@@ -282,7 +282,70 @@ public class DocsSeed
         Due("Abstimmung Projektplan Q4", -2);
         Due("Angebot Nr. 2026-0418", 1);
 
+        Newsletter(db, account);
+
         db.Exec(@"UPDATE mail_folders SET unread=(SELECT COUNT(*) FROM mail WHERE account=$a AND folder=mail_folders.path AND seen=0),
                   total=(SELECT COUNT(*) FROM mail WHERE account=$a AND folder=mail_folders.path) WHERE account=$a", ("$a", account.Id));
+    }
+
+    /// <summary>Prio-Posteingang und Newsletter abmelden: Verteiler-Mails mit List-Unsubscribe, fest eingeordnet
+    /// (Relevant/Sonstige), damit die Bilder nicht vom Zufall des Filters abhaengen.</summary>
+    private static void Newsletter(UserDb db, MailAccount account)
+    {
+        // (Name, Adresse, Betreff, HTML, gelesen, Stunden zurueck, List-Unsubscribe, One-Click)
+        var samples = new (string Name, string Addr, string Subject, string Html, bool Seen, double Hours, string Unsub, bool OneClick)[]
+        {
+            ("Kurbel & Kette Radsport", "news@kurbel-kette.example", "Herbstputz fürs Fahrrad: 5 Tipps und 15 % auf Pflegemittel",
+                "<table width='100%' style='max-width:620px;margin:auto;font-family:Arial'><tr><td style='background:#1f4e5f;color:#fff;padding:18px'>" +
+                "<h2 style='margin:0'>Kurbel &amp; Kette – Werkstattbrief</h2></td></tr><tr><td style='padding:16px 0'>" +
+                "<h3 style='margin:0 0 8px'>Fit durch Herbst und Winter</h3><ol><li>Kette reinigen und ölen</li><li>Bremsbeläge prüfen</li>" +
+                "<li>Licht testen</li><li>Reifendruck anpassen</li><li>Schaltung nachstellen lassen</li></ol>" +
+                "<p>Bis Sonntag 15 % auf alle Pflegemittel in unserer Werkstatt am Bahnhof.</p></td></tr>" +
+                "<tr><td style='font-size:12px;color:#777'>Sie erhalten den Werkstattbrief, weil Sie ihn bestellt haben.</td></tr></table>",
+                false, 2.8, "<https://abmelden.kurbel-kette.example/u/7f3a91>, <mailto:abmelden@kurbel-kette.example?subject=unsubscribe>", true),
+            ("Lichtspiele Musterstadt", "programm@lichtspiele.example", "Kinoprogramm ab Donnerstag: Herbstfilmtage",
+                "<p>Liebe Kinofreunde,</p><p>ab Donnerstag zeigen wir bei den Herbstfilmtagen zwölf Filme aus Europa – mit Gesprächsrunde am Samstag.</p>" +
+                "<p>Ihr Team der Lichtspiele</p>",
+                false, 9, "<mailto:programm-abmelden@lichtspiele.example?subject=abmelden>", false),
+            ("Kochkiste", "rezepte@kochkiste.example", "Wochenrezepte: Kürbis in allen Varianten",
+                "<p>Hallo,</p><p>diese Woche: Kürbissuppe mit Ingwer, Ofenkürbis mit Feta und Kürbisbrot.</p><p>Guten Appetit!<br>Ihre Kochkiste</p>",
+                true, 30, "<https://kochkiste.example/newsletter/abmelden?id=55120>", false),
+            ("Cloudspeicher Beispiel", "noreply@cloudspeicher.example", "Ihr Speicher ist zu 80 % belegt",
+                "<p>Guten Tag,</p><p>Ihr Online-Speicher ist zu 80 % belegt. Mit einem größeren Tarif haben Sie wieder Platz.</p>",
+                true, 60, "", false),
+        };
+        foreach (var x in samples)
+        {
+            var uid = (uint)(Convert.ToInt64(db.Scalar("SELECT COALESCE(MAX(uid),0) FROM mail WHERE account=$a AND folder='INBOX'", ("$a", account.Id))) + 1);
+            var m = new MimeMessage();
+            m.From.Add(new MailboxAddress(x.Name, x.Addr));
+            m.To.Add(new MailboxAddress("Alex Berger", Me));
+            m.Subject = x.Subject;
+            m.Date = DateTimeOffset.Now.AddHours(-x.Hours);
+            m.MessageId = $"docs-blog-nl-{uid}@dmoffice";
+            if (x.Unsub.Length > 0)
+            {
+                m.Headers.Add("List-Id", $"<{x.Addr.Split('@')[1]}>");
+                m.Headers.Add("List-Unsubscribe", x.Unsub);
+                if (x.OneClick) m.Headers.Add("List-Unsubscribe-Post", "List-Unsubscribe=One-Click");
+            }
+            m.Body = new BodyBuilder { HtmlBody = x.Html }.ToMessageBody();
+            using var ms = new MemoryStream();
+            m.WriteTo(ms);
+            db.Exec(@"INSERT OR REPLACE INTO mail(account,folder,uid,message_id,subject,from_name,from_addr,recipients,date,size,seen,flagged,has_att,keywords,answered)
+                      VALUES($a,'INBOX',$u,$mid,$s,$fn,$fa,$rc,$d,$sz,$seen,0,0,'',0)",
+                ("$a", account.Id), ("$u", (long)uid), ("$mid", m.MessageId), ("$s", x.Subject), ("$fn", x.Name), ("$fa", x.Addr),
+                ("$rc", $"{{\"to\":[{{\"name\":\"Alex Berger\",\"address\":\"{Me}\"}}],\"cc\":[]}}"),
+                ("$d", m.Date.ToUnixTimeMilliseconds()), ("$sz", ms.Length), ("$seen", x.Seen ? 1 : 0));
+            var id = Convert.ToInt64(db.Scalar("SELECT id FROM mail WHERE account=$a AND folder='INBOX' AND uid=$u", ("$a", account.Id), ("$u", (long)uid)));
+            db.Exec("DELETE FROM mail_fts WHERE rowid=$i", ("$i", id));
+            db.Exec("INSERT INTO mail_fts(rowid,subject,sender,recipients,body) VALUES($i,$s,$f,'','')", ("$i", id), ("$s", x.Subject), ("$f", x.Name + " " + x.Addr));
+            MailStore.StoreRaw(db, account.Id, "INBOX", uid, ms.ToArray(), m);
+        }
+
+        // Fest einordnen: alles Relevant, Verteiler und Werbung nach Sonstige
+        db.Exec("UPDATE mail SET focus=1 WHERE account=$a AND folder='INBOX'", ("$a", account.Id));
+        db.Exec(@"UPDATE mail SET focus=0 WHERE account=$a AND folder='INBOX' AND (message_id LIKE 'docs-blog-nl-%'
+                  OR subject LIKE 'Gartenbrief%' OR subject LIKE 'Nur heute%')", ("$a", account.Id));
     }
 }

@@ -92,6 +92,23 @@ auf iPhone/iPad in Safari über *Teilen* → *Zum Home-Bildschirm*. Voraussetzun
 liegen danach im Gerät, Post und Termine kommen immer frisch vom Server; ohne Verbindung erscheint ein Hinweis. Nach einem
 Update bietet die App „Neu laden“ an. Die Symbole zeichnet `python tools/pwa-icons.py`.
 
+## Outlook.com, Hotmail und Live
+
+Private Microsoft-Konten (`outlook.com`, `hotmail.*`, `live.*`, `msn.com`) nehmen für IMAP und SMTP kein Passwort mehr an,
+nur OAuth2. dmOffice bringt dafür eine eigene App-Registrierung mit („dmO Mail“), es ist nichts einzurichten.
+
+Wer lieber eine eigene Registrierung verwendet (etwa in einer Firma), legt sie im
+[Entra-Portal](https://entra.microsoft.com) unter *App-Registrierungen* an: Kontotypen *Alle Konten von Entra ID-Mandanten
+und persönliche Microsoft-Konten*, keine Umleitungs-URI, unter *Authentifizierung* **Öffentliche Clientflows zulassen**
+auf *Ja*. Der Name darf keine Microsoft-Marken wie „Office“ oder „Outlook“ enthalten. Die *Anwendungs-ID (Client)* dann
+als `DMOFFICE_MS_CLIENT_ID` setzen (Unraid: erweiterte Ansicht der Vorlage, Docker Compose: `.env`) und dmOffice neu
+starten. `DMOFFICE_MS_CLIENT_ID=off` schaltet die Microsoft-Anmeldung ganz ab.
+
+Danach erkennt *Einstellungen* → *Konto* → *Konto hinzufügen* die Adresse und zeigt **Mit Microsoft anmelden**: Code
+kopieren, `microsoft.com/link` öffnen, Code eingeben, anmelden und den Zugriff erlauben. dmOffice wartet, prüft IMAP und
+SMTP und legt das Konto an. Das Refresh-Token liegt wie die Passwörter anderer Konten in der verschlüsselten Datenbank
+des Benutzers. Läuft es ab (etwa nach einer Passwortänderung bei Microsoft), im Konto auf **Neu anmelden** gehen.
+
 ## Geräte verbinden
 
 In dmOffice unter *Einstellungen* → *Geräte & Sync* je Gerät ein **App-Passwort** erstellen. Dort stehen auch die Adressen.

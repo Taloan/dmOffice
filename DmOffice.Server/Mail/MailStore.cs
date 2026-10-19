@@ -177,19 +177,113 @@ public static class MailStore
     private const string NotFailing =
         " AND NOT EXISTS (SELECT 1 FROM mail_fetch_failed x WHERE x.account=mail.account AND x.folder=mail.folder AND x.uid=mail.uid AND x.next > $now)";
 
-    public static List<(uint Uid, long Size)> MissingBodies(UserDb db, string account, string folder, long maxBytes, int limit)
+    /// <summary>Mails ohne Inhalt hier, neueste zuerst. Mit slim nur die, deren Inhalt "Schlank" behaelt.</summary>
+    public static List<(uint Uid, long Size)> MissingBodies(UserDb db, string account, string folder, long maxBytes, int limit, SlimLimit? slim = null)
     {
         Ensure(db);
-        return db.Query($"SELECT uid, size FROM mail WHERE account=$a AND folder=$f AND cached=0 AND size <= $m{NotFailing} ORDER BY date DESC LIMIT $l",
-            r => ((uint)r.GetInt64(0), r.GetInt64(1)), ("$a", account), ("$f", folder), ("$m", maxBytes), ("$l", limit),
-            ("$now", DateTimeOffset.UtcNow.ToUnixTimeSeconds()));
+        var (with, keep) = slim == null ? ("", "") : ($"WITH {KeepCte} ", " AND id IN (SELECT id FROM keep)");
+        return db.Query($"{with}SELECT uid, size FROM mail WHERE account=$a AND folder=$f AND cached=0 AND size <= $m{keep}{NotFailing} ORDER BY date DESC LIMIT $l",
+            r => ((uint)r.GetInt64(0), r.GetInt64(1)), SlimArgs(slim, ("$a", account), ("$f", folder), ("$m", maxBytes), ("$l", limit),
+            ("$now", DateTimeOffset.UtcNow.ToUnixTimeSeconds())));
     }
 
-    public static int MissingCount(UserDb db, string account, long maxBytes)
+    /// <summary>Wie MissingBodies mit slim, aber fuer alle Ordner auf einmal - die Auswahl rechnet nur einmal.</summary>
+    public static ILookup<string, (uint Uid, long Size)> MissingBodies(UserDb db, string account, long maxBytes, SlimLimit slim)
     {
         Ensure(db);
-        return Convert.ToInt32(db.Scalar($"SELECT COUNT(*) FROM mail WHERE account=$a AND cached=0 AND size <= $m{NotFailing}",
-            ("$a", account), ("$m", maxBytes), ("$now", DateTimeOffset.UtcNow.ToUnixTimeSeconds())));
+        return db.Query($"WITH {KeepCte} SELECT folder, uid, size FROM mail WHERE account=$a AND cached=0 AND size <= $m AND id IN (SELECT id FROM keep){NotFailing} ORDER BY date DESC",
+                r => (Folder: r.GetString(0), Uid: (uint)r.GetInt64(1), Size: r.GetInt64(2)),
+                SlimArgs(slim, ("$a", account), ("$m", maxBytes), ("$now", DateTimeOffset.UtcNow.ToUnixTimeSeconds())))
+            .ToLookup(x => x.Folder, x => (x.Uid, x.Size));
+    }
+
+    public static int MissingCount(UserDb db, string account, long maxBytes, SlimLimit? slim = null)
+    {
+        Ensure(db);
+        var (with, keep) = slim == null ? ("", "") : ($"WITH {KeepCte} ", " AND id IN (SELECT id FROM keep)");
+        return Convert.ToInt32(db.Scalar($"{with}SELECT COUNT(*) FROM mail WHERE account=$a AND cached=0 AND size <= $m{keep}{NotFailing}",
+            SlimArgs(slim, ("$a", account), ("$m", maxBytes), ("$now", DateTimeOffset.UtcNow.ToUnixTimeSeconds()))));
+    }
+
+    // ---------------- Speichermodus "Schlank" ----------------
+
+    /// <summary>Grenzen fuer "Schlank": Inhalte der Mails, die seit Since (Unix-ms) kamen oder geoeffnet
+    /// wurden - die juengsten zuerst, bis sie zusammen Budget Bytes erreichen (Groesse laut Server).</summary>
+    public sealed record SlimLimit(long Since, long Budget)
+    {
+        public static SlimLimit? Of(MailAccount a, DateTimeOffset now) =>
+            a.Slim ? new(now.AddDays(-a.SlimDays).ToUnixTimeMilliseconds(), a.SlimMb * 1024L * 1024L) : null;
+
+        /// <summary>Groessere Mails nie vorab - sonst verdraengt eine einzige alle anderen.
+        /// Geoeffnet bleiben sie bis zum naechsten Aufraeumen.</summary>
+        public long Big => Budget / 4;
+    }
+
+    /// <summary>Welche Mails eines Kontos ihren Inhalt behalten - neu angekommene und zuletzt geoeffnete zuerst.</summary>
+    private const string KeepCte = @"keep(id) AS (SELECT id FROM (
+            SELECT id, SUM(size) OVER (ORDER BY MAX(date, COALESCE(opened, 0)) DESC, id DESC ROWS UNBOUNDED PRECEDING) AS run
+            FROM mail WHERE account=$a AND size <= $big AND (date >= $since OR opened >= $since)) WHERE run <= $budget)";
+
+    private static (string, object?)[] SlimArgs(SlimLimit? slim, params (string, object?)[] args) =>
+        slim == null ? args : args.Concat(new (string, object?)[] { ("$since", slim.Since), ("$budget", slim.Budget), ("$big", slim.Big) }).ToArray();
+
+    /// <summary>Aufraeumer fuer "Schlank": Inhalte und Anhaenge ausserhalb der Grenzen verwerfen. Kopfdaten,
+    /// Flags und Vorschau bleiben; die Suche findet die Mail weiter ueber Kopf und Vorschau. Gibt Zahl
+    /// und Bytes (komprimiert) zurueck - frei wird der Platz in der Datei erst mit UserDb.ReclaimIncremental/Compact.</summary>
+    public static (int Count, long Bytes) Discard(UserDb db, string account, SlimLimit slim)
+    {
+        using var conn = db.Open();
+        var drop = UserDb.Query(conn, $@"WITH {KeepCte} SELECT m.id, length(r.raw) FROM mail m JOIN mail_raw r ON r.id = m.id
+                WHERE m.account=$a AND m.id NOT IN (SELECT id FROM keep)",
+            r => (Id: r.GetInt64(0), Bytes: r.GetInt64(1)), SlimArgs(slim, ("$a", account)));
+        foreach (var chunk in drop.Chunk(500))
+        {
+            // Nur Zahlen aus der Datenbank - direkt einsetzen geht
+            var ids = string.Join(",", chunk.Select(x => x.Id));
+            using var tx = conn.BeginTransaction();
+            UserDb.Exec(conn, $"DELETE FROM mail_raw WHERE id IN ({ids})");
+            UserDb.Exec(conn, $"UPDATE mail SET cached=0 WHERE id IN ({ids})");
+            UserDb.Exec(conn, $"UPDATE mail_fts SET body=(SELECT preview FROM mail WHERE mail.id = mail_fts.rowid) WHERE rowid IN ({ids})");
+            tx.Commit();
+        }
+        return (drop.Count, drop.Sum(x => x.Bytes));
+    }
+
+    /// <summary>Geoeffnet: der Inhalt zaehlt bei "Schlank" wieder als juengst (bleibt hier).</summary>
+    public static void Opened(UserDb db, string account, string folder, uint uid) =>
+        db.Exec("UPDATE mail SET opened=$t WHERE account=$a AND folder=$f AND uid=$u",
+            ("$t", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()), ("$a", account), ("$f", folder), ("$u", (long)uid));
+
+    /// <summary>Mails ohne Inhalt und ohne Vorschau - bei "Schlank" holt der Sync nur die Vorschau.</summary>
+    public static List<uint> MissingPreviews(UserDb db, string account, string folder, int limit) =>
+        db.Query("SELECT uid FROM mail WHERE account=$a AND folder=$f AND cached=0 AND preview='' ORDER BY date DESC LIMIT $l",
+            r => (uint)r.GetInt64(0), ("$a", account), ("$f", folder), ("$l", limit));
+
+    /// <summary>Vorschau vom Server (ohne Inhalt) ablegen, auch fuer die Suche.</summary>
+    public static void SetPreviews(UserDb db, string account, string folder, IEnumerable<(uint Uid, string? Text)> items)
+    {
+        using var conn = db.Open();
+        using var tx = conn.BeginTransaction();
+        foreach (var (uid, text) in items)
+        {
+            // Leer heisst "noch nicht geholt" - eine Mail ohne Text bekommt ein Leerzeichen
+            var p = Preview(text ?? "");
+            if (p.Length == 0) p = " ";
+            var id = UserDb.Query(conn, "UPDATE mail SET preview=$p WHERE account=$a AND folder=$f AND uid=$u AND cached=0 RETURNING id",
+                r => r.GetInt64(0), ("$p", p), ("$a", account), ("$f", folder), ("$u", (long)uid)).FirstOrDefault();
+            if (id != 0) UserDb.Exec(conn, "UPDATE mail_fts SET body=$p WHERE rowid=$id", ("$p", p), ("$id", id));
+        }
+        tx.Commit();
+    }
+
+    /// <summary>Mails eines Ordners nach UID, nur die ohne Inhalt hier - fuer Treffer der Suche beim Anbieter.</summary>
+    public static List<MailRow> NotCached(UserDb db, string account, string folder, IEnumerable<uint> uids)
+    {
+        var result = new List<MailRow>();
+        foreach (var chunk in uids.Chunk(500))
+            result.AddRange(db.Query($"SELECT {RowColumns} FROM mail WHERE account=$a AND folder=$f AND cached=0 AND uid IN ({string.Join(",", chunk)})",
+                ReadRow, ("$a", account), ("$f", folder)));
+        return result;
     }
 
     /// <summary>Laden fehlgeschlagen: spaeter erneut, mit wachsendem Abstand (10 min, 20 min ... hoechstens ein Tag).</summary>
@@ -376,6 +470,9 @@ public static class MailStore
     /// <summary>Kein Ordner auf dem Server: alle gekennzeichneten Mails eines Kontos (wie "Markiert" bei Proton).</summary>
     public const string FlaggedFolder = "__flagged";
 
+    /// <summary>Kein Ordner auf dem Server: die Posteingaenge aller Konten zusammen ("Alle Posteingaenge").</summary>
+    public const string UnifiedFolder = "__unified";
+
     private const string NotDeleted =
         " AND NOT EXISTS (SELECT 1 FROM mail_folders mf WHERE mf.account=mail.account AND mf.path=mail.folder AND mf.special IN ('trash','junk'))";
 
@@ -532,6 +629,34 @@ public static class MailStore
             parts.Add(column == null ? term : column + ":" + term);
         }
         return string.Join(" AND ", parts);
+    }
+
+    /// <summary>Dieselbe Suche als IMAP SEARCH fuer den Anbieter (Speichermodus "Schlank"): freie Woerter im
+    /// ganzen Text (TEXT), von:/an:/betreff: in ihrem Feld. Null, wenn kein freies Wort dabei ist - Kopfdaten
+    /// liegen ohnehin hier, da findet die eigene Suche schon alles.</summary>
+    public static MailKit.Search.SearchQuery? ImapQuery(string query)
+    {
+        var parts = new List<MailKit.Search.SearchQuery>();
+        bool free = false;
+        foreach (var raw in query.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var word = raw;
+            string? column = null;
+            foreach (var (prefix, col) in new[] { ("von:", "sender"), ("from:", "sender"), ("an:", "recipients"), ("to:", "recipients"),
+                         ("betreff:", "subject"), ("subject:", "subject") })
+                if (word.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) { column = col; word = word[prefix.Length..]; }
+            word = new string(word.Where(c => char.IsLetterOrDigit(c) || c is '@' or '.' or '-' or '_').ToArray());
+            if (!word.Any(char.IsLetterOrDigit)) continue;
+            free |= column == null;
+            parts.Add(column switch
+            {
+                "sender" => MailKit.Search.SearchQuery.FromContains(word),
+                "recipients" => MailKit.Search.SearchQuery.ToContains(word).Or(MailKit.Search.SearchQuery.CcContains(word)),
+                "subject" => MailKit.Search.SearchQuery.SubjectContains(word),
+                _ => MailKit.Search.SearchQuery.MessageContains(word),
+            });
+        }
+        return free ? parts.Aggregate((a, b) => a.And(b)) : null;
     }
 
     /// <summary>Mail per Message-ID (mit oder ohne spitze Klammern) - Posteingang zuerst, sonst die neueste.</summary>

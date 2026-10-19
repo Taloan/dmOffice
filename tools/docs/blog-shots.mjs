@@ -102,11 +102,14 @@ await click('Ihr Kundenkonto: Bitte Daten bis morgen bestätigen')
 await pause(800)
 await shot('m-junk-unsicher')
 
+// Der Newsletter liegt im Prio-Posteingang unter "Sonstige"
+await mouse('[role=tab]', 'Sonstige')
 await click('Gartenbrief Oktober: Zwiebeln setzen, Laub nutzen')
 await pause(800)
 await mouse('button', 'Bilder anzeigen')
 await shot('m-bilder-blockiert')
 await escape()
+await mouse('[role=tab]', 'Relevant')
 
 await click('Grillabend am Samstag?')
 await mouse('button', 'Nachverfolgen')
@@ -287,5 +290,258 @@ await page.evaluate(() => {
   for (const el of document.querySelectorAll('span')) if (el.children.length === 0 && el.textContent?.startsWith('Datenverzeichnis:')) el.textContent = 'Datenverzeichnis: /data'
 })
 await shot('d-verwaltung-benutzer')
+
+// ======================= Mail: Prio, Abmelden, VIP, Postausgang, Fenster, Suche, Aufraeumen =======================
+// Rueckfragen (Verwerfen? Loeschen?) bestaetigen
+page.on('dialog', d => d.accept().catch(() => {}))
+
+/** Rechtsklick auf das sichtbare Element mit diesem Text (Kontextmenue). */
+async function rclick(text) {
+  const box = await page.evaluate(text => {
+    const el = [...document.querySelectorAll('*')].find(e => e.offsetParent && e.children.length === 0 && e.textContent?.trim() === text)
+    if (!el) return null
+    el.scrollIntoView({ block: 'center' })
+    const r = el.getBoundingClientRect()
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+  }, text)
+  if (!box) { console.warn('    nicht gefunden: ' + text); return false }
+  await page.mouse.click(box.x, box.y, { button: 'right' })
+  await pause(700)
+  return true
+}
+/** Maus auf einen Menuepunkt (oeffnet Untermenues). */
+async function hover(selector, text) {
+  const box = await page.evaluate((selector, text) => {
+    const el = [...document.querySelectorAll(selector)].find(e => e.offsetParent !== null && e.textContent?.trim().includes(text))
+    if (!el) return null
+    const r = el.getBoundingClientRect()
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+  }, selector, text)
+  if (!box) { console.warn('    nicht gefunden: ' + selector + ' ' + text); return false }
+  await page.mouse.move(box.x, box.y)
+  await pause(900)
+  return true
+}
+/** Ohne die Maus nach unten links zu schieben (Untermenues bleiben offen). */
+async function shotHere(name, target = page) {
+  if (wanted && !wanted.has(name)) return
+  await pause(400)
+  await target.screenshot({ path: join(out, name + '.png') })
+  console.log('  ' + name)
+}
+/** Element mit diesem Text in die Mitte scrollen. */
+const scrollTo = text => page.evaluate(text => {
+  const el = [...document.querySelectorAll('label,span,div')].find(e => e.offsetParent && e.children.length === 0 && e.textContent?.trim().startsWith(text))
+  el?.scrollIntoView({ block: 'center' })
+}, text)
+/** Auswahlliste unter einer Feldbeschriftung oeffnen. */
+async function openDrop(label) {
+  const box = await page.evaluate(label => {
+    const l = [...document.querySelectorAll('label')].find(e => e.offsetParent && e.textContent?.trim() === label)
+    const dd = l?.parentElement?.querySelector('[role=combobox],button')
+    if (!dd) return null
+    dd.scrollIntoView({ block: 'center' })
+    const r = dd.getBoundingClientRect()
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+  }, label)
+  if (!box) { console.warn('    nicht gefunden: Feld ' + label); return false }
+  await page.mouse.click(box.x, box.y)
+  await pause(700)
+  return true
+}
+/** Neue Mail: Empfaenger aus den Kontakten, Betreff, Text vor der Signatur. */
+async function newMail(to, subject, body) {
+  await click('Neue E-Mail')
+  await pause(900)
+  await page.keyboard.type(to, { delay: 30 })
+  await pause(900)
+  await page.keyboard.press('Enter')
+  await pause(300)
+  await page.click('input[placeholder="Betreff"]')
+  await page.keyboard.type(subject, { delay: 15 })
+  await page.evaluate(() => {
+    const el = document.querySelector('.dm-editor')
+    el.focus()
+    const r = document.createRange(); r.setStart(el, 0); r.collapse(true)
+    const s = getSelection(); s.removeAllRanges(); s.addRange(r)
+  })
+  for (const line of body.split('\n')) { await page.keyboard.type(line, { delay: 8 }); await page.keyboard.press('Enter') }
+  await pause(500)
+}
+const mailStatus = () => page.evaluate(() => window.dispatchEvent(new Event('dmoffice:mailstatus')))
+
+// ---------- Prio-Posteingang ----------
+await go('mail')
+await mouse('[role=tab]', 'Relevant')
+await click('Grillabend am Samstag?')
+await pause(800)
+await shot('m-prio-relevant')
+
+await mouse('[role=tab]', 'Sonstige')
+await pause(800)
+await click('Kinoprogramm ab Donnerstag: Herbstfilmtage')
+await pause(1000)
+await shot('m-prio-sonstige')
+
+// Kontextmenue: zurueck nach Relevant, nur diese Mail oder immer fuer den Absender
+await rclick('Wochenrezepte: Kürbis in allen Varianten')
+await hover('[role=menuitem]', 'Nach Relevant verschieben')
+await shotHere('m-prio-verschieben')
+await escape(); await escape()
+
+// ---------- Newsletter abmelden ----------
+await click('Herbstputz fürs Fahrrad: 5 Tipps und 15 % auf Pflegemittel')
+await pause(1200)
+await shot('m-abmelden')
+// Kein echter Aufruf beim Anbieter: die Antwort des Servers ("One-Click erledigt") wird im Browser vorgegeben.
+// Dafuer diese Seite ohne verschluesselten Umschlag laden (/api/e2e/key "gibt es nicht"), sonst sieht fetch nur Chiffrat;
+// Puppeteer-Abfangen greift nicht, der Service Worker der PWA steht dazwischen.
+const fake = await page.evaluateOnNewDocument(() => {
+  sessionStorage.removeItem('dmoffice.e2e')
+  const real = window.fetch
+  window.fetch = (input, init) => {
+    const url = String(input?.url ?? input)
+    if (url.endsWith('/api/e2e/key')) return Promise.resolve(new Response('', { status: 404 }))
+    if (url.includes('/unsubscribe')) return Promise.resolve(new Response(JSON.stringify({ done: true, how: 'oneclick' }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    return real(input, init)
+  }
+})
+await page.reload({ waitUntil: 'networkidle0' })
+await pause(1200)
+await mouse('[role=tab]', 'Sonstige')
+await click('Herbstputz fürs Fahrrad: 5 Tipps und 15 % auf Pflegemittel')
+await pause(1200)
+await mouse('button', 'Vom Newsletter abmelden')
+await pause(600)
+await shot('m-abmelden-erledigt')
+await page.removeScriptToEvaluateOnNewDocument(fake.identifier)
+await noToasts()
+
+// ---------- Konto: Prio-Posteingang, Papierkorb/Junk automatisch leeren ----------
+await go('settings/accounts')
+await mouse('button[aria-label="Konto bearbeiten"]')
+await pause(800)
+await scrollTo('Prio-Posteingang')
+await shot('m-prio-einstellung')
+await openDrop('Gelöschte Elemente automatisch leeren')
+await mouse('[role=option]', '=nach 30 Tagen')
+await openDrop('Junk-E-Mail automatisch leeren')
+await shotHere('m-autoleeren')
+await escape()
+await click('Abbrechen', 'button')
+
+// Dasselbe im Kontextmenue des Ordners (nur zeigen, nicht einstellen - ohne Mailserver)
+await go('mail')
+await rclick('Gelöschte Elemente')
+await hover('[role=menuitem]', 'Automatisch leeren')
+await shotHere('m-autoleeren-ordner')
+await escape(); await escape()
+
+// ---------- VIP-Kontakte ----------
+await go('contacts')
+await click('Laura Neumann')
+await click('VIP', 'button')
+await pause(1200)
+await click('Jana Wolff')
+await click('VIP', 'button')
+await pause(1200)
+await noToasts()
+await shot('m-vip')
+await click('Bearbeiten', 'button')
+await pause(800)
+await scrollTo('VIP – Benachrichtigungen')
+await shot('m-vip-bearbeiten')
+await click('Abbrechen', 'button')
+
+// ---------- Eigenes Fenster, Senden mit Zurueckrufen, spaeter senden, Postausgang ----------
+const popup = async open => {
+  // Nur Seiten, nicht den Service Worker der PWA
+  const target = new Promise(res => {
+    const on = t => { if (t.type() === 'page') { browser.off('targetcreated', on); res(t.page()) } }
+    browser.on('targetcreated', on)
+  })
+  await open()
+  const p = await target
+  await p.setViewport(VIEW)
+  await p.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'light' }])
+  await pause(2500)
+  return p
+}
+// Verfassen in ein eigenes Fenster auskoppeln (Knopf links neben "Schliessen")
+await go('mail')
+await newMail('Jana', 'Salat für Samstag', 'Hallo Jana,\n\nich bringe Nudelsalat und frisches Brot mit. Bis Samstag!')
+let win = await popup(() => page.evaluate(() => {
+  document.querySelector('button[aria-label="Schließen"]')?.previousElementSibling?.click()
+}))
+await shotHere('m-eigenes-fenster', win)
+// Das eigene Fenster verwerfen und im Hauptfenster senden: unten erscheint die Leiste zum Zurueckrufen
+await win.close()
+await pause(800)
+await go('mail')
+await newMail('Jana', 'Salat für Samstag', 'Hallo Jana,\n\nich bringe Nudelsalat und frisches Brot mit. Bis Samstag!')
+await page.evaluate(() => [...document.querySelectorAll('button')].find(b => b.textContent?.trim() === 'Senden')?.click())
+await pause(1500)
+await shot('m-zurueckrufen')
+// Zurueckrufen: die Mail kommt wieder ins Verfassen - und geht dann geplant raus
+await mouse('button', 'Zurückrufen')
+await pause(1200)
+await noToasts()
+await mouse('button[aria-label="Später senden"]')
+await pause(600)
+await shotHere('m-spaeter-senden')
+await click('Morgen')
+await pause(1500)
+await noToasts()
+
+await newMail('Laura', 'Projektplan Q4 – meine Anmerkungen', 'Hallo Laura,\n\nich habe mir Abschnitt 3 angesehen. Die Meilensteine passen, nur der Test braucht eine Woche mehr.\n\nViele Grüße\nAlex')
+await mouse('button[aria-label="Später senden"]')
+await click('Morgen Nachmittag')
+await pause(1500)
+await noToasts()
+await mailStatus()
+await pause(1500)
+await mouse('button', 'Postausgang')
+await pause(1200)
+await shot('m-postausgang')
+
+// Mail per Doppelklick im eigenen Fenster
+await go('mail')
+await click('Einladung zur Jahreshauptversammlung')
+await pause(1200)
+win = await popup(() => page.evaluate(() => {
+  const el = [...document.querySelectorAll('[role=option]')].find(e => e.textContent?.includes('Einladung zur Jahreshauptversammlung'))
+  el?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+}))
+await shotHere('m-mail-fenster', win)
+await win.close()
+
+// ---------- Suchtreffer sortieren ----------
+await go('mail')
+await type('input[placeholder="Suchen (von:, an:, betreff:)"]', 'rechnung')
+await pause(1500)
+await mouse('button', 'Neueste')
+await shotHere('m-suche-sortiert')
+await escape()
+
+// ---------- Apps installieren ----------
+await go('settings/install')
+await scrollTo('Android-App (APK)')
+await shot('b-apps-installieren')
+
+// ---------- Leerer Posteingang (zuletzt: alle Mails ins Archiv) ----------
+await go('mail')
+await page.evaluate(async () => {
+  const acc = (await (await fetch('/api/mail/accounts')).json())[0].id
+  const r = await (await fetch(`/api/mail/${acc}/messages?folder=INBOX&size=500`)).json()
+  await fetch(`/api/mail/${acc}/move`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder: 'INBOX', uids: r.items.map(i => i.uid), target: 'Archive' }) })
+})
+await go('mail')
+// Immer derselbe Spruch: der erste
+await page.evaluate(() => { Math.random = () => 0 })
+await click('Verein')
+await pause(800)
+await click('Posteingang')
+await pause(1200)
+await shot('m-leer')
 
 await browser.close()

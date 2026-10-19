@@ -92,6 +92,8 @@ export default function MailView({ status }: { status: any }) {
     return parts[0] === 'mail' && parts.length >= 3 ? { account: decodeURIComponent(parts[1]), folder: decodeURIComponent(parts.slice(2).join('/')) } : null
   })
   const [items, setItems] = useState<MailItem[]>([])
+  // Speichermodus "Schlank": Suche laeuft noch beim Anbieter
+  const [remoteSearch, setRemoteSearch] = useState(false)
   // Ruecklink aus einer Notiz: #/mail/open/<konto>/<message-id>
   // Aus der E-Mail-Nachverfolgung: #/mail/flagged/<konto>/<message-id> - im Ordner "Markiert" oeffnen
   const [opening, setOpening] = useState<(MailItem & { openIn: string }) | null>(null)
@@ -282,13 +284,28 @@ export default function MailView({ status }: { status: any }) {
         const inInbox = folders[sel.account]?.find(f => f.path === sel.folder)?.special === 'inbox'
         const inVirtual = sel.folder.startsWith('sf:') || sel.folder.startsWith('cat:')
         const folder = inVirtual ? undefined : scope === 'current' || (scope === 'inboxAll' && !inInbox) ? sel.folder : undefined
-        const r = await api.get<MailItem[]>('/api/mail/search?' + q({
-          q: query, acc: allAccounts ? undefined : sel.account, folder: allAccounts ? undefined : folder,
-          deleted: prefs.searchDeleted ?? true, relevance: searchSort === 'relevance',
-        }))
+        const params = { q: query, acc: allAccounts ? undefined : sel.account, folder: allAccounts ? undefined : folder, deleted: prefs.searchDeleted ?? true }
+        const r = await api.get<MailItem[]>('/api/mail/search?' + q({ ...params, relevance: searchSort === 'relevance' }))
         if (req !== listReq.current) return
         setItems(r)
         setTotal(r.length)
+        // Schlank: den Text der Mails, deren Inhalt nur beim Anbieter liegt, dort durchsuchen - die Treffer kommen danach dazu
+        if (accounts?.some(a => a.storage === 'slim' && (allAccounts || a.id === sel.account))) {
+          setRemoteSearch(true)
+          api.get<MailItem[]>('/api/mail/search/remote?' + q(params)).then(more => {
+            if (req !== listReq.current) return
+            const known = new Set(r.map(i => i.id))
+            const add = more.filter(m => !known.has(m.id))
+            if (!add.length) return
+            setItems(prev => {
+              const have = new Set(prev.map(i => i.id))
+              const all = [...prev, ...add.filter(m => !have.has(m.id))]
+              return searchSort === 'relevance' ? all : all.sort((a, b) => b.date.localeCompare(a.date))
+            })
+            setTotal(n => n + add.length)
+          }).catch(() => { /* Anbieter nicht erreichbar: bleibt bei den eigenen Treffern */ })
+            .finally(() => { if (req === listReq.current) setRemoteSearch(false) })
+        } else setRemoteSearch(false)
       } else {
         const size = 100 * ((keepPage ? page : 0) + 1)
         const r = await api.get(`/api/mail/${sel.account}/messages?` + q({ folder: sel.folder, size, filter: listFilter }))
@@ -300,7 +317,7 @@ export default function MailView({ status }: { status: any }) {
         if (size <= 100) remember(key, r.items, r.total)
       }
     } catch (e) { if (req === listReq.current) fail(e) } finally { if (req === listReq.current) setLoading(false) }
-  }, [sel, query, allAccounts, listFilter, page, fail])
+  }, [sel, query, allAccounts, listFilter, page, fail, accounts])
   // Ungelesene je Reiter; beim Wechsel des Posteingangs und nach Aenderungen neu
   const loadFocus = useCallback(() => {
     if (!sel || !inboxSel) { setFocusInfo(null); return }
@@ -765,6 +782,7 @@ export default function MailView({ status }: { status: any }) {
               <div className={s.listTitle}>
                 <Text weight="semibold" size={400} truncate>
                   {query ? (total === 1 ? t('Suche: 1 Treffer') : t('Suche: {n} Treffer', { n: total })) : virtualName ?? folderLabel(currentFolder)}
+                  {query && remoteSearch && <Text size={200} weight="regular" style={{ marginLeft: 6, color: tokens.colorNeutralForeground3 }}>{t('sucht auch beim Anbieter …')}</Text>}
                 </Text>
                 {query ? (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -849,8 +867,9 @@ export default function MailView({ status }: { status: any }) {
               <Compose key={compose.id} ref={composeRef} init={compose.init} accounts={accounts} onPopOut={popOutCompose}
                 onDirty={d => { composeDirty.current = d }}
                 onSaved={() => loadList(true)}
-                onClose={sent => {
+                onClose={(sent, queued) => {
                   setCompose(null)
+                  if (queued) setUndo(queued)
                   // Geschlossenen Entwurf nicht sofort wieder oeffnen
                   if (openDraft) setSelected([])
                   if (sent || openDraft) loadList(true)

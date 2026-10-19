@@ -321,6 +321,9 @@ private fun MailFollowUps(onOpenMail: (String, String, Long) -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
     suspend fun load() { try { list = app.mail.followUps(); error = null } catch (e: Exception) { error = e.message } }
     LaunchedEffect(Unit) { load() }
+    // Bei mehreren Konten: aus welchem Postfach die Mail stammt
+    var mailboxes by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    LaunchedEffect(Unit) { try { mailboxes = app.mail.accounts().let { a -> if (a.size > 1) a.associate { it.id to it.email } else emptyMap() } } catch (_: Exception) { } }
     val today = LocalDate.now().toString()
     val sorted = (list ?: emptyList()).sortedWith(compareBy<at.dimes.dmoffice.api.FollowUp>({ it.due ?: "9999" }).thenByDescending { it.mail.date })
     error?.let { Text(stringResource(R.string.error_generic, it), color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(16.dp)) }
@@ -337,7 +340,7 @@ private fun MailFollowUps(onOpenMail: (String, String, Long) -> Unit) {
                 })
                 Column(Modifier.weight(1f)) {
                     Text(m.subject.ifBlank { "(…)" }, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(listOfNotNull(m.from?.text, f.due?.let { d -> java.time.LocalDate.parse(d).let { Fmt.shortDate(it) } }).joinToString(" · "),
+                    Text(listOfNotNull(m.from?.text, mailboxes[m.account], f.due?.let { d -> java.time.LocalDate.parse(d).let { Fmt.shortDate(it) } }).joinToString(" · "),
                         style = MaterialTheme.typography.bodySmall, maxLines = 1,
                         color = if (f.due != null && f.due < today) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
                 }

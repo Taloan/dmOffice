@@ -178,17 +178,24 @@ export function NotesSettings() {
   const s = useStyles()
   const { fail, notify } = useApp()
   const [data, setData] = useState<any>(null)
+  const [dav, setDav] = useState<any>(null)
   const [enabled, setEnabled] = useState(false)
   const [root, setRoot] = useState('notizisync')
   const [password, setPassword] = useState('')
   const [folder, setFolder] = useState('')
   const [busy, setBusy] = useState(false)
+  const [appPassword, setAppPassword] = useState<string | null>(null)
 
   const load = () => api.get('/api/settings/notizi').then(d => {
     setData(d); setEnabled(d.enabled); setRoot(d.root); setFolder(d.dbFolder)
   }).catch(fail)
-  useEffect(() => { load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); api.get('/api/settings/dav').then(setDav).catch(fail) }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
+  const copy = async (text: string) => { if (await copyText(text)) notify(t('Kopiert')) }
+  // Eigenes App-Passwort fuer notizi - einmal anzeigen, unter "Geraete & Sync" widerrufbar
+  const createAppPassword = async () => {
+    try { setAppPassword((await api.post('/api/settings/app-passwords', { name: 'notizi' })).password) } catch (e) { fail(e) }
+  }
   const save = async () => {
     setBusy(true)
     try {
@@ -201,27 +208,58 @@ export function NotesSettings() {
 
   if (!data) return null
   const dbs: any[] = data.databases ?? []
+  const row = (label: string, value: string) => (
+    <>
+      <Text>{label}</Text>
+      <span className={s.mono}>{value}</span>
+      <Button size="small" appearance="subtle" icon={<Copy16Regular />} onClick={() => copy(value)} aria-label={t('Kopieren')} title={t('Kopieren')} />
+    </>
+  )
   return (
     <>
       <Text size={600} weight="semibold">{t('Notizen (notizi)')}</Text>
       <Text>
-        {t('Die Notizen kommen über den Abgleichordner von notizi – Ende-zu-Ende-verschlüsselt im WebDAV von dmOffice. dmOffice ist dabei ein weiteres Gerät wie das Handy: Absätze und Listen lassen sich hier bearbeiten, Tabellen, Bilder und Codeblöcke bleiben unverändert.')}
+        {t('Mit der kostenlosen App notizi für Windows und Android hast du dieselben Notizen am PC, am Handy und hier im Browser – verschlüsselt abgeglichen über dmOffice.')}{' '}
+        <a href="https://notizi.de" target="_blank" rel="noopener noreferrer">{t('Mehr auf notizi.de')}</a>
       </Text>
+
+      <Text weight="semibold">{t('1. notizi installieren')}</Text>
+      <Text>{t('Auf dem PC oder Handy von notizi.de herunterladen und einmal starten – Version 1.5 oder neuer.')}</Text>
+
+      <Text weight="semibold">{t('2. In notizi mit dmOffice verbinden')}</Text>
+      <Text>{t('In notizi unter Einstellungen → Sync → Verbindung → WebDAV diese Angaben eintragen:')}</Text>
+      <Card>
+        <div className={s.urls}>
+          {dav && row(t('Adresse'), dav.notizi)}
+          {dav && row(t('Benutzer'), dav.login)}
+          <Text>{t('Passwort')}</Text>
+          {appPassword ? <span className={s.mono}>{appPassword}</span>
+            : <span><Button size="small" icon={<Key20Regular />} onClick={createAppPassword}>{t('App-Passwort für notizi erzeugen')}</Button></span>}
+          {appPassword ? <Button size="small" appearance="subtle" icon={<Copy16Regular />} onClick={() => copy(appPassword)} aria-label={t('Kopieren')} title={t('Kopieren')} /> : <span />}
+        </div>
+      </Card>
+      {appPassword && <Text size={200} className={s.muted}>{t('Das App-Passwort wird nur jetzt angezeigt. Widerrufen lässt es sich unter „Geräte & Sync“.')}</Text>}
+      <Text>{t('Dort legst du auch ein E2EE-Passwort fest – damit sind die Notizen verschlüsselt, bevor sie dmOffice erreichen. Merk es dir gut, du brauchst es gleich noch einmal. Dann in notizi einmal abgleichen.')}</Text>
+
+      <Text weight="semibold">{t('3. Hier einschalten')}</Text>
       <form className={s.form} onSubmit={e => { e.preventDefault(); save() }}>
         <Switch label={t('Notizen einschalten')} checked={enabled} onChange={(_, d) => setEnabled(d.checked)} />
-        <Field label={t('Wurzel im WebDAV')} hint={t('der Ordner, den notizi als WebDAV-Wurzel nutzt')}>
-          <Input value={root} onChange={(_, d) => setRoot(d.value)} />
-        </Field>
-        <Field label={t('E2EE-Passwort')} hint={data.hasPassword ? t('leer lassen: bleibt') : t('wie in notizi unter Einstellungen → Sync')}>
+        <Field label={t('E2EE-Passwort')} hint={data.hasPassword ? t('leer lassen: bleibt') : t('dasselbe wie in notizi')}>
           <Input type="password" value={password} onChange={(_, d) => setPassword(d.value)} autoComplete="new-password" />
         </Field>
-        <Field label={t('Datenbank')} hint={t('Ordner unter der Wurzel; noch keiner da: Namen eintippen, dmOffice richtet ihn ein')}>
+        <Field label={t('Datenbank')} hint={dbs.length > 0 ? t('die Notizsammlung aus notizi') : t('erscheint hier, sobald notizi einmal abgeglichen hat')}>
           {dbs.length > 0 ? (
             <Dropdown value={dbs.find(d => d.folder === folder)?.title ?? folder} selectedOptions={[folder]} onOptionSelect={(_, d) => setFolder(d.optionValue!)}>
               {dbs.map(d => <Option key={d.folder} value={d.folder} text={d.title}>{d.title}{!d.passwordFits && ' ' + t('(Passwort passt nicht)')}</Option>)}
             </Dropdown>
           ) : <Input value={folder} onChange={(_, d) => setFolder(d.value)} placeholder={t('z. B. notizi pr')} />}
         </Field>
+        <details>
+          <summary className={s.muted} style={{ cursor: 'pointer' }}>{t('Erweitert')}</summary>
+          <Field label={t('Wurzel im WebDAV')} hint={t('nur ändern, wenn notizi einen anderen Ordner nutzt')} style={{ marginTop: 8 }}>
+            <Input value={root} onChange={(_, d) => setRoot(d.value)} />
+          </Field>
+        </details>
         <div><Button appearance="primary" type="submit" disabled={busy}>{busy ? <Spinner size="tiny" /> : t('Speichern')}</Button></div>
       </form>
       {data.status?.error && <MessageBar intent="error"><MessageBarBody>{tError(data.status.error)}</MessageBarBody></MessageBar>}
@@ -229,7 +267,7 @@ export function NotesSettings() {
         <MessageBar intent="success"><MessageBarBody>{t('Zuletzt abgeglichen {time}: {report}', { time: new Date(data.status.lastRun).toLocaleString(locale), report: data.status.report })}</MessageBarBody></MessageBar>
       )}
       <Text size={200} className={s.muted}>
-        {t('Der Abgleichordner liegt in der verschlüsselten Datenbank von dmOffice, unter Dateien → {root}. notizi verbindet sich mit der Adresse aus „Geräte & Sync“.', { root })}
+        {t('dmOffice ist dabei ein weiteres Gerät wie das Handy: Texte und Listen lassen sich hier bearbeiten, Tabellen, Bilder und Codeblöcke bleiben unverändert.')}
       </Text>
     </>
   )

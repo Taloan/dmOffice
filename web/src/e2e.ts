@@ -19,7 +19,21 @@ const b64 = (b: ArrayBuffer | Uint8Array) => { let s = ''; const a = new Uint8Ar
 const unb64 = (s: string) => Uint8Array.from(atob(s), c => c.charCodeAt(0))
 const utf8 = (s: string) => new TextEncoder().encode(s)
 
+/** Neues Fenster aus window.open (eigenes Fenster, Ordner im neuen Tab): Der Browser kopiert sessionStorage mit,
+ *  dieselbe Geraete-ID mit demselben Zaehler wuerde der Server als Wiederholung ablehnen. Solche Fenster melden
+ *  sich deshalb als eigenes Geraet an; ein Neuladen desselben Fensters behaelt sein Geraet. */
+function copiedFromOpener(): boolean {
+  try {
+    if (!window.opener) return false
+    const nav = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined
+    return nav?.type !== 'reload'
+  } catch { return false }
+}
+
+let fresh = copiedFromOpener()
+
 function load(): State | null {
+  if (fresh) { fresh = false; try { sessionStorage.removeItem(STORE) } catch { /* privat */ } return null }
   try { const s = sessionStorage.getItem(STORE); return s ? JSON.parse(s) : null } catch { return null }
 }
 function save() { try { if (state) sessionStorage.setItem(STORE, JSON.stringify(state)); else sessionStorage.removeItem(STORE) } catch { /* privat */ } }

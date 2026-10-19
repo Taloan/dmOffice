@@ -136,6 +136,11 @@ class Prefs(context: Context) : at.dimes.dmoffice.api.E2e.Counters {
         val mailPreview: Boolean,
         /** Sperrbildschirm: "show" (mit Inhalt) oder "hide" (nur "Neue E-Mail"). */
         val mailLockscreen: String,
+        /** Wischgesten in der Mailliste (SwipeAction.key): nach links / rechts, jeweils kurz und weit. */
+        val swipeLeft: String,
+        val swipeLeftFar: String,
+        val swipeRight: String,
+        val swipeRightFar: String,
     )
 
     private fun readSettings() = Settings(
@@ -155,6 +160,10 @@ class Prefs(context: Context) : at.dimes.dmoffice.api.E2e.Counters {
         mailNotify = plain.getString("mailNotify", null) ?: "all",
         mailPreview = plain.getBoolean("mailPreview", true),
         mailLockscreen = plain.getString("mailLockscreen", null) ?: "show",
+        swipeLeft = plain.getString("swipeLeft", null) ?: "delete",
+        swipeLeftFar = plain.getString("swipeLeftFar", null) ?: "none",
+        swipeRight = plain.getString("swipeRight", null) ?: "archive",
+        swipeRightFar = plain.getString("swipeRightFar", null) ?: "none",
     )
 
     private fun edit(block: SharedPreferences.Editor.() -> Unit) {
@@ -174,6 +183,7 @@ class Prefs(context: Context) : at.dimes.dmoffice.api.E2e.Counters {
     fun setMailNotify(v: String) = edit { putString("mailNotify", v) }
     fun setMailPreview(v: Boolean) = edit { putBoolean("mailPreview", v) }
     fun setMailLockscreen(v: String) = edit { putString("mailLockscreen", v) }
+    fun setSwipe(key: String, v: String) = edit { putString(key, v) }
     fun setAndroidCalendar(v: Boolean) = edit { putBoolean("androidCalendar", v) }
     fun setAndroidContacts(v: Boolean) = edit { putBoolean("androidContacts", v) }
     fun setAccent(v: Long) = edit { putLong("accent", v) }

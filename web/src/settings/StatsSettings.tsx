@@ -27,7 +27,12 @@ interface Stats {
   file: number; wal: number; free: number
   database: number; mails: number; mailBytes: number; events: number; tasks: number; contacts: number
   notes: number; noteBlobs: number; files: number; fileBytes: number; appPasswords: number
-  accounts: { id: string; name: string; email: string; syncMonths: number; folders: FolderStat[] }[]
+  accounts: {
+    id: string; name: string; email: string; syncMonths: number; folders: FolderStat[]
+    storage?: 'full' | 'slim'; slimDays?: number; slimMb?: number
+    /** Schlank: Groesse der Mails, deren Inhalt nur beim Anbieter liegt */
+    serverOnly?: number
+  }[]
 }
 
 const n = (x: number) => x.toLocaleString(locale)
@@ -40,6 +45,8 @@ export function StatsSettings() {
   const [stats, setStats] = useState<Stats | null>(null)
   useEffect(() => { api.get<Stats>('/api/settings/stats').then(setStats).catch(fail) }, [fail])
   if (!stats) return <Spinner />
+  const slim = stats.accounts.filter(a => a.storage === 'slim')
+  const saved = slim.reduce((sum, a) => sum + (a.serverOnly ?? 0), 0)
 
   const tile = (value: string, label: string, hint?: string) => (
     <Card className={s.tile}>
@@ -54,6 +61,8 @@ export function StatsSettings() {
       <div className={s.tiles}>
         {tile(fmtSize(stats.database), t('Datenbank (verschlüsselt)'), t('Die ganze Datei auf dem Server, mit allem'))}
         {tile(n(stats.mails), t('Mails hier'), t('davon vollständig gespeichert: {size} (komprimiert)', { size: fmtSize(stats.mailBytes) }))}
+        {slim.length > 0 && tile(fmtSize(saved), t('Gespart durch „Schlank“'),
+          t('So viel Mail (Größe beim Anbieter) liegt nur dort und wird beim Öffnen geholt.'))}
         {tile(n(stats.events), t('Termine'))}
         {tile(n(stats.tasks), t('Aufgaben'))}
         {tile(n(stats.contacts), t('Kontakte'))}
@@ -75,6 +84,8 @@ export function StatsSettings() {
               {a.email} · {a.syncMonths === 1 ? t('letzter Monat synchronisiert') : a.syncMonths ? t('letzte {n} Monate synchronisiert', { n: a.syncMonths }) : t('alles synchronisiert')} ·
               {' '}{sum.server === 1 ? t('{local} von 1 Mail hier', { local: n(sum.local) }) : t('{local} von {server} Mails hier', { local: n(sum.local), server: n(sum.server) })}
               {' · '}{t('{size} auf dem Server, {stored} gespeichert', { size: fmtSize(sum.size), stored: fmtSize(sum.stored) })}
+              {a.storage === 'slim' && <>{' · '}{t('Schlank: Inhalte {days} Tage, höchstens {max}; {saved} nur beim Anbieter', {
+                days: a.slimDays ?? 30, max: fmtSize((a.slimMb ?? 200) * 1024 * 1024), saved: fmtSize(a.serverOnly ?? 0) })}</>}
             </Text>
             <Table size="small">
               <TableHeader>

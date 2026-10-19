@@ -39,7 +39,7 @@ public static class MailApi
         var api = app.MapGroup("/api/mail").RequireAuthorization();
 
         api.MapGet("/accounts", (HttpContext http) =>
-            http.Space().Settings.MailAccounts.Select(a => new { a.Id, a.Name, a.Email, a.DisplayName, a.Signature, a.Language, a.TrashDays, a.JunkDays }));
+            http.Space().Settings.MailAccounts.Select(a => new { a.Id, a.Name, a.Email, a.DisplayName, a.Signature, a.Language, a.TrashDays, a.JunkDays, a.Storage }));
 
         api.MapGet("/status", (HttpContext http, MailSync sync) =>
         {
@@ -79,6 +79,14 @@ public static class MailApi
         {
             int n = Math.Clamp(size ?? 100, 1, 500), p = Math.Max(0, page ?? 0);
             var space = http.Space();
+            // Alle Posteingaenge (App und Web): die Posteingaenge aller Konten zusammen, ohne Relevant/Sonstige -
+            // die Konten koennen das unterschiedlich eingestellt haben
+            if (folder == MailStore.UnifiedFolder)
+            {
+                var inboxes = space.Settings.MailAccounts.SelectMany(a => MailStore.Folders(space.Db, a.Id).Where(f => f.Special == "inbox").Select(f => a.Id + "|" + f.Path)).ToList();
+                var (ut, uu, ui) = inboxes.Count == 0 ? (0, 0, new List<MailRow>()) : MailStore.Query(space.Db, new MailCriteria { Folders = inboxes }, p, n, filter is "focused" or "other" ? null : filter);
+                return Results.Ok(new { total = ut, unread = uu, page = p, size = n, items = ui });
+            }
             // Suchordner und Kategorie-Ordner: ueber alle Konten
             if (MailStore.Virtual(space.Settings, folder) is { } criteria)
             {
@@ -119,6 +127,20 @@ public static class MailApi
         api.MapGet("/search", (string q, string? acc, string? folder, bool? deleted, bool? relevance, HttpContext http) =>
             MailStore.Search(http.Space().Db, q, acc, folder, 300, deleted ?? true, relevance ?? false));
 
+        // Speichermodus "Schlank": den Text der Mails, deren Inhalt hier nicht liegt, beim Anbieter durchsuchen
+        // (IMAP SEARCH). Die Oberflaeche zeigt zuerst die eigenen Treffer und haengt diese danach an.
+        api.MapGet("/search/remote", async (string q, string? acc, string? folder, bool? deleted, HttpContext http, ImapPool pool, CancellationToken ct) =>
+        {
+            var space = http.Space();
+            if (MailStore.ImapQuery(q) is not { } query) return Results.Ok(Array.Empty<MailRow>());
+            var accounts = space.Settings.MailAccounts
+                .Where(a => a.Slim && !string.IsNullOrEmpty(a.ImapHost) && (string.IsNullOrEmpty(acc) || a.Id == acc)).ToList();
+            var until = DateTime.UtcNow + RemoteSearchBudget;
+            var found = await Task.WhenAll(accounts.Select(a => SearchRemote(space, a, string.IsNullOrEmpty(folder) ? null : folder,
+                deleted ?? true, query, until, pool, ct)));
+            return Results.Ok(found.SelectMany(x => x).OrderByDescending(m => m.Date).Take(300));
+        });
+
         api.MapGet("/{acc}/message", async (string acc, string folder, uint uid, bool? images, bool? markSeen,
             HttpContext http, ImapPool pool, MailOutbox outbox, CancellationToken ct) =>
         {
@@ -126,6 +148,7 @@ public static class MailApi
             var account = space.Account(acc);
             var row = MailStore.Row(space.Db, acc, folder, uid) ?? throw new KeyNotFoundException("Mail nicht gefunden.");
             var message = await Load(space, account, folder, uid, pool, ct);
+            if (account.Slim) MailStore.Opened(space.Db, acc, folder, uid);
             // Sichere Absender: Bilder ohne Nachfrage
             var from = message.From.Mailboxes.FirstOrDefault()?.Address?.ToLowerInvariant() ?? "";
             var trusted = from.Length > 0 && space.Settings.TrustedImageSenders.Any(t =>
@@ -661,6 +684,42 @@ public static class MailApi
     }
 
     // ------------------------------------------------------------------
+
+    /// <summary>So lange sucht /search/remote hoechstens - neue Ordner werden danach nicht mehr begonnen.</summary>
+    private static readonly TimeSpan RemoteSearchBudget = TimeSpan.FromSeconds(8);
+
+    /// <summary>IMAP SEARCH in den Ordnern eines Kontos, in denen Inhalte fehlen; nur Treffer ohne Inhalt hier
+    /// (die anderen findet schon die eigene Suche). Fehler beim Anbieter: einfach keine weiteren Treffer.</summary>
+    private static async Task<List<MailRow>> SearchRemote(UserSpace space, MailAccount account, string? folder, bool withDeleted,
+        MailKit.Search.SearchQuery query, DateTime until, ImapPool pool, CancellationToken ct)
+    {
+        var missing = space.Db.Query("SELECT DISTINCT folder FROM mail WHERE account=$a AND cached=0", r => r.GetString(0), ("$a", account.Id)).ToHashSet();
+        var folders = MailStore.Folders(space.Db, account.Id)
+            .Where(f => f.Selectable && f.Special != "all" && missing.Contains(f.Path)
+                        && (folder != null ? f.Path == folder : withDeleted || f.Special is not ("trash" or "junk")))
+            .OrderBy(f => f.Special switch { "inbox" => 0, "sent" => 1, "archive" => 2, null => 3, _ => 4 }).ToList();
+        var hits = new List<MailRow>();
+        if (folders.Count == 0) return hits;
+        try
+        {
+            await pool.UseAsync(account, ImapPool.Ui, async c =>
+            {
+                foreach (var row in folders)
+                {
+                    if (DateTime.UtcNow > until) break;
+                    var f = await c.GetFolderAsync(row.Path, ct);
+                    await f.OpenAsync(FolderAccess.ReadOnly, ct);
+                    var uids = await f.SearchAsync(query, ct);
+                    if (uids.Count > 0) hits.AddRange(MailStore.NotCached(space.Db, account.Id, row.Path, uids.Select(u => u.Id)));
+                }
+            }, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            // Anbieter nicht erreichbar oder kein SEARCH fuer diesen Ordner: bleibt bei den eigenen Treffern
+        }
+        return hits;
+    }
 
     /// <summary>Aus der Datenbank; fehlt der Inhalt noch (Sync nicht so weit, zu gross), vom Server.</summary>
     private static async Task<MimeMessage> Load(UserSpace space, MailAccount account, string folder, uint uid, ImapPool pool, CancellationToken ct)

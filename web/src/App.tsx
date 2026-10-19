@@ -3,7 +3,7 @@ import {
   Toaster, useId, useToastController, Toast, ToastTitle, ToastBody,
 } from '@fluentui/react-components'
 import { createContext, useCallback, useContext, useEffect, useState } from 'react'
-import { t, tError } from './i18n'
+import { chooseLanguage, lang, t, tError } from './i18n'
 import { api, Me } from './api'
 import { storeTheme, themesFor, ThemeChoice, useIsDark } from './theme'
 import { currentPrefs, PrefsContext, usePrefsState, usePrefsVersion } from './prefs'
@@ -28,6 +28,8 @@ const useStyles = makeStyles({
     backgroundColor: tokens.colorNeutralBackground1, boxShadow: tokens.shadow16,
   },
   logo: { display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' },
+  foot: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px', color: tokens.colorNeutralForeground3, fontSize: tokens.fontSizeBase200 },
+  langs: { display: 'flex', gap: '2px' },
   update: {
     // In der installierten App unter der Titelleiste - dort waere sie Ziehflaeche des Fensters und nicht klickbar
     position: 'fixed', top: 'calc(env(titlebar-area-height, 0px) + 8px)', left: '50%', transform: 'translateX(-50%)', zIndex: 1000000,
@@ -108,6 +110,25 @@ function Logo() {
   )
 }
 
+/** Fuss der Anmelde-/Einrichtungsseite: Sprache umschalten und Versionsnummer. */
+function CardFooter() {
+  const s = useStyles()
+  const [version, setVersion] = useState('')
+  useEffect(() => { fetch('/api/health').then(r => r.json()).then(r => setVersion(r.version ?? '')).catch(() => {}) }, [])
+  return (
+    <div className={s.foot}>
+      <div className={s.langs}>
+        {(['de', 'en'] as const).map(l => (
+          <Button key={l} size="small" appearance={lang === l ? 'secondary' : 'subtle'} onClick={() => lang !== l && chooseLanguage(l)}>
+            {l === 'de' ? 'Deutsch' : 'English'}
+          </Button>
+        ))}
+      </div>
+      {version && <span>dmOffice {version}</span>}
+    </div>
+  )
+}
+
 function Login({ onDone }: { onDone: () => void }) {
   const s = useStyles()
   const [login, setLogin] = useState('')
@@ -153,6 +174,7 @@ function Login({ onDone }: { onDone: () => void }) {
         {error && <MessageBar intent="error"><MessageBarBody>{tError(error)}</MessageBarBody></MessageBar>}
         <Button appearance="primary" type="submit" disabled={busy}>{busy ? <Spinner size="tiny" /> : needCode ? t('Bestätigen') : t('Anmelden')}</Button>
         {needCode && <Button appearance="subtle" onClick={() => { setNeedCode(false); setCode('') }}>{t('Zurück')}</Button>}
+        <CardFooter />
       </form>
     </Center>
   )
@@ -190,6 +212,7 @@ function Setup({ onDone }: { onDone: () => void }) {
         <Field label={t('Passwort wiederholen')}><Input type="password" value={repeat} onChange={(_, d) => setRepeat(d.value)} /></Field>
         {error && <MessageBar intent="error"><MessageBarBody>{tError(error)}</MessageBarBody></MessageBar>}
         <Button appearance="primary" type="submit">{t('Einrichten')}</Button>
+        <CardFooter />
       </form>
     </Center>
   )

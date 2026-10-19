@@ -26,9 +26,14 @@ builder.Services.AddHostedService<Push.Watcher>();
 builder.Services.AddHttpClient("fcm");
 // Newsletter abmelden (One-Click): keine Umleitungen - sie koennten ins eigene Netz fuehren
 builder.Services.AddHttpClient("unsub").ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false });
+builder.Services.AddHttpClient("discover").ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false });
 builder.Services.AddHttpClient("e2e").ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false });
 builder.Services.AddSingleton<Spaces>();
 builder.Services.AddSingleton<ImapPool>();
+// Private Microsoft-Konten (outlook.com, hotmail, live): OAuth2, Vorgabe ist die App-Registrierung des Projekts
+var microsoftOAuth = new MicrosoftOAuth(MicrosoftOAuth.ClientIdFrom(Environment.GetEnvironmentVariable("DMOFFICE_MS_CLIENT_ID")), new HttpClient { Timeout = TimeSpan.FromSeconds(30) });
+builder.Services.AddSingleton(microsoftOAuth);
+ImapPool.OAuth = microsoftOAuth;
 builder.Services.AddSingleton<MailSync>();
 builder.Services.AddSingleton<DmOffice.Mail.MailOutbox>();
 builder.Services.AddHostedService<DmOffice.Mail.MailQueueSender>();
@@ -93,6 +98,16 @@ var app = builder.Build();
     DmOffice.Dav.FileStore.FilesOffOf = id => users.ById(id)?.FilesOff == true;
 }
 
+// Microsoft tauscht das Refresh-Token beim Erneuern aus - das neue ins Konto schreiben
+{
+    var spaces = app.Services.GetRequiredService<Spaces>();
+    microsoftOAuth.TokenRotated = (accountId, previous, fresh) =>
+    {
+        try { MicrosoftOAuth.Persist(spaces.All(), accountId, previous, fresh); }
+        catch (Exception ex) { app.Logger.LogWarning("Microsoft-Token speichern: {Error}", ex.Message); }
+    };
+}
+
 app.UseForwardedHeaders();
 app.UseDefaultFiles();
 var contentTypes = new Microsoft.AspNetCore.StaticFiles.FileExtensionContentTypeProvider();
@@ -144,7 +159,7 @@ NotesApi.Map(app);
 FilesApi.Map(app);
 DavServer.Map(app);
 
-app.MapGet("/api/health", () => Results.Ok(new { ok = true }));
+app.MapGet("/api/health", () => Results.Ok(new { ok = true, version = DmOffice.SettingsApi.Version() }));
 
 // Service Worker auch ohne Dateiendung: Reverse-Proxys mit Asset-Cache (Nginx Proxy Manager
 // "Cache Assets") halten *.js trotz no-cache bis zu einem Tag fest - dann kaeme kein Update an.

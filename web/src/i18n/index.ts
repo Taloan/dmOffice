@@ -9,7 +9,8 @@ export type Lang = 'de' | 'en'
 
 function initial(): Lang {
   if (currentPrefs.language) return currentPrefs.language
-  // Vor der ersten Anmeldung: Sprache des Browsers
+  // Vor der Anmeldung: auf der Anmeldeseite gewaehlt, sonst Sprache des Browsers
+  try { const l = localStorage.getItem('dmoffice.lang'); if (l === 'de' || l === 'en') return l } catch { /* egal */ }
   return navigator.language?.toLowerCase().startsWith('de') ? 'de' : 'en'
 }
 
@@ -18,6 +19,12 @@ document.documentElement.lang = lang
 
 /** Fuer Intl/toLocaleString: "de-DE" oder "en-GB". */
 export const locale = lang === 'en' ? 'en-GB' : 'de-DE'
+
+/** Sprache vor der Anmeldung umschalten (Anmelde- und Einrichtungsseite); laedt neu. */
+export function chooseLanguage(l: Lang) {
+  try { localStorage.setItem('dmoffice.lang', l) } catch { /* egal */ }
+  location.reload()
+}
 
 export function t(de: string, vars?: Record<string, string | number>): string {
   let s = lang === 'en' ? en[de] ?? de : de

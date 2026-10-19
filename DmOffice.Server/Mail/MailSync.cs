@@ -17,7 +17,9 @@ namespace DmOffice.Mail;
 ///      (Kopfzeilen), Fehlendes hier loeschen.
 ///   3. Flags: mit CONDSTORE nur Geaendertes, sonst alle.
 ///   4. Danach im Hintergrund die vollstaendigen Mails samt Anhaengen,
-///      neueste zuerst, bis zur Groessengrenze des Kontos.
+///      neueste zuerst, bis zur Groessengrenze des Kontos. Im Speichermodus
+///      "Schlank" nur die juengsten (MailStore.SlimLimit), fuer die uebrigen
+///      nur die Vorschau; ihr Inhalt kommt beim Oeffnen.
 ///
 /// Neue Mails im Posteingang laufen durch Spamfilter und Regeln - nur die,
 /// die nach dem ersten vollstaendigen Sync ankommen; sonst wuerde das
@@ -332,7 +334,8 @@ public sealed class MailSync : BackgroundService
         var localUnread = Convert.ToInt32(db.Scalar("SELECT COUNT(*) FROM mail WHERE account=$a AND folder=$f AND seen=0", ("$a", account.Id), ("$f", row.Path)));
         db.Set($"mail.{account.Id}.outside.{row.Path}", Math.Max(0, unread - localUnread).ToString());
         // Gesamtzahl ohne als geloescht markierte (die zeigt die Liste auch nicht) - sonst bleibt z. B. "1" an einem leeren Ordner stehen
-        var total = account.SyncMonths > 0 ? (await f.SearchAsync(SearchQuery.NotDeleted, ct)).Count : server.Count;
+        // Zahl wie die Liste: nur was im Synchronisierungszeitraum liegt (sonst "5" bei leerem Ordner)
+        var total = server.Count;
         MailStore.SetFolderState(db, account.Id, row.Path, f.UidValidity, (long)f.HighestModSeq, unread, total);
 
         if (fresh.Count > 0 || removed.Count > 0 || known.Count > 0) Touch(space.User.Id);
@@ -576,14 +579,17 @@ public sealed class MailSync : BackgroundService
         State state, TimeSpan budget, CancellationToken ct)
     {
         var limit = account.MaxCachedMb * 1024L * 1024L;
+        var slim = MailStore.SlimLimit.Of(account, DateTimeOffset.UtcNow);
+        var slimMissing = slim == null ? null : MailStore.MissingBodies(space.Db, account.Id, limit, slim);
         var until = DateTime.UtcNow + budget;
         bool any = false;
         try
         {
             foreach (var row in folders.OrderBy(f => Order(f.Special)))
             {
-                var missing = MailStore.MissingBodies(space.Db, account.Id, row.Path, limit, 100_000);
-                if (missing.Count == 0) continue;
+                var missing = slimMissing?[row.Path].ToList() ?? MailStore.MissingBodies(space.Db, account.Id, row.Path, limit, 100_000);
+                var previews = slim == null ? new List<uint>() : MailStore.MissingPreviews(space.Db, account.Id, row.Path, 100_000);
+                if (missing.Count == 0 && previews.Count == 0) continue;
                 IMailFolder f;
                 try
                 {
@@ -594,6 +600,23 @@ public sealed class MailSync : BackgroundService
                 {
                     _log.LogWarning("Mail-Sync {Account}, Inhalte in {Folder}: {Error}", account.Email, row.Path, ex.Message);
                     continue;
+                }
+                // Schlank: fuer Mails ohne Inhalt hier nur die Vorschau (Liste und Suche) - wenige Bytes je Mail
+                foreach (var batch in previews.Chunk(200))
+                {
+                    if (DateTime.UtcNow > until) return;
+                    ct.ThrowIfCancellationRequested();
+                    try
+                    {
+                        var got = await f.FetchAsync(batch.Select(u => new UniqueId(u)).ToList(), MessageSummaryItems.UniqueId | MessageSummaryItems.PreviewText, ct);
+                        MailStore.SetPreviews(space.Db, account.Id, row.Path, got.Select(x => (x.UniqueId.Id, x.PreviewText)));
+                        any = true;
+                    }
+                    catch (Exception ex) when (Skippable(c, ex))
+                    {
+                        _log.LogWarning("Mail-Sync {Account}: Vorschau in {Folder} nicht geladen: {Error}", account.Email, row.Path, ex.Message);
+                        break;
+                    }
                 }
                 foreach (var batch in missing.Chunk(20))
                 {
@@ -623,7 +646,7 @@ public sealed class MailSync : BackgroundService
         finally
         {
             // Auch nach einem Fehler, sonst bleibt der alte Stand stehen
-            try { state.PendingBodies = MailStore.MissingCount(space.Db, account.Id, limit); }
+            try { state.PendingBodies = MailStore.MissingCount(space.Db, account.Id, limit, slim); }
             catch (Exception ex) { _log.LogWarning("Mail-Sync {Account}: fehlende Inhalte zaehlen: {Error}", account.Email, ex.Message); }
             if (any) Touch(space.User.Id);
         }

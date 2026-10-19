@@ -6,9 +6,11 @@ namespace DmOffice;
 
 public static class SettingsApi
 {
+    public record DiscoverBody(string Email);
     public record General(string? Theme, string? TimeZone, int? MarkReadDelay, string? OpenOnFolder, long? InviteCalendar = null, bool? SmartCalendar = null);
     public record NewAppPassword(string Name);
     public record TrustedEntry(string Entry);
+    public record OAuthPoll(string Flow);
 
     public sealed class CompactJob
     {
@@ -32,19 +34,23 @@ public static class SettingsApi
     {
         a.Id, a.Name, a.Email, a.DisplayName, a.ImapHost, a.ImapPort, a.ImapSecurity, a.ImapUser,
         hasImapPassword = !string.IsNullOrEmpty(a.ImapPassword),
+        a.Auth, hasOAuth = !string.IsNullOrEmpty(a.OAuthRefreshToken),
         a.SmtpHost, a.SmtpPort, a.SmtpSecurity, a.SmtpUser,
         hasSmtpPassword = !string.IsNullOrEmpty(a.SmtpPassword),
-        a.Signature, a.AcceptAnyCertificate, a.SaveSentCopy, a.SyncMonths, a.MaxCachedMb, a.Language, a.TrashDays, a.JunkDays, a.FocusedInbox
+        a.Signature, a.AcceptAnyCertificate, a.SaveSentCopy, a.SyncMonths, a.MaxCachedMb, a.Storage, a.SlimDays, a.SlimMb, a.Language, a.TrashDays, a.JunkDays, a.FocusedInbox
     };
 
-    /// <summary>Leeres Passwort beim Speichern heisst: das bisherige behalten.</summary>
-    private static void Merge(MailAccount target, MailAccount body)
+    /// <summary>Leeres Passwort beim Speichern heisst: das bisherige behalten. Das Microsoft-Token kommt
+    /// nie aus der Anfrage, nur aus einer abgeschlossenen Anmeldung (Claim).</summary>
+    internal static void Merge(MailAccount target, MailAccount body)
     {
         var imap = string.IsNullOrEmpty(body.ImapPassword) ? target.ImapPassword : body.ImapPassword;
         var smtp = string.IsNullOrEmpty(body.SmtpPassword) ? target.SmtpPassword : body.SmtpPassword;
         target.Name = body.Name.Trim(); target.Email = body.Email.Trim(); target.DisplayName = body.DisplayName.Trim();
         target.ImapHost = body.ImapHost.Trim(); target.ImapPort = body.ImapPort; target.ImapSecurity = body.ImapSecurity;
         target.ImapUser = body.ImapUser.Trim(); target.ImapPassword = imap;
+        target.Auth = body.Auth;
+        if (target.Auth != MailAuth.Microsoft) target.OAuthRefreshToken = null;
         target.SmtpHost = body.SmtpHost.Trim(); target.SmtpPort = body.SmtpPort; target.SmtpSecurity = body.SmtpSecurity;
         target.SmtpUser = body.SmtpUser.Trim(); target.SmtpPassword = smtp;
         target.Signature = body.Signature; target.AcceptAnyCertificate = body.AcceptAnyCertificate;
@@ -52,10 +58,41 @@ public static class SettingsApi
         target.Language = body.Language == "en" ? "en" : "de";
         target.SyncMonths = Math.Max(0, body.SyncMonths);
         target.MaxCachedMb = Math.Clamp(body.MaxCachedMb, 1, 500);
+        target.Storage = body.Storage == MailAccount.StorageSlim ? MailAccount.StorageSlim : MailAccount.StorageFull;
+        target.SlimDays = Math.Clamp(body.SlimDays, 7, 365);
+        target.SlimMb = Math.Clamp(body.SlimMb, 20, 10_000);
         target.TrashDays = Math.Clamp(body.TrashDays, 0, 3650);
         target.JunkDays = Math.Clamp(body.JunkDays, 0, 3650);
         target.FocusedInbox = body.FocusedInbox;
         if (string.IsNullOrWhiteSpace(target.Name)) target.Name = target.Email;
+    }
+
+    /// <summary>Token einer abgeschlossenen Microsoft-Anmeldung ins Konto uebernehmen.</summary>
+    internal static void Claim(MailAccount target, string? refreshToken)
+    {
+        if (target.Auth == MailAuth.Microsoft && !string.IsNullOrEmpty(refreshToken)) target.OAuthRefreshToken = refreshToken;
+    }
+
+    /// <summary>Datenbank im Hintergrund verdichten - laeuft schon eine, bleibt es bei der.
+    /// Auch der Aufraeumer fuer "Schlank" (MailCleanup.Slim) startet sie hierueber.</summary>
+    public static CompactJob StartCompact(UserSpace space, ILogger log)
+    {
+        var job = Compactions.GetOrAdd(space.User.Id, _ => new CompactJob());
+        lock (job)
+        {
+            if (job.Running) return job;
+            job.Running = true; job.Error = null; job.Started = DateTime.UtcNow; job.Finished = null;
+            var before = space.Db.SpaceInfo();
+            job.Before = before.File + before.Wal;
+        }
+        _ = Task.Run(() =>
+        {
+            try { space.Db.Compact(); }
+            catch (Exception ex) { job.Error = ex.Message; log.LogWarning("Verdichten: {Error}", ex.Message); }
+            var after = space.Db.SpaceInfo();
+            lock (job) { job.After = after.File + after.Wal; job.Finished = DateTime.UtcNow; job.Running = false; }
+        });
+        return job;
     }
 
     public static void Map(WebApplication app)
@@ -69,6 +106,8 @@ public static class SettingsApi
             return new
             {
                 s.Theme, s.TimeZone, s.MarkReadDelay, s.OpenOnFolder, s.InviteCalendar, s.SmartCalendar,
+                // Domains, bei denen der Assistent "Mit Microsoft anmelden" anbietet - null: nicht eingerichtet
+                microsoftDomains = http.RequestServices.GetRequiredService<MicrosoftOAuth>().Enabled ? MicrosoftOAuth.Domains.Order() : null,
                 accounts = s.MailAccounts.Select(Masked),
                 user = new { space.User.Login, space.User.DisplayName, space.User.IsAdmin }
             };
@@ -91,23 +130,49 @@ public static class SettingsApi
 
         // ---------------- Mailkonten ----------------
 
-        api.MapPost("/accounts", (MailAccount body, HttpContext http, MailSync sync) =>
+        api.MapPost("/accounts", (MailAccount body, HttpContext http, MailSync sync, MicrosoftOAuth oauth) =>
         {
             var a = new MailAccount();
-            Merge(a, body);
             var space = http.Space();
+            Merge(a, body);
+            Claim(a, oauth.Grant(space.User.Id, body.OAuthFlow));
+            if (a.Auth == MailAuth.Microsoft && string.IsNullOrEmpty(a.OAuthRefreshToken))
+                return Results.BadRequest(new { error = "Erst bei Microsoft anmelden." });
             space.UpdateSettings(s => s.MailAccounts.Add(a));
+            oauth.Forget(body.OAuthFlow);
             sync.Kick(space.User.Id, a.Id);
             return Results.Ok(new { a.Id });
         });
 
-        api.MapPut("/accounts/{id}", (string id, MailAccount body, HttpContext http, MailSync sync) =>
+        api.MapPut("/accounts/{id}", (string id, MailAccount body, HttpContext http, MailSync sync, MicrosoftOAuth oauth, ImapPool pool, ILogger<MailCleanup> log) =>
         {
             var space = http.Space();
-            space.UpdateSettings(s => Merge(s.MailAccounts.First(a => a.Id == id), body));
+            var token = oauth.Grant(space.User.Id, body.OAuthFlow);
+            space.UpdateSettings(s =>
+            {
+                var a = s.MailAccounts.First(a => a.Id == id);
+                Merge(a, body);
+                Claim(a, token);
+            });
+            oauth.Forget(body.OAuthFlow);
+            // Neu angemeldet: offene Verbindungen mit dem alten Token schliessen
+            if (token != null) pool.Close(id);
             sync.Kick(space.User.Id, id);
+            // Schlank: gleich aufraeumen, damit der Platz frei wird - nicht erst beim naechsten stuendlichen Lauf
+            if (space.Settings.MailAccounts.FirstOrDefault(a => a.Id == id) is { Slim: true })
+                _ = Task.Run(() =>
+                {
+                    try { if (MailCleanup.Slim(space, log).Count > 0) sync.Touch(space.User.Id); }
+                    catch (Exception ex) { log.LogWarning("Schlank aufraeumen: {Error}", ex.Message); }
+                });
             return Results.Ok();
         });
+
+        // Microsoft-Konten: Anmeldung per Geraetecode (microsoft.com/devicelogin)
+        api.MapPost("/accounts/microsoft/start", async (HttpContext http, MicrosoftOAuth oauth, CancellationToken ct) =>
+            oauth.Enabled ? Results.Ok(await oauth.StartAsync(http.Space().User.Id, ct)) : Results.NotFound());
+        api.MapPost("/accounts/microsoft/poll", async (OAuthPoll body, HttpContext http, MicrosoftOAuth oauth, CancellationToken ct) =>
+            oauth.Enabled ? Results.Ok(new { status = await oauth.PollAsync(http.Space().User.Id, body.Flow, ct) }) : Results.NotFound());
 
         api.MapDelete("/accounts/{id}", (string id, HttpContext http, MailSync sync) =>
         {
@@ -117,18 +182,33 @@ public static class SettingsApi
             return Results.Ok();
         });
 
-        api.MapPost("/accounts/test", async (MailAccount body, HttpContext http, ImapPool pool, CancellationToken ct) =>
+        // Einrichtungsassistent: Server, Ports und Verschluesselung aus der Mailadresse herausfinden
+        api.MapPost("/accounts/discover", async (DiscoverBody body, IHttpClientFactory factory, MicrosoftOAuth oauth, CancellationToken ct) =>
         {
+            var email = body.Email.Trim();
+            var r = await DmOffice.Mail.MailDiscovery.DiscoverAsync(factory.CreateClient("discover"), email, ct);
+            return r == null ? Results.Ok(new { found = false })
+                : Results.Ok(new { found = true, settings = r, auth = DmOffice.Mail.MailDiscovery.AuthFor(email, r, oauth.Enabled) });
+        });
+
+        api.MapPost("/accounts/test", async (MailAccount body, HttpContext http, MicrosoftOAuth oauth, CancellationToken ct) =>
+        {
+            var space = http.Space();
             var a = new MailAccount { Id = body.Id };
-            if (http.Space().Settings.MailAccounts.FirstOrDefault(x => x.Id == body.Id) is { } existing) Merge(a, existing);
+            if (space.Settings.MailAccounts.FirstOrDefault(x => x.Id == body.Id) is { } existing)
+            {
+                Merge(a, existing);
+                a.OAuthRefreshToken = existing.OAuthRefreshToken;
+            }
             Merge(a, body);
+            Claim(a, oauth.Grant(space.User.Id, body.OAuthFlow));
             var result = new Dictionary<string, string>();
             try
             {
                 using var imap = new MailKit.Net.Imap.ImapClient { Timeout = 20_000 };
                 if (a.AcceptAnyCertificate) imap.ServerCertificateValidationCallback = (_, _, _, _) => true;
                 await imap.ConnectAsync(a.ImapHost, a.ImapPort, ImapPool.Options(a.ImapSecurity), ct);
-                await imap.AuthenticateAsync(a.ImapUser, a.ImapPassword ?? "", ct);
+                await ImapPool.LoginAsync(imap, a, a.ImapUser, a.ImapPassword, ct);
                 await imap.DisconnectAsync(true, ct);
                 result["imap"] = "ok";
             }
@@ -234,7 +314,9 @@ public static class SettingsApi
 
             var accounts = space.Settings.MailAccounts.Select(a => new
             {
-                a.Id, a.Name, a.Email, a.SyncMonths,
+                a.Id, a.Name, a.Email, a.SyncMonths, a.Storage, a.SlimDays, a.SlimMb,
+                // Schlank: Groesse (laut Server) der Mails, deren Inhalt nur beim Anbieter liegt
+                serverOnly = a.Slim ? Convert.ToInt64(db.Scalar("SELECT COALESCE(SUM(size),0) FROM mail WHERE account=$a AND cached=0", ("$a", a.Id)) ?? 0L) : 0L,
                 folders = db.Query(@"SELECT f.path, f.name, f.special, f.total, f.unread,
                         COUNT(m.id), COALESCE(SUM(m.size),0), COALESCE(SUM((SELECT length(raw) FROM mail_raw r WHERE r.id = m.id)),0),
                         COALESCE(SUM(m.cached),0), COALESCE(SUM(m.has_att),0), MIN(m.date), MAX(m.date)
@@ -271,26 +353,7 @@ public static class SettingsApi
 
         // Datenbank verdichten - im Hintergrund, denn bei mehreren GB dauert es laenger als ein
         // Reverse-Proxy auf eine Antwort wartet. Die Oberflaeche fragt den Stand ab.
-        api.MapPost("/compact", (HttpContext http, ILogger<UserSpace> log) =>
-        {
-            var space = http.Space();
-            var job = Compactions.GetOrAdd(space.User.Id, _ => new CompactJob());
-            lock (job)
-            {
-                if (job.Running) return Results.Ok(job);
-                job.Running = true; job.Error = null; job.Started = DateTime.UtcNow; job.Finished = null;
-                var before = space.Db.SpaceInfo();
-                job.Before = before.File + before.Wal;
-            }
-            _ = Task.Run(() =>
-            {
-                try { space.Db.Compact(); }
-                catch (Exception ex) { job.Error = ex.Message; log.LogWarning("Verdichten: {Error}", ex.Message); }
-                var after = space.Db.SpaceInfo();
-                lock (job) { job.After = after.File + after.Wal; job.Finished = DateTime.UtcNow; job.Running = false; }
-            });
-            return Results.Ok(job);
-        });
+        api.MapPost("/compact", (HttpContext http, ILogger<UserSpace> log) => Results.Ok(StartCompact(http.Space(), log)));
         api.MapGet("/compact", (HttpContext http) =>
             Compactions.TryGetValue(http.Space().User.Id, out var job) ? Results.Ok(job) : Results.Ok(new CompactJob()));
 

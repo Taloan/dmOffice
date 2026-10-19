@@ -258,7 +258,10 @@ export default function NotesView() {
       <div className={s.list}>
         {config && !config.enabled && (
           <MessageBar intent="info" style={{ margin: '10px 10px 0' }}>
-            <MessageBarBody>{t('Notizen liegen nur in dmOffice. Abgleich mit notizi:')} <a href="#/settings/notes">{t('einrichten')}</a></MessageBarBody>
+            <MessageBarBody>
+              {t('Tipp: Mit der App notizi hast du deine Notizen auch auf dem Windows-Desktop und dem Handy – mit Erinnerungen, Texterkennung und Abgleich.')}{' '}
+              <a href="#/settings/notes">{t('Abgleich einrichten')}</a>
+            </MessageBarBody>
           </MessageBar>
         )}
         <div style={{ padding: 10 }}><SearchBox placeholder={t('Notizen durchsuchen')} value={search} onChange={(_, d) => setSearch(d.value)} style={{ width: '100%' }} /></div>

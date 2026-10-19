@@ -3,7 +3,7 @@ import {
 } from '@fluentui/react-components'
 import { Send20Regular, Attach20Regular, Dismiss20Regular, Save20Regular, Dismiss16Regular, Important20Regular, WindowNew20Regular, ChevronDown20Regular } from '@fluentui/react-icons'
 import { SendLaterMenu } from './Outbox'
-import { fmtDate } from '../shell/hooks'
+import { fmtLong } from '../shell/hooks'
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { Account, addrFull, api, Attachment, fmtSize, Message } from '../api'
 import { useApp } from '../App'
@@ -193,7 +193,7 @@ export const Compose = forwardRef<ComposeHandle, {
       }
       const delay = at ? undefined : Math.max(0, Math.min(30, prefs.sendDelay ?? 10))
       const r = await api.form(`/api/mail/${account}/send`, form({ sendAt: at?.toISOString(), delaySeconds: delay }))
-      if (r?.queued && at) { notify(t('Geplant'), t('Geht raus: {when}', { when: fmtDate(r.sendAt) })); onClose(true); return }
+      if (r?.queued && at) { notify(t('Geplant'), t('Geht raus: {when}', { when: fmtLong(r.sendAt) })); onClose(true); return }
       if (r?.queued) { onClose(true, { id: r.queued, sendAt: r.sendAt, snapshot }); return }
       // Gesendet, aber z. B. die Kopie in "Gesendet" hat nicht geklappt
       if (r?.warning) notify(t('Gesendet – mit Hinweis'), r.warning, 'warning')

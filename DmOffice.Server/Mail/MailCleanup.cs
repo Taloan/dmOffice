@@ -7,6 +7,7 @@ namespace DmOffice.Mail;
 /// <summary>
 /// Papierkorb und Junk automatisch leeren: was laut Mail-Datum aelter als die eingestellten Tage ist,
 /// wird endgueltig geloescht. Laeuft stuendlich fuer alle geoeffneten Benutzer und gleich nach dem Einstellen.
+/// Dazu der Aufraeumer fuer den Speichermodus "Schlank" (Slim).
 /// </summary>
 public sealed class MailCleanup(Spaces spaces, ImapPool pool, MailSync sync, ILogger<MailCleanup> log) : BackgroundService
 {
@@ -44,11 +45,37 @@ public sealed class MailCleanup(Spaces spaces, ImapPool pool, MailSync sync, ILo
         return count;
     }
 
+    /// <summary>Ab so viel freiem Platz lohnt das einmalige Verdichten (stellt auf auto_vacuum=INCREMENTAL um).</summary>
+
+    /// <summary>Speichermodus "Schlank": Inhalte und Anhaenge ausserhalb der Grenzen verwerfen (alle schlanken
+    /// Konten eines Benutzers). Platz wird nur ohne Sperre freigegeben (auto_vacuum=INCREMENTAL); sonst nutzt SQLite
+    /// die freien Seiten wieder. Nie automatisch VACUUM - das sperrt bei grossen Dateien minutenlang alles;
+    /// Verdichten bleibt ein Knopf unter Einstellungen -> Speicher.</summary>
+    public static (int Count, long Bytes) Slim(UserSpace space, ILogger log)
+    {
+        int count = 0;
+        long bytes = 0;
+        foreach (var account in space.Settings.MailAccounts.Where(a => a.Slim).ToList())
+        {
+            var (n, b) = MailStore.Discard(space.Db, account.Id, MailStore.SlimLimit.Of(account, DateTimeOffset.UtcNow)!);
+            if (n > 0) log.LogInformation("Schlank {Account}: {Count} Inhalte verworfen ({Bytes} Bytes)", account.Email, n, b);
+            count += n;
+            bytes += b;
+        }
+        if (space.Db.Incremental()) space.Db.ReclaimIncremental();
+        return (count, bytes);
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stop)
     {
         try { await Task.Delay(TimeSpan.FromMinutes(2), stop); } catch (OperationCanceledException) { return; }
         while (!stop.IsCancellationRequested)
         {
+            foreach (var space in spaces.All())
+            {
+                try { if (Slim(space, log).Count > 0) sync.Touch(space.User.Id); }
+                catch (Exception e) { log.LogWarning("Schlank aufraeumen {User}: {Error}", space.User.Id, e.Message); }
+            }
             foreach (var space in spaces.All())
                 foreach (var account in space.Settings.MailAccounts.Where(a => a.TrashDays > 0 || a.JunkDays > 0).ToList())
                 {

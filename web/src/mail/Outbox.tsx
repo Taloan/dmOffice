@@ -7,7 +7,7 @@ import { ChevronDown20Regular, Clock20Regular, Delete20Regular, DocumentEdit20Re
 import { ReactElement, useEffect, useState } from 'react'
 import { Account, api } from '../api'
 import { useApp } from '../App'
-import { fmtDate } from '../shell/hooks'
+import { fmtLong } from '../shell/hooks'
 import { t } from '../i18n'
 import { snoozeOptions } from './SnoozeMenu'
 
@@ -96,7 +96,7 @@ export function OutboxView({ accounts, version, onChanged }: { accounts: Account
             <Text size={200} className={r.state === 'failed' ? s.err : s.sub}>
               {r.state === 'failed' ? t('Nicht gesendet: {error}', { error: r.error ?? '' })
                 : r.state === 'sending' ? t('Wird gerade gesendet …')
-                : t('Geht raus: {when}', { when: fmtDate(r.sendAt) })}
+                : t('Geht raus: {when}', { when: fmtLong(r.sendAt) })}
             </Text>
           </div>
           {r.state !== 'sending' && <>

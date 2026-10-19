@@ -1,7 +1,7 @@
 import { Button, Checkbox, Text, makeStyles, mergeClasses, tokens } from '@fluentui/react-components'
-import { CalendarLtr16Regular, Mail16Regular } from '@fluentui/react-icons'
+import { CalendarLtr16Regular, Mail16Regular, MailInbox16Regular } from '@fluentui/react-icons'
 import { useCallback, useEffect, useState } from 'react'
-import { addrText, api, MailItem } from '../api'
+import { Account, addrText, api, MailItem } from '../api'
 import { useApp } from '../App'
 import { locale, t } from '../i18n'
 import { FollowUpDueButton } from '../mail/FollowUpMenu'
@@ -36,6 +36,10 @@ export function MailFollowUps({ list, reload }: { list: FollowUp[]; reload: () =
   const s = useStyles()
   const { fail, notify } = useApp()
   const today = todayIso()
+  // Bei mehreren Konten: aus welchem Postfach die Mail stammt
+  const [accounts, setAccounts] = useState<Account[]>([])
+  useEffect(() => { api.get<Account[]>('/api/mail/accounts').then(setAccounts).catch(() => {}) }, [])
+  const mailbox = (id: string) => accounts.length > 1 ? accounts.find(a => a.id === id)?.email ?? null : null
   // Faellige zuerst, dann nach Datum, ohne Datum zuletzt
   const sorted = [...list].sort((a, b) => (a.due ?? '9999') .localeCompare(b.due ?? '9999') || b.mail.date.localeCompare(a.mail.date))
 
@@ -64,6 +68,7 @@ export function MailFollowUps({ list, reload }: { list: FollowUp[]; reload: () =
               <span className={s.title}>{f.mail.subject || t('(ohne Betreff)')}</span>
               <span className={s.meta}>
                 <span><Mail16Regular style={{ verticalAlign: -3 }} /> {addrText(f.mail.from)}</span>
+                {mailbox(f.mail.account) && <span title={t('Postfach')}><MailInbox16Regular style={{ verticalAlign: -3 }} /> {mailbox(f.mail.account)}</span>}
                 {f.due && <span className={mergeClasses(late && s.late)}><CalendarLtr16Regular style={{ verticalAlign: -3 }} /> {new Date(f.due + 'T12:00').toLocaleDateString(locale, { weekday: 'short', day: '2-digit', month: '2-digit' })}</span>}
               </span>
             </div>

@@ -30,6 +30,9 @@ public sealed class ImapPool : IDisposable
     /// ein langer Erst-Sync soll kein Verschieben oder Oeffnen aufhalten.</summary>
     public const string Ui = "ui", Sync = "sync";
 
+    /// <summary>OAuth2 fuer Microsoft-Konten - beim Start gesetzt (Program.cs).</summary>
+    public static MicrosoftOAuth? OAuth { get; set; }
+
     public ImapPool()
     {
         // Nach zehn Minuten ohne Zugriff schliessen - Server trennen sonst
@@ -87,7 +90,7 @@ public sealed class ImapPool : IDisposable
             or System.Net.Sockets.SocketException;
 
     private static string SignatureOf(MailAccount a) =>
-        string.Join("|", a.ImapHost, a.ImapPort, a.ImapSecurity, a.ImapUser, a.ImapPassword, a.AcceptAnyCertificate);
+        string.Join("|", a.ImapHost, a.ImapPort, a.ImapSecurity, a.ImapUser, a.Auth, a.ImapPassword, a.AcceptAnyCertificate);
 
     private static readonly TimeSpan IdleCheck = TimeSpan.FromSeconds(30);
 
@@ -108,7 +111,7 @@ public sealed class ImapPool : IDisposable
         {
             if (account.AcceptAnyCertificate) client.ServerCertificateValidationCallback = (_, _, _, _) => true;
             await client.ConnectAsync(account.ImapHost, account.ImapPort, Options(account.ImapSecurity), ct);
-            await client.AuthenticateAsync(account.ImapUser, account.ImapPassword ?? "", ct);
+            await LoginAsync(client, account, account.ImapUser, account.ImapPassword, ct);
         }
         catch
         {
@@ -127,8 +130,23 @@ public sealed class ImapPool : IDisposable
         _ => SecureSocketOptions.None
     };
 
+    /// <summary>Anmelden mit Passwort oder - bei Microsoft-Konten - XOAUTH2 mit frischem Access-Token.</summary>
+    public static async Task LoginAsync(MailService client, MailAccount account, string user, string? password, CancellationToken ct)
+    {
+        if (account.Auth == MailAuth.Microsoft)
+        {
+            var oauth = OAuth ?? throw new AuthenticationException("Microsoft-Anmeldung ist auf diesem Server nicht eingerichtet (DMOFFICE_MS_CLIENT_ID).");
+            var token = await oauth.AccessTokenAsync(account, ct);
+            await client.AuthenticateAsync(new SaslMechanismOAuth2(user, token), ct);
+        }
+        else await client.AuthenticateAsync(user, password ?? "", ct);
+    }
+
     public static async Task<SmtpClient> SmtpAsync(MailAccount account, CancellationToken ct)
     {
+        // Sonst meldet MailKit "The host name cannot be empty. (Parameter 'host')"
+        if (string.IsNullOrWhiteSpace(account.SmtpHost))
+            throw new InvalidOperationException("Für dieses Konto ist kein Postausgangsserver (SMTP) eingetragen.");
         var smtp = new SmtpClient { Timeout = 60_000 };
         try
         {
@@ -136,7 +154,7 @@ public sealed class ImapPool : IDisposable
             await smtp.ConnectAsync(account.SmtpHost, account.SmtpPort, Options(account.SmtpSecurity), ct);
             var user = string.IsNullOrEmpty(account.SmtpUser) ? account.ImapUser : account.SmtpUser;
             var password = string.IsNullOrEmpty(account.SmtpPassword) ? account.ImapPassword : account.SmtpPassword;
-            if (!string.IsNullOrEmpty(user)) await smtp.AuthenticateAsync(user, password ?? "", ct);
+            if (!string.IsNullOrEmpty(user)) await LoginAsync(smtp, account, user, password, ct);
             return smtp;
         }
         catch

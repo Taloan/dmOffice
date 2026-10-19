@@ -142,6 +142,9 @@ export function Shell() {
   const go = (m: Module) => { location.hash = '#/' + m }
   const unread = status ? Object.values<any>(status.accounts).reduce((n, a) => n + (a.unread || 0), 0) : 0
   const syncing = status ? Object.values<any>(status.accounts).some(a => a.running) : false
+  // Ohne Mailkonto kein Mail-Bereich (Konten legt man in den Einstellungen an); solange der Stand fehlt, bleibt er sichtbar
+  const hasMail = !status || Object.keys(status.accounts ?? {}).length > 0
+  useEffect(() => { if (!hasMail && module === 'mail') go('calendar') }, [hasMail, module]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     document.title = unread > 0 ? `(${unread}) dmOffice` : 'dmOffice'
@@ -209,7 +212,7 @@ export function Shell() {
       </header>
       <div className={s.body}>
         <nav className={s.rail}>
-          {modules.filter(m => m.key !== 'files' || me.files !== false).map(m => (
+          {modules.filter(m => (m.key !== 'files' || me.files !== false) && (m.key !== 'mail' || hasMail)).map(m => (
             <Tooltip key={m.key} content={m.label} relationship="label" positioning="after">
               {/* Zaehler neben dem Knopf, nicht darin - sonst wird der Knopf breiter als die Leiste */}
               <div style={{ position: 'relative' }}>

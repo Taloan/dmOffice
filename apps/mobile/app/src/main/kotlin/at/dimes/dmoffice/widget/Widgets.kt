@@ -117,9 +117,18 @@ internal object WidgetFollowUps {
 
     suspend fun load(context: Context): List<at.dimes.dmoffice.api.FollowUp> {
         val fresh = try { kotlinx.coroutines.withTimeoutOrNull(8000) { App.get(context).mail.followUps() } } catch (_: Exception) { null }
+        // Postfaecher (nur bei mehreren Konten angezeigt), ebenfalls zwischengespeichert
+        try {
+            kotlinx.coroutines.withTimeoutOrNull(5000) { App.get(context).mail.accounts() }?.let { a ->
+                prefs(context).edit().putString("mailboxes", json.encodeToString(if (a.size > 1) a.associate { it.id to it.email } else emptyMap())).apply()
+            }
+        } catch (_: Exception) { }
         if (fresh != null) { prefs(context).edit().putString("list", json.encodeToString(fresh)).apply(); return fresh }
         return try { prefs(context).getString("list", null)?.let { json.decodeFromString<List<at.dimes.dmoffice.api.FollowUp>>(it) } ?: emptyList() } catch (_: Exception) { emptyList() }
     }
+
+    fun mailboxes(context: Context): Map<String, String> =
+        try { prefs(context).getString("mailboxes", null)?.let { json.decodeFromString<Map<String, String>>(it) } ?: emptyMap() } catch (_: Exception) { emptyMap() }
 
     fun drop(context: Context, account: String, folder: String, uid: Long) {
         val p = prefs(context)
@@ -626,6 +635,7 @@ class TasksWidget : GlanceAppWidget() {
                 .sortedWith(compareBy({ it.due ?: "9999" }, { it.mail.subject }))
                 .take(cfg.maxItems)
         val shownTasks = tasks.take((cfg.maxItems - follow.size).coerceAtLeast(0))
+        val mailboxes = if (follow.isEmpty()) emptyMap() else WidgetFollowUps.mailboxes(context)
         val now = System.currentTimeMillis()
         // Neue Aufgabe aus dem Widget: in die erste gewaehlte Liste (Reihenfolge wie in der App)
         val addTo = cfg.lists?.let { sel -> cals.firstOrNull { it.href in sel }?.href }
@@ -641,7 +651,7 @@ class TasksWidget : GlanceAppWidget() {
                         !signedIn -> Empty(context.getString(R.string.widget_not_set_up), cfg)
                         shownTasks.isEmpty() && follow.isEmpty() -> Empty(context.getString(R.string.no_tasks), cfg)
                         else -> LazyColumn(modifier = GlanceModifier.fillMaxSize()) {
-                            items(follow) { f -> FollowLine(context, f, today, cfg) }
+                            items(follow) { f -> FollowLine(context, f, today, cfg, mailboxes[f.mail.account]) }
                             items(shownTasks) { t -> TaskLine(context, t, colors[t.calendarHref], names[t.calendarHref], now, cfg) }
                         }
                     }
@@ -706,11 +716,11 @@ private fun TaskLine(context: Context, t: ItemEntity, color: Int?, calendarName:
 
 /** Gekennzeichnete Mail: Kaestchen = erledigt, Zeile oeffnet die Mail in der App. */
 @Composable
-private fun FollowLine(context: Context, f: at.dimes.dmoffice.api.FollowUp, today: LocalDate, cfg: WidgetConfig) {
+private fun FollowLine(context: Context, f: at.dimes.dmoffice.api.FollowUp, today: LocalDate, cfg: WidgetConfig, mailbox: String?) {
     val m = f.mail
     val s = cfg.textSize.scale
     val due = f.due?.let { try { LocalDate.parse(it) } catch (_: Exception) { null } }
-    val sub = listOfNotNull(m.from?.text, due?.let { Fmt.shortDate(it) }).joinToString(" · ")
+    val sub = listOfNotNull(m.from?.text, mailbox, due?.let { Fmt.shortDate(it) }).joinToString(" · ")
     val titleStyle = TextStyle(fontSize = (13 * s).sp, color = GlanceTheme.colors.onBackground)
     val subStyle = TextStyle(fontSize = (11 * s).sp, color = if (due != null && due < today) GlanceTheme.colors.error else GlanceTheme.colors.onSurfaceVariant)
     val done = actionRunCallback<FollowUpDoneAction>(actionParametersOf(accKey to m.account, folderKey to m.folder, uidKey to m.uid))

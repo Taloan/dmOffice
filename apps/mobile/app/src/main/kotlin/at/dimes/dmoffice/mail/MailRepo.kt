@@ -34,7 +34,16 @@ class MailRepo(private val context: Context, private val db: AppDb) {
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false; coerceInputValues = true }
     private fun api(): ApiClient = App.get(context).api ?: throw ApiException(401, "no account")
 
-    suspend fun accounts(): List<MailAccount> = withContext(Dispatchers.IO) { api().get(api().url("/api/mail/accounts")) }
+    private val state = context.getSharedPreferences("mailstate", Context.MODE_PRIVATE)
+    /** Ob ein Mailkonto eingerichtet ist - ohne Konto blendet die App den Mail-Reiter und die Mail-Optionen aus. */
+    val hasAccounts = kotlinx.coroutines.flow.MutableStateFlow(state.getBoolean("has", true))
+
+    suspend fun accounts(): List<MailAccount> = withContext(Dispatchers.IO) {
+        val list: List<MailAccount> = api().get(api().url("/api/mail/accounts"))
+        hasAccounts.value = list.isNotEmpty()
+        state.edit().putBoolean("has", list.isNotEmpty()).apply()
+        list
+    }
     suspend fun status(): MailStatus = withContext(Dispatchers.IO) { api().get(api().url("/api/mail/status")) }
 
     fun folders(account: String): Flow<List<Folder>> = db.mail().folders(account).map { list ->

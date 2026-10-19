@@ -53,6 +53,10 @@ fun HomeScreen(initialTab: String?, onOpen: (String) -> Unit, onNewEvent: (Long)
     LaunchedEffect(initialTab) { if (initialTab == "agenda") CalendarPrefs.setMode(ctx, CalMode.Agenda) }
     LaunchedEffect(openList) { if (openList != null) tab = Tab.Tasks }
     val snack = remember { SnackbarHostState() }
+    // Ohne Mailkonto kein Mail-Reiter (Konten richtet man im Web ein)
+    val hasMail by app.mail.hasAccounts.collectAsState()
+    LaunchedEffect(Unit) { try { app.mail.accounts() } catch (_: Exception) { } }
+    LaunchedEffect(hasMail) { if (!hasMail && tab == Tab.Mail) tab = Tab.Calendar }
     val settings by app.prefs.settings.collectAsState()
     var selectedDay by remember { mutableStateOf(java.time.LocalDate.now()) }
 
@@ -67,7 +71,7 @@ fun HomeScreen(initialTab: String?, onOpen: (String) -> Unit, onNewEvent: (Long)
         snackbarHost = { SnackbarHost(snack) },
         bottomBar = {
             NavigationBar {
-                for (t in Tab.entries) {
+                for (t in Tab.entries.filter { it != Tab.Mail || hasMail }) {
                     // Bereichssymbole einheitlich in der Akzentfarbe (wie die Leiste links im Web)
                     val iconColor = androidx.compose.material3.MaterialTheme.colorScheme.primary
                     NavigationBarItem(

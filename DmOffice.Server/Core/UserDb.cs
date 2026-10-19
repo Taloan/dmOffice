@@ -103,9 +103,36 @@ public sealed class UserDb
         using (var cmd = conn.CreateCommand())
         {
             cmd.CommandTimeout = 0;
-            cmd.CommandText = "PRAGMA wal_checkpoint(TRUNCATE); VACUUM; PRAGMA wal_checkpoint(TRUNCATE);";
+            // auto_vacuum=INCREMENTAL wirkt erst mit dem VACUUM - danach geht Reclaim ohne Sperre der ganzen Datei
+            cmd.CommandText = "PRAGMA auto_vacuum=INCREMENTAL; PRAGMA wal_checkpoint(TRUNCATE); VACUUM; PRAGMA wal_checkpoint(TRUNCATE);";
             cmd.ExecuteNonQuery();
         }
+    }
+
+    /// <summary>Kann die Datei freie Seiten ohne VACUUM abgeben (auto_vacuum=INCREMENTAL)?</summary>
+    public bool Incremental()
+    {
+        using var conn = Open();
+        return Query(conn, "PRAGMA auto_vacuum", r => r.GetInt64(0)).First() == 2;
+    }
+
+    /// <summary>Freie Seiten an das Dateisystem zurueckgeben - schnell, sperrt nur kurz.
+    /// Nur bei auto_vacuum=INCREMENTAL (nach dem ersten Compact); gibt die frei gewordenen Bytes zurueck.</summary>
+    public long ReclaimIncremental()
+    {
+        var before = SpaceInfo();
+        using (var conn = Open())
+        {
+            if (Query(conn, "PRAGMA auto_vacuum", r => r.GetInt64(0)).First() != 2) return 0;
+            using var cmd = conn.CreateCommand();
+            cmd.CommandTimeout = 0;
+            cmd.CommandText = "PRAGMA incremental_vacuum; PRAGMA wal_checkpoint(TRUNCATE);";
+            // Jeder Schritt gibt Seiten frei - bis zum Ende lesen
+            using var r = cmd.ExecuteReader();
+            do { while (r.Read()) { } } while (r.NextResult());
+        }
+        var after = SpaceInfo();
+        return Math.Max(0, before.File + before.Wal - after.File - after.Wal);
     }
 
     /// <summary>Journal einarbeiten und kuerzen - nach groesseren Schreibvorgaengen.</summary>
@@ -227,6 +254,11 @@ CREATE TABLE focus_senders (address TEXT PRIMARY KEY, focused INTEGER NOT NULL);
 CREATE TABLE focus_tokens (token TEXT PRIMARY KEY, other INTEGER NOT NULL DEFAULT 0, focused INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE focus_trained (key TEXT PRIMARY KEY, focused INTEGER NOT NULL);
 PRAGMA user_version=9;");
+        }
+        if (Query(conn, "PRAGMA user_version", r => r.GetInt64(0)).First() < 10)
+        {
+            // Speichermodus "Schlank" (MailStore.Discard): wann eine Mail zuletzt geoeffnet wurde
+            Exec(conn, "ALTER TABLE mail ADD COLUMN opened INTEGER NULL; PRAGMA user_version=10;");
         }
     }
 

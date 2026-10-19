@@ -2,6 +2,9 @@ namespace DmOffice.Core;
 
 public enum Security { Ssl, StartTls, None }
 
+/// <summary>Anmeldung am Mailserver: Passwort oder OAuth2 bei Microsoft (private Konten, Mail/MicrosoftOAuth.cs).</summary>
+public enum MailAuth { Password, Microsoft }
+
 public sealed class MailAccount
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
@@ -14,6 +17,13 @@ public sealed class MailAccount
     public Security ImapSecurity { get; set; } = Security.Ssl;
     public string ImapUser { get; set; } = "";
     public string? ImapPassword { get; set; }
+    public MailAuth Auth { get; set; } = MailAuth.Password;
+    /// <summary>Bei Auth = Microsoft: Refresh-Token, gilt fuer IMAP und SMTP. Nie an die Oberflaeche.</summary>
+    public string? OAuthRefreshToken { get; set; }
+    /// <summary>Nur in Anfragen der Oberflaeche: abgeschlossene Microsoft-Anmeldung, deren Token das Konto
+    /// bekommen soll. Wird nicht gespeichert.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? OAuthFlow { get; set; }
 
     public string SmtpHost { get; set; } = "";
     public int SmtpPort { get; set; } = 465;
@@ -39,6 +49,18 @@ public sealed class MailAccount
     /// <summary>Mails bis zu dieser Groesse kommen vollstaendig in die
     /// Datenbank (samt Anhaengen); groessere werden beim Oeffnen geholt.</summary>
     public int MaxCachedMb { get; set; } = 50;
+
+    /// <summary>Speichermodus: "full" - alle Mails vollstaendig hier (wie bisher);
+    /// "slim" - nur Kopfdaten, Flags und Vorschau immer, Inhalte und Anhaenge nur fuer
+    /// die juengsten (SlimDays/SlimMb), aeltere werden beim Oeffnen geholt (MailCleanup.Slim).</summary>
+    public string Storage { get; set; } = StorageFull;
+    /// <summary>Schlank: Inhalte der Mails, die in so vielen Tagen kamen oder geoeffnet wurden.</summary>
+    public int SlimDays { get; set; } = 30;
+    /// <summary>Schlank: hoechstens so viel Mail (Groesse laut Server) vollstaendig hier.</summary>
+    public int SlimMb { get; set; } = 200;
+
+    public const string StorageFull = "full", StorageSlim = "slim";
+    [System.Text.Json.Serialization.JsonIgnore] public bool Slim => Storage == StorageSlim;
 
     /// <summary>Papierkorb/Junk automatisch leeren: Mails, die laut Datum aelter als so
     /// viele Tage sind, endgueltig loeschen. 0: nie.</summary>

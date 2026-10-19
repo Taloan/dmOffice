@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Bilder fuer Blog-Artikel (docs/img/blog) - eigene, leere Datenbank, erfundene Beispieldaten.
 #   tools/docs/make-blog.sh   (Oberflaeche deutsch; docs/img/de und docs/img/en bleiben unberuehrt)
+#   ONLY=m-vip,m-leer tools/docs/make-blog.sh   nur diese Bilder neu schreiben (die Schritte laufen trotzdem alle)
 # Braucht: dotnet, node, Edge oder Chrome (BROWSER=/pfad/zu/msedge.exe), gebaute Oberflaeche (web: npm run build).
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -34,5 +35,5 @@ DMOFFICE_DOCS_BLOG=1 DMOFFICE_DOCS_SEED="$DATA" dotnet test "$ROOT/DmOffice.Test
 start
 node seed.mjs "$BASE" "$PASS"
 node blog-seed.mjs "$BASE" "$PASS"
-node blog-shots.mjs "$BASE" "$PASS" "$BROWSER"
+node blog-shots.mjs "$BASE" "$PASS" "$BROWSER" ${ONLY:-}
 echo "Bilder in docs/img/blog"

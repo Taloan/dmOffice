@@ -54,7 +54,7 @@ export interface Me {
 
 export interface Addr { name?: string | null; address: string }
 
-export interface Account { id: string; name: string; email: string; displayName: string; signature: string; language?: 'de' | 'en'; trashDays?: number; junkDays?: number }
+export interface Account { id: string; name: string; email: string; displayName: string; signature: string; language?: 'de' | 'en'; trashDays?: number; junkDays?: number; storage?: 'full' | 'slim' }
 
 export interface Folder {
   path: string; name: string; delimiter: string; special: string | null; selectable: boolean

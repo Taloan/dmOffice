@@ -9,6 +9,8 @@ services:
       - "8080:8080"
     environment:
       DMOFFICE_MASTER_KEY: ${DMOFFICE_MASTER_KEY:-}
+      # Outlook.com/Hotmail/Live als Mailkonto: Client-ID einer eigenen Azure-App (siehe README), sonst leer
+      DMOFFICE_MS_CLIENT_ID: ${DMOFFICE_MS_CLIENT_ID:-}
       TZ: Europe/Berlin
     volumes:
       - dmoffice-data:/data

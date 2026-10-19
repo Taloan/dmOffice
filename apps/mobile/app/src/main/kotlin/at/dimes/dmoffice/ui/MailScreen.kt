@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.Badge
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -126,29 +127,33 @@ fun MailScreen(onOpen: (account: String, folder: String, uid: Long) -> Unit, onC
     }
     val focusOn = inbox && focusInfo?.enabled == true
     val shownItems = if (!focusOn) items else items.filter { (it.focus ?: true) == focusTab }
+    val categories by app.mail.categories.collectAsState()
+    // Ordnerleiste wie bei Proton (von links oder ueber den Ordnernamen oben)
+    val drawer = androidx.compose.material3.rememberDrawerState(androidx.compose.material3.DrawerValue.Closed)
+    val title = if (folder == UNIFIED) stringResource(R.string.all_inboxes)
+        else current?.let { folderLabel(it) } ?: categories.firstOrNull { "cat:" + it.key == folder }?.name ?: folder
 
+    androidx.compose.material3.ModalNavigationDrawer(drawerState = drawer, gesturesEnabled = drawer.isOpen, drawerContent = {
+        androidx.compose.material3.ModalDrawerSheet(Modifier.width(300.dp)) {
+            FolderDrawer(accounts, acc, folders, folder, categories,
+                onAccount = { id -> scope.launch { drawer.close() }; account = id; app.prefs.setMailAccount(id); folder = "INBOX"; scope.launch { refresh(id) } },
+                onFolder = { path -> scope.launch { drawer.close() }; folder = path; scope.launch { refresh(acc) } })
+        }
+    }) {
+    Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box {
-                Row(Modifier.clip(MaterialTheme.shapes.small).clickable { folderMenu = true }.padding(horizontal = 8.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(current?.let { folderLabel(it) } ?: folder, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-                    if ((current?.unread ?: 0) > 0) { Spacer(Modifier.width(8.dp)); Badge { Text(current!!.unread.toString()) } }
-                    Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+            IconButton(onClick = { scope.launch { drawer.open() } }) { Icon(Icons.Default.Menu, contentDescription = stringResource(R.string.folders)) }
+            Row(Modifier.clip(MaterialTheme.shapes.small).clickable { scope.launch { drawer.open() } }.padding(horizontal = 4.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column {
+                    Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    // Mehrere Konten: klein darunter, welches gerade offen ist
+                    val mailbox = if (accounts.size > 1) accounts.firstOrNull { it.id == acc }?.let { it.email.ifBlank { it.name } } else null
+                    if (mailbox != null) Text(mailbox, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                DropdownMenu(expanded = folderMenu, onDismissRequest = { folderMenu = false }) {
-                    for (f in folders) DropdownMenuItem(
-                        text = { Text(folderLabel(f) + if (f.unread > 0) "  (${f.unread})" else "", fontWeight = if (f.unread > 0) FontWeight.SemiBold else FontWeight.Normal) },
-                        onClick = { folderMenu = false; folder = f.path; scope.launch { refresh(acc) } }
-                    )
-                }
+                if ((current?.unread ?: 0) > 0) { Spacer(Modifier.width(8.dp)); Badge { Text(current!!.unread.toString()) } }
             }
             Spacer(Modifier.weight(1f))
-            if (accounts.size > 1) Box {
-                TextButton(onClick = { accountMenu = true }) { Text(accounts.firstOrNull { it.id == acc }?.name ?: "", maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                DropdownMenu(expanded = accountMenu, onDismissRequest = { accountMenu = false }) {
-                    for (a in accounts) DropdownMenuItem(text = { Text(a.name + " · " + a.email) }, onClick = { accountMenu = false; account = a.id; app.prefs.setMailAccount(a.id); folder = "INBOX"; scope.launch { refresh(a.id) } })
-                }
-            }
             IconButton(onClick = { scope.launch { app.mail.sync(); refresh(acc) } }) { Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.refresh)) }
         }
         error?.let { Text(stringResource(R.string.error_generic, it), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp)) }
@@ -164,7 +169,32 @@ fun MailScreen(onOpen: (account: String, folder: String, uid: Long) -> Unit, onC
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 88.dp)) {
                 items(shownItems.size, key = { i -> "${shownItems[i].account}/${shownItems[i].folder}/${shownItems[i].uid}" }) { i ->
                     val m = shownItems[i]
-                    MailRow(m, folder) { onOpen(m.account.ifEmpty { acc }, m.folder.ifEmpty { folder }, m.uid) }
+                    val ma = m.account.ifEmpty { acc }
+                    val mf = m.folder.ifEmpty { folder }
+                    // Wischgesten wie eingestellt (Optionen); Vorgabe: links loeschen, rechts archivieren
+                    SwipeRow(SwipeAction.of(settings.swipeLeft), SwipeAction.of(settings.swipeLeftFar),
+                        SwipeAction.of(settings.swipeRight), SwipeAction.of(settings.swipeRightFar), onAction = { a ->
+                            scope.launch {
+                                try {
+                                    when (a) {
+                                        SwipeAction.Delete -> app.mail.delete(ma, mf, listOf(m.uid))
+                                        SwipeAction.Archive -> if (!app.mail.archive(ma, mf, listOf(m.uid))) error = ctx.getString(R.string.no_archive)
+                                        SwipeAction.Read -> app.mail.setSeen(ma, mf, listOf(m.uid), !m.seen)
+                                        SwipeAction.Flag -> if (m.flagged) app.mail.followUp(ma, mf, listOf(m.uid), null, done = true)
+                                                            else app.mail.followUp(ma, mf, listOf(m.uid), java.time.LocalDate.now().toString())
+                                        SwipeAction.Snooze -> app.mail.snooze(ma, mf, listOf(m.uid),
+                                            java.time.LocalDate.now().plusDays(1).atTime(9, 0).atZone(java.time.ZoneId.systemDefault()).toOffsetDateTime().toString())
+                                        SwipeAction.Junk -> app.mail.junk(ma, mf, listOf(m.uid), true)
+                                        SwipeAction.Focus -> if (inbox) app.mail.moveFocus(ma, mf, listOf(m.uid), !(m.focus ?: true), false)
+                                        SwipeAction.None -> {}
+                                    }
+                                } catch (e: Exception) { error = e.message }
+                                // Alle Posteingaenge sind eine eigene Liste: nach der Aktion neu holen
+                                if (folder == UNIFIED) try { refresh(acc) } catch (_: Exception) { }
+                            }
+                        }) {
+                        MailRow(m, folder) { onOpen(ma, mf, m.uid) }
+                    }
                 }
                 if (hasMore) item { TextButton(onClick = { scope.launch { try { hasMore = app.mail.refresh(acc, folder, page + 1); page++ } catch (e: Exception) { error = e.message } } }, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.load_more)) } }
             }
@@ -172,6 +202,8 @@ fun MailScreen(onOpen: (account: String, folder: String, uid: Long) -> Unit, onC
     }
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomEnd) {
         ExtendedFloatingActionButton(onClick = { onCompose(acc) }, icon = { Icon(Icons.Default.Edit, contentDescription = null) }, text = { Text(stringResource(R.string.compose)) }, modifier = Modifier.padding(16.dp))
+    }
+    }
     }
 }
 

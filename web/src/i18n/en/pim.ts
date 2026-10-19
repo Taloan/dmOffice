@@ -25,7 +25,7 @@ export const pim: Record<string, string> = {
   'Monat': 'Month',
   'Liste': 'List',
   'Zurück': 'Back',
-  'Weiter': 'Forward',
+  'Weiter': 'Next',
   'Vorheriger Monat': 'Previous month',
   'Nächster Monat': 'Next month',
   'Neuer Termin': 'New event',

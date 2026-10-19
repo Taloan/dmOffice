@@ -22,6 +22,13 @@ export const server: Record<string, string> = {
   'Das eigene Konto lässt sich hier nicht löschen.': 'You cannot delete your own account here.',
   'Benutzer gibt es nicht.': 'User does not exist.',
   'Konto nicht gefunden.': 'Account not found.',
+  'Erst bei Microsoft anmelden.': 'Sign in with Microsoft first.',
+  'Nicht bei Microsoft angemeldet – Konto bearbeiten und neu anmelden.': 'Not signed in with Microsoft – edit the account and sign in again.',
+  'Microsoft-Anmeldung abgelaufen – Konto bearbeiten und neu anmelden.': 'Microsoft sign-in expired – edit the account and sign in again.',
+  'Microsoft-Anmeldung ist auf diesem Server nicht eingerichtet (DMOFFICE_MS_CLIENT_ID).': 'Microsoft sign-in is not set up on this server (DMOFFICE_MS_CLIENT_ID).',
+  'Microsoft-Anmeldung ist nicht eingerichtet (DMOFFICE_MS_CLIENT_ID).': 'Microsoft sign-in is not set up (DMOFFICE_MS_CLIENT_ID).',
+  'Microsoft-Anmeldung': 'Microsoft sign-in',
+  'Für dieses Konto ist kein Postausgangsserver (SMTP) eingetragen.': 'No outgoing mail server (SMTP) is set up for this account.',
 
   // Einstellungen
   'Unbekannte Zeitzone.': 'Unknown time zone.',

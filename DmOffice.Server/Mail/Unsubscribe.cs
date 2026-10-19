@@ -75,7 +75,7 @@ public static class Unsubscribe
         return m;
     }
 
-    private static async Task<bool> IsPublicAsync(string host, CancellationToken ct)
+    internal static async Task<bool> IsPublicAsync(string host, CancellationToken ct)
     {
         IPAddress[] addrs;
         try { addrs = IPAddress.TryParse(host, out var ip) ? new[] { ip } : await Dns.GetHostAddressesAsync(host, ct); }
