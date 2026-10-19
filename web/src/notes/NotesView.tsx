@@ -259,7 +259,7 @@ export default function NotesView() {
         {config && !config.enabled && (
           <MessageBar intent="info" style={{ margin: '10px 10px 0' }}>
             <MessageBarBody>
-              {t('Tipp: Mit der App notizi hast du deine Notizen auch auf dem Windows-Desktop und dem Handy – mit Erinnerungen, Texterkennung und Abgleich.')}{' '}
+              {t('Tipp: Mit der App notizi hast du deine Notizen auch auf dem Windows-Desktop – mit Erinnerungen, Texterkennung und Abgleich.')}{' '}
               <a href="#/settings/notes">{t('Abgleich einrichten')}</a>
             </MessageBarBody>
           </MessageBar>

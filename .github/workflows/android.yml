@@ -1,6 +1,8 @@
-# Android-App (apps/mobile): baut bei einem Tag android-v1.2.3 die Release-APK, signiert sie und haengt sie
-# als dmOffice-1.2.3.apk an einen GitHub-Release, dazu als dmOffice.apk fuer den festen Link
-# releases/latest/download/dmOffice.apk (Einstellungen -> Als PWA installieren -> Android-App). Von Hand (workflow_dispatch) entsteht nur ein Build-Artefakt.
+# Android-App (apps/mobile): baut bei jedem Versions-Tag v1.2.3 (auch android-v1.2.3) die Release-APK, signiert sie
+# und haengt sie als dmOffice-1.2.3.apk und dmOffice.apk an genau diesen Release - so hat
+# releases/latest/download/dmOffice.apk (Einstellungen -> Apps installieren -> Android-App) immer eine APK.
+# Von Hand (workflow_dispatch) mit "release" = vorhandener Tag: APK nachtraeglich an diesen Release haengen;
+# ohne: nur ein Build-Artefakt.
 # Der Signaturschluessel liegt nie im Repo, sondern in vier Geheimnissen (Settings -> Secrets and variables -> Actions):
 #   ANDROID_KEYSTORE_BASE64   Keystore-Datei als Base64 (base64 -w0 dmoffice.jks)
 #   ANDROID_KEYSTORE_PASSWORD Passwort des Keystores
@@ -10,8 +12,12 @@
 name: android
 on:
   push:
-    tags: ['android-v*']
+    tags: ['v*', 'android-v*']
   workflow_dispatch:
+    inputs:
+      release:
+        description: 'Vorhandener Release-Tag (z. B. v1.1.0), an den die APK soll - leer: nur Artefakt'
+        required: false
 permissions:
   contents: write
 jobs:
@@ -27,10 +33,19 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
+      - name: version
+        env:
+          RELEASE_INPUT: ${{ github.event.inputs.release }}
+        run: |
+          tag="$RELEASE_INPUT"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then tag="$GITHUB_REF_NAME"; fi
+          v="${tag#android-}"; v="${v#v}"
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          echo "VERSION=${v:-dev-${GITHUB_SHA::7}}" >> "$GITHUB_ENV"
       - name: bauen
         run: |
           echo "sdk.dir=$ANDROID_HOME" > local.properties
-          bash ./gradlew --no-daemon :app:assembleRelease
+          bash ./gradlew --no-daemon :app:assembleRelease -PappVersion="$VERSION"
       - name: signieren
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -40,7 +55,7 @@ jobs:
         run: |
           set -eu
           if [ -z "$KEYSTORE_BASE64" ]; then echo "::error::Geheimnis ANDROID_KEYSTORE_BASE64 fehlt - siehe Kopf von android.yml"; exit 1; fi
-          if [ "$GITHUB_REF_TYPE" = tag ]; then v="${GITHUB_REF_NAME#android-v}"; else v="dev-${GITHUB_SHA::7}"; fi
+          v="$VERSION"
           tools=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
           echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/dmoffice.jks"
           mkdir -p out
@@ -49,13 +64,14 @@ jobs:
             --ks-key-alias "$KEY_ALIAS" --key-pass env:KEY_PASSWORD --out "out/dmOffice-$v.apk" out/aligned.apk
           "$tools/apksigner" verify "out/dmOffice-$v.apk"
           rm -f out/aligned.apk "$RUNNER_TEMP/dmoffice.jks"
-          if [ "$GITHUB_REF_TYPE" = tag ]; then cp "out/dmOffice-$v.apk" out/dmOffice.apk; fi
+          if [ -n "$TAG" ]; then cp "out/dmOffice-$v.apk" out/dmOffice.apk; fi
       - uses: actions/upload-artifact@v4
         with:
           name: dmOffice-apk
           path: apps/mobile/out/*.apk
-      - if: github.ref_type == 'tag'
+      # An den Release dieses Tags haengen (gibt es ihn schon, bleiben Titel und Text erhalten)
+      - if: env.TAG != ''
         uses: softprops/action-gh-release@v2
         with:
-          name: Android ${{ github.ref_name }}
+          tag_name: ${{ env.TAG }}
           files: apps/mobile/out/*.apk

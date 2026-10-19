@@ -11,7 +11,7 @@ namespace DmOffice.Mail;
 ///
 /// Device-Code-Flow gegen /consumers: dmOffice holt einen Code, der Benutzer gibt ihn unter
 /// microsoft.com/devicelogin ein und bestaetigt. Keine Redirect-URI, also gleich fuer jede
-/// Installation. Vorgabe ist die App-Registrierung des Projekts ("dmO Mail", oeffentlicher Client,
+/// Installation. Vorgabe ist die App-Registrierung des Projekts ("dm Mailsuite", oeffentlicher Client,
 /// die ID ist kein Geheimnis); DMOFFICE_MS_CLIENT_ID setzt eine eigene, "off" schaltet die Anmeldung ab.
 ///
 /// Das Refresh-Token liegt im Konto (Einstellungen, SQLCipher-Datenbank des Benutzers). Access-Tokens

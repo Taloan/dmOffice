@@ -219,12 +219,12 @@ export function NotesSettings() {
     <>
       <Text size={600} weight="semibold">{t('Notizen (notizi)')}</Text>
       <Text>
-        {t('Mit der kostenlosen App notizi für Windows und Android hast du dieselben Notizen am PC, am Handy und hier im Browser – verschlüsselt abgeglichen über dmOffice.')}{' '}
+        {t('Mit der kostenlosen App notizi für Windows hast du dieselben Notizen am PC und hier im Browser – verschlüsselt abgeglichen über dmOffice. Eine Android-Version ist in Arbeit.')}{' '}
         <a href="https://notizi.de" target="_blank" rel="noopener noreferrer">{t('Mehr auf notizi.de')}</a>
       </Text>
 
       <Text weight="semibold">{t('1. notizi installieren')}</Text>
-      <Text>{t('Auf dem PC oder Handy von notizi.de herunterladen und einmal starten – Version 1.5 oder neuer.')}</Text>
+      <Text>{t('Am PC von notizi.de herunterladen und einmal starten – Version 1.5 oder neuer.')}</Text>
 
       <Text weight="semibold">{t('2. In notizi mit dmOffice verbinden')}</Text>
       <Text>{t('In notizi unter Einstellungen → Sync → Verbindung → WebDAV diese Angaben eintragen:')}</Text>

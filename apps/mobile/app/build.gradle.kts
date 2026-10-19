@@ -21,6 +21,10 @@ fun com.android.build.api.dsl.VariantDimension.firebaseFields(packageName: Strin
     for (k in listOf("FCM_APP_ID", "FCM_API_KEY", "FCM_PROJECT_ID", "FCM_SENDER_ID")) buildConfigField("String", k, "\"" + (v[k] ?: "") + "\"")
 }
 
+/** Version aus dem Release-Tag (-PappVersion=1.1.0); versionCode steigt mit jeder Version, sonst nimmt Android kein Update an. */
+val appVersion = (project.findProperty("appVersion") as String?)?.takeIf { it.matches(Regex("\\d+\\.\\d+\\.\\d+")) } ?: "0.1.0"
+val appVersionCode = appVersion.split('.').map { it.toInt() }.let { (a, b, c) -> a * 10000 + b * 100 + c }.coerceAtLeast(1)
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -37,8 +41,8 @@ android {
         applicationId = "at.dimes.dmoffice"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1"
+        versionCode = appVersionCode
+        versionName = appVersion
         vectorDrawables.useSupportLibrary = true
     }
 

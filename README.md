@@ -95,7 +95,7 @@ Update bietet die App „Neu laden“ an. Die Symbole zeichnet `python tools/pwa
 ## Outlook.com, Hotmail und Live
 
 Private Microsoft-Konten (`outlook.com`, `hotmail.*`, `live.*`, `msn.com`) nehmen für IMAP und SMTP kein Passwort mehr an,
-nur OAuth2. dmOffice bringt dafür eine eigene App-Registrierung mit („dmO Mail“), es ist nichts einzurichten.
+nur OAuth2. dmOffice bringt dafür eine eigene App-Registrierung mit („dm Mailsuite“ – so heißt sie auf der Zustimmungsseite von Microsoft), es ist nichts einzurichten.
 
 Wer lieber eine eigene Registrierung verwendet (etwa in einer Firma), legt sie im
 [Entra-Portal](https://entra.microsoft.com) unter *App-Registrierungen* an: Kontotypen *Alle Konten von Entra ID-Mandanten
