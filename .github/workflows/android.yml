@@ -1,0 +1,61 @@
+# Android-App (apps/mobile): baut bei einem Tag android-v1.2.3 die Release-APK, signiert sie und haengt sie
+# als dmOffice-1.2.3.apk an einen GitHub-Release, dazu als dmOffice.apk fuer den festen Link
+# releases/latest/download/dmOffice.apk (Einstellungen -> Als PWA installieren -> Android-App). Von Hand (workflow_dispatch) entsteht nur ein Build-Artefakt.
+# Der Signaturschluessel liegt nie im Repo, sondern in vier Geheimnissen (Settings -> Secrets and variables -> Actions):
+#   ANDROID_KEYSTORE_BASE64   Keystore-Datei als Base64 (base64 -w0 dmoffice.jks)
+#   ANDROID_KEYSTORE_PASSWORD Passwort des Keystores
+#   ANDROID_KEY_ALIAS         Alias des Schluessels
+#   ANDROID_KEY_PASSWORD      Passwort des Schluessels (oft gleich dem Keystore-Passwort)
+# Immer denselben Schluessel nehmen: Android installiert ein Update nur mit derselben Signatur.
+name: android
+on:
+  push:
+    tags: ['android-v*']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: bauen
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          bash ./gradlew --no-daemon :app:assembleRelease
+      - name: signieren
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -eu
+          if [ -z "$KEYSTORE_BASE64" ]; then echo "::error::Geheimnis ANDROID_KEYSTORE_BASE64 fehlt - siehe Kopf von android.yml"; exit 1; fi
+          if [ "$GITHUB_REF_TYPE" = tag ]; then v="${GITHUB_REF_NAME#android-v}"; else v="dev-${GITHUB_SHA::7}"; fi
+          tools=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/dmoffice.jks"
+          mkdir -p out
+          "$tools/zipalign" -f -p 4 app/build/outputs/apk/release/app-release-unsigned.apk out/aligned.apk
+          "$tools/apksigner" sign --ks "$RUNNER_TEMP/dmoffice.jks" --ks-pass env:KEYSTORE_PASSWORD \
+            --ks-key-alias "$KEY_ALIAS" --key-pass env:KEY_PASSWORD --out "out/dmOffice-$v.apk" out/aligned.apk
+          "$tools/apksigner" verify "out/dmOffice-$v.apk"
+          rm -f out/aligned.apk "$RUNNER_TEMP/dmoffice.jks"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then cp "out/dmOffice-$v.apk" out/dmOffice.apk; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dmOffice-apk
+          path: apps/mobile/out/*.apk
+      - if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Android ${{ github.ref_name }}
+          files: apps/mobile/out/*.apk

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="12dp"
+    android:background="@drawable/widget_bg">
+    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center" android:textStyle="bold" android:text="@string/month" />
+    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center" android:textSize="11sp" android:text="M   T   W   T   F   S   S" />
+    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center" android:text="  5    6    7    8    9   10  11" />
+    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center" android:text="12  13  14  15  16  17  18" />
+    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center" android:text="19  20  21  22  23  24  25" />
+    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="09:00  Team" />
+    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="14:30  Dr. Huber" />
+</LinearLayout>

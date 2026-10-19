@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="12dp"
+    android:background="@drawable/widget_bg">
+    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:textStyle="bold" android:text="@string/today" />
+    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="09:00  Team" />
+    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="14:30  Dr. Huber" />
+    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:textStyle="bold" android:text="@string/tomorrow" />
+    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="10:00  Review" />
+</LinearLayout>

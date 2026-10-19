@@ -1,0 +1,18 @@
+# dmOffice als ein Container. Aus dem Checkout: `docker compose up -d --build`.
+# DMOFFICE_MASTER_KEY in .env setzen (eine lange Zufallsfolge, z. B. `openssl rand -hex 32`) und gut aufheben:
+# Ohne ihn lassen sich die Benutzerdatenbanken nicht mehr oeffnen. Fehlt er, legt dmOffice ihn als Datei in /data an.
+services:
+  dmoffice:
+    image: ghcr.io/taloan/dmoffice:latest
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      DMOFFICE_MASTER_KEY: ${DMOFFICE_MASTER_KEY:-}
+      TZ: Europe/Berlin
+    volumes:
+      - dmoffice-data:/data
+    restart: unless-stopped
+
+volumes:
+  dmoffice-data:

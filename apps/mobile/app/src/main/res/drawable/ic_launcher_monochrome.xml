@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <!-- D mit Haken fuer monochrome Themensymbole (derzeit nicht eingebunden, siehe mipmap-anydpi-v26) -->
+    <group android:pivotX="54" android:pivotY="54" android:scaleX="0.72" android:scaleY="0.72">
+        <path android:fillColor="#FFFFFF" android:pathData="M27,24h30a24,24 0 0 1 24,24v12a24,24 0 0 1 -24,24H27z"/>
+        <path android:strokeColor="#000000" android:strokeWidth="7" android:strokeLineCap="round" android:strokeLineJoin="round"
+            android:pathData="M39,54l8,8l16,-16"/>
+    </group>
+</vector>

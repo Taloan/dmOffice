@@ -1,0 +1,12 @@
+bin/
+obj/
+.vs/
+*.user
+node_modules/
+web/dist/
+DmOffice.Server/wwwroot/
+data/
+*.db
+*.db-wal
+*.db-shm
+.build/

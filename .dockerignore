@@ -1,0 +1,10 @@
+**/bin
+**/obj
+**/node_modules
+web/dist
+DmOffice.Server/wwwroot
+DmOffice.Tests
+data
+.git
+.vs
+*.user

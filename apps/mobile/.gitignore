@@ -1,0 +1,13 @@
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+.kotlin/
+app/release/
+
+# Quellordner data/ ist im Wurzel-.gitignore (Server-Daten) ausgeschlossen; hier wieder aufnehmen
+!data/
+
+# Firebase-Werte des eigenen Projekts (siehe README, Push)
+app/google-services.json

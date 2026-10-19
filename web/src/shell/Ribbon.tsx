@@ -1,0 +1,178 @@
+import { Button, Menu, MenuItemRadio, MenuList, MenuPopover, MenuTrigger, makeStyles, mergeClasses, tokens } from '@fluentui/react-components'
+import { ChevronLeft20Regular, ChevronRight20Regular, SlideText20Regular } from '@fluentui/react-icons'
+import { forwardRef, useCallback, useEffect, useRef, useState } from 'react'
+import { t } from '../i18n'
+import { usePrefs } from '../prefs'
+
+// Menueband wie in Office: Symbol oben, Beschriftung darunter (bis zu zwei Zeilen), Gruppen mit Trennstrich.
+// Bricht nicht um - wird es zu eng, schieben Pfeile links/rechts die Leiste weiter (wie "Scrollband rechts" in Outlook).
+
+const useStyles = makeStyles({
+  wrap: { position: 'relative', flexShrink: 0, borderBottom: `1px solid ${tokens.colorNeutralStroke2}` },
+  ribbon: {
+    display: 'flex', alignItems: 'stretch', gap: '2px', padding: '4px 8px', overflowX: 'auto', overflowY: 'hidden',
+    scrollbarWidth: 'none', scrollBehavior: 'smooth',
+  },
+  scroll: {
+    position: 'absolute', top: '4px', bottom: '4px', width: '22px', minWidth: '22px', padding: 0, zIndex: 1,
+    backgroundColor: tokens.colorNeutralBackground3, borderRadius: tokens.borderRadiusMedium, boxShadow: tokens.shadow4,
+  },
+  button: {
+    display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-start', gap: '3px',
+    minWidth: '56px', maxWidth: '86px', height: '66px', padding: '6px 6px 4px', flexShrink: 0,
+  },
+  // Nur Symbole: kleiner, quadratisch; nur Text: eine Zeile
+  iconsOnly: { minWidth: '40px', maxWidth: '40px', height: '40px', padding: '8px', justifyContent: 'center' },
+  textOnly: { height: '32px', maxWidth: 'none', padding: '4px 10px', justifyContent: 'center', '& span': { whiteSpace: 'nowrap', display: 'block' } },
+  icon: { fontSize: '24px', height: '24px', display: 'inline-flex', alignItems: 'center', '& svg': { width: '24px', height: '24px' } },
+  label: {
+    fontSize: '12px', lineHeight: '14px', fontWeight: 400, textAlign: 'center', whiteSpace: 'normal',
+    display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+  },
+  divider: { width: '1px', margin: '8px 6px', backgroundColor: tokens.colorNeutralStroke2, flexShrink: 0 },
+  tabs: { display: 'flex', gap: '2px', padding: '4px 10px 0', flexShrink: 0 },
+  tab: {
+    border: 'none', background: 'transparent', color: tokens.colorNeutralForeground2, fontFamily: 'inherit', fontSize: '13px',
+    padding: '6px 10px 5px', cursor: 'pointer', position: 'relative', borderRadius: tokens.borderRadiusMedium,
+    ':hover': { backgroundColor: tokens.colorNeutralBackground1Hover, color: tokens.colorNeutralForeground1 },
+  },
+  tabOn: {
+    color: tokens.colorNeutralForeground1, fontWeight: 600,
+    '::after': { content: '""', position: 'absolute', left: '10px', right: '10px', bottom: 0, height: '2px', borderRadius: '1px', backgroundColor: tokens.colorBrandBackground },
+  },
+  pressed: { backgroundColor: tokens.colorNeutralBackground1Selected },
+})
+
+export function Ribbon({ children, className }: { children: React.ReactNode; className?: string }) {
+  const s = useStyles()
+  const bar = useRef<HTMLDivElement>(null)
+  const [edge, setEdge] = useState({ left: false, right: false })
+  const check = useCallback(() => {
+    const el = bar.current
+    if (!el) return
+    setEdge({ left: el.scrollLeft > 2, right: el.scrollLeft + el.clientWidth < el.scrollWidth - 2 })
+  }, [])
+  useEffect(() => {
+    const el = bar.current
+    if (!el) return
+    check()
+    const ro = new ResizeObserver(check)
+    ro.observe(el)
+    if (el.firstElementChild) ro.observe(el.firstElementChild)
+    return () => ro.disconnect()
+  }, [check])
+  const by = (dir: number) => bar.current?.scrollBy({ left: dir * Math.max(120, bar.current.clientWidth * 0.6) })
+  return (
+    <div className={s.wrap}>
+      <div ref={bar} role="toolbar" className={mergeClasses(s.ribbon, className)} onScroll={check}>{children}</div>
+      {edge.left && <Button className={s.scroll} style={{ left: 2 }} appearance="subtle" icon={<ChevronLeft20Regular />}
+        onClick={() => by(-1)} aria-label={t('Menüband links')} title={t('Menüband links')} />}
+      {edge.right && <Button className={s.scroll} style={{ right: 2 }} appearance="subtle" icon={<ChevronRight20Regular />}
+        onClick={() => by(1)} aria-label={t('Menüband rechts')} title={t('Menüband rechts')} />}
+    </div>
+  )
+}
+
+/** Reiter ueber dem Menueband (Start, Ansicht) wie in Office. */
+export function RibbonTabs({ tabs, value, onChange }: { tabs: [string, string][]; value: string; onChange: (v: string) => void }) {
+  const s = useStyles()
+  return (
+    <div className={s.tabs} role="tablist">
+      {tabs.map(([k, l]) => (
+        <button key={k} role="tab" aria-selected={value === k} className={mergeClasses(s.tab, value === k && s.tabOn)} onClick={() => onChange(k)}>{l}</button>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * Kopf eines Bereichs wie bei den Mails: Reiter "Start" und "Ansicht", darunter das Menueband.
+ * Der gewaehlte Reiter bleibt je Bereich gespeichert.
+ */
+export function RibbonHeader({ area, start, view, before, after }: {
+  area: string; start: React.ReactNode; view: React.ReactNode; before?: React.ReactNode; after?: React.ReactNode
+}) {
+  const { prefs, update } = usePrefs()
+  const tab = prefs.ribbonTabs?.[area] ?? 'start'
+  return (
+    <>
+      <div style={{ display: 'flex', alignItems: 'center', minWidth: 0 }}>
+        {before}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <RibbonTabs tabs={[['start', t('Start')], ['view', t('Ansicht')]]} value={tab}
+            onChange={v => update({ ribbonTabs: { ...prefs.ribbonTabs, [area]: v as 'start' | 'view' } })} />
+        </div>
+        {after}
+      </div>
+      <Ribbon>{tab === 'view' ? <>{view}<RibbonDivider /><RibbonDisplayMenu /></> : start}</Ribbon>
+    </>
+  )
+}
+
+/** Navigationsbereich links ein-/ausblenden, je Bereich gespeichert. */
+export function useSidePane(area: string): [boolean, () => void] {
+  const { prefs, update } = usePrefs()
+  const on = prefs.sidePane?.[area] ?? true
+  return [on, () => update({ sidePane: { ...prefs.sidePane, [area]: !on } })]
+}
+
+/** Menueband: Symbole und Text, nur Symbole oder nur Text - fuer alle Bereiche gleich. */
+export function RibbonDisplayMenu() {
+  const { prefs, update } = usePrefs()
+  return (
+    <Menu>
+      <MenuTrigger disableButtonEnhancement><RibbonButton icon={<SlideText20Regular />} label={t('Menüband')} /></MenuTrigger>
+      <MenuPopover>
+        <MenuList checkedValues={{ labels: [prefs.ribbonLabels ?? 'both'] }} onCheckedValueChange={(_, d) => update({ ribbonLabels: d.checkedItems[0] as any })}>
+          <MenuItemRadio name="labels" value="both">{t('Symbole und Text')}</MenuItemRadio>
+          <MenuItemRadio name="labels" value="icons">{t('Nur Symbole')}</MenuItemRadio>
+          <MenuItemRadio name="labels" value="text">{t('Nur Text')}</MenuItemRadio>
+        </MenuList>
+      </MenuPopover>
+    </Menu>
+  )
+}
+
+export function RibbonDivider() {
+  const s = useStyles()
+  return <div className={s.divider} role="separator" />
+}
+
+/**
+ * Leichte Farbakzente fuer die haeufigen Knoepfe - wie in Outlook, damit man sie schneller findet.
+ * Nach dem Symbol (Name ohne Groesse/Variante); alles andere bleibt neutral.
+ */
+const tints: Record<string, string> = {
+  Archive: '#1F9E77', ShieldCheckmark: '#1F9E77', CheckmarkCircle: '#1F9E77',
+  ShieldError: '#D13438', Flag: '#D13438', Note: '#D69A1E',
+  FolderArrowRight: '#D69A1E', FolderOpen: '#D69A1E', FolderAdd: '#D69A1E', Star: '#D69A1E', Broom: '#D69A1E',
+  ArrowReply: '#8B5CF6', ArrowReplyAll: '#8B5CF6',
+  ArrowForward: '#2F7FD9', MailRead: '#2F7FD9', MailUnread: '#2F7FD9', Mail: '#2F7FD9', ArrowSync: '#2F7FD9',
+  ArrowDownload: '#2F7FD9', ArrowUpload: '#2F7FD9', ArrowImport: '#2F7FD9', ArrowExport: '#2F7FD9',
+  Clock: '#0E9AA7', CalendarAdd: '#0E9AA7', CalendarToday: '#0E9AA7', CalendarLtr: '#0E9AA7', ArrowReset: '#0E9AA7',
+  Tag: '#E2782E', Rss: '#E2782E',
+}
+const tintOf = (icon: JSX.Element) => {
+  const name: string | undefined = (icon.type as any)?.displayName
+  return name ? tints[name.replace(/\d+(Regular|Filled)$/, '')] : undefined
+}
+
+type Props = Omit<React.ComponentProps<typeof Button>, 'icon' | 'children'> & {
+  icon: JSX.Element
+  label: string
+  primary?: boolean
+  /** Umschalter, der gerade an ist */
+  pressed?: boolean
+}
+
+/** Ein Knopf im Menueband. Mit forwardRef, damit er als Ausloeser eines Menues dienen kann. */
+export const RibbonButton = forwardRef<HTMLButtonElement, Props>(function RibbonButton({ icon, label, primary, pressed, className, ...rest }, ref) {
+  const s = useStyles()
+  const mode = usePrefs().prefs.ribbonLabels ?? 'both'
+  return (
+    <Button ref={ref} appearance={primary ? 'primary' : 'subtle'} className={mergeClasses(s.button, mode === 'icons' && s.iconsOnly, mode === 'text' && s.textOnly, pressed && s.pressed, className)} title={label} aria-pressed={pressed} {...(rest as any)}>
+      {mode !== 'text' && <span className={s.icon} style={!primary && !rest.disabled && tintOf(icon) ? { color: tintOf(icon) } : undefined}>{icon}</span>}
+      {mode !== 'icons' && <span className={s.label}>{label}</span>}
+    </Button>
+  )
+})

@@ -1,0 +1,35 @@
+# Image in die Container-Registry der Gitea: bei jedem Push auf master als `latest` und `sha-<kurz>`.
+# Wie bei journali: Der Job laeuft im Image docker:cli, der Docker-Socket des Hosts ist hineingereicht (Runner-Einstellung).
+# Zwei Adressen fuer dieselbe Gitea:
+#   git clone  - GITHUB_SERVER_URL, so wie der Job-Container sie sieht
+#   Registry   - 127.0.0.1:<Port>, so wie der Docker des Hosts sie sieht; ohne https nimmt Docker nur localhost an
+# docker:cli ist Alpine: kein Node (keine JS-Aktionen, `git clone` statt actions/checkout) und kein bash (`shell: sh`).
+name: docker
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - name: bauen und in die Registry der Gitea
+        shell: sh
+        env:
+          TOKEN: ${{ secrets.REGISTRY_TOKEN || secrets.GITEA_TOKEN }}
+        run: |
+          set -eu
+          gitea="${GITHUB_SERVER_URL%/}"
+          registry="127.0.0.1:${gitea##*:}"
+          besitzer=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          bild="$registry/$besitzer/dmoffice"
+          kurz=$(echo "$GITHUB_SHA" | cut -c1-7)
+          auth=$(printf '%s:%s' "$GITHUB_ACTOR" "$TOKEN" | base64 | tr -d '\n')
+          git -c http.extraheader="Authorization: Basic $auth" clone --depth 1 -b "$GITHUB_REF_NAME" "$gitea/$GITHUB_REPOSITORY.git" quelle
+          cd quelle
+          echo "$TOKEN" | docker login "$registry" -u "$GITHUB_ACTOR" --password-stdin
+          docker build --pull --build-arg VERSION="$(date +%Y.%m.%d)-$kurz" -t "$bild:latest" -t "$bild:sha-$kurz" .
+          docker push "$bild:latest"
+          docker push "$bild:sha-$kurz"
+          docker image rm "$bild:sha-$kurz" || true
+          echo "Image: $bild:latest"

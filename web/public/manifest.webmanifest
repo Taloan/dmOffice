@@ -1,0 +1,24 @@
+{
+  "id": "/",
+  "name": "dmOffice",
+  "short_name": "dmOffice",
+  "description": "E-Mail, Kalender, Kontakte, Aufgaben, Notizen und Dateien",
+  "lang": "de",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone"],
+  "theme_color": "#7B1DD3",
+  "background_color": "#FFFFFF",
+  "categories": ["productivity", "business"],
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "E-Mail", "url": "/#/mail", "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Kalender", "url": "/#/calendar", "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }] }
+  ]
+}

@@ -1,0 +1,1250 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- Zoomen wie im Browser: zwei Finger vergroessern den Bereich unter
+     ihnen, Bilder eingeschlossen. Die App schaltet dazu den eingebauten
+     Zoom der WebView ein (MauiProgram). -->
+<meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=6, user-scalable=yes">
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; padding: 12px 14px 80px; font-family: system-ui, sans-serif; font-size: 16px;
+         line-height: 1.45; word-wrap: break-word; }
+  #root { outline: none; min-height: 60vh; white-space: pre-wrap; }
+  #root p { margin: 0 0 4px; }
+  #root table { border-collapse: collapse; max-width: 100%; }
+  #root td { border: 1px solid #9994; padding: 3px 6px; vertical-align: top; }
+  #root img { max-width: 100%; height: auto; }
+  /* Makros von notizi (Anhang, Datum): feste Bausteine, nicht zum Hineintippen. */
+  #root .macro { border-radius: 3px; padding: 0 3px; }
+  #root [data-attachment] { text-decoration: underline; }
+  /* Gesperrt: Tabellen, Bilder - die App zeigt sie, aendert sie nicht. Codebloecke sind Text. */
+  #root [contenteditable="false"] { position: relative; border-left: 3px solid #9996; padding-left: 6px;
+                                    margin: 4px 0; overflow-x: auto; }
+  /* Hell oder dunkel setzt die App (Einstellungen: System, Hell, Dunkel). */
+  html[data-theme="light"] { color-scheme: light; }
+  html[data-theme="light"] body { background: #ffffff; color: #1a1a1a; }
+  html[data-theme="dark"] { color-scheme: dark; }
+  html[data-theme="dark"] body { background: #1e1e1e; color: #e6e6e6; }
+
+  /* Codebloecke wie in notizi am PC: feste Schrittweite auf grauem Grund.
+     Consolas gibt es auf Android nicht - dann die Monospace des Systems. */
+  #root p[style*="Consolas"], #root p[style*="Courier"] {
+    font-family: ui-monospace, "Roboto Mono", "Droid Sans Mono", monospace !important;
+    white-space: pre-wrap; border-radius: 4px; font-size: 14px; }
+  #root p[style*="Consolas"], #root p[style*="Courier"] { position: relative; padding-right: 40px !important; }
+  /* Rahmen mit vier Punkten um ein angetipptes Bild - an einer Ecke ziehen
+     aendert die Groesse, wie am PC. */
+  /* Pinselstrich: was ueberstrichen ist, ohne echte Auswahl - die liess
+     Android seine Lupe zeigen und die Geste uebernehmen. */
+  #paintmark { position: absolute; left: 0; top: 0; pointer-events: none; z-index: 4; }
+  #paintmark div { position: absolute; background: rgba(45, 125, 210, .28); border-radius: 3px; }
+  #resizer { position: absolute; display: none; border: 2px solid #2D7DD2; box-sizing: border-box; z-index: 5; pointer-events: none; }
+  #resizer.on { display: block; }
+  #resizer .h { position: absolute; width: 36px; height: 36px; margin: -18px 0 0 -18px; pointer-events: auto; touch-action: none; }
+  #resizer .h::after { content: ''; position: absolute; left: 11px; top: 11px; width: 14px; height: 14px; border-radius: 7px;
+                       background: #2D7DD2; border: 2px solid #fff; box-sizing: border-box; }
+  #resizer .nw { left: 0; top: 0; } #resizer .ne { left: 100%; top: 0; }
+  #resizer .sw { left: 0; top: 100%; } #resizer .se { left: 100%; top: 100%; }
+  #root .copy { position: absolute; top: 2px; right: 2px; width: 34px; height: 34px; border-radius: 17px;
+                display: flex; align-items: center; justify-content: center; background: #8883; }
+  #root .copy svg { width: 18px; height: 18px; fill: currentColor; }
+
+  /* Malflaeche: weiss wie Papier, damit die Zeichnung am PC in hellem wie
+     dunklem Schema lesbar bleibt. */
+  #draw { position: fixed; inset: 0; background: #0008; display: none; flex-direction: column; z-index: 10; }
+  #draw.on { display: flex; }
+  #draw canvas { flex: 1; background: #fff; touch-action: none; margin: 8px; border-radius: 6px; }
+  #draw .bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 8px 10px; background: #222; }
+  #draw button { width: 42px; height: 42px; padding: 0; border: 0; border-radius: 21px; background: #444; color: #fff;
+                 display: inline-flex; align-items: center; justify-content: center; }
+  #draw button svg { width: 24px; height: 24px; fill: #fff; }
+  #draw button .dot { background: #fff; border-radius: 50%; }
+  #draw button.color { width: 34px; height: 34px; padding: 0; border: 3px solid transparent; }
+  #draw button.color.on, #draw button.width.on { border-color: #fff; outline: 2px solid #2D7DD2; }
+  #draw .spacer { flex: 1; }
+</style>
+</head>
+<body>
+<div id="root" contenteditable="true"></div>
+<div id="paintmark"></div>
+<div id="resizer"><div class="h nw" data-x="-1"></div><div class="h ne" data-x="1"></div><div class="h sw" data-x="-1"></div><div class="h se" data-x="1"></div></div>
+<div id="draw">
+  <canvas id="canvas"></canvas>
+  <div class="bar">
+    <button class="color on" style="background:#111" data-c="#111111"></button>
+    <button class="color" style="background:#D32F2F" data-c="#D32F2F"></button>
+    <button class="color" style="background:#1F5FBF" data-c="#1F5FBF"></button>
+    <button class="color" style="background:#2E7D32" data-c="#2E7D32"></button>
+    <button class="color" style="background:#FBC02D" data-c="#FBC02D"></button>
+    <button class="width on" data-w="3"><span class="dot" style="width:6px;height:6px"></span></button>
+    <button class="width" data-w="9"><span class="dot" style="width:16px;height:16px"></span></button>
+    <button id="undo"><svg viewBox="0 0 24 24"><path d="M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z"/></svg></button>
+    <button id="clear"><svg viewBox="0 0 24 24"><path d="M5 13h14v-2H5v2zm-2 4h14v-2H3v2zM7 7v2h14V7H7z"/></svg></button>
+    <button id="remove" style="background:#C62828"><svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg></button>
+    <span class="spacer"></span>
+    <button id="cancel"><svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>
+    <button id="done" style="background:#2D7DD2"><svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></button>
+  </div>
+</div>
+<script>
+// Der Editor der App. Laedt die Bloecke einer Notiz (HTML wie im
+// Abgleichordner), laesst Absaetze und Listen bearbeiten und gibt beim
+// Speichern zurueck: unveraenderte und gesperrte Bloecke als ihre Nummer -
+// die App setzt dann den Originaltext ein, Zeichen fuer Zeichen -, alles
+// andere als neues XHTML. So bleibt, was die App nicht anfasst, genau so,
+// wie notizi es geschrieben hat (siehe ProtectedBlocks).
+const root = document.getElementById('root');
+let protectedFlags = [];
+let ser0 = [];
+
+const b64d = s => decodeURIComponent(escape(atob(s)));
+const b64e = s => btoa(unescape(encodeURIComponent(s)));
+
+document.execCommand('styleWithCSS', false, true);
+document.execCommand('defaultParagraphSeparator', false, 'p');
+
+function load(payloadB64) {
+  const data = JSON.parse(b64d(payloadB64));   // { blocks: [], protected: [], images: { name: dataUri }, dark }
+  document.documentElement.setAttribute('data-theme', data.dark ? 'dark' : 'light');
+  if (data.readOnly) root.setAttribute('contenteditable', 'false');
+  protectedFlags = data.protected;
+  root.innerHTML = '';
+  ser0 = [];
+  swaps = {};
+  aligns = {};
+  data.blocks.forEach((html, i) => {
+    let node, extra = [];
+    if (html.trim().startsWith('<')) {
+      const t = document.createElement('template');
+      t.innerHTML = html;
+      node = t.content.firstElementChild || document.createElement('p');
+      // Ein Block, den der Browser in mehrere zerlegt (etwa eine Liste in
+      // einem Absatz): der Rest kommt als eigene Bloecke dahinter.
+      extra = Array.from(t.content.children).slice(1);
+    } else {
+      node = document.createElement('p');
+      node.textContent = html;
+    }
+    node.setAttribute('data-i', i);
+    if (data.protected[i]) node.setAttribute('contenteditable', 'false');
+    markMacros(node);
+    node.querySelectorAll('img').forEach(img => {
+      const src = img.getAttribute('src') || '';
+      if (src.startsWith('blob:') && data.images[src.substring(5)]) {
+        img.setAttribute('data-blob', src.substring(5));
+        img.setAttribute('src', data.images[src.substring(5)]);
+      }
+    });
+    root.appendChild(node);
+    extra.forEach(x => root.appendChild(x));
+    ser0[i] = extra.length ? null : ser(node);
+  });
+  if (!root.firstChild) root.appendChild(document.createElement('p'));
+  addCopyButtons();
+  fitImages();
+  undoStack.length = 0; redoStack.length = 0; typedAt = 0;
+}
+
+// ------------------------------------------------------------------
+//  Rueckgaengig / Wiederholen - eigener Verlauf: Codeblock, Aufgabe und
+//  Bilder baut der Editor selbst um, das kennt das Rueckgaengig des
+//  Browsers nicht. Gemerkt wird der ganze Text vor jedem Schritt.
+// ------------------------------------------------------------------
+
+const undoStack = [], redoStack = [];
+let typedAt = 0;
+
+function snapshot() {
+  return { html: root.innerHTML, caret: caretInfo(), aligns: JSON.stringify(aligns), swaps: JSON.stringify(swaps) };
+}
+
+/// Vor jedem Schritt aufrufen, der etwas aendert.
+function remember() {
+  undoStack.push(snapshot());
+  if (undoStack.length > 100) undoStack.shift();
+  redoStack.length = 0;
+  typedAt = 0;   // was danach getippt wird, ist ein eigener Schritt
+}
+
+// Tippen: ein Schritt je Schwung - nach anderthalb Sekunden Pause beginnt
+// der naechste.
+root.addEventListener('beforeinput', () => {
+  if (Date.now() - typedAt > 1500) remember();
+  typedAt = Date.now();
+});
+
+function restoreSnapshot(s) {
+  hideSizes();
+  root.innerHTML = s.html;
+  aligns = JSON.parse(s.aligns);
+  swaps = JSON.parse(s.swaps);
+  addCopyButtons();
+  fitImages();
+  restoreCaret(s.caret);
+  lastInput = Date.now();
+  typedAt = 0;
+}
+
+function undo() {
+  if (!undoStack.length) return;
+  redoStack.push(snapshot());
+  restoreSnapshot(undoStack.pop());
+}
+
+function redo() {
+  if (!redoStack.length) return;
+  undoStack.push(snapshot());
+  restoreSnapshot(redoStack.pop());
+}
+
+// ------------------------------------------------------------------
+//  Bildgroesse - in den Verhaeltnissen vom PC
+// ------------------------------------------------------------------
+
+/// Breite des Editors am PC, auf die sich width/height der Bilder beziehen.
+/// Ein Bild, das dort halb so breit ist wie der Text, ist es hier auch.
+const REF = 760;
+
+function fitImages() {
+  root.querySelectorAll('img').forEach(img => {
+    const w = parseFloat(img.getAttribute('width'));
+    if (!(w > 0)) return;
+    img.style.width = Math.min(100, w / REF * 100) + '%';
+    img.style.height = 'auto';
+  });
+}
+
+const resizer = document.getElementById('resizer');
+let sizeTarget = null, drag = null;
+
+/// Antippen eines Bilds: Rahmen mit vier Punkten (langes Druecken oeffnet
+/// weiter das Zeichenfeld).
+function showSizes(img) {
+  sizeTarget = img;
+  placeResizer();
+  resizer.classList.add('on');
+}
+function hideSizes() { resizer.classList.remove('on'); sizeTarget = null; drag = null; }
+function placeResizer() {
+  if (!sizeTarget) return;
+  const r = sizeTarget.getBoundingClientRect();
+  resizer.style.left = (window.scrollX + r.left) + 'px';
+  resizer.style.top = (window.scrollY + r.top) + 'px';
+  resizer.style.width = r.width + 'px';
+  resizer.style.height = r.height + 'px';
+}
+window.addEventListener('resize', placeResizer);
+
+resizer.querySelectorAll('.h').forEach(h => {
+  h.addEventListener('pointerdown', e => {
+    if (!sizeTarget) return;
+    e.preventDefault(); e.stopPropagation();
+    h.setPointerCapture(e.pointerId);
+    remember();
+    drag = { x: e.clientX, w: sizeTarget.getBoundingClientRect().width, dir: +h.dataset.x };
+  });
+  h.addEventListener('pointermove', e => {
+    if (!drag || !sizeTarget) return;
+    // Seitenverhaeltnis bleibt; hoechstens so breit wie der Text.
+    const w = Math.max(40, Math.min(root.clientWidth, drag.w + drag.dir * (e.clientX - drag.x)));
+    sizeTarget.style.width = w + 'px';
+    sizeTarget.style.height = 'auto';
+    placeResizer();
+  });
+  const finish = () => {
+    if (!drag || !sizeTarget) return;
+    drag = null;
+    const img = sizeTarget;
+    const shown = img.getBoundingClientRect().width;
+    const ratio = (img.naturalHeight && img.naturalWidth) ? img.naturalHeight / img.naturalWidth
+                : (parseFloat(img.getAttribute('height')) || 1) / (parseFloat(img.getAttribute('width')) || 1);
+    // In die Einheiten vom PC: so viel vom Text breit wie hier.
+    const w = Math.round(shown / Math.max(1, root.clientWidth) * REF), hgt = Math.round(w * ratio);
+    img.setAttribute('width', w);
+    img.setAttribute('height', hgt);
+    fitImages();
+    // In einem gesperrten Block: als Tausch merken - die App setzt die Groesse
+    // dann im Originaltext genau dieses Bilds (wie bei einer Zeichnung).
+    const block = topBlock(img);
+    const i = block && block.hasAttribute('data-i') ? parseInt(block.getAttribute('data-i')) : -1;
+    const blobName = img.getAttribute('data-blob');
+    if (i >= 0 && blobName) (swaps[i] = swaps[i] || []).push([blobName, blobName, String(w), String(hgt)]);
+    placeResizer();
+  };
+  h.addEventListener('pointerup', finish);
+  h.addEventListener('pointercancel', finish);
+});
+
+// ------------------------------------------------------------------
+//  Codebloecke - wie in notizi am PC: ein Absatz in Consolas auf grauem
+//  Grund (CodeBlockTools), Zeilen darin mit Zeilenumbruch.
+// ------------------------------------------------------------------
+
+const CODE_STYLE = 'font-family:Consolas, Courier New;font-size:14px;background-color:#80808022;margin:4px 0px 8px 0px;padding:6px 8px 6px 8px';
+const COPY_ICON = '<svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>';
+const CHECK_ICON = '<svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>';
+let copyText = '';
+
+function isCode(el) {
+  const st = el && el.getAttribute ? el.getAttribute('style') || '' : '';
+  return el && el.tagName === 'P' && /Consolas|Courier/i.test(st);
+}
+
+/// Oben rechts an jedem Codeblock: kopieren - wie am PC. Der Knopf gehoert
+/// nicht zum Text (data-ui) und wird nie gespeichert.
+function addCopyButtons() {
+  for (const block of Array.from(root.children)) {
+    if (!isCode(block) || block.querySelector('.copy')) continue;
+    const b = document.createElement('span');
+    b.className = 'copy';
+    b.setAttribute('data-ui', '1');
+    b.setAttribute('contenteditable', 'false');
+    b.innerHTML = COPY_ICON;
+    block.appendChild(b);
+  }
+}
+
+root.addEventListener('click', e => {
+  const b = e.target.closest ? e.target.closest('.copy') : null;
+  if (!b) return;
+  e.preventDefault(); e.stopPropagation();
+  copyText = b.parentNode.innerText.replace(/\n+$/, '');
+  location.href = 'notizi://copy';
+  b.innerHTML = CHECK_ICON;
+  setTimeout(() => { b.innerHTML = COPY_ICON; }, 1500);
+}, true);
+
+function takeCopy() { return b64e(copyText); }
+
+// ------------------------------------------------------------------
+//  Neu laden nach einem Abgleich: Schreibmarke und Ansicht behalten
+// ------------------------------------------------------------------
+
+let lastInput = 0;
+root.addEventListener('input', () => { lastInput = Date.now(); });
+root.addEventListener('keydown', () => { lastInput = Date.now(); });
+
+/// Sekunden seit der letzten Eingabe - die App laedt nicht mitten im Tippen neu.
+function idleSeconds() { return lastInput ? (Date.now() - lastInput) / 1000 : 9999; }
+
+/// Wo die Schreibmarke steht: der wievielte Block, die Stelle darin, ob der
+/// Editor den Fokus hatte, und wie weit gerollt war.
+function caretInfo() {
+  const info = { i: -1, o: 0, f: document.activeElement === root, y: window.scrollY };
+  const sel = window.getSelection();
+  if (sel.rangeCount && root.contains(sel.anchorNode)) {
+    const range = sel.getRangeAt(0);
+    const block = topBlock(range.startContainer);
+    if (block) {
+      info.i = Array.prototype.indexOf.call(root.children, block);
+      const r = document.createRange();
+      r.selectNodeContents(block); r.setEnd(range.startContainer, range.startOffset);
+      info.o = r.toString().length;
+    }
+  }
+  return b64e(JSON.stringify(info));
+}
+
+function restoreCaret(b64) {
+  let info;
+  try { info = JSON.parse(b64d(b64)); } catch (e) { return; }
+  window.scrollTo(0, info.y || 0);
+  if (info.i < 0 || !root.children.length) return;
+  const block = root.children[Math.min(info.i, root.children.length - 1)];
+  // Die Stelle im Text des Blocks suchen.
+  const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+  let left = info.o, node, target = null, offset = 0;
+  while ((node = walker.nextNode())) {
+    if (left <= node.nodeValue.length) { target = node; offset = left; break; }
+    left -= node.nodeValue.length;
+  }
+  const r = document.createRange();
+  if (target) r.setStart(target, offset); else { r.selectNodeContents(block); r.collapse(false); }
+  r.collapse(true);
+  if (info.f) root.focus({ preventScroll: true });
+  const sel = window.getSelection();
+  sel.removeAllRanges(); sel.addRange(r);
+}
+
+/// Absatz mit der Schreibmarke - oder alle markierten - zum Codeblock: ein
+/// Absatz, die Zeilen mit Zeilenumbruch. Ein eben hier angelegter Codeblock
+/// wird damit wieder gewoehnlicher Text.
+function toggleCode() {
+  ensureCaret();
+  const sel = window.getSelection();
+  if (!sel.rangeCount) return;
+  const range = sel.getRangeAt(0);
+  const first = topBlock(range.startContainer), last = topBlock(range.endContainer) || first;
+  if (!first) return;
+  const blocks = [];
+  for (let b = first; b; b = b.nextElementSibling) { blocks.push(b); if (b === last) break; }
+  const editable = blocks.filter(b => b.getAttribute('contenteditable') !== 'false');
+  if (!editable.length) return;
+  remember();
+
+  if (editable.length === 1 && isCode(editable[0])) {
+    editable[0].removeAttribute('style');
+    placeCaret(editable[0], false);
+    return;
+  }
+  const p = document.createElement('p');
+  p.setAttribute('style', CODE_STYLE);
+  editable.forEach((b, i) => {
+    if (i) p.appendChild(document.createElement('br'));
+    p.appendChild(document.createTextNode(b.innerText.replace(/\n+$/, '')));
+  });
+  if (!p.textContent) p.appendChild(document.createElement('br'));
+  editable[0].before(p);
+  editable.forEach(b => b.remove());
+  placeCaret(p, false);
+  addCopyButtons();
+}
+
+// Makros erkennt notizi an ihrer Darstellung: heller Grund #E4E4E4 (siehe
+// NoteMacros). Hier werden sie zu festen Bausteinen - wie am PC nur als
+// Ganzes zu loeschen. Ein Anhang-Verweis oeffnet beim Antippen den Anhang.
+function markMacros(node) {
+  node.querySelectorAll('span').forEach(sp => {
+    if (sp.style.backgroundColor.replace(/\s/g, '') !== 'rgb(228,228,228)') return;
+    sp.setAttribute('contenteditable', 'false');
+    sp.classList.add('macro');
+    const text = sp.textContent.replace(/^[\u274F\u{1F4CE}]\s?/u, '').trim();
+    if (/\.[A-Za-z0-9]{1,8}$/.test(text)) sp.setAttribute('data-attachment', text);
+  });
+}
+
+root.addEventListener('click', e => {
+  const m = e.target.closest ? e.target.closest('[data-attachment]') : null;
+  if (!m) return;
+  e.preventDefault();
+  location.href = 'notizi://attachment/' + encodeURIComponent(m.getAttribute('data-attachment'));
+});
+
+// Gesperrte Bloecke gegen Loeschen schuetzen: Eine Eingabe, die einen von
+// ihnen beruehrt, wird verworfen.
+// Enter im Codeblock: neue Zeile im Block, kein zweiter Codeblock - wie am PC.
+root.addEventListener('beforeinput', e => {
+  if (e.inputType !== 'insertParagraph') return;
+  const sel = window.getSelection();
+  if (!sel.rangeCount || !isCode(topBlock(sel.getRangeAt(0).startContainer))) return;
+  e.preventDefault();
+  document.execCommand('insertLineBreak');
+});
+
+root.addEventListener('beforeinput', e => {
+  const locked = root.querySelectorAll(':scope > [contenteditable="false"][data-i]');
+  if (!locked.length) return;
+  const ranges = e.getTargetRanges ? e.getTargetRanges() : [];
+  for (const r of ranges) {
+    const range = document.createRange();
+    range.setStart(r.startContainer, r.startOffset);
+    range.setEnd(r.endContainer, r.endOffset);
+    for (const el of locked) {
+      if (range.intersectsNode(el) && !(range.collapsed && !el.contains(range.startContainer))) { e.preventDefault(); return; }
+    }
+    if (e.inputType.startsWith('delete') && range.collapsed) {
+      // Rueckschritt direkt hinter / Entf direkt vor einem gesperrten Block
+      const block = topBlock(range.startContainer);
+      const back = e.inputType === 'deleteContentBackward';
+      const atEdge = back ? range.startOffset === 0 && isAtStart(block, range) : isAtEnd(block, range);
+      const neighbour = block && (back ? block.previousElementSibling : block.nextElementSibling);
+      if (atEdge && neighbour && neighbour.getAttribute('contenteditable') === 'false') { e.preventDefault(); return; }
+    }
+  }
+});
+
+function topBlock(node) {
+  while (node && node.parentNode !== root) node = node.parentNode;
+  return node;
+}
+function isAtStart(block, range) {
+  if (!block) return false;
+  const r = document.createRange(); r.selectNodeContents(block); r.setEnd(range.startContainer, range.startOffset);
+  return r.toString().length === 0;
+}
+function isAtEnd(block, range) {
+  if (!block) return false;
+  const r = document.createRange(); r.selectNodeContents(block); r.setStart(range.startContainer, range.startOffset);
+  return r.toString().length === 0;
+}
+
+// ------------------------------------------------------------------
+//  Aufgaben: wie in notizi am PC ein Kaestchen am Zeilenanfang,
+//  ☐ offen, ☑ erledigt (NoteTasks). Steht im Text - der PC liest es so.
+// ------------------------------------------------------------------
+const OPEN = '\u2610', DONE = '\u2611';
+
+/// Steht keine Schreibmarke im Text - etwa in einer neuen, noch leeren
+/// Notiz -, kommt sie ans Ende der letzten bearbeitbaren Zeile; gibt es keine,
+/// entsteht eine.
+function ensureCaret() {
+  root.focus({ preventScroll: true });
+  const sel = window.getSelection();
+  if (sel.rangeCount && root.contains(sel.anchorNode) && sel.anchorNode !== root) return;
+  let line = Array.from(root.children).reverse().find(c => c.getAttribute('contenteditable') !== 'false');
+  if (!line) { line = document.createElement('p'); root.appendChild(line); }
+  const r = document.createRange();
+  r.selectNodeContents(line);
+  r.collapse(false);
+  sel.removeAllRanges(); sel.addRange(r);
+}
+
+/// Die Zeile mit der Schreibmarke: Listeneintrag oder Absatz.
+function currentLine() {
+  ensureCaret();
+  const sel = window.getSelection();
+  if (!sel.rangeCount) return null;
+  let node = sel.getRangeAt(0).startContainer;
+  const block = topBlock(node);
+  if (!block || block.getAttribute('contenteditable') === 'false') return null;
+  while (node && node !== block && node.nodeName !== 'LI') node = node.parentNode;
+  return node && node.nodeName === 'LI' ? node : block;
+}
+
+function firstText(el) {
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  return walker.nextNode();
+}
+
+/// Kaestchen an den Zeilenanfang setzen - oder wieder entfernen.
+function toggleTask() {
+  root.focus();
+  const line = currentLine();
+  if (!line) return;
+  remember();
+  const sel = window.getSelection();
+  const text = firstText(line);
+  const r = document.createRange();
+  if (text) {
+    const m = text.nodeValue.match(/^\s*[\u2610\u2611]\s?/);
+    if (m) {
+      r.setStart(text, 0); r.setEnd(text, m[0].length);
+      sel.removeAllRanges(); sel.addRange(r);
+      document.execCommand('delete');
+      return;
+    }
+    r.setStart(text, 0);
+  } else {
+    r.setStart(line, 0);
+  }
+  r.collapse(true);
+  sel.removeAllRanges(); sel.addRange(r);
+  document.execCommand('insertText', false, OPEN + ' ');
+}
+
+/// Antippen des Kaestchens: offen <-> erledigt.
+root.addEventListener('click', e => {
+  const pos = document.caretRangeFromPoint ? document.caretRangeFromPoint(e.clientX, e.clientY) : null;
+  if (!pos || pos.startContainer.nodeType !== 3) return;
+  const t = pos.startContainer, value = t.nodeValue;
+  for (const i of [pos.startOffset, pos.startOffset - 1]) {
+    if (i < 0 || i >= value.length || (value[i] !== OPEN && value[i] !== DONE)) continue;
+    if (value.slice(0, i).trim() !== '') return;          // nur am Zeilenanfang
+    const block = topBlock(t);
+    if (!block || block.getAttribute('contenteditable') === 'false') return;
+    const r = document.createRange();
+    r.setStart(t, i); r.setEnd(t, i + 1);
+    const sel = window.getSelection();
+    sel.removeAllRanges(); sel.addRange(r);
+    document.execCommand('insertText', false, value[i] === OPEN ? DONE : OPEN);
+    return;
+  }
+});
+
+// ------------------------------------------------------------------
+//  Pinsel: Stil waehlen, dann mit einem Finger ueber den Text streichen.
+//  Zwei Finger scrollen und zoomen wie sonst.
+// ------------------------------------------------------------------
+let brush = null, paintFrom = null;
+
+/// Pinsel als JSON (Base64): { Bold, Italic, Underline, Strike, Fore, Marker, Eraser }.
+function setBrush(b64) {
+  brush = b64 ? JSON.parse(b64d(b64)) : null;
+  if (brush) {
+    // Keine Tastatur, solange gemalt wird.
+    root.setAttribute('inputmode', 'none');
+    if (document.activeElement) document.activeElement.blur();
+    // Ein Finger malt, zwei scrollen und zoomen - der Browser darf mit
+    // einem Finger nicht selbst schieben.
+    root.style.touchAction = 'pinch-zoom';
+  } else {
+    root.removeAttribute('inputmode');
+    root.style.touchAction = '';
+    clearPaintMark();
+  }
+}
+
+const paintMark = document.getElementById('paintmark');
+
+/// Zeigt, was der Strich gerade abdeckt - als eigene Kaesten, nicht als
+/// Auswahl. Eine Auswahl unter dem Finger haelt Android fuer das Ziehen
+/// einer Markierung: Es zeigt die Lupe und nimmt die Geste an sich.
+function showPaintMark(a, b) {
+  const range = document.createRange();
+  if (a.compareBoundaryPoints(Range.START_TO_START, b) <= 0) {
+    range.setStart(a.startContainer, a.startOffset); range.setEnd(b.startContainer, b.startOffset);
+  } else {
+    range.setStart(b.startContainer, b.startOffset); range.setEnd(a.startContainer, a.startOffset);
+  }
+  paintMark.innerHTML = '';
+  for (const r of range.getClientRects()) {
+    if (r.width < 1) continue;
+    const d = document.createElement('div');
+    d.style.left = (window.scrollX + r.left) + 'px';
+    d.style.top = (window.scrollY + r.top) + 'px';
+    d.style.width = r.width + 'px';
+    d.style.height = r.height + 'px';
+    paintMark.appendChild(d);
+  }
+}
+
+function clearPaintMark() { paintMark.innerHTML = ''; }
+
+/// Setzt der Pinsel ueberhaupt etwas? Ohne Wahl haelt er nur den Finger.
+function brushSets() { return !!brush && Object.keys(brush).some(k => brush[k]); }
+
+function caretAt(x, y) { return document.caretRangeFromPoint ? document.caretRangeFromPoint(x, y) : null; }
+
+function selectBetween(a, b) {
+  const range = document.createRange();
+  if (a.compareBoundaryPoints(Range.START_TO_START, b) <= 0) {
+    range.setStart(a.startContainer, a.startOffset); range.setEnd(b.startContainer, b.startOffset);
+  } else {
+    range.setStart(b.startContainer, b.startOffset); range.setEnd(a.startContainer, a.startOffset);
+  }
+  const sel = window.getSelection();
+  sel.removeAllRanges(); sel.addRange(range);
+}
+
+/// Auf ganze Woerter runden - mit dem Finger trifft man selten den Buchstaben.
+function snapToWords() {
+  const sel = window.getSelection();
+  if (!sel.rangeCount) return;
+  const r = sel.getRangeAt(0);
+  if (r.startContainer.nodeType === 3) {
+    const t = r.startContainer.nodeValue; let i = r.startOffset;
+    while (i > 0 && /\S/.test(t[i - 1])) i--;
+    r.setStart(r.startContainer, i);
+  }
+  if (r.endContainer.nodeType === 3) {
+    const t = r.endContainer.nodeValue; let i = r.endOffset;
+    while (i < t.length && /\S/.test(t[i])) i++;
+    r.setEnd(r.endContainer, i);
+  }
+  sel.removeAllRanges(); sel.addRange(r);
+}
+
+function applyBrush() {
+  const sel = window.getSelection();
+  if (!sel.rangeCount) return;
+  // Auf ganze Woerter - auch ein blosses Antippen trifft so das Wort.
+  snapToWords();
+  if (sel.isCollapsed) return;
+  remember();
+  root.focus({ preventScroll: true });
+  // Setzen, nicht umschalten: Schon fetter Text bleibt fett.
+  const set = name => { if (!document.queryCommandState(name)) document.execCommand(name); };
+  if (brush.Eraser) {
+    document.execCommand('removeFormat');
+    document.execCommand('hiliteColor', false, 'transparent');
+  } else {
+    if (brush.Bold) set('bold');
+    if (brush.Italic) set('italic');
+    if (brush.Underline) set('underline');
+    if (brush.Strike) set('strikeThrough');
+    if (brush.Fore) document.execCommand('foreColor', false, brush.Fore);
+    if (brush.Marker) document.execCommand('hiliteColor', false, brush.Marker);
+  }
+  sel.collapseToEnd();
+  if (document.activeElement) document.activeElement.blur();
+}
+
+let paintTo = null;
+
+root.addEventListener('touchstart', e => {
+  if (!brush || e.touches.length !== 1) { paintFrom = paintTo = null; clearPaintMark(); return; }
+  const t = e.touches[0];
+  const at = caretAt(t.clientX, t.clientY);
+  if (!at) return;
+  e.preventDefault();
+  paintFrom = paintTo = at;
+  clearPaintMark();
+}, { passive: false });
+
+root.addEventListener('touchmove', e => {
+  if (!brush || !paintFrom) return;
+  if (e.touches.length !== 1) { paintFrom = paintTo = null; clearPaintMark(); return; }   // zweiter Finger: scrollen
+  e.preventDefault();
+  const t = e.touches[0];
+  const at = caretAt(t.clientX, t.clientY);
+  if (!at) return;
+  paintTo = at;
+  showPaintMark(paintFrom, paintTo);
+}, { passive: false });
+
+root.addEventListener('touchend', () => {
+  if (!brush || !paintFrom) return;
+  const from = paintFrom, to = paintTo;
+  paintFrom = paintTo = null;
+  clearPaintMark();
+  if (!to || !brushSets()) return;
+  // Erst jetzt, mit dem Finger oben: auswaehlen und formatieren.
+  selectBetween(from, to);
+  applyBrush();
+});
+
+root.addEventListener('touchcancel', () => { paintFrom = paintTo = null; clearPaintMark(); });
+
+function cmd(name, value) {
+  ensureCaret();
+  remember();
+  document.execCommand(name, false, value || null);
+}
+
+// ------------------------------------------------------------------
+//  Ausrichtung: links / Mitte / rechts
+// ------------------------------------------------------------------
+
+let aligns = {};   // Blocknummer -> Ausrichtung fuer gesperrte Bildbloecke
+
+/// Richtet die Bloecke der Auswahl aus - oder, ist ein Bild angetippt,
+/// dessen Block. Ein gesperrter Block (Bild) bekommt die Angabe fuer die
+/// App, die sie im Originaltext setzt - wie die Bildgroesse. Andere
+/// gesperrte Bloecke (Tabellen) bleiben, wie sie sind.
+function align(value) {
+  let blocks = [];
+  if (sizeTarget) blocks = [topBlock(sizeTarget)];
+  else {
+    ensureCaret();
+    const sel = window.getSelection();
+    if (!sel.rangeCount) return;
+    const r = sel.getRangeAt(0);
+    const first = topBlock(r.startContainer), last = topBlock(r.endContainer);
+    for (let n = first; n; n = n.nextElementSibling) { blocks.push(n); if (n === last) break; }
+  }
+  remember();
+  blocks.forEach(block => {
+    if (!block || block.nodeType !== 1) return;
+    const locked = block.getAttribute('contenteditable') === 'false';
+    if (locked && (!block.querySelector('img') || block.querySelector('table'))) return;
+    block.style.textAlign = value === 'left' ? '' : value;
+    if (!block.getAttribute('style')) block.removeAttribute('style');
+    if (locked && block.hasAttribute('data-i')) aligns[block.getAttribute('data-i')] = value;
+  });
+  placeResizer();
+}
+
+// XHTML schreiben, wie notizi es liest: Leerelemente geschlossen, Text und
+// Attribute maskiert, ohne die Hilfsattribute dieses Editors.
+const VOID = new Set(['br', 'img', 'hr', 'col']);
+const esc = t => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const escA = t => esc(t).replace(/"/g, '&quot;');
+function ser(n) {
+  if (n.nodeType === 3) return esc(n.nodeValue);
+  if (n.nodeType !== 1) return '';
+  if (n.hasAttribute('data-ui')) return '';   // Kopierknopf und Aehnliches
+  const tag = n.tagName.toLowerCase();
+  let a = '';
+  const blob = n.getAttribute('data-blob');
+  for (const at of n.attributes) {
+    if (at.name === 'data-i' || at.name === 'contenteditable' || at.name === 'class'
+        || at.name === 'data-blob' || at.name === 'data-attachment' || at.name === 'data-pad'
+        || (tag === 'img' && at.name === 'style')) continue;
+    const value = at.name === 'src' && blob ? 'blob:' + blob : at.value;
+    a += ' ' + at.name + '="' + escA(value) + '"';
+  }
+  if (VOID.has(tag)) return '<' + tag + a + '/>';
+  const kids = Array.from(n.childNodes);
+  // Der Platzhalter-Umbruch, den der Browser in leere Absaetze setzt
+  if ((tag === 'p' || tag === 'li') && kids.length && kids[kids.length - 1].nodeName === 'BR') kids.pop();
+  return '<' + tag + a + '>' + kids.map(ser).join('') + '</' + tag + '>';
+}
+
+// ------------------------------------------------------------------
+//  Zeichnen - neu, oder in ein vorhandenes Bild (lange darauf druecken)
+// ------------------------------------------------------------------
+const draw = document.getElementById('draw');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+let strokes = [], current = null, penColor = '#111111', penWidth = 3, drawing = '', savedRange = null;
+let editTarget = null, background = null, fit = null;   // fit: wo das Bild auf der Flaeche steht (CSS-Pixel)
+let swaps = {};   // Blocknummer -> [[alterBlob, neuerBlob], ...] fuer bearbeitete Bilder in gesperrten Bloecken
+
+// Ansicht der Malflaeche: zwei Finger vergroessern und verschieben, ein
+// Finger malt. Die Striche liegen in Flaechenkoordinaten (Massstab 1) - die
+// Ansicht ist nur Darstellung; was herauskommt, haengt nicht von ihr ab.
+let view = { s: 1, x: 0, y: 0 };
+const fingers = new Map();      // pointerId -> [x, y] auf dem Schirm
+let pinch = null;               // { d, m, v } beim Ansetzen der zwei Finger
+let pinched = false;            // bis alle Finger weg sind, wird nicht gemalt
+
+/// Der App sagen, dass gemalt wird - sie blendet dann ihre Knoepfe aus,
+/// damit nichts versehentlich die Notiz statt des Bilds trifft.
+function drawMode(on) { location.href = 'notizi://drawmode/' + (on ? 'on' : 'off'); }
+/// <param name="keepTarget">Beim Fertigstellen: Das bearbeitete Bild muss
+/// bleiben, bis die App die Zeichnung abgelegt hat (finishDrawing) - sonst
+/// kaeme sie als neues Bild dazu, statt das alte zu ersetzen.</param>
+function closeDraw(signal, keepTarget) {
+  draw.classList.remove('on');
+  if (!keepTarget) editTarget = null;
+  fingers.clear(); pinch = null; pinched = false; current = null;
+  if (signal) drawMode(false);
+}
+
+function startDrawing(img) {
+  // Ein Bild ohne geladenen Inhalt laesst sich nicht bearbeiten.
+  if (img && !img.getAttribute('data-blob')) return;
+  editTarget = img || null;
+  background = null;
+  if (!editTarget) {
+    // Wo die Zeichnung hin soll: hinter den Absatz mit der Schreibmarke.
+    const sel = window.getSelection();
+    savedRange = sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
+  }
+  root.blur();
+  // Ein vorhandenes Bild laesst sich hier auch ganz entfernen.
+  document.getElementById('remove').style.display = editTarget ? '' : 'none';
+  draw.classList.add('on');
+  drawMode(true);
+  view = { s: 1, x: 0, y: 0 };
+  const r = canvas.getBoundingClientRect();
+  canvas.width = Math.round(r.width * devicePixelRatio);
+  canvas.height = Math.round(r.height * devicePixelRatio);
+  strokes = [];
+  fit = null;
+  if (editTarget) {
+    background = new Image();
+    // Eingepasst und mittig - die Zeichnung entsteht aber in der vollen
+    // Aufloesung des Bilds (siehe Fertig).
+    background.onload = () => fitToCanvas();
+    background.src = editTarget.getAttribute('src');
+  }
+  redraw();
+}
+
+/// Die Flaeche richtet sich nach dem Fenster - blendet die App beim Malen
+/// ihre Leisten aus, wird sie groesser. Dann den Puffer neu anlegen und das
+/// Bild neu einpassen; die Striche wandern mit dem Bild mit, sonst laegen sie
+/// gestreckt und versetzt.
+function fitToCanvas() {
+  const r = canvas.getBoundingClientRect();
+  if (r.width < 2 || r.height < 2) return;
+  canvas.width = Math.round(r.width * devicePixelRatio);
+  canvas.height = Math.round(r.height * devicePixelRatio);
+  if (background && background.naturalWidth) {
+    const s = Math.min(r.width / background.naturalWidth, r.height / background.naturalHeight);
+    const w = background.naturalWidth * s, h = background.naturalHeight * s;
+    const next = { x: (r.width - w) / 2, y: (r.height - h) / 2, w: w, h: h };
+    if (fit) {
+      const k = next.w / fit.w;
+      for (const st of strokes) {
+        st.p = st.p.map(([x, y]) => [next.x + (x - fit.x) * k, next.y + (y - fit.y) * k]);
+        st.w *= k;
+      }
+    }
+    fit = next;
+  }
+  redraw();
+}
+new ResizeObserver(() => { if (draw.classList.contains('on')) fitToCanvas(); }).observe(canvas);
+
+function redraw() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  const d = devicePixelRatio;
+  ctx.setTransform(d * view.s, 0, 0, d * view.s, d * view.x, d * view.y);
+  if (background && fit) ctx.drawImage(background, fit.x, fit.y, fit.w, fit.h);
+  paintStrokes(ctx, 0, 0, 1, 1);
+}
+
+/// Striche zeichnen, verschoben um (ox, oy) und gestreckt um (sx, sy).
+function paintStrokes(c, ox, oy, sx, sy) {
+  c.lineCap = 'round'; c.lineJoin = 'round';
+  for (const s of strokes) {
+    c.strokeStyle = s.c; c.lineWidth = s.w * sx;
+    c.beginPath();
+    s.p.forEach((pt, i) => {
+      const x = (pt[0] - ox) * sx, y = (pt[1] - oy) * sy;
+      i ? c.lineTo(x, y) : c.moveTo(x, y);
+    });
+    if (s.p.length === 1) c.lineTo((s.p[0][0] - ox) * sx + 0.1, (s.p[0][1] - oy) * sy);
+    c.stroke();
+  }
+}
+
+function screen(e) { const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; }
+/// Bildschirm -> Flaechenkoordinaten (Massstab 1).
+function point(e) { const [x, y] = screen(e); return [(x - view.x) / view.s, (y - view.y) / view.s]; }
+function pinchState() {
+  const [a, b] = Array.from(fingers.values());
+  return { d: Math.hypot(a[0] - b[0], a[1] - b[1]) || 1, m: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] };
+}
+
+canvas.addEventListener('pointerdown', e => {
+  canvas.setPointerCapture(e.pointerId);
+  fingers.set(e.pointerId, screen(e));
+  if (fingers.size >= 2) {
+    // Zweiter Finger: kein Strich - der eben begonnene war keiner.
+    if (current) { strokes.splice(strokes.indexOf(current), 1); current = null; }
+    pinch = { ...pinchState(), v: { ...view } };
+    pinched = true;
+    redraw();
+    return;
+  }
+  if (pinched) return;
+  current = { c: penColor, w: penWidth / view.s, p: [point(e)] };
+  strokes.push(current);
+  redraw();
+});
+canvas.addEventListener('pointermove', e => {
+  if (!fingers.has(e.pointerId)) return;
+  fingers.set(e.pointerId, screen(e));
+  if (pinch && fingers.size >= 2) {
+    // Vergroessern um den Punkt zwischen den Fingern, verschieben mit ihnen.
+    const now = pinchState();
+    const s = Math.min(8, Math.max(1, pinch.v.s * now.d / pinch.d));
+    const bx = (pinch.m[0] - pinch.v.x) / pinch.v.s, by = (pinch.m[1] - pinch.v.y) / pinch.v.s;
+    view = { s: s, x: now.m[0] - bx * s, y: now.m[1] - by * s };
+    if (s === 1) view = { s: 1, x: 0, y: 0 };
+    redraw();
+    return;
+  }
+  if (current) { current.p.push(point(e)); redraw(); }
+});
+function lift(e) {
+  fingers.delete(e.pointerId);
+  if (fingers.size < 2) pinch = null;
+  if (fingers.size === 0) { pinched = false; current = null; }
+}
+canvas.addEventListener('pointerup', lift);
+canvas.addEventListener('pointercancel', lift);
+
+document.querySelectorAll('#draw .color').forEach(b => b.onclick = () => {
+  penColor = b.dataset.c;
+  document.querySelectorAll('#draw .color').forEach(x => x.classList.toggle('on', x === b));
+});
+document.querySelectorAll('#draw .width').forEach(b => b.onclick = () => {
+  penWidth = +b.dataset.w;
+  document.querySelectorAll('#draw .width').forEach(x => x.classList.toggle('on', x === b));
+});
+document.getElementById('undo').onclick = () => { strokes.pop(); redraw(); };
+document.getElementById('clear').onclick = () => { strokes = []; redraw(); };
+document.getElementById('cancel').onclick = () => closeDraw(true);
+
+/// Das Bild entfernen. Steht es allein in seinem Block, geht der Block mit;
+/// sonst bleibt der Rest als geaenderter Block. Der Abgleich nimmt das hin:
+/// Ein gesperrter Block darf fehlen, veraendert werden darf er nicht.
+document.getElementById('remove').onclick = () => {
+  const img = editTarget;
+  closeDraw(true);
+  if (!img) return;
+  const block = topBlock(img);
+  img.remove();
+  if (!block) return;
+  if (!block.textContent.trim() && !block.querySelector('img')) {
+    const next = block.nextElementSibling;
+    block.remove();
+    if (next) placeCaret(next, true);
+  } else {
+    block.removeAttribute('data-i');
+    if (!block.querySelector('img')) block.removeAttribute('contenteditable');
+  }
+};
+document.getElementById('done').onclick = () => {
+  if (!strokes.length) { closeDraw(true); return; }
+
+  let out, w, h;
+  if (editTarget && background && fit) {
+    // In das Bild: volle Aufloesung des Originals, Striche hochgerechnet.
+    // Was ueber das Bild hinaus gemalt wurde, gehoert dazu - das Bild waechst
+    // dann um diesen Rand (weiss), wie es auf der Flaeche zu sehen war.
+    const nw = background.naturalWidth, nh = background.naturalHeight;
+    const k = nw / fit.w;
+    let x0 = fit.x, y0 = fit.y, x1 = fit.x + fit.w, y1 = fit.y + fit.h;
+    for (const st of strokes) for (const [x, y] of st.p) {
+      x0 = Math.min(x0, x - st.w); y0 = Math.min(y0, y - st.w); x1 = Math.max(x1, x + st.w); y1 = Math.max(y1, y + st.w);
+    }
+    const ow = Math.round((x1 - x0) * k), oh = Math.round((y1 - y0) * k);
+    out = document.createElement('canvas');
+    out.width = ow; out.height = oh;
+    const c = out.getContext('2d');
+    c.fillStyle = '#fff'; c.fillRect(0, 0, ow, oh);
+    c.drawImage(background, Math.round((fit.x - x0) * k), Math.round((fit.y - y0) * k), nw, nh);
+    paintStrokes(c, x0, y0, k, k);
+    // In der Notiz: so gross wie bisher - um den neuen Rand groesser.
+    const ew = parseFloat(editTarget.getAttribute('width')) || fit.w;
+    const eh = parseFloat(editTarget.getAttribute('height')) || fit.h;
+    w = Math.round(ew * (x1 - x0) / fit.w); h = Math.round(eh * (y1 - y0) / fit.h);
+  } else {
+    // Neue Zeichnung: auf das Gemalte zuschneiden, mit etwas Rand.
+    let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+    for (const s of strokes) for (const [x, y] of s.p) {
+      x0 = Math.min(x0, x - s.w); y0 = Math.min(y0, y - s.w); x1 = Math.max(x1, x + s.w); y1 = Math.max(y1, y + s.w);
+    }
+    // Unabhaengig von der Ansicht: die Striche selbst, auf weissem Grund.
+    x0 -= 12; y0 -= 12; x1 += 12; y1 += 12;
+    w = Math.max(1, Math.round(x1 - x0)); h = Math.max(1, Math.round(y1 - y0));
+    out = document.createElement('canvas');
+    const d = devicePixelRatio;
+    out.width = Math.round(w * d); out.height = Math.round(h * d);
+    const c = out.getContext('2d');
+    c.fillStyle = '#fff'; c.fillRect(0, 0, out.width, out.height);
+    c.setTransform(d, 0, 0, d, -x0 * d, -y0 * d);
+    paintStrokes(c, 0, 0, 1, 1);
+    // Groesse in der Notiz in den Einheiten vom PC: so viel vom Text breit
+    // wie hier vom Bildschirm.
+    const k = REF / Math.max(1, root.clientWidth);
+    w = Math.round(w * k); h = Math.round(h * k);
+  }
+
+  drawing = JSON.stringify({ png: out.toDataURL('image/png').split(',')[1], w: w, h: h });
+  closeDraw(false, true);
+  location.href = 'notizi://drawing';   // die App holt sie mit takeDrawing() - und zeigt ihre Knoepfe wieder
+};
+
+function takeDrawing() { return b64e(drawing); }
+
+// ------------------------------------------------------------------
+//  Bilder einfuegen - aus der Zwischenablage oder ueber die App (Galerie)
+// ------------------------------------------------------------------
+
+/// Bild als neuen Block hinter den Absatz mit der Schreibmarke - ueber
+/// denselben Weg wie eine Zeichnung: Die App legt die Bytes ab und meldet
+/// den Blobnamen (finishDrawing).
+function offerPicture(dataUrl) {
+  const img = new Image();
+  img.onload = () => {
+    // In der Notiz hoechstens so breit wie der Text am PC (REF) - hier dann
+    // die volle Breite.
+    const w = Math.min(img.naturalWidth, REF);
+    const h = Math.round(img.naturalHeight * w / img.naturalWidth);
+    const sel = window.getSelection();
+    savedRange = sel.rangeCount ? sel.getRangeAt(0).cloneRange() : savedRange;
+    editTarget = null;
+    drawing = JSON.stringify({ png: dataUrl.split(',')[1], w: w, h: h, uri: dataUrl });
+    location.href = 'notizi://drawing';
+  };
+  img.src = dataUrl;
+}
+
+root.addEventListener('paste', e => {
+  const items = e.clipboardData ? Array.from(e.clipboardData.items) : [];
+  const picture = items.find(i => i.kind === 'file' && i.type.startsWith('image/'));
+  if (!picture) return;               // Text: wie gewohnt
+  e.preventDefault();
+  const reader = new FileReader();
+  reader.onload = () => offerPicture(reader.result);
+  reader.readAsDataURL(picture.getAsFile());
+});
+
+/// Von der App: ein Bild aus der Galerie (Base64 ohne Kopf, mit Typ).
+function insertPicture(b64, type) { offerPicture('data:' + type + ';base64,' + b64); }
+
+// Lange auf ein Bild druecken: hineinzeichnen.
+let pressTimer = null, pressAt = null;
+root.addEventListener('contextmenu', e => {
+  const img = e.target.closest ? e.target.closest('img') : null;
+  if (!img) return;
+  e.preventDefault();
+  clearTimeout(pressTimer);
+  startDrawing(img);
+});
+root.addEventListener('touchstart', e => {
+  const img = e.target.closest ? e.target.closest('img') : null;
+  if (!img || e.touches.length !== 1) return;
+  pressAt = [e.touches[0].clientX, e.touches[0].clientY];
+  pressTimer = setTimeout(() => startDrawing(img), 650);
+}, { passive: true });
+root.addEventListener('touchmove', e => {
+  if (!pressTimer || !pressAt) return;
+  const t = e.touches[0];
+  if (Math.hypot(t.clientX - pressAt[0], t.clientY - pressAt[1]) > 10) { clearTimeout(pressTimer); pressTimer = null; }
+}, { passive: true });
+root.addEventListener('touchend', () => { clearTimeout(pressTimer); pressTimer = null; });
+
+// ------------------------------------------------------------------
+//  Schreibmarke neben und unter Bildern
+// ------------------------------------------------------------------
+
+/// Schreibmarke an den Anfang (oder ans Ende) eines Blocks.
+function placeCaret(block, atStart) {
+  root.focus({ preventScroll: true });
+  const r = document.createRange();
+  r.selectNodeContents(block);
+  r.collapse(!!atStart);
+  const sel = window.getSelection();
+  sel.removeAllRanges(); sel.addRange(r);
+}
+
+/// Hinter einem gesperrten Block (Bild, Tabelle) eine Zeile zum Schreiben:
+/// die naechste, wenn sie bearbeitbar ist, sonst eine neue, leere. Bleibt
+/// die leer, wird sie nicht gespeichert (data-pad).
+function lineAfter(block) {
+  const next = block.nextElementSibling;
+  if (next && next.getAttribute('contenteditable') !== 'false' && !isCode(next)) return next;
+  const p = document.createElement('p');
+  p.setAttribute('data-pad', '1');
+  p.appendChild(document.createElement('br'));
+  block.after(p);
+  return p;
+}
+
+/// Tippen neben ein Bild, unter das letzte oder in den leeren Rest der
+/// Seite: Die Schreibmarke kommt in die Zeile dahinter. Gesperrte Bloecke
+/// nehmen selbst keine Schreibmarke an. Langes Druecken auf ein Bild
+/// (Zeichnen) bleibt davon unberuehrt.
+document.addEventListener('click', e => {
+  if (root.getAttribute('contenteditable') === 'false' || draw.classList.contains('on')) return;
+  if (e.target.closest && e.target.closest('#resizer')) return;
+  const tapped = e.target.closest ? e.target.closest('#root img') : null;
+  if (tapped && tapped.getAttribute('data-blob')) { showSizes(tapped); return; }
+  hideSizes();
+  if (e.target.closest && e.target.closest('[data-attachment]')) return;
+  let block = null;
+  if (e.target === root || e.target === document.body || e.target === document.documentElement) {
+    // Unter dem letzten Block oder daneben: der Block auf dieser Hoehe, sonst der letzte.
+    const kids = Array.from(root.children);
+    block = kids.find(k => { const b = k.getBoundingClientRect(); return e.clientY >= b.top && e.clientY <= b.bottom; })
+         || kids[kids.length - 1];
+    // Unter einem Codeblock (oder Bild): eine Zeile dahinter - nicht in den Code.
+    if (block && block.getAttribute('contenteditable') !== 'false' && !isCode(block)) {
+      if (e.target !== root) placeCaret(block, false);
+      return;
+    }
+  } else {
+    const hit = topBlock(e.target);
+    if (hit && hit.getAttribute('contenteditable') === 'false') block = hit;
+  }
+  if (!block) return;
+  placeCaret(lineAfter(block), true);
+});
+
+// Nach rechts wischen: zurueck zur Liste. Nur ein zuegiger, klar
+// waagrechter Wisch mit einem Finger - nicht beim Malen mit dem Pinsel,
+// nicht auf der Malflaeche, nicht vergroessert (da verschiebt der Finger
+// die Ansicht) und nicht in Tabellen oder Codebloecken, die sich seitlich
+// rollen lassen.
+let swipeFrom = null;
+function scrollsSideways(el) {
+  for (; el && el !== document.body; el = el.parentElement)
+    if (el.scrollWidth > el.clientWidth + 2 && getComputedStyle(el).overflowX !== 'visible') return true;
+  return false;
+}
+document.addEventListener('touchstart', e => {
+  swipeFrom = null;
+  if (e.touches.length !== 1 || brush || draw.classList.contains('on')) return;
+  if (e.target.closest && e.target.closest('#resizer')) return;   // Bildgroesse ziehen, nicht zurueck
+  if (window.visualViewport && window.visualViewport.scale > 1.05) return;
+  if (scrollsSideways(e.target)) return;
+  swipeFrom = { x: e.touches[0].clientX, y: e.touches[0].clientY, t: Date.now() };
+}, { passive: true });
+document.addEventListener('touchmove', e => { if (e.touches.length !== 1) swipeFrom = null; }, { passive: true });
+document.addEventListener('touchend', e => {
+  if (!swipeFrom) return;
+  const t = e.changedTouches[0];
+  const dx = t.clientX - swipeFrom.x, dy = Math.abs(t.clientY - swipeFrom.y);
+  const fast = Date.now() - swipeFrom.t < 500;
+  swipeFrom = null;
+  if (fast && dx > 90 && dy < dx / 3) location.href = 'notizi://back';
+});
+
+// Die App hat das Bild abgelegt und nennt seinen Blobnamen.
+function finishDrawing(name) {
+  remember();
+  const d = JSON.parse(drawing);
+  const uri = d.uri || 'data:image/png;base64,' + d.png;
+  drawing = '';
+
+  if (editTarget) {
+    // Bild ersetzen. Steht es in einem gesperrten Block, merkt sich der
+    // Editor nur den Tausch - die App setzt dann im Originaltext des Blocks
+    // genau diesen einen Verweis um, sonst bleibt er Zeichen fuer Zeichen.
+    const old = editTarget.getAttribute('data-blob');
+    editTarget.setAttribute('src', uri);
+    editTarget.setAttribute('data-blob', name);
+    if (d.w && d.h) { editTarget.setAttribute('width', d.w); editTarget.setAttribute('height', d.h); }
+    const block = topBlock(editTarget);
+    const i = block && block.hasAttribute('data-i') ? parseInt(block.getAttribute('data-i')) : -1;
+    if (i >= 0 && old) (swaps[i] = swaps[i] || []).push([old, name, String(d.w || ''), String(d.h || '')]);
+    editTarget = null;
+    fitImages();
+    return;
+  }
+
+  const block = document.createElement('div');
+  block.setAttribute('data-block', 'image');
+  block.setAttribute('contenteditable', 'false');
+  const img = document.createElement('img');
+  img.setAttribute('src', uri);
+  img.setAttribute('data-blob', name);
+  img.setAttribute('width', d.w);
+  img.setAttribute('height', d.h);
+  block.appendChild(img);
+
+  const after = savedRange ? topBlock(savedRange.startContainer) : null;
+  if (after && after.parentNode === root) after.after(block); else root.appendChild(block);
+  // Dahinter ein leerer Absatz, damit man weiterschreiben kann.
+  const p = document.createElement('p'); p.appendChild(document.createElement('br'));
+  block.after(p);
+  fitImages();
+}
+
+// Der Browser setzt eine Liste gern in den Absatz, aus dem sie entstand -
+// <p><ul>…</ul></p>. Das ist kein gueltiges HTML; notizi laese daraus
+// Text, und beim naechsten Laden ginge die Liste verloren. Vor dem
+// Speichern deshalb: Bloecke in einem Absatz werden eigene Bloecke.
+const BLOCKS = new Set(['UL', 'OL', 'TABLE', 'DIV', 'P', 'PRE', 'BLOCKQUOTE', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6']);
+function liftBlocks() {
+  for (const p of Array.from(root.children)) {
+    if (p.nodeName !== 'P' || !Array.from(p.children).some(c => BLOCKS.has(c.nodeName))) continue;
+    let run = null;
+    const parts = [];
+    for (const child of Array.from(p.childNodes)) {
+      if (child.nodeType === 1 && BLOCKS.has(child.nodeName)) {
+        run = null;
+        parts.push(child);
+      } else {
+        if (!run) {
+          run = p.cloneNode(false);
+          run.removeAttribute('data-i');
+          parts.push(run);
+        }
+        run.appendChild(child);
+      }
+    }
+    for (const part of parts) {
+      // Nur Leerraum: kein eigener Absatz
+      if (part.nodeName === 'P' && part !== p && !part.textContent.trim() && !part.querySelector('img,br')) continue;
+      p.before(part);
+    }
+    p.remove();
+  }
+}
+
+function getContent() {
+  liftBlocks();
+  const used = new Set();
+  const blocks = [];
+  for (const node of Array.from(root.childNodes)) {
+    if (node.nodeType === 3) {
+      if (node.nodeValue.trim()) blocks.push({ html: '<p>' + esc(node.nodeValue) + '</p>' });
+      continue;
+    }
+    if (node.nodeType !== 1) continue;
+    if (node.hasAttribute('data-pad') && !node.textContent.trim() && !node.querySelector('img')) continue;
+    const i = node.hasAttribute('data-i') ? parseInt(node.getAttribute('data-i')) : -1;
+    if (i >= 0 && !used.has(i) && (protectedFlags[i] || ser(node) === ser0[i] || swaps[i])) {
+      used.add(i);
+      blocks.push({ i: i, swaps: swaps[i] || [], align: aligns[i] });
+    } else {
+      if (i >= 0) used.add(i);
+      blocks.push({ html: ser(node) });
+    }
+  }
+  return b64e(JSON.stringify({ blocks: blocks, plain: root.innerText }));
+}
+</script>
+</body>
+</html>

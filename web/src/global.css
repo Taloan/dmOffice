@@ -1,0 +1,67 @@
+* { box-sizing: border-box; }
+body { font-family: 'Segoe UI', 'Segoe UI Web (West European)', -apple-system, BlinkMacSystemFont, Roboto, 'Helvetica Neue', sans-serif; }
+
+/* Rollbalken schmal wie in Outlook */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: rgba(128, 128, 128, .35); border-radius: 5px; border: 2px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background-color: rgba(128, 128, 128, .55); }
+* { scrollbar-width: thin; }
+
+.dm-editor { outline: none; min-height: 100%; line-height: 1.5; word-wrap: break-word; }
+.dm-editor p { margin: 0 0 4px; }
+.dm-editor blockquote { margin: 0 0 0 8px; padding-left: 10px; border-left: 3px solid rgba(128, 128, 128, .5); }
+.dm-editor img { max-width: 100%; }
+.dm-editor table { border-collapse: collapse; }
+.dm-editor td, .dm-editor th { border: 1px solid rgba(128, 128, 128, .4); padding: 3px 6px; vertical-align: top; }
+.dm-editor [contenteditable="false"] { border-left: 3px solid rgba(128, 128, 128, .45); padding-left: 6px; margin: 4px 0; overflow-x: auto; cursor: default; }
+/* Codebloecke wie in notizi: feste Schrittweite auf durchscheinendem Grau */
+.dm-editor p[style*="Consolas"], .dm-editor p[style*="Courier"] { font-family: Consolas, 'Cascadia Mono', monospace !important; white-space: pre-wrap;
+  border-radius: 4px; font-size: 0.92em; }
+
+/* FullCalendar an Fluent anpassen */
+.fc { --fc-border-color: var(--colorNeutralStroke2); --fc-page-bg-color: var(--colorNeutralBackground1);
+      --fc-neutral-bg-color: var(--colorNeutralBackground3); --fc-today-bg-color: var(--colorBrandBackground2);
+      --fc-now-indicator-color: var(--colorPaletteRedBorder2); --fc-event-border-color: transparent;
+      --fc-list-event-hover-bg-color: var(--colorNeutralBackground1Hover); --fc-non-business-color: var(--colorNeutralBackground2);
+      font-size: 13px; color: var(--colorNeutralForeground1); }
+.fc .fc-col-header-cell-cushion, .fc .fc-daygrid-day-number { color: var(--colorNeutralForeground2); text-decoration: none; font-weight: 400; }
+.fc .fc-timegrid-slot { height: 2.2em; }
+.fc .fc-timegrid-slot-label-cushion { color: var(--colorNeutralForeground3); font-size: 11px; }
+.fc .fc-event { border-radius: 4px; padding: 1px 3px; cursor: pointer; }
+.fc .fc-daygrid-event-dot { display: none; }
+.fc .fc-daygrid-day.dm-offday { background: var(--fc-non-business-color); }
+.fc .fc-daygrid .fc-non-business { display: none; }
+.fc-theme-standard .fc-scrollgrid { border: none; }
+.fc .fc-list-day-cushion { background: var(--colorNeutralBackground3); }
+.fc .fc-highlight { background: var(--colorBrandBackground2); }
+
+/* Notizen: Schwarz bzw. Weiss aus notizi an das Theme anpassen, sonst verschwindet der Text auf neutralem Grund */
+.dm-paper-dark .dm-editor [style*="color:#000000" i], .dm-paper-dark .dm-editor [style*="color: #000000" i],
+.dm-paper-dark .dm-editor [style*="color:#000;" i], .dm-paper-dark .dm-editor [style*="color: rgb(0, 0, 0)"],
+.dm-paper-dark .dm-editor [style*="color:black" i] { color: inherit !important; }
+.dm-paper-light .dm-editor [style*="color:#FFFFFF" i], .dm-paper-light .dm-editor [style*="color: #FFFFFF" i],
+.dm-paper-light .dm-editor [style*="color: rgb(255, 255, 255)"], .dm-paper-light .dm-editor [style*="color:white" i] { color: inherit !important; }
+/* Zu schwach abgesetzte Schriftfarbe aus notizi: nur fuer die Anzeige normale Schrift */
+.dm-editor [data-dm-contrast], .dm-editor [data-dm-contrast] * { color: inherit !important; }
+
+/* Aufgaben im Kalender: Rahmen in der Listenfarbe, Kaestchen zum Abhaken */
+.fc .dm-task { border-width: 1px 1px 1px 3px !important; color: var(--colorNeutralForeground1) !important; background: var(--colorNeutralBackground1) !important; }
+.fc .dm-task-done { opacity: .55; text-decoration: line-through; }
+.dm-task-check { cursor: pointer; font-size: 1.1em; line-height: 1; }
+
+/* Installierte App mit "Window Controls Overlay" (Chrome/Edge am Desktop): keine eigene Titelleiste,
+   die Kopfleiste ist die Titelleiste. Sie zieht das Fenster, rechts bleibt Platz fuer Minimieren/Maximieren/Schliessen.
+   Die Klasse dm-wco und die Masse setzt pwa.ts - nur wenn der Browser brauchbare Werte liefert. */
+.dm-wco .dm-titlebar {
+  app-region: drag; -webkit-app-region: drag;
+  height: max(48px, var(--tb-height, 0px)) !important;
+  padding-left: calc(var(--tb-left, 0px) + 12px) !important;
+  padding-right: calc(var(--tb-right, 0px) + 8px) !important;
+}
+.dm-wco .dm-titlebar button, .dm-wco .dm-titlebar a, .dm-wco .dm-titlebar input, .dm-wco .dm-titlebar [role="button"] { app-region: no-drag; -webkit-app-region: no-drag; }
+
+
+/* Installierte App mit eigener Titelleiste (z. B. Vivaldi): dort steht "dmOffice" schon - nicht doppelt */
+.dm-app:not(.dm-wco) .dm-brand-name { display: none; }
+/* Ueberlagerungen (Hinweis "Neue Version") nie als Ziehflaeche des Fensters - sonst nicht klickbar */
+.dm-nodrag, .dm-nodrag * { app-region: no-drag; -webkit-app-region: no-drag; }

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ic_launcher_background">#7B1DD3</color>
+    <color name="brand">#7B1DD3</color>
+    <!-- anthracite(0x1C) aus ui/Theme.kt -->
+    <color name="anthracite_background">#1A1B22</color>
+</resources>

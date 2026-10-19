@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Was notizi auf Windows und eine spaetere App auf Android gemeinsam
+       brauchen: das Format des Abgleichordners, seine Verschluesselung, die
+       Transporte (Ordner, WebDAV) und den Abgleich selbst. Ohne WPF und ohne
+       Windows-Abhaengigkeit - deshalb net8.0 schlicht, siehe
+       docs/konzept-sync.md, Abschnitt 8. -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>Notizi</RootNamespace>
+    <AssemblyName>Notizi.Core</AssemblyName>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+</Project>
