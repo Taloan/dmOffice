@@ -78,7 +78,7 @@ jobs:
         run: |
           echo "sdk.dir=$ANDROID_HOME" > local.properties
           bash ./gradlew --no-daemon :app:assembleRelease -PappVersion="$VERSION"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: apk-unsigned
           path: apps/mobile/app/build/outputs/apk/release/app-release-unsigned.apk
@@ -116,7 +116,7 @@ jobs:
           "$tools/apksigner" verify "out/dmOffice-$VERSION.apk"
           rm -f out/aligned.apk "$RUNNER_TEMP/dmoffice.jks"
           if [ -n "$TAG" ]; then cp "out/dmOffice-$VERSION.apk" out/dmOffice.apk; fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dmOffice-apk
           path: out/*.apk
