@@ -9,24 +9,24 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@fluentui/react-components": "9.74.9",
+    "@fluentui/react-components": "9.74.10",
     "@fluentui/react-icons": "2.0.344",
-    "@fullcalendar/core": "6.1.22",
+    "@fullcalendar/core": "7.1.3",
     "@fullcalendar/daygrid": "6.1.22",
     "@fullcalendar/interaction": "6.1.22",
     "@fullcalendar/list": "6.1.22",
-    "@fullcalendar/react": "6.1.22",
+    "@fullcalendar/react": "7.1.3",
     "@fullcalendar/timegrid": "6.1.22",
-    "@types/qrcode": "^1.5.5",
+    "@types/qrcode": "^1.5.6",
     "qrcode": "^1.5.4",
-    "react": "18.3.1",
-    "react-dom": "18.3.1"
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
   },
   "devDependencies": {
-    "@types/react": "18.3.31",
-    "@types/react-dom": "18.3.7",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.1.2",
-    "typescript": "5.9.3",
+    "typescript": "7.0.2",
     "vite": "8.3.4"
   }
 }
