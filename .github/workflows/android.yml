@@ -43,14 +43,14 @@ jobs:
       run:
         working-directory: apps/mobile
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '17'
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
       - name: version
         id: version
         env:
@@ -78,7 +78,7 @@ jobs:
         run: |
           echo "sdk.dir=$ANDROID_HOME" > local.properties
           bash ./gradlew --no-daemon :app:assembleRelease -PappVersion="$VERSION"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: apk-unsigned
           path: apps/mobile/app/build/outputs/apk/release/app-release-unsigned.apk
@@ -92,7 +92,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: apk-unsigned
           path: in
@@ -116,13 +116,13 @@ jobs:
           "$tools/apksigner" verify "out/dmOffice-$VERSION.apk"
           rm -f out/aligned.apk "$RUNNER_TEMP/dmoffice.jks"
           if [ -n "$TAG" ]; then cp "out/dmOffice-$VERSION.apk" out/dmOffice.apk; fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dmOffice-apk
           path: out/*.apk
       # Attach to the release of this tag (if it exists already, title and text are kept)
       - if: needs.build.outputs.tag != ''
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.build.outputs.tag }}
           files: out/*.apk
