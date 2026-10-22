@@ -11,7 +11,7 @@
   <ItemGroup>
     <PackageReference Include="MailKit" Version="4.18.1" />
     <PackageReference Include="HtmlSanitizer" Version="9.2.1039" />
-    <PackageReference Include="Ical.Net" Version="4.3.1" />
+    <PackageReference Include="Ical.Net" Version="5.2.3" />
     <!-- Volltextsuche (Search/TextExtract.cs): Text aus PDF (Apache-2.0) und Office-Dateien (MIT) -->
     <PackageReference Include="PdfPig" Version="0.1.16" />
     <PackageReference Include="DocumentFormat.OpenXml" Version="3.5.1" />
