@@ -135,6 +135,10 @@ fun MessageScreen(account: String, folder: String, uid: Long, onClose: () -> Uni
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(formatDate(ctx, m.date), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 CategoryChips(categories.filter { it.key in keywords })
+                // Phishing-Verdacht (wie im Web): Absenderpruefung, Linktext gegen Linkziel, aehnliche Domains, erstmaliger Absender
+                m.phish?.let { found -> PhishCard(found, onJunk = if (m.junk || special == "junk") null else {
+                    { act { app.mail.junk(account, folder, listOf(uid), true); toast(R.string.learned_junk); onClose() } }
+                }) }
                 // Newsletter: abmelden wie im Web (One-Click/Mail ueber den Server, sonst Link im Browser)
                 if (m.unsubscribe != null) {
                     var unsubDone by remember(uid) { mutableStateOf(false) }
@@ -152,33 +156,50 @@ fun MessageScreen(account: String, folder: String, uid: Long, onClose: () -> Uni
                         modifier = Modifier.padding(end = 6.dp)
                     )
                 }
-                if (m.hasRemoteImages && !m.imagesAllowed) TextButton(onClick = { scope.launch { try { msg = app.mail.message(account, folder, uid, images = true, force = true) } catch (e: Exception) { error = e.message } } }) { Text(stringResource(R.string.load_images)) }
+                if (m.junk) Text(stringResource(R.string.junk_locked), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 4.dp))
+                else if (m.hasRemoteImages && !m.imagesAllowed) TextButton(onClick = { scope.launch { try { msg = app.mail.message(account, folder, uid, images = true, force = true) } catch (e: Exception) { error = e.message } } }) { Text(stringResource(R.string.load_images)) }
             }
             val bg = MaterialTheme.colorScheme.background.toArgb()
             val fg = MaterialTheme.colorScheme.onBackground.toArgb()
+            // Externe Bilder nur, wenn freigegeben (Knopf "Bilder laden" oder sicherer Absender) - sonst laedt die Mail nichts aus dem Netz
+            val remote = m.imagesAllowed && !m.junk
+            // Grosse Bilder in der Mail erst auf Tipp (Einstellungen -> Mail -> Lesen)
+            val limitMb = app.prefs.settings.collectAsState().value.mailImageMb
+            var allowLarge by remember(uid) { mutableStateOf(false) }
+            val limit = if (limitMb <= 0 || allowLarge) Long.MAX_VALUE else limitMb * 1024L * 1024L
+            val large = m.attachments.filter { it.inline && it.size > limit }
+            if (large.isNotEmpty()) TextButton(onClick = { allowLarge = true }, modifier = Modifier.padding(horizontal = 8.dp)) {
+                Text(stringResource(R.string.mail_load_large, large.size, sizeText(large.sumOf { it.size })))
+            }
             AndroidView(
                 factory = { c ->
                     WebView(c).apply {
                         settings.javaScriptEnabled = false
+                        settings.domStorageEnabled = false
+                        settings.allowFileAccess = false
+                        settings.allowContentAccess = false
+                        settings.setGeolocationEnabled(false)
                         settings.loadWithOverviewMode = true
                         settings.useWideViewPort = true
                         settings.builtInZoomControls = true
                         settings.displayZoomControls = false
-                        settings.blockNetworkImage = false
                         setBackgroundColor(bg)
                         if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) WebSettingsCompat.setAlgorithmicDarkeningAllowed(settings, dark)
-                        webViewClient = object : WebViewClient() {
-                            override fun shouldOverrideUrlLoading(view: WebView, request: android.webkit.WebResourceRequest): Boolean {
-                                try { c.startActivity(Intent(Intent.ACTION_VIEW, request.url)) } catch (_: Exception) { }
-                                return true
-                            }
-                        }
+                        webViewClient = MailWebClient(c, account)
                     }
                 },
                 update = { wv ->
+                    // Gesperrt wird in MailWebClient.shouldInterceptRequest: blockNetworkImage hielte auch die Bilder der Mail
+                    // selbst (Teile ueber die App) zurueck, bevor die App sie liefern kann
+                    (wv.webViewClient as? MailWebClient)?.let { c -> c.remoteImages = remote; c.limit = limit; c.sizes = m.attachments.associate { it.index to it.size } }
                     val css = "body{font-family:sans-serif;font-size:16px;line-height:1.45;margin:12px;word-wrap:break-word;color:${hex(fg)};background:${hex(bg)}} img{max-width:100%;height:auto} table{max-width:100%} pre{white-space:pre-wrap} a{color:#4A9EE8}"
                     val html = if (m.html.isNotBlank()) m.html else "<pre style=\"white-space:pre-wrap;font-family:sans-serif\">" + android.text.Html.escapeHtml(m.text) + "</pre>"
-                    wv.loadDataWithBaseURL(app.prefs.account.value?.baseUrl, "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><style>$css</style></head><body>$html</body></html>", "text/html", "utf-8", null)
+                    // Zweite Linie neben shouldInterceptRequest: nichts nachladen ausser Bildern, keine Formulare, kein <base>
+                    val csp = "default-src 'none'; img-src data: $MAIL_ORIGIN" + (if (remote) " https: http:" else "") +
+                        "; style-src 'unsafe-inline'; font-src data:; form-action 'none'; base-uri 'none'; frame-src 'none'"
+                    // Eigene, erfundene Herkunft statt der Server-Adresse: Anhaenge im Text holt MailWebClient ueber die App
+                    wv.loadDataWithBaseURL("$MAIL_ORIGIN/", "<!doctype html><html><head><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"$csp\">" +
+                        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><style>$css</style></head><body>$html</body></html>", "text/html", "utf-8", null)
                 },
                 modifier = Modifier.fillMaxSize()
             )
@@ -195,10 +216,59 @@ fun MessageScreen(account: String, folder: String, uid: Long, onClose: () -> Uni
 
 private fun hex(argb: Int) = String.format("#%06X", argb and 0xFFFFFF)
 
+/** Herkunft des Mail-WebViews: gibt es nicht (.invalid), so laeuft nichts mit der Server-Adresse und ihren Cookies. */
+private const val MAIL_ORIGIN = "https://mail.dmoffice.invalid"
+
+/**
+ * Alles, was die Mail nachladen will, geht hier durch. Erlaubt sind nur Bilder: Teile der Mail selbst (vom Server als
+ * /api/mail/<konto>/part umgeschrieben, ueber die App und damit im Umschlag geholt) und externe Bilder, wenn freigegeben.
+ * Alles andere - Formulare (POST), Stylesheets, Schriften, Rahmen, andere Adressen - bekommt eine leere Antwort.
+ */
+private class MailWebClient(private val context: android.content.Context, private val account: String) : WebViewClient() {
+    @Volatile var remoteImages = false
+    /** Teile ueber dieser Groesse nicht laden (Einstellung); sizes: Groesse je Teil der Mail. */
+    @Volatile var limit = Long.MAX_VALUE
+    @Volatile var sizes: Map<Int, Long> = emptyMap()
+    private val partPath = "/api/mail/" + at.dimes.dmoffice.data.Account.encode(account) + "/part"
+
+    private fun blocked() = android.webkit.WebResourceResponse("text/plain", "utf-8", 403, "Blocked", emptyMap(), java.io.ByteArrayInputStream(ByteArray(0)))
+
+    override fun shouldInterceptRequest(view: WebView, request: android.webkit.WebResourceRequest): android.webkit.WebResourceResponse? {
+        val url = request.url
+        if (request.method != "GET") return blocked()
+        if (url.scheme == "data") return null
+        if (url.scheme == "https" && url.host == android.net.Uri.parse(MAIL_ORIGIN).host) {
+            if (url.encodedPath != partPath) return blocked()
+            val index = url.getQueryParameter("index")?.toIntOrNull()
+            if (index != null && (sizes[index] ?: 0L) > limit) return blocked()
+            return try {
+                val api = App.get(context).api ?: return blocked()
+                val (bytes, type) = api.getBytes(api.url(partPath + "?" + (url.encodedQuery ?: "")))
+                val mime = (type ?: "application/octet-stream").substringBefore(';').trim()
+                if (!mime.startsWith("image/") || mime == "image/svg+xml") blocked()
+                else android.webkit.WebResourceResponse(mime, null, java.io.ByteArrayInputStream(bytes))
+            } catch (_: Exception) { blocked() }
+        }
+        // Externe Bilder: nur nach Freigabe und nur, was der WebView als Bild anfordert
+        val accept = request.requestHeaders.entries.firstOrNull { it.key.equals("Accept", true) }?.value ?: ""
+        if (remoteImages && url.scheme in setOf("https", "http") && accept.startsWith("image/")) return null
+        return blocked()
+    }
+
+    override fun shouldOverrideUrlLoading(view: WebView, request: android.webkit.WebResourceRequest): Boolean {
+        // Links oeffnet der Browser bzw. die passende App; Formulare und Weiterleitungen bleiben draussen
+        if (request.isForMainFrame && request.hasGesture() && request.url.host != android.net.Uri.parse(MAIL_ORIGIN).host && request.url.scheme != "data")
+            try { context.startActivity(Intent(Intent.ACTION_VIEW, request.url)) } catch (_: Exception) { }
+        return true
+    }
+}
+
 fun sizeText(n: Long): String = when {
     n < 1024 -> "$n B"
     n < 1024 * 1024 -> "${n / 1024} KB"
-    else -> String.format("%.1f MB", n / 1024.0 / 1024.0)
+    n < 1024L * 1024 * 1024 -> String.format("%.1f MB", n / 1024.0 / 1024.0)
+    n < 1024L * 1024 * 1024 * 1024 -> String.format("%.1f GB", n / 1024.0 / 1024.0 / 1024.0)
+    else -> String.format("%.1f TB", n / 1024.0 / 1024.0 / 1024.0 / 1024.0)
 }
 
 fun formatDate(ctx: android.content.Context, iso: String): String {
@@ -214,7 +284,11 @@ suspend fun openAttachment(ctx: android.content.Context, account: String, folder
         val safe = name.ifBlank { "anhang-$index" }.replace(Regex("[^A-Za-z0-9._ -]"), "_")
         val f = File(dir, safe).apply { writeBytes(bytes) }
         val uri = FileProvider.getUriForFile(ctx, ctx.packageName + ".files", f)
-        val i = Intent(Intent.ACTION_VIEW).setDataAndType(uri, (type ?: mime).ifBlank { "*/*" }.substringBefore(';')).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        // Der Download kommt als application/octet-stream - dann bieten Android-Apps fuer "alles" an (Wallet, Garmin ...).
+        // Die Art aus der Mail nehmen, sonst aus der Endung.
+        fun specific(t: String?) = t?.substringBefore(';')?.trim()?.takeIf { it.isNotBlank() && it != "application/octet-stream" && it != "*/*" }
+        val viewType = specific(mime) ?: specific(type) ?: specific(at.dimes.dmoffice.files.FilesRepo.guessMime(safe)) ?: "*/*"
+        val i = Intent(Intent.ACTION_VIEW).setDataAndType(uri, viewType).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
         ctx.startActivity(Intent.createChooser(i, name).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     } catch (e: Exception) {
         android.widget.Toast.makeText(ctx, e.message ?: "Fehler", android.widget.Toast.LENGTH_LONG).show()

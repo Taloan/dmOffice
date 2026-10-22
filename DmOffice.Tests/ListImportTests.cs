@@ -40,4 +40,25 @@ public class ListImportTests
         Assert.Equal(3, h.Count);
         Assert.Equal(1, h.Single(x => x.Name == "milch").Count);
     }
+
+    private static string Todo(string item, string? section = null, bool done = false) =>
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VTODO\r\nUID:x\r\nSUMMARY:" + item + "\r\nX-DM-ITEM:" + item + "\r\n"
+        + (section != null ? "X-DM-SECTION:" + section + "\r\n" : "") + (done ? "STATUS:COMPLETED\r\n" : "") + "END:VTODO\r\nEND:VCALENDAR\r\n";
+
+    [Fact]
+    public void Ueber_CalDAV_eingetragene_Artikel_landen_in_den_Vorschlaegen()
+    {
+        // Die App traegt per CalDAV ein - neue Artikel lernen, Abhaken nicht mitzaehlen
+        var dir = Directory.CreateTempSubdirectory("dmlearn");
+        var db = new Core.UserDb(Path.Combine(dir.FullName, "u.db"), new byte[32], "t");
+        Lists.Update(db, 7, Lists.Shop, null);
+        Lists.LearnFromIcs(db, 7, null, Todo("Hafermilch", "Kühlregal"));
+        Lists.LearnFromIcs(db, 7, Todo("Hafermilch", "Kühlregal"), Todo("Hafermilch", "Kühlregal", done: true));
+        var h = Lists.Get(db, 7).History.Single();
+        Assert.Equal("Hafermilch", h.Name);
+        Assert.Equal(1, h.Count);
+        Assert.Equal("Kühlregal", h.Section);
+        Lists.LearnFromIcs(db, 7, null, "kaputt");
+        Assert.Single(Lists.Get(db, 7).History);
+    }
 }

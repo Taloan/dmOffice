@@ -32,4 +32,6 @@ jobs:
           docker push "$bild:latest"
           docker push "$bild:sha-$kurz"
           docker image rm "$bild:sha-$kurz" || true
+          # Das bisherige latest hat jetzt keinen Namen mehr: unbenannte Images (und Reste frueherer Laeufe) gleich entfernen
+          docker image prune -f || true
           echo "Image: $bild:latest"

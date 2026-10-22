@@ -62,21 +62,37 @@ public sealed class Spaces
     private readonly ConcurrentDictionary<string, Lazy<UserSpace>> _open = new();
     private readonly UserStore _users;
     private readonly DataPaths _paths;
+    private readonly UpdateCenter? _update;
 
     public event Action<UserSpace>? Opened;
 
-    public Spaces(UserStore users, DataPaths paths)
+    public Spaces(UserStore users, DataPaths paths, UpdateCenter? update = null)
     {
         _users = users;
         _paths = paths;
+        _update = update;
+        if (update != null) update.IsOpen = IsOpen;
     }
+
+    /// <summary>Ist die Datenbank des Benutzers geoeffnet - und damit auf dem neuesten Stand?</summary>
+    public bool IsOpen(string userId) => _open.TryGetValue(userId, out var l) && l.IsValueCreated;
 
     public UserSpace Get(string userId)
     {
         var lazy = _open.GetOrAdd(userId, id => new Lazy<UserSpace>(() =>
         {
             var user = _users.ById(id) ?? throw new KeyNotFoundException("Benutzer gibt es nicht.");
-            var db = new UserDb(_paths.UserDb(id), _users.DbKey(user), id);
+            // Vorabpruefung: Platz, Sicherung, Freigabe - erst dann darf die Datenbank umgebaut werden
+            var migrating = _update?.Gate(user) ?? false;
+            UserDb db;
+            try { db = new UserDb(_paths.UserDb(id), _users.DbKey(user), id, _paths.UserBlobs(id)); }
+            catch (Exception ex) when (migrating)
+            {
+                // Jeder Schritt ist eine Transaktion: die Datenbank steht noch auf der Version davor
+                _update!.Failed(id, ex);
+                throw new UpdatePendingException("Die Datenänderung ist gescheitert, die Daten sind unverändert: " + ex.Message, "error");
+            }
+            if (migrating) _update!.Succeeded(id);
             return new UserSpace(user, db);
         }));
         try { return lazy.Value; }

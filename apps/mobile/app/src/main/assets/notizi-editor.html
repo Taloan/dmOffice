@@ -2,6 +2,9 @@
 <html>
 <head>
 <meta charset="utf-8">
+<!-- Schutz in der Tiefe: Falls doch ungefiltertes Notiz-HTML hereinkommt, laeuft daraus kein Skript und es
+     werden keine Inhalte nach aussen geladen. Bilder nur aus der App (appassets), aus data:/blob:. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' https://appassets.androidplatform.net data: blob:; font-src 'self' data:; connect-src 'none'; form-action 'none'; base-uri 'none'">
 <!-- Zoomen wie im Browser: zwei Finger vergroessern den Bereich unter
      ihnen, Bilder eingeschlossen. Die App schaltet dazu den eingebauten
      Zoom der WebView ein (MauiProgram). -->
@@ -104,6 +107,19 @@ const b64e = s => btoa(unescape(encodeURIComponent(s)));
 document.execCommand('styleWithCSS', false, true);
 document.execCommand('defaultParagraphSeparator', false, 'p');
 
+/// Leerzeilen sichtbar halten: Gespeichert ist eine Leerzeile als <p></p> -
+/// den Umbruch darin setzt nur der Browser beim Tippen, und ser() laesst ihn
+/// weg. Ohne ihn ist der Absatz beim naechsten Oeffnen null Pixel hoch: da,
+/// aber weder zu sehen noch anzuwaehlen. Also hier wieder hinein; ser()
+/// nimmt ihn beim Speichern wie gewohnt heraus, die Notiz bleibt gleich.
+function padEmpty(node) {
+  const lines = node.matches && node.matches('p, li') ? [node] : [];
+  lines.push(...node.querySelectorAll('p, li'));
+  for (const el of lines)
+    if (!el.textContent && !el.querySelector('br, img, hr, table, input, svg'))
+      el.appendChild(document.createElement('br'));
+}
+
 function load(payloadB64) {
   const data = JSON.parse(b64d(payloadB64));   // { blocks: [], protected: [], images: { name: dataUri }, dark }
   document.documentElement.setAttribute('data-theme', data.dark ? 'dark' : 'light');
@@ -129,6 +145,7 @@ function load(payloadB64) {
     node.setAttribute('data-i', i);
     if (data.protected[i]) node.setAttribute('contenteditable', 'false');
     markMacros(node);
+    padEmpty(node);
     node.querySelectorAll('img').forEach(img => {
       const src = img.getAttribute('src') || '';
       if (src.startsWith('blob:') && data.images[src.substring(5)]) {
@@ -137,7 +154,7 @@ function load(payloadB64) {
       }
     });
     root.appendChild(node);
-    extra.forEach(x => root.appendChild(x));
+    extra.forEach(x => { padEmpty(x); root.appendChild(x); });
     ser0[i] = extra.length ? null : ser(node);
   });
   if (!root.firstChild) root.appendChild(document.createElement('p'));
@@ -1223,27 +1240,60 @@ function liftBlocks() {
   }
 }
 
+// dmOffice: was getContent() zuletzt geliefert hat - je Block der Knoten und sein Text in
+// diesem Moment -, damit reindex() nach dem Speichern die Nummern nachfuehren kann.
+let lastSaved = [];
+
 function getContent() {
   liftBlocks();
   const used = new Set();
   const blocks = [];
+  lastSaved = [];
   for (const node of Array.from(root.childNodes)) {
     if (node.nodeType === 3) {
-      if (node.nodeValue.trim()) blocks.push({ html: '<p>' + esc(node.nodeValue) + '</p>' });
+      if (node.nodeValue.trim()) { blocks.push({ html: '<p>' + esc(node.nodeValue) + '</p>' }); lastSaved.push(null); }
       continue;
     }
     if (node.nodeType !== 1) continue;
     if (node.hasAttribute('data-pad') && !node.textContent.trim() && !node.querySelector('img')) continue;
     const i = node.hasAttribute('data-i') ? parseInt(node.getAttribute('data-i')) : -1;
-    if (i >= 0 && !used.has(i) && (protectedFlags[i] || ser(node) === ser0[i] || swaps[i])) {
+    // dmOffice: auch gesperrte Bloecke nur, wenn sie noch dieselben sind (oder ihr Bild /
+    // ihre Ausrichtung geaendert wurde) - nach Rueckgaengig ueber ein Speichern hinweg kann
+    // ein Knoten eine veraltete Nummer tragen.
+    const same = ser(node) === ser0[i];
+    if (i >= 0 && !used.has(i) && (same || (protectedFlags[i] && (swaps[i] || aligns[i] !== undefined)))) {
       used.add(i);
       blocks.push({ i: i, swaps: swaps[i] || [], align: aligns[i] });
     } else {
       if (i >= 0) used.add(i);
       blocks.push({ html: ser(node) });
     }
+    lastSaved.push({ node: node, ser: ser(node) });
   }
   return b64e(JSON.stringify({ blocks: blocks, plain: root.innerText }));
+}
+
+/// dmOffice: Der Server hat gespeichert und die Notiz neu in Bloecke zerlegt. Passt das
+/// Stueck fuer Stueck zu dem, was getContent() geliefert hat, bekommen die Bloecke ihre
+/// neuen Nummern - ohne Neuladen, Schreibmarke und Rueckgaengig bleiben. Sonst false:
+/// dann laedt die App die Notiz neu.
+function reindex(payloadB64) {
+  const data = JSON.parse(b64d(payloadB64));   // { count, protected: [] }
+  if (lastSaved.length !== data.count || lastSaved.some(x => !x || x.node.parentNode !== root)) return false;
+  const saved = new Set(lastSaved.map(x => x.node));
+  for (const child of Array.from(root.children))
+    if (!saved.has(child)) child.removeAttribute('data-i');
+  ser0 = [];
+  lastSaved.forEach((x, k) => {
+    x.node.setAttribute('data-i', k);
+    // Der Stand beim Speichern - was seither getippt wurde, gilt weiter als geaendert.
+    ser0[k] = x.ser;
+  });
+  protectedFlags = data.protected;
+  swaps = {};
+  aligns = {};
+  lastSaved = [];
+  return true;
 }
 </script>
 </body>

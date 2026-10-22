@@ -1,7 +1,8 @@
 import {
-  Button, Dropdown, Option, Text, Tooltip, makeStyles, tokens, Checkbox, Spinner, Link,
+  Button, Dropdown, Option, Text, Tooltip, makeStyles, tokens, Checkbox, Spinner, Link, Menu, MenuItem, MenuList, MenuPopover, MenuTrigger,
 } from '@fluentui/react-components'
-import { Send20Regular, Attach20Regular, Dismiss20Regular, Save20Regular, Dismiss16Regular, Important20Regular, WindowNew20Regular, ChevronDown20Regular } from '@fluentui/react-icons'
+import { Send20Regular, Attach20Regular, Dismiss20Regular, Save20Regular, Dismiss16Regular, Important20Regular, WindowNew20Regular, ChevronDown20Regular, Link16Regular, Attach16Regular, Cloud20Regular, Desktop20Regular } from '@fluentui/react-icons'
+import { StoredFilesDialog } from './StoredFilesDialog'
 import { SendLaterMenu } from './Outbox'
 import { fmtLong } from '../shell/hooks'
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
@@ -59,13 +60,25 @@ const lang = (a: Account) => words[a.language === 'en' ? 'en' : 'de']
 const prefixed = (subject: string, forward: boolean, a: Account) =>
   (forward ? /^\s*(wg|fw|fwd):/i : /^\s*(aw|re|antw):/i).test(subject) ? subject : (forward ? lang(a).fwd : lang(a).re) + subject
 
+// Zitat fuer den Editor: die Mail ist zwar serverseitig bereinigt (keine Skripte), aber sie landet hier
+// OHNE abschirmenden Rahmen direkt im App-DOM. Ein <style>-Block oder ein <form> aus der fremden Mail wuerde
+// sonst die ganze Oberflaeche veraendern (Phishing-Optik). Darum vor dem Einfuegen entfernen.
+function stripForQuote(html: string): string {
+  try {
+    const doc = new DOMParser().parseFromString(html, 'text/html')
+    doc.querySelectorAll('style,link,base,meta,script,form,input,button,select,textarea,iframe,object,embed').forEach(e => e.remove())
+    doc.querySelectorAll('[class]').forEach(e => e.removeAttribute('class'))
+    return doc.body.innerHTML
+  } catch { return '' }
+}
+
 function quote(m: Message, a: Account): string {
   const w = lang(a)
   const date = new Date(m.date).toLocaleString(w.locale, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })
   return `<br><div style="border-top:1px solid #b5c4df;padding-top:6px;margin-top:12px"><b>${w.from}:</b> ${esc(m.from ? addrFull(m.from) : '')}<br>` +
     `<b>${w.sent}:</b> ${esc(date)}<br><b>${w.to}:</b> ${esc(m.to.map(addrFull).join('; '))}<br>` +
     (m.cc.length ? `<b>Cc:</b> ${esc(m.cc.map(addrFull).join('; '))}<br>` : '') +
-    `<b>${w.subject}:</b> ${esc(m.subject)}</div><br><blockquote style="margin:0 0 0 4px;padding-left:10px;border-left:3px solid #b5c4df">${m.html}</blockquote>`
+    `<b>${w.subject}:</b> ${esc(m.subject)}</div><br><blockquote style="margin:0 0 0 4px;padding-left:10px;border-left:3px solid #b5c4df">${stripForQuote(m.html)}</blockquote>`
 }
 
 const sig = (a: Account) => (a.signature ? `<br><div class="dm-signature">${a.signature}</div>` : '')
@@ -104,9 +117,16 @@ export function forwardOf(m: Message, account: Account): ComposeInit {
   }
 }
 
+/** Ab dieser Groesse geht ein Anhang von selbst als Freigabelink (laesst sich je Anhang umstellen). */
+const LINK_FROM = 10 * 1024 * 1024
+
 const useStyles = makeStyles({
   root: { flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 },
-  bar: { display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 12px', borderBottom: `1px solid ${tokens.colorNeutralStroke2}` },
+  bar: { display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 12px', borderBottom: `1px solid ${tokens.colorNeutralStroke2}`,
+    // Handy: Knoepfe umbrechen statt aus dem Bild laufen
+    '@media (max-width: 767px)': { flexWrap: 'wrap', padding: '6px 8px' } },
+  // Auf dem Handy entbehrlich (Tastenkuerzel, eigenes Fenster)
+  desktopOnly: { '@media (max-width: 767px)': { display: 'none' } },
   field: { display: 'flex', alignItems: 'center', gap: '8px', padding: '0 16px', borderBottom: `1px solid ${tokens.colorNeutralStroke3}`, minHeight: '40px' },
   label: { width: '52px', color: tokens.colorNeutralForeground3, flexShrink: 0 },
   subject: { flex: 1, border: 'none', outline: 'none', background: 'transparent', fontSize: '15px', color: tokens.colorNeutralForeground1, fontFamily: 'inherit', padding: '8px 0' },
@@ -136,6 +156,11 @@ export const Compose = forwardRef<ComposeHandle, {
   const [showCc, setShowCc] = useState(init.cc.length > 0 || init.bcc.length > 0)
   const [subject, setSubject] = useState(init.subject)
   const [files, setFiles] = useState<File[]>(init.files ?? [])
+  // Als Freigabelink statt in der Mail (Vorgaben unter Freigabelinks); grosse Dateien stehen von selbst darauf
+  const [linked, setLinked] = useState<File[]>(() => (init.files ?? []).filter(f => f.size >= LINK_FROM))
+  // Aus der eigenen Dateiablage: der Server haengt sie an oder legt den Link an
+  const [stored, setStored] = useState<{ path: string; name: string; size: number; link: boolean }[]>([])
+  const [pickStored, setPickStored] = useState(false)
   const [fwd, setFwd] = useState<Attachment[]>(init.forwardAttachments ?? [])
   const [asAttachment, setAsAttachment] = useState(init.forwardAsAttachment)
   const [important, setImportant] = useState(init.important ?? false)
@@ -158,6 +183,16 @@ export const Compose = forwardRef<ComposeHandle, {
     // anderen Konto (Absender gewechselt und gespeichert), zaehlt fuer draftUid dieses Konto;
     // die Bezuege auf die Ursprungsmail passen dann nicht mehr und bleiben weg.
     const moved = draftUid != null && draftAccount !== init.account
+    // Namen eindeutig machen - der Server erkennt die Link-Anhaenge an ihnen
+    const seen = new Set<string>()
+    const names = files.map(file => {
+      const dot = file.name.lastIndexOf('.')
+      const base = dot > 0 ? file.name.slice(0, dot) : file.name, ext = dot > 0 ? file.name.slice(dot) : ''
+      let n = file.name, k = 2
+      while (seen.has(n)) n = `${base} (${k++})${ext}`
+      seen.add(n)
+      return n
+    })
     const f = new FormData()
     f.append('json', JSON.stringify({
       sourceAccount: moved ? draftAccount : init.account,
@@ -171,8 +206,10 @@ export const Compose = forwardRef<ComposeHandle, {
       forwardAsAttachment: !moved && !!asAttachment,
       draftUid, highPriority: important, readReceipt: receipt,
       sendAt: when?.sendAt, delaySeconds: when?.delaySeconds,
+      filePaths: stored.filter(x => !x.link).map(x => x.path), linkPaths: stored.filter(x => x.link).map(x => x.path),
+      linkUploads: names.filter((_, i) => linked.includes(files[i])),
     }))
-    files.forEach(file => f.append('files', file, file.name))
+    files.forEach((file, i) => f.append('files', file, names[i]))
     return f
   }
 
@@ -247,11 +284,20 @@ export const Compose = forwardRef<ComposeHandle, {
 
   const addFiles = (list: FileList | null) => {
     if (!list) return
-    setFiles(f => [...f, ...Array.from(list)])
+    const added = Array.from(list)
+    setFiles(f => [...f, ...added])
+    setLinked(l => [...l, ...added.filter(f => f.size >= LINK_FROM)])
     setDirty(true)
   }
 
-  const total = files.reduce((n, f) => n + f.size, 0) + fwd.reduce((n, a) => n + a.size, 0)
+  // Was als Link geht, zaehlt nicht zur Groesse der Mail
+  const total = files.filter(f => !linked.includes(f)).reduce((n, f) => n + f.size, 0) + fwd.reduce((n, a) => n + a.size, 0)
+    + stored.filter(x => !x.link).reduce((n, x) => n + x.size, 0)
+  const linkToggle = (on: boolean, flip: () => void) => (
+    <Tooltip content={on ? t('Wird als Link gesendet – klicken für Anhang') : t('Wird angehängt – klicken für Link')} relationship="label">
+      <Button size="small" appearance={on ? 'primary' : 'transparent'} icon={on ? <Link16Regular /> : <Attach16Regular />} onClick={flip} />
+    </Tooltip>
+  )
 
   return (
     <div className={`${s.root} ${dragging ? s.drop : ''}`}
@@ -268,17 +314,25 @@ export const Compose = forwardRef<ComposeHandle, {
               style={{ minWidth: 0, borderTopLeftRadius: 0, borderBottomLeftRadius: 0, borderLeft: `1px solid ${tokens.colorNeutralStrokeOnBrand}` }} />
           } />
         </div>
-        <Button icon={<Attach20Regular />} onClick={() => fileInput.current?.click()}>{t('Anfügen')}</Button>
+        <Menu>
+          <MenuTrigger disableButtonEnhancement><Button icon={<Attach20Regular />}>{t('Anfügen')}</Button></MenuTrigger>
+          <MenuPopover>
+            <MenuList>
+              <MenuItem icon={<Desktop20Regular />} onClick={() => fileInput.current?.click()}>{t('Vom Computer')}</MenuItem>
+              <MenuItem icon={<Cloud20Regular />} onClick={() => setPickStored(true)}>{t('Aus den dmOffice-Dateien')}</MenuItem>
+            </MenuList>
+          </MenuPopover>
+        </Menu>
         <Button icon={<Save20Regular />} onClick={() => save()}>{t('Entwurf')}</Button>
         <Tooltip content={t('Wichtigkeit: hoch')} relationship="label">
           <Button appearance={important ? 'primary' : 'subtle'} icon={<Important20Regular />} onClick={() => setImportant(v => !v)} />
         </Tooltip>
         <Checkbox label={t('Lesebestätigung')} checked={receipt} onChange={(_, d) => setReceipt(!!d.checked)} />
         <div className={s.spacer} />
-        <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>{t('Strg+Enter sendet')}</Text>
+        <Text size={200} className={s.desktopOnly} style={{ color: tokens.colorNeutralForeground3 }}>{t('Strg+Enter sendet')}</Text>
         {onPopOut && (
           <Tooltip content={t('In eigenem Fenster öffnen')} relationship="label">
-            <Button appearance="subtle" icon={<WindowNew20Regular />} onClick={onPopOut} />
+            <Button appearance="subtle" className={s.desktopOnly} icon={<WindowNew20Regular />} onClick={onPopOut} />
           </Tooltip>
         )}
         <Button appearance="subtle" icon={<Dismiss20Regular />} onClick={close} aria-label={t('Schließen')} />
@@ -288,7 +342,7 @@ export const Compose = forwardRef<ComposeHandle, {
         <div className={s.field}>
           <span className={s.label}>{t('Von')}</span>
           <Dropdown value={(() => { const a = accounts.find(x => x.id === account); return a ? `${a.displayName || a.name} <${a.email}>` : '' })()}
-            selectedOptions={[account]} onOptionSelect={(_, d) => { if (d.optionValue && d.optionValue !== account) { setAccount(d.optionValue); setDirty(true) } }} appearance="underline" style={{ minWidth: 320 }}>
+            selectedOptions={[account]} onOptionSelect={(_, d) => { if (d.optionValue && d.optionValue !== account) { setAccount(d.optionValue); setDirty(true) } }} appearance="underline" style={{ minWidth: 'min(320px, 60vw)' }}>
             {accounts.map(a => <Option key={a.id} value={a.id}>{`${a.displayName || a.name} <${a.email}>`}</Option>)}
           </Dropdown>
         </div>
@@ -307,7 +361,7 @@ export const Compose = forwardRef<ComposeHandle, {
       <div className={s.field}>
         <input className={s.subject} placeholder={t('Betreff')} value={subject} onChange={e => { setSubject(e.target.value); setDirty(true) }} />
       </div>
-      {(files.length > 0 || fwd.length > 0 || !!asAttachment) && (
+      {(files.length > 0 || stored.length > 0 || fwd.length > 0 || !!asAttachment) && (
         <div className={s.atts}>
           {asAttachment && (
             <span className={s.att}>✉ {asAttachment}
@@ -321,7 +375,14 @@ export const Compose = forwardRef<ComposeHandle, {
           ))}
           {files.map((f, i) => (
             <span key={i} className={s.att}>{f.name} <Text size={200}>({fmtSize(f.size)})</Text>
-              <Button size="small" appearance="transparent" icon={<Dismiss16Regular />} onClick={() => setFiles(x => x.filter((_, j) => j !== i))} />
+              {linkToggle(linked.includes(f), () => { setLinked(l => l.includes(f) ? l.filter(x => x !== f) : [...l, f]); setDirty(true) })}
+              <Button size="small" appearance="transparent" icon={<Dismiss16Regular />} onClick={() => { setFiles(x => x.filter((_, j) => j !== i)); setLinked(l => l.filter(x => x !== f)) }} />
+            </span>
+          ))}
+          {stored.map(x => (
+            <span key={'s' + x.path} className={s.att}>☁ {x.name} <Text size={200}>({fmtSize(x.size)})</Text>
+              {linkToggle(x.link, () => { setStored(l => l.map(y => y.path === x.path ? { ...y, link: !y.link } : y)); setDirty(true) })}
+              <Button size="small" appearance="transparent" icon={<Dismiss16Regular />} onClick={() => setStored(l => l.filter(y => y.path !== x.path))} />
             </span>
           ))}
           <Text size={200} style={{ alignSelf: 'center', color: total > 20e6 ? tokens.colorPaletteRedForeground1 : tokens.colorNeutralForeground3 }}>
@@ -331,6 +392,11 @@ export const Compose = forwardRef<ComposeHandle, {
           </Text>
         </div>
       )}
+      {pickStored && <StoredFilesDialog onClose={() => setPickStored(false)} onPick={items => {
+        setPickStored(false)
+        setStored(l => [...l, ...items.filter(i => !l.some(x => x.path === i.path)).map(i => ({ path: i.path, name: i.name, size: i.size, link: i.size >= LINK_FROM }))])
+        setDirty(true)
+      }} />}
       <RichEditor ref={editor} initial={initialHtml.current} onChange={() => setDirty(true)} areaStyle={font}
         lang={accounts.find(x => x.id === account)?.language === 'en' ? 'en' : 'de'} />
     </div>

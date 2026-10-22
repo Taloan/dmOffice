@@ -27,4 +27,21 @@ public class MailHtmlTests
         Assert.Contains("blinkend", clean);
         Assert.Contains("<style>", clean);
     }
+
+    [Fact]
+    public void Junk_sperrt_alle_Bilder_und_Links_auch_wenn_Bilder_erlaubt_waeren()
+    {
+        var html = """<p>Hallo <a href="https://boese.example/klick">hier</a></p><img src="cid:bild1"><img src="data:image/png;base64,AAAA"><img src="https://boese.example/p.gif">""";
+        var r = MailHtml.Sanitize(html, true, _ => "/api/mail/a/part?index=1", junk: true);
+        Assert.DoesNotContain("href=", r.Html);
+        Assert.DoesNotContain("src=", r.Html);
+        Assert.Contains("hier", r.Html);
+        Assert.Contains("boese.example/klick", r.Html);   // nur als Hinweis (title)
+        Assert.True(r.HasRemoteImages);
+
+        // Ohne Junk bleiben eingebettete Bilder und Links wie bisher
+        var normal = MailHtml.Sanitize(html, false, _ => "/api/mail/a/part?index=1").Html;
+        Assert.Contains("href=\"https://boese.example/klick\"", normal);
+        Assert.Contains("/api/mail/a/part?index=1", normal);
+    }
 }

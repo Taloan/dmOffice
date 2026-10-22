@@ -20,7 +20,7 @@ public class DocsSeed
         var paths = new DataPaths(dir);
         var users = new UserStore(paths, new Vault(paths, null));
         var user = users.ByLogin("alex") ?? throw new InvalidOperationException("Erst den Benutzer alex anlegen.");
-        var db = new UserDb(paths.UserDb(user.Id), users.DbKey(user), user.Id);
+        var db = new UserDb(paths.UserDb(user.Id), users.DbKey(user), user.Id, paths.UserBlobs(user.Id));
 
         var settings = db.GetJson<UserSettings>("settings");
         var account = settings.MailAccounts.FirstOrDefault(a => a.Name == "Privat");
@@ -227,6 +227,17 @@ public class DocsSeed
             ("INBOX", "Funknetz Beispiel", "rechnung@funknetz.example", "Rechnung Mobilfunk September",
                 "<p>Ihre Mobilfunkrechnung für September beträgt 19,99 €.</p>",
                 true, false, "Mobilfunk-2026-09.pdf", 200, " dm_rechnung ", null, null, null),
+            // Junk: Bilder und Links bleiben gesperrt, bis die Mail als "Kein Junk" freigegeben wird
+            ("Junk", "Gewinnspiel-Zentrale", "gewinn@preis-zentrale.example", "Herzlichen Glückwunsch! Ihr Gutschein über 500 € wartet",
+                "<table width='100%' style='max-width:620px;margin:auto;font-family:Arial'>" +
+                "<tr><td><img src='https://bilder.preis-zentrale.example/banner-gutschein.jpg' width=620 height=180 alt='Ihr Gutschein'></td></tr>" +
+                "<tr><td style='padding:16px 0'><h2 style='color:#c00;margin:0 0 8px'>Sie wurden ausgewählt!</h2>" +
+                "<p>Als einer von nur 100 Teilnehmern erhalten Sie einen Einkaufsgutschein über <b>500 €</b>. Das Angebot gilt nur noch heute.</p>" +
+                "<p><a href='https://preis-zentrale.example/einloesen?id=99812' style='background:#c00;color:#fff;padding:10px 18px;text-decoration:none'>Jetzt Gutschein einlösen</a></p>" +
+                "<p>Fragen? <a href='https://preis-zentrale.example/hilfe'>Zur Hilfe-Seite</a></p></td></tr>" +
+                "<tr><td><img src='https://bilder.preis-zentrale.example/siegel.png' width=120 height=120 alt='Gewinner-Siegel'></td></tr></table>" +
+                "<img src='https://zaehler.preis-zentrale.example/open.gif?id=99812' width=1 height=1>",
+                false, false, null, 3.5, "", 0.98, null, null),
         };
 
         foreach (var x in samples)
@@ -283,6 +294,11 @@ public class DocsSeed
         Due("Angebot Nr. 2026-0418", 1);
 
         Newsletter(db, account);
+
+        // Unterschiedliche Groessen (Anhaenge, Bilder), damit "Groesste zuerst" etwas zeigt - nur die Anzeige der Groesse aendert sich
+        foreach (var (start, kb) in new[] { ("Ihre Rechnung Oktober 2026", 4_800), ("Gartenbrief Oktober", 2_350), ("Rechnung Nr. 4711", 1_240), ("Ihre Rechnung zur Bestellung", 860),
+            ("Rechnung Mobilfunk", 520), ("Buchungsbest", 210), ("Einladung: Workshop", 96), ("Ihre Bestellung GL-20931", 64) })
+            db.Exec("UPDATE mail SET size=$s WHERE account=$a AND folder='INBOX' AND subject LIKE $p", ("$s", kb * 1024L), ("$a", account.Id), ("$p", start + "%"));
 
         db.Exec(@"UPDATE mail_folders SET unread=(SELECT COUNT(*) FROM mail WHERE account=$a AND folder=mail_folders.path AND seen=0),
                   total=(SELECT COUNT(*) FROM mail WHERE account=$a AND folder=mail_folders.path) WHERE account=$a", ("$a", account.Id));

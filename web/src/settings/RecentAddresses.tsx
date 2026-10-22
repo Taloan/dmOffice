@@ -7,6 +7,7 @@ import { api, Collection } from '../api'
 import { useApp } from '../App'
 import { fmtDate } from '../shell/hooks'
 import { t } from '../i18n'
+import { useSort } from '../shell/sort'
 
 interface Recent { name?: string | null; address: string; count: number; last: string; inContacts: boolean }
 
@@ -30,6 +31,9 @@ export function RecentAddresses() {
     return (list ?? []).filter(r => !term || r.address.toLowerCase().includes(term) || (r.name ?? '').toLowerCase().includes(term))
   }, [list, q])
 
+  const { sorted, header } = useSort(shown, {
+    name: r => r.name || r.address, address: r => r.address, count: r => r.count, last: r => Date.parse(r.last),
+  })
   const allPicked = shown.length > 0 && shown.every(r => picked.includes(r.address))
   const toggle = (a: string) => setPicked(p => (p.includes(a) ? p.filter(x => x !== a) : [...p, a]))
 
@@ -68,14 +72,14 @@ export function RecentAddresses() {
                 <Checkbox checked={allPicked ? true : picked.length ? 'mixed' : false}
                   onChange={() => setPicked(allPicked ? [] : shown.map(r => r.address))} aria-label={t('Alle')} />
               </TableHeaderCell>
-              <TableHeaderCell>{t('Name')}</TableHeaderCell>
-              <TableHeaderCell>{t('Adresse')}</TableHeaderCell>
-              <TableHeaderCell style={{ width: 80 }}>{t('Anzahl')}</TableHeaderCell>
-              <TableHeaderCell style={{ width: 120 }}>{t('Zuletzt')}</TableHeaderCell>
+              <TableHeaderCell {...header('name')}>{t('Name')}</TableHeaderCell>
+              <TableHeaderCell {...header('address')}>{t('Adresse')}</TableHeaderCell>
+              <TableHeaderCell {...header('count')} style={{ width: 80 }}>{t('Anzahl')}</TableHeaderCell>
+              <TableHeaderCell {...header('last')} style={{ width: 120 }}>{t('Zuletzt')}</TableHeaderCell>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {shown.map(r => (
+            {sorted.map(r => (
               <TableRow key={r.address} onClick={() => toggle(r.address)} style={{ cursor: 'pointer' }}>
                 <TableCell><Checkbox checked={picked.includes(r.address)} onChange={() => toggle(r.address)} onClick={e => e.stopPropagation()} /></TableCell>
                 <TableCell>{r.name || '–'} {r.inContacts && <Badge size="small" appearance="tint" color="success">{t('Kontakt')}</Badge>}</TableCell>

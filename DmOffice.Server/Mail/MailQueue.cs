@@ -148,6 +148,7 @@ public sealed class MailQueueSender(Spaces spaces, ImapPool pool, MailSync sync,
 
     private async Task Send(UserSpace space, MailQueue.Item item, CancellationToken stop)
     {
+        using var activity = Activity.Start(space.User.Id, Activity.MailQueue);
         MailAccount account, source;
         try { account = space.Account(item.Account); source = space.Settings.MailAccounts.FirstOrDefault(a => a.Id == item.Source) ?? account; }
         catch (Exception) { MailQueue.Failed(space.Db, item.Id, "Das Konto gibt es nicht mehr.", 3); sync.Touch(space.User.Id); return; }
@@ -163,6 +164,7 @@ public sealed class MailQueueSender(Spaces spaces, ImapPool pool, MailSync sync,
             // Nur wenn SMTP selbst scheitert - die Mail ist dann nicht raus
             log.LogWarning("Postausgang {Account}: Senden fehlgeschlagen: {Error}", account.Email, e.Message);
             MailQueue.Failed(space.Db, item.Id, e.Message, item.Attempts + 1);
+            activity.Fail(e.Message);
         }
         sync.Touch(space.User.Id);
     }

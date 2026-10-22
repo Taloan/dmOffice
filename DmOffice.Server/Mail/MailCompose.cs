@@ -35,6 +35,12 @@ public static class MailCompose
         /// <summary>Geplant senden (ISO-Zeit). Leer: gleich - nach DelaySeconds (Zurueckrufen, hoechstens 30).</summary>
         public string? SendAt { get; set; }
         public int? DelaySeconds { get; set; }
+        /// <summary>Dateien aus der eigenen Dateiablage (Pfade) - der Server haengt sie an, das Geraet laedt nichts herunter.</summary>
+        public List<string> FilePaths { get; set; } = new();
+        /// <summary>Als Freigabelink statt als Anhang: Dateien aus der Dateiablage (Pfade) ...</summary>
+        public List<string> LinkPaths { get; set; } = new();
+        /// <summary>... und hochgeladene Dateien (ihre Namen im Formular) - die kommen erst in die Dateiablage.</summary>
+        public List<string> LinkUploads { get; set; } = new();
     }
 
     public static string Wrap(string html) =>
@@ -52,6 +58,10 @@ public static class MailCompose
         AddAddresses(m.Cc, d.Cc, "Cc");
         AddAddresses(m.Bcc, d.Bcc, "Bcc");
         m.Subject = d.Subject;
+        // Message-ID mit der Domain des Absenders statt dem Rechnernamen (im Container ein Zufallsname): Mailprogramme und
+        // Spamfilter beim Empfaenger werten eine Kennung ohne echte Domain schlecht
+        var domain = account.Email.Contains('@') ? account.Email[(account.Email.LastIndexOf('@') + 1)..].Trim() : "";
+        if (domain.Contains('.') && domain.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '-')) m.MessageId = MimeKit.Utils.MimeUtils.GenerateMessageId(domain);
         if (!string.IsNullOrEmpty(d.InReplyTo)) m.InReplyTo = d.InReplyTo;
         foreach (var r in d.References) m.References.Add(r);
         if (d.HighPriority) m.Priority = MessagePriority.Urgent;

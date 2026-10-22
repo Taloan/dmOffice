@@ -20,6 +20,23 @@ public static class SettingsApi
         public long Before { get; set; }
         public long After { get; set; }
         public string? Error { get; set; }
+        /// <summary>Gesetzt, wenn der freie Platz nicht reicht: so viel braucht das Verdichten, so viel ist frei, so viel fehlt. Dann lief nichts.</summary>
+        public long Need { get; set; }
+        public long? Free { get; set; }
+        public long Missing { get; set; }
+    }
+
+    /// <summary>
+    /// Platz, den das Verdichten braucht: VACUUM schreibt die Datenbank noch einmal (im Journal, bis es zurueckkopiert ist),
+    /// dazu die Reserve. Reicht der Platz nicht, startet es gar nicht - mitten drin abzubrechen wuerde nichts zerstoeren
+    /// (SQLite rollt zurueck), liesse aber eine halbe Kopie und eine volle Platte zurueck.
+    /// </summary>
+    public static (long Need, long? Free, long Missing) CompactSpace(UserSpace space, DataPaths paths, UpdateCenter update)
+    {
+        var (file, wal, _) = space.Db.SpaceInfo();
+        var need = file + wal + update.Reserve;
+        var free = update.FreeBytes(Path.GetDirectoryName(paths.UserDb(space.User.Id))!);
+        return (need, free, free is { } f ? Math.Max(0, need - f) : 0);
     }
 
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, CompactJob> Compactions = new();
@@ -28,6 +45,16 @@ public static class SettingsApi
     public static string Version() =>
         Environment.GetEnvironmentVariable("DMOFFICE_VERSION") is { Length: > 0 } v ? v
         : "dev-" + (typeof(SettingsApi).Assembly.GetName().Version?.ToString(3) ?? "0");
+
+    /// <summary>Name der Version des Zweigs ("1.5", "2.0") aus release.txt neben der Assembly; leer, wenn die Datei fehlt.</summary>
+    public static string Release() => ReleaseText.Value;
+
+    // Einmal lesen: /api/health fragt ohne Anmeldung und alle 15 s - nicht jedes Mal die Platte
+    private static readonly Lazy<string> ReleaseText = new(() =>
+    {
+        try { return File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "release.txt")).Trim(); }
+        catch (IOException) { return ""; }
+    });
 
     /// <summary>Konto ohne Passwoerter - die Oberflaeche sieht nur, ob eines gesetzt ist.</summary>
     private static object Masked(MailAccount a) => new
@@ -40,8 +67,51 @@ public static class SettingsApi
         a.Signature, a.AcceptAnyCertificate, a.SaveSentCopy, a.SyncMonths, a.MaxCachedMb, a.Storage, a.SlimDays, a.SlimMb, a.Language, a.TrashDays, a.JunkDays, a.FocusedInbox
     };
 
+    /// <summary>Zeigt der Host auf den eigenen Container (Loopback, Link-Local, unbestimmt)? Dann kein Verbindungsversuch -
+    /// das Heimnetz (selbst gehostete Mail) bleibt erlaubt. Auch Namen werden aufgeloest: ein DNS-Name, der auf
+    /// 127.0.0.1 zeigt, ist ebenso tabu.</summary>
+    private static async Task<bool> LoopbackHost(string? host)
+    {
+        if (string.IsNullOrWhiteSpace(host)) return false;
+        var h = host.Trim().Trim('[', ']');
+        if (h.Equals("localhost", StringComparison.OrdinalIgnoreCase)) return true;
+        static bool Bad(System.Net.IPAddress ip)
+        {
+            if (ip.IsIPv4MappedToIPv6) ip = ip.MapToIPv4();
+            return System.Net.IPAddress.IsLoopback(ip) || ip.IsIPv6LinkLocal || ip.Equals(System.Net.IPAddress.Any) || ip.Equals(System.Net.IPAddress.IPv6Any)
+                   || ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork && ip.GetAddressBytes() is [169, 254, ..];
+        }
+        if (System.Net.IPAddress.TryParse(h, out var lit)) return Bad(lit);
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            return (await System.Net.Dns.GetHostAddressesAsync(h, cts.Token)).Any(Bad);
+        }
+        catch (Exception) { return false; }   // nicht aufloesbar: die Verbindung scheitert ohnehin
+    }
+
+    /// <summary>Zeigt das Konto auf einen anderen Server oder Benutzer als gespeichert? Dann darf das gespeicherte
+    /// Passwort bzw. Microsoft-Token nicht mitgehen - sonst liesse es sich an einen frei gewaehlten Host schicken.</summary>
+    private static bool TargetChanged(MailAccount existing, MailAccount body) =>
+        existing.ImapHost != body.ImapHost.Trim() || existing.ImapPort != body.ImapPort
+        || existing.ImapSecurity != body.ImapSecurity || existing.ImapUser != body.ImapUser.Trim()
+        || existing.SmtpHost != body.SmtpHost.Trim() || existing.SmtpPort != body.SmtpPort
+        || existing.SmtpSecurity != body.SmtpSecurity || existing.SmtpUser != body.SmtpUser.Trim()
+        || existing.AcceptAnyCertificate != body.AcceptAnyCertificate && body.AcceptAnyCertificate;
+
+    /// <summary>Fehlertext, wenn das Ziel geaendert wurde, aber Passwort bzw. neue Microsoft-Anmeldung fehlen; sonst null.</summary>
+    private static string? MissingSecretFor(MailAccount existing, MailAccount body)
+    {
+        if (!TargetChanged(existing, body)) return null;
+        if (body.Auth == MailAuth.Microsoft)
+            return string.IsNullOrEmpty(body.OAuthFlow) ? "Bei geändertem Server bitte erneut bei Microsoft anmelden." : null;
+        return string.IsNullOrEmpty(body.ImapPassword) || string.IsNullOrEmpty(body.SmtpPassword)
+            ? "Bei geändertem Server bitte das Passwort erneut eingeben." : null;
+    }
+
     /// <summary>Leeres Passwort beim Speichern heisst: das bisherige behalten. Das Microsoft-Token kommt
     /// nie aus der Anfrage, nur aus einer abgeschlossenen Anmeldung (Claim).</summary>
+
     internal static void Merge(MailAccount target, MailAccount body)
     {
         var imap = string.IsNullOrEmpty(body.ImapPassword) ? target.ImapPassword : body.ImapPassword;
@@ -75,20 +145,34 @@ public static class SettingsApi
 
     /// <summary>Datenbank im Hintergrund verdichten - laeuft schon eine, bleibt es bei der.
     /// Auch der Aufraeumer fuer "Schlank" (MailCleanup.Slim) startet sie hierueber.</summary>
-    public static CompactJob StartCompact(UserSpace space, ILogger log)
+    public static CompactJob? CompactOf(string userId) => Compactions.GetValueOrDefault(userId);
+
+    public static CompactJob StartCompact(UserSpace space, ILogger log, DataPaths? paths = null, UpdateCenter? update = null)
     {
         var job = Compactions.GetOrAdd(space.User.Id, _ => new CompactJob());
         lock (job)
         {
             if (job.Running) return job;
+            if (paths != null && update != null)
+            {
+                var (need, free, missing) = CompactSpace(space, paths, update);
+                job.Need = need; job.Free = free; job.Missing = missing;
+                if (missing > 0)
+                {
+                    job.Error = "Zu wenig freier Platz zum Verdichten.";
+                    log.LogWarning("Verdichten {User}: nicht gestartet, es fehlen etwa {Missing} MB freier Platz", space.User.Login, missing / 1024 / 1024);
+                    return job;
+                }
+            }
             job.Running = true; job.Error = null; job.Started = DateTime.UtcNow; job.Finished = null;
             var before = space.Db.SpaceInfo();
             job.Before = before.File + before.Wal;
         }
         _ = Task.Run(() =>
         {
+            using var activity = Activity.Start(space.User.Id, Activity.Compact);
             try { space.Db.Compact(); }
-            catch (Exception ex) { job.Error = ex.Message; log.LogWarning("Verdichten: {Error}", ex.Message); }
+            catch (Exception ex) { job.Error = ex.Message; activity.Fail(ex.Message); log.LogWarning("Verdichten: {Error}", ex.Message); }
             var after = space.Db.SpaceInfo();
             lock (job) { job.After = after.File + after.Wal; job.Finished = DateTime.UtcNow; job.Running = false; }
         });
@@ -121,7 +205,7 @@ public static class SettingsApi
                 if (body.Theme is "system" or "light" or "dark") s.Theme = body.Theme;
                 if (body.TimeZone != null) s.TimeZone = body.TimeZone;
                 if (body.MarkReadDelay is int d) s.MarkReadDelay = Math.Clamp(d, -1, 60);
-                if (body.OpenOnFolder is "none" or "first" or "last") s.OpenOnFolder = body.OpenOnFolder;
+                if (body.OpenOnFolder is "none" or "first" or "unread" or "last") s.OpenOnFolder = body.OpenOnFolder;
                 if (body.InviteCalendar is long ic) s.InviteCalendar = ic > 0 ? ic : null;
                 if (body.SmartCalendar is bool sc) s.SmartCalendar = sc;
             });
@@ -130,10 +214,11 @@ public static class SettingsApi
 
         // ---------------- Mailkonten ----------------
 
-        api.MapPost("/accounts", (MailAccount body, HttpContext http, MailSync sync, MicrosoftOAuth oauth) =>
+        api.MapPost("/accounts", async (MailAccount body, HttpContext http, MailSync sync, MicrosoftOAuth oauth) =>
         {
             var a = new MailAccount();
             var space = http.Space();
+            if (await LoopbackHost(body.ImapHost) || await LoopbackHost(body.SmtpHost)) return Results.BadRequest(new { error = "Dieser Server ist nicht erlaubt." });
             Merge(a, body);
             Claim(a, oauth.Grant(space.User.Id, body.OAuthFlow));
             if (a.Auth == MailAuth.Microsoft && string.IsNullOrEmpty(a.OAuthRefreshToken))
@@ -144,9 +229,13 @@ public static class SettingsApi
             return Results.Ok(new { a.Id });
         });
 
-        api.MapPut("/accounts/{id}", (string id, MailAccount body, HttpContext http, MailSync sync, MicrosoftOAuth oauth, ImapPool pool, ILogger<MailCleanup> log) =>
+        api.MapPut("/accounts/{id}", async (string id, MailAccount body, HttpContext http, MailSync sync, MicrosoftOAuth oauth, ImapPool pool, ILogger<MailCleanup> log) =>
         {
             var space = http.Space();
+            var existing = space.Settings.MailAccounts.FirstOrDefault(a => a.Id == id) ?? throw new KeyNotFoundException("Konto nicht gefunden.");
+            // Neuer Server: gespeichertes Passwort bzw. Microsoft-Token nicht mitnehmen (wie beim Test)
+            if (MissingSecretFor(existing, body) is { } missing) return Results.BadRequest(new { error = missing });
+            if (await LoopbackHost(body.ImapHost) || await LoopbackHost(body.SmtpHost)) return Results.BadRequest(new { error = "Dieser Server ist nicht erlaubt." });
             var token = oauth.Grant(space.User.Id, body.OAuthFlow);
             space.UpdateSettings(s =>
             {
@@ -199,9 +288,13 @@ public static class SettingsApi
             {
                 Merge(a, existing);
                 a.OAuthRefreshToken = existing.OAuthRefreshToken;
+                // Das gespeicherte Passwort bzw. Microsoft-Token nicht an einen anderen Server schicken
+                if (MissingSecretFor(existing, body) is { } missing) return Results.BadRequest(new { error = missing });
             }
             Merge(a, body);
             Claim(a, oauth.Grant(space.User.Id, body.OAuthFlow));
+            // Nur der eigene Container ist tabu (Loopback) - das Heimnetz ist bei selbst gehosteter Mail gewollt
+            if (await LoopbackHost(a.ImapHost) || await LoopbackHost(a.SmtpHost)) return Results.BadRequest(new { error = "Dieser Server ist nicht erlaubt." });
             var result = new Dictionary<string, string>();
             try
             {
@@ -212,15 +305,18 @@ public static class SettingsApi
                 await imap.DisconnectAsync(true, ct);
                 result["imap"] = "ok";
             }
-            catch (Exception ex) { result["imap"] = ex.Message; }
+            // Keine Server-Einzelheiten als Fehlertext (Port-Scan-Orakel) - nur Anmeldung vs. Verbindung
+            catch (MailKit.Security.AuthenticationException) { result["imap"] = "Anmeldung fehlgeschlagen (Benutzer oder Passwort)."; }
+            catch (Exception) { result["imap"] = "Keine Verbindung zum Server."; }
             try
             {
                 using var smtp = await ImapPool.SmtpAsync(a, ct);
                 await smtp.DisconnectAsync(true, ct);
                 result["smtp"] = "ok";
             }
-            catch (Exception ex) { result["smtp"] = ex.Message; }
-            return result;
+            catch (MailKit.Security.AuthenticationException) { result["smtp"] = "Anmeldung fehlgeschlagen (Benutzer oder Passwort)."; }
+            catch (Exception) { result["smtp"] = "Keine Verbindung zum Server."; }
+            return Results.Ok(result);
         });
 
         // ---------------- Oberflaeche (Favoriten, Ordnerfarben, Reihenfolge ...) ----------------
@@ -290,7 +386,7 @@ public static class SettingsApi
         // ---------------- Speicher und Statistik ----------------
 
         // Kurz fuer die Fusszeile im Ordnerbereich: belegter Platz, Datei-Grenze, Version
-        api.MapGet("/storage", (HttpContext http, DataPaths paths) =>
+        api.MapGet("/storage", (HttpContext http, DataPaths paths, UpdateCenter update) =>
         {
             var space = http.Space();
             var dbPath = paths.UserDb(space.User.Id);
@@ -298,8 +394,11 @@ public static class SettingsApi
             return new
             {
                 database = FileSize(dbPath) + FileSize(dbPath + "-wal"),
-                files = Dav.FileStore.Usage(space.Db),
+                files = Dav.FileStore.UsageTotal(space.Db),
+                used = UserStorage.Used(space.Db),
                 fileQuota = Dav.FileStore.Quota(space.Db),
+                // freier Platz auf dem Datentraeger des Servers (fehlt, wenn er sich nicht ermitteln laesst)
+                diskFree = update.FreeBytes(paths.Root),
                 version = Version()
             };
         });
@@ -333,6 +432,7 @@ public static class SettingsApi
             }).ToList();
 
             var (file, wal, free) = db.SpaceInfo();
+            var cs = CompactSpace(space, paths, http.RequestServices.GetRequiredService<UpdateCenter>());
             return new
             {
                 database = FileSize(dbPath) + FileSize(dbPath + "-wal"),
@@ -346,6 +446,11 @@ public static class SettingsApi
                 noteBlobs = Count("SELECT COALESCE(SUM(length(data)),0) FROM note_blobs"),
                 files = Count("SELECT COUNT(*) FROM files WHERE is_dir=0"),
                 fileBytes = Count("SELECT COALESCE(SUM(size),0) FROM files"),
+                // Alte Inhalte noch in der Datenbank (BlobMigration) - danach lohnt das Verdichten
+                fileContentsPending = Dav.FileStore.PendingBlobs(db),
+                // Platz fuers Verdichten: so viel braucht es voruebergehend, so viel ist frei
+                compactNeed = cs.Need,
+                diskFree = cs.Free,
                 appPasswords = Count("SELECT COUNT(*) FROM app_passwords"),
                 accounts
             };
@@ -353,7 +458,11 @@ public static class SettingsApi
 
         // Datenbank verdichten - im Hintergrund, denn bei mehreren GB dauert es laenger als ein
         // Reverse-Proxy auf eine Antwort wartet. Die Oberflaeche fragt den Stand ab.
-        api.MapPost("/compact", (HttpContext http, ILogger<UserSpace> log) => Results.Ok(StartCompact(http.Space(), log)));
+        api.MapPost("/compact", (HttpContext http, ILogger<UserSpace> log, DataPaths paths, UpdateCenter update) =>
+        {
+            var job = StartCompact(http.Space(), log, paths, update);
+            return job.Missing > 0 && !job.Running ? Results.Json(job, statusCode: 409) : Results.Ok(job);
+        });
         api.MapGet("/compact", (HttpContext http) =>
             Compactions.TryGetValue(http.Space().User.Id, out var job) ? Results.Ok(job) : Results.Ok(new CompactJob()));
 
@@ -414,6 +523,7 @@ public static class SettingsApi
             return new
             {
                 serverKey = e2e.Public,
+                serverKeyFingerprint = e2e.Fingerprint,
                 server = origin + "/dav/",
                 caldav = $"{origin}/dav/calendars/{login}/",
                 carddav = $"{origin}/dav/addressbooks/{login}/",
@@ -437,6 +547,20 @@ public static class SettingsApi
                 databases = string.IsNullOrEmpty(n.E2eePassword) ? null : await NotesSync.ScanAsync(space, ct)
             };
         });
+        // notizi verbinden: eigenes App-Passwort, das nur den Abgleichordner sieht, dazu ein Link fuer den QR-Code.
+        // Ab dann sehen alle anderen Zugaenge (Explorer, Nextcloud, DAVx5 ...) den Ordner nicht mehr.
+        api.MapPost("/notizi/connect", (HttpContext http) =>
+        {
+            var space = http.Space();
+            var origin = $"{http.Request.Scheme}://{http.Request.Host}";
+            var url = $"{origin}/dav/files/{Uri.EscapeDataString(space.User.Login)}/{space.Settings.Notizi.Root.Trim('/')}/";
+            // Jeder Aufruf: ein weiterer Zugang (ein Geraet je QR-Code); bestehende bleiben gueltig, entfernen unter "Geraete & Sync"
+            var password = AppPasswords.Create(space.Db, "notizi " + DateTime.Now.ToString("dd.MM. HH:mm"), AppPasswords.ScopeNotizi);
+            var link = "notizi://webdav?url=" + Uri.EscapeDataString(url) + "&user=" + Uri.EscapeDataString(space.User.Login)
+                + "&password=" + Uri.EscapeDataString(password);
+            return Results.Ok(new { url, login = space.User.Login, password, link });
+        });
+
         api.MapPut("/notizi", (NotiziSettings body, HttpContext http, NotesSync notes) =>
         {
             var space = http.Space();
@@ -450,8 +574,9 @@ public static class SettingsApi
                 if (changedPlace)
                 {
                     s.Notizi.DbFolder = body.DbFolder.Trim().Trim('/');
-                    s.Notizi.DbId = null;
-                    NotesDb.Of(space).ForgetSync();
+                    // Die Notizen hier bleiben bis zum naechsten Abgleich - der raeumt sie weg, wenn sie
+                    // zu einer anderen Datenbank gehoeren (nie mitnehmen, NotesSync.RunAsync)
+                    s.Notizi.SwitchDb();
                 }
             });
             notes.Kick(space.User.Id);

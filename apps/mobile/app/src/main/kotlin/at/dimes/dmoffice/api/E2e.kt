@@ -109,12 +109,32 @@ object E2e {
     }
 
     /**
-     * Umschlag einrichten: Serverschluessel (aus dem QR-Code, sonst vom Server), eigenes Schluesselpaar,
-     * Geraet mit dem App-Passwort registrieren. Ein Server ohne /api/e2e/key bleibt bei TLS allein.
+     * Fingerabdruck eines Serverschluessels zum Vergleichen mit dem Auge: die ersten 16 Byte von SHA-256 ueber den
+     * rohen Punkt, hex in Vierergruppen. Gleich gerechnet wie im Server (E2e.Fingerprint), der ihn in den Einstellungen
+     * unter "Geraete & Sync" und beim Start im Log zeigt.
+     */
+    fun fingerprint(serverKey: String): String =
+        java.security.MessageDigest.getInstance("SHA-256").digest(unb64u(serverKey)).copyOf(16)
+            .joinToString("") { "%02X".format(it) }.chunked(4).joinToString(" ")
+
+    /** Der Server bietet den Umschlag an, sein Schluessel kam aber nicht aus dem QR-Code: erst nach Vergleich des Fingerabdrucks. */
+    class KeyUnconfirmed(val key: String) : java.io.IOException("Serverschlüssel noch nicht bestätigt")
+
+    /** Schluessel, den der Server gerade nennt (ungeprueft - nur zum Vergleichen); null: Server ohne Umschlag. */
+    fun offeredKey(a: Account): String? {
+        val plain = ApiClient(a.copy(deviceId = null))
+        return try { plain.get<KeyInfo>(plain.url("/api/e2e/key")).key.also { importPublic(it) } } catch (e: ApiException) { if (e.code == 404) null else throw e }
+    }
+
+    /**
+     * Umschlag einrichten: Serverschluessel, eigenes Schluesselpaar, Geraet mit dem App-Passwort registrieren. Der
+     * Schluessel muss aus dem QR-Code kommen oder vom Benutzer per Fingerabdruck bestaetigt sein (a.serverKey) - einem
+     * Schluessel, den nur das Netz liefert, wird nie still vertraut: dann [KeyUnconfirmed]. Ein Server ohne /api/e2e/key
+     * bleibt bei TLS allein.
      */
     fun pair(a: Account): Account {
         val plain = ApiClient(a.copy(deviceId = null))
-        val serverKey = a.serverKey ?: try { plain.get<KeyInfo>(plain.url("/api/e2e/key")).key } catch (e: ApiException) { if (e.code == 404) return a else throw e }
+        val serverKey = a.serverKey ?: throw KeyUnconfirmed(offeredKey(a) ?: return a)
         val kp = generateKeyPair()
         val pub = exportPublic(kp.public)
         val reg: Registration = plain.postFor(plain.url("/api/e2e/register"), mapOf("pubKey" to pub))

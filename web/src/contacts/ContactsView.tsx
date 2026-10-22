@@ -1,43 +1,49 @@
 import {
   Avatar, Button, Dropdown, Field, Input, Option, SearchBox, Spinner, Switch, Text, Textarea, Toolbar, ToolbarButton, makeStyles, mergeClasses, tokens,
-  Menu, MenuItem, MenuList, MenuPopover, MenuTrigger, Link,
+  Menu, MenuDivider, MenuItem, MenuList, MenuPopover, MenuTrigger, Link,
 } from '@fluentui/react-components'
 import {
   PersonAdd20Regular, Edit20Regular, Delete20Regular, Mail20Regular, Call20Regular, Location20Regular, Add16Regular, Dismiss16Regular,
-  Building20Regular, Gift20Regular, Globe20Regular, MoreVertical16Regular, Book20Regular, Star20Regular, Star20Filled, Star12Filled,
+  Building20Regular, Gift20Regular, Globe20Regular, Book20Regular, Star20Regular, Star20Filled, Star12Filled,
   BookAdd20Regular, ArrowImport20Regular, ArrowExport20Regular, ArrowSort20Regular, PanelLeft20Regular,
+  MoreHorizontal16Regular, Open20Regular, Rename20Regular, People20Regular, CheckboxChecked20Regular,
 } from '@fluentui/react-icons'
+import { ContextMenu, TargetMenu, askText, isTyping, useContextMenu, useMultiSelect } from '../shell/context'
+import { useNavStyles } from '../shell/nav'
 import { MenuItemRadio } from '@fluentui/react-components'
 import { RibbonButton, RibbonDivider, RibbonHeader, useSidePane } from '../shell/Ribbon'
+import { BackBar, SidePane, useBackClose, useIsMobile, useMobileStyles } from '../shell/mobile'
 import { usePrefs } from '../prefs'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, Collection, Contact } from '../api'
 import { useApp } from '../App'
-import { CollectionDialog, importInto } from '../calendar/CollectionDialog'
+import { CollectionDialog, importInto, removeCollection } from '../calendar/CollectionDialog'
 import { locale, t } from '../i18n'
 
 const useStyles = makeStyles({
   outer: { display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 },
-  root: { display: 'flex', flex: 1, minWidth: 0, minHeight: 0 },
+  root: { display: 'flex', flex: 1, minWidth: 0, minHeight: 0, position: 'relative' },
   main: { flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 },
   panes: { flex: 1, display: 'flex', minHeight: 0, minWidth: 0 },
-  books: { width: '220px', flexShrink: 0, borderRight: `1px solid ${tokens.colorNeutralStroke2}`, padding: '12px 8px', display: 'flex', flexDirection: 'column', gap: '4px' },
-  book: { display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 8px', borderRadius: tokens.borderRadiusMedium, cursor: 'pointer', ':hover': { backgroundColor: tokens.colorNeutralBackground1Hover } },
-  active: { backgroundColor: tokens.colorBrandBackground2, fontWeight: 600 },
-  list: { width: '320px', flexShrink: 0, borderRight: `1px solid ${tokens.colorNeutralStroke2}`, display: 'flex', flexDirection: 'column', minHeight: 0 },
-  items: { flex: 1, overflowY: 'auto' },
+  books: { width: '220px', flexShrink: 0, borderRight: `1px solid ${tokens.colorNeutralStroke2}` },
+  list: { width: '320px', flexShrink: 0, borderRight: `1px solid ${tokens.colorNeutralStroke2}`, display: 'flex', flexDirection: 'column', minHeight: 0,
+    '@media (max-width: 767px)': { width: 'auto', flex: 1, minWidth: 0, borderRight: 'none' } },
+  items: { flex: 1, overflowY: 'auto', outline: 'none' },
   letter: { padding: '8px 14px 2px', fontWeight: 600, color: tokens.colorBrandForeground1, fontSize: '13px' },
-  item: { display: 'flex', alignItems: 'center', gap: '10px', padding: '6px 14px', cursor: 'pointer', ':hover': { backgroundColor: tokens.colorNeutralBackground1Hover } },
+  item: { display: 'flex', alignItems: 'center', gap: '10px', padding: '4px 14px', cursor: 'pointer', userSelect: 'none', ':hover': { backgroundColor: tokens.colorNeutralBackground1Hover },
+    '@media (max-width: 767px)': { padding: '6px 14px' } },
   sel: { backgroundColor: tokens.colorBrandBackground2, ':hover': { backgroundColor: tokens.colorBrandBackground2Hover } },
   sub: { fontSize: '12px', color: tokens.colorNeutralForeground3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  detail: { flex: 1, overflowY: 'auto', padding: '24px 32px' },
-  head: { display: 'flex', alignItems: 'center', gap: '20px', marginBottom: '24px' },
+  detail: { flex: 1, minHeight: 0, overflowY: 'auto', padding: '24px 32px', '@media (max-width: 767px)': { padding: '16px' } },
+  head: { display: 'flex', alignItems: 'center', gap: '20px', marginBottom: '24px', '@media (max-width: 767px)': { gap: '12px', marginBottom: '12px' } },
   row: { display: 'flex', gap: '12px', alignItems: 'flex-start', padding: '8px 0', borderBottom: `1px solid ${tokens.colorNeutralStroke3}` },
   label: { width: '90px', color: tokens.colorNeutralForeground3, fontSize: '13px', flexShrink: 0 },
-  grid: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '10px 16px', maxWidth: '760px' },
+  grid: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '10px 16px', maxWidth: '760px', '@media (max-width: 767px)': { gridTemplateColumns: 'minmax(0, 1fr)' } },
   full: { gridColumn: '1 / -1' },
-  multi: { display: 'flex', gap: '6px', alignItems: 'center', marginBottom: '6px' },
+  multi: { display: 'flex', gap: '6px', alignItems: 'center', marginBottom: '6px', flexWrap: 'wrap' },
   section: { gridColumn: '1 / -1', marginTop: '10px', fontWeight: 600 },
+  // Adresse: Typ, Strasse, PLZ, Ort, Entfernen - auf dem Handy zweispaltig
+  address: { display: 'grid', gridTemplateColumns: '110px 1fr 100px 1fr auto', gap: '6px', '@media (max-width: 767px)': { gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)' } },
 })
 
 // Erster Wert geht in die vCard (TYPE=...), nur der zweite ist Anzeige
@@ -65,7 +71,13 @@ export default function ContactsView() {
   const importInput = useRef<HTMLInputElement>(null)
   const { prefs, update } = usePrefs()
   const sort = prefs.contactSort ?? 'name'
-  const [sidePane, toggleSide] = useSidePane('people')
+  const [sidePane, toggleSide, closeSide] = useSidePane('people')
+  // Handy: Liste in voller Breite, Kontakt bzw. Formular im Vollbild mit Zurueck
+  const mobile = useIsMobile()
+  const ms = useMobileStyles()
+  const open = !!(edit || selected)
+  const closeDetail = () => { setEdit(null); setSelected(null) }
+  useBackClose(open, closeDetail)
   const sortKey = (c: Contact) => (sort === 'family' ? c.family || c.displayName : sort === 'org' ? c.org || '~' + c.displayName : c.displayName).trim()
   const importTo = (id: number | undefined) => {
     if (!id) return
@@ -114,22 +126,156 @@ export default function ContactsView() {
     try { await api.del(`/api/pim/contacts/${c.book}/${encodeURIComponent(c.uri)}`); setSelected(null); load() } catch (e) { fail(e) }
   }
 
-  const writeMail = (addr: string) => {
-    sessionStorage.setItem('dmoffice.compose.to', addr)
+  const writeMail = (addr: string | string[]) => {
+    sessionStorage.setItem('dmoffice.compose.to', ([] as string[]).concat(addr).join('\n'))
     location.hash = '#/mail'
+  }
+
+  // ---------------- Auswahl, Kontextmenue, Tastatur, Ziehen ----------------
+  const nv = useNavStyles()
+  const mx = useMultiSelect<string>(useMemo(() => filtered.map(c => c.id), [filtered]))
+  const picked = filtered.filter(c => mx.selected.includes(c.id))
+  type Ctx = { kind: 'contact'; ids: string[] } | { kind: 'book'; b: Collection } | { kind: 'side' } | { kind: 'list' }
+  const cm = useContextMenu<Ctx>()
+  const listRef = useRef<HTMLDivElement>(null)
+  useEffect(() => { mx.clear() }, [book]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Pfeiltasten: der Kontakt rechts folgt der Auswahl
+  useEffect(() => {
+    if (mx.selected.length !== 1 || mx.selected[0] === selected?.id) return
+    const c = filtered.find(x => x.id === mx.selected[0])
+    if (c) { setSelected(c); setEdit(null) }
+  }, [mx.selected]) // eslint-disable-line react-hooks/exhaustive-deps
+  const clickRow = (e: React.MouseEvent, c: Contact) => {
+    mx.click(e, c.id)
+    if (!(e.ctrlKey || e.metaKey || e.shiftKey)) { setSelected(c); setEdit(null) }
+    else setSelected(null)
+    listRef.current?.focus({ preventScroll: true })
+  }
+  const rowMenu = (e: React.MouseEvent, c: Contact) => {
+    const ids = mx.selected.includes(c.id) ? mx.selected : [c.id]
+    mx.pick(c.id)
+    cm.open(e, { kind: 'contact', ids })
+  }
+  const DRAG = 'application/x-dmoffice-contacts'
+  const [dropOn, setDropOn] = useState<number | null>(null)
+  const full = (c: Contact) => api.get<Contact>(`/api/pim/contacts/${c.book}/${encodeURIComponent(c.uri)}`)
+  /** In ein anderes Adressbuch verschieben bzw. kopieren - Foto und alles andere bleiben. */
+  const transfer = async (list: Contact[], target: number, copy: boolean) => {
+    let n = 0
+    try {
+      for (const c of list) {
+        if (c.book === target && !copy) continue
+        const x = await full(c)
+        if (copy) await api.post('/api/pim/contacts', { ...x, id: '', uri: '', etag: '', uid: undefined, book: target, moveTo: undefined })
+        else await api.post('/api/pim/contacts', { ...x, photo: undefined, moveTo: target })
+        n++
+      }
+    } catch (err) { fail(err) }
+    if (n) notify(copy ? t('{n} kopiert', { n }) : t('{n} verschoben', { n }))
+    setSelected(null); mx.clear(); load(); loadBooks()
+  }
+  const removeMany = async (list: Contact[]) => {
+    if (!list.length) return
+    if (list.length === 1) { remove(list[0]); return }
+    if (!confirm(t('{n} Kontakte löschen?', { n: list.length }))) return
+    try { for (const c of list) await api.del(`/api/pim/contacts/${c.book}/${encodeURIComponent(c.uri)}`) } catch (err) { fail(err) }
+    setSelected(null); mx.clear(); load(); loadBooks()
+  }
+  const setVip = async (list: Contact[], vip: boolean) => {
+    try { for (const c of list) await api.post('/api/pim/contacts', { ...(await full(c)), photo: undefined, vip, moveTo: c.book }) } catch (err) { fail(err) }
+    load(); if (detail && list.some(c => c.id === detail.id)) loadDetail(detail)
+  }
+  const bookDrop = (id: number) => ({
+    onDragOver: (e: React.DragEvent) => {
+      if (!e.dataTransfer.types.includes(DRAG)) return
+      e.preventDefault(); e.dataTransfer.dropEffect = e.ctrlKey ? 'copy' : 'move'; setDropOn(id)
+    },
+    onDragLeave: () => setDropOn(d => (d === id ? null : d)),
+    onDrop: (e: React.DragEvent) => {
+      setDropOn(null)
+      const ids: string[] = JSON.parse(e.dataTransfer.getData(DRAG) || '[]')
+      const list = (contacts ?? []).filter(c => ids.includes(c.id))
+      if (!list.length) return
+      e.preventDefault()
+      transfer(list, id, e.ctrlKey)
+    },
+  })
+  const renameBook = async (b: Collection) => {
+    const name = await askText(t('Umbenennen'), b.name)
+    if (!name || name === b.name) return
+    try { await api.put(`/api/pim/collections/${b.id}`, { name }); loadBooks() } catch (err) { fail(err) }
+  }
+  const deleteBook = async (b: Collection) => {
+    try { if (await removeCollection(b, 'addressbooks')) { if (book === b.id) setBook('all'); loadBooks(); load() } } catch (err) { fail(err) }
+  }
+  const newContact = (b?: number) => { setSelected(null); setEdit(empty(b ?? (book === 'all' ? books[0]?.id : book))) }
+  const onListKey = (e: React.KeyboardEvent) => {
+    if (isTyping(e)) return
+    const k = e.key
+    if (k === 'Delete') { e.preventDefault(); removeMany(picked) }
+    else if (k === 'Escape') { mx.clear(); closeDetail() }
+    else if (e.ctrlKey && k.toLowerCase() === 'a') { e.preventDefault(); mx.all() }
+    else if (e.ctrlKey && k.toLowerCase() === 'n') { e.preventDefault(); newContact() }
+    else if (k === 'Enter' && picked.length === 1) { e.preventDefault(); setSelected(picked[0]); setEdit(null) }
+    else if (k === 'F2' && picked.length === 1) { e.preventDefault(); full(picked[0]).then(setEdit).catch(fail) }
+    else if (k === 'ArrowDown' || k === 'ArrowUp') { e.preventDefault(); mx.step(k === 'ArrowDown' ? 1 : -1, e.shiftKey) }
+  }
+
+  const ctxMenu = () => {
+    const x = cm.ctx?.data
+    if (!x) return null
+    if (x.kind === 'side') return <MenuItem icon={<BookAdd20Regular />} onClick={() => setBookDialog('new')}>{t('Neues Adressbuch')}</MenuItem>
+    if (x.kind === 'list') return <>
+      <MenuItem icon={<PersonAdd20Regular />} onClick={() => newContact()}>{t('Neuer Kontakt')}</MenuItem>
+      {filtered.length > 0 && <MenuItem icon={<CheckboxChecked20Regular />} onClick={mx.all}>{t('Alle auswählen')}</MenuItem>}
+    </>
+    if (x.kind === 'book') {
+      const b = x.b
+      return <>
+        <MenuItem icon={<Open20Regular />} onClick={() => setBook(b.id)}>{t('Öffnen')}</MenuItem>
+        <MenuItem icon={<PersonAdd20Regular />} onClick={() => newContact(b.id)}>{t('Neuer Kontakt')}</MenuItem>
+        <MenuDivider />
+        <MenuItem icon={<Edit20Regular />} onClick={() => setBookDialog(b)}>{t('Bearbeiten …')}</MenuItem>
+        <MenuItem icon={<Rename20Regular />} onClick={() => renameBook(b)}>{t('Umbenennen')}</MenuItem>
+        <MenuDivider />
+        <MenuItem icon={<ArrowImport20Regular />} onClick={() => importTo(b.id)}>{t('Importieren (.vcf) …')}</MenuItem>
+        <MenuItem icon={<ArrowExport20Regular />} onClick={() => window.open(`/api/pim/export/${b.id}`)}>{t('Exportieren (.vcf)')}</MenuItem>
+        <MenuDivider />
+        <MenuItem icon={<Delete20Regular />} onClick={() => deleteBook(b)}>{t('Löschen')}</MenuItem>
+      </>
+    }
+    const sel = (contacts ?? []).filter(c => x.ids.includes(c.id))
+    if (!sel.length) return null
+    const one = sel.length === 1 ? sel[0] : null
+    const mails = sel.map(c => c.emails[0]?.value).filter(Boolean) as string[]
+    const allVip = sel.every(c => c.vip)
+    const inBooks = new Set(sel.map(c => c.book))
+    return <>
+      {!one && <MenuItem disabled>{t('{n} Kontakte ausgewählt', { n: sel.length })}</MenuItem>}
+      {one && <MenuItem icon={<Open20Regular />} onClick={() => { setSelected(one); setEdit(null) }}>{t('Öffnen')}</MenuItem>}
+      {one && <MenuItem icon={<Edit20Regular />} onClick={() => full(one).then(setEdit).catch(fail)}>{t('Bearbeiten')}</MenuItem>}
+      <MenuItem icon={mails.length > 1 ? <People20Regular /> : <Mail20Regular />} disabled={!mails.length} onClick={() => writeMail(mails)}>{t('E-Mail senden')}</MenuItem>
+      <MenuItem icon={allVip ? <Star20Filled /> : <Star20Regular />} onClick={() => setVip(sel, !allVip)}>{allVip ? t('Nicht mehr VIP') : t('Als VIP markieren')}</MenuItem>
+      <MenuDivider />
+      <TargetMenu kind="move" targets={books.filter(b => !(inBooks.size === 1 && inBooks.has(b.id))).map(b => ({ id: b.id, label: b.name }))} onPick={id => transfer(sel, Number(id), false)} />
+      <TargetMenu kind="copy" targets={books.filter(b => !(inBooks.size === 1 && inBooks.has(b.id))).map(b => ({ id: b.id, label: b.name }))} onPick={id => transfer(sel, Number(id), true)} />
+      {one && <MenuItem icon={<ArrowExport20Regular />} onClick={() => window.open(`/api/pim/contacts/${one.book}/${encodeURIComponent(one.uri)}/vcf`)}>{t('Exportieren (.vcf)')}</MenuItem>}
+      <MenuDivider />
+      <MenuItem icon={<Delete20Regular />} onClick={() => removeMany(sel)}>{t('Löschen')}</MenuItem>
+    </>
   }
 
   let last = ''
   return (
     <div className={s.outer}>
       {/* Menueband ueber die ganze Breite wie in Office - auch ueber dem Navigationsbereich */}
-      <RibbonHeader area="people"
+      <RibbonHeader area="people" onMenu={toggleSide}
         start={<>
-          <RibbonButton primary icon={<PersonAdd20Regular />} label={t('Neuer Kontakt')} onClick={() => setEdit(empty(book === 'all' ? books[0]?.id : book))} />
+          <RibbonButton primary icon={<PersonAdd20Regular />} label={t('Neuer Kontakt')} onClick={() => newContact()} />
           <RibbonDivider />
           <RibbonButton icon={<Mail20Regular />} label={t('E-Mail')} disabled={!detail?.emails[0]} onClick={() => detail?.emails[0] && writeMail(detail.emails[0].value)} />
           <RibbonButton icon={<Edit20Regular />} label={t('Bearbeiten')} disabled={!detail} onClick={() => detail && setEdit(detail)} />
-          <RibbonButton icon={<Delete20Regular />} label={t('Löschen')} disabled={!detail} onClick={() => detail && remove(detail)} />
+          <RibbonButton icon={<Delete20Regular />} label={t('Löschen')} disabled={!detail && !picked.length} onClick={() => picked.length > 1 ? removeMany(picked) : detail && remove(detail)} />
           <RibbonDivider />
           <RibbonButton icon={<BookAdd20Regular />} label={t('Neues Adressbuch')} onClick={() => setBookDialog('new')} />
           <RibbonButton icon={<ArrowImport20Regular />} label={t('Importieren')} disabled={!books.length} onClick={() => importTo(book === 'all' ? books[0]?.id : book)} />
@@ -150,24 +296,28 @@ export default function ContactsView() {
           <RibbonButton icon={<PanelLeft20Regular />} label={t('Ordnerbereich')} pressed={sidePane} onClick={toggleSide} />
         </>} />
       <div className={s.root}>
-      <div className={s.books} style={sidePane ? undefined : { display: 'none' }}>
-        <div className={mergeClasses(s.book, book === 'all' && s.active)} onClick={() => setBook('all')}><Book20Regular /> {t('Alle Kontakte')}</div>
+      <SidePane className={mergeClasses(s.books, nv.pane)} open={sidePane} onClose={closeSide}>
+        <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }} onContextMenu={e => cm.open(e, { kind: 'side' })}>
+        <div className={mergeClasses(nv.row, book === 'all' && nv.active)} onClick={() => setBook('all')}><People20Regular /><span className={nv.name}>{t('Alle Kontakte')}</span></div>
+        <div className={nv.section}><span style={{ flex: 1 }}>{t('Adressbücher')}</span>
+          <Button appearance="subtle" size="small" icon={<BookAdd20Regular />} aria-label={t('Neues Adressbuch')} title={t('Neues Adressbuch')} onClick={() => setBookDialog('new')} />
+        </div>
         {books.map(b => (
-          <div key={b.id} className={mergeClasses(s.book, book === b.id && s.active)} onClick={() => setBook(b.id)}>
-            <Book20Regular /> <span style={{ flex: 1 }}>{b.name}</span> <Text size={200}>{b.count}</Text>
-            <Menu>
-              <MenuTrigger disableButtonEnhancement><Button appearance="transparent" size="small" icon={<MoreVertical16Regular />} aria-label={t('Mehr')} onClick={e => e.stopPropagation()} /></MenuTrigger>
-              <MenuPopover>
-                <MenuList>
-                  <MenuItem onClick={() => setBookDialog(b)}>{t('Bearbeiten …')}</MenuItem>
-                  <MenuItem onClick={() => importTo(b.id)}>{t('Importieren (.vcf) …')}</MenuItem>
-                  <MenuItem onClick={() => window.open(`/api/pim/export/${b.id}`)}>{t('Exportieren (.vcf)')}</MenuItem>
-                </MenuList>
-              </MenuPopover>
-            </Menu>
+          <div key={b.id} className={mergeClasses(nv.row, book === b.id && nv.active, dropOn === b.id && nv.drop)} onClick={() => setBook(b.id)} tabIndex={0}
+            onContextMenu={e => cm.open(e, { kind: 'book', b })} {...bookDrop(b.id)}
+            onKeyDown={e => {
+              if (e.key === 'Enter') setBook(b.id)
+              else if (e.key === 'F2') { e.preventDefault(); renameBook(b) }
+              else if (e.key === 'Delete') { e.preventDefault(); deleteBook(b) }
+            }}>
+            <Book20Regular /><span className={nv.name}>{b.name}</span><span className={nv.count}>{b.count}</span>
+            <Button className="dm-more" appearance="transparent" size="small" icon={<MoreHorizontal16Regular />} aria-label={t('Mehr')}
+              onClick={e => { e.stopPropagation(); cm.open(e, { kind: 'book', b }) }} />
           </div>
         ))}
-        <Link onClick={() => setBookDialog('new')} style={{ padding: '6px 8px' }}>{t('+ Adressbuch')}</Link>
+        <Link className={nv.link} onClick={() => setBookDialog('new')}>{t('+ Adressbuch')}</Link>
+        <div style={{ flex: 1, minHeight: 24 }} />
+        </div>
         <input ref={importInput} type="file" accept=".vcf,text/vcard" hidden onChange={async e => {
           const f = e.target.files?.[0]
           if (f) {
@@ -180,18 +330,21 @@ export default function ContactsView() {
           }
           e.target.value = ''
         }} />
-      </div>
+      </SidePane>
       <div className={s.main}>
       <div className={s.panes}>
       <div className={s.list}>
         <div style={{ padding: 10 }}><SearchBox placeholder={t('Kontakte durchsuchen')} value={search} onChange={(_, d) => setSearch(d.value)} style={{ width: '100%' }} /></div>
-        <div className={s.items}>
+        <div className={s.items} ref={listRef} tabIndex={-1} onKeyDown={onListKey}
+          onContextMenu={e => cm.open(e, { kind: 'list' })}>
           {!contacts ? <Spinner /> : filtered.length === 0 ? <Text style={{ padding: 16, display: 'block' }}>{t('Keine Kontakte.')}</Text> : filtered.map(c => {
             const letter = (sortKey(c).replace(/^~/, '')[0] || '#').toUpperCase()
             const head = letter !== last ? <div key={'l' + letter} className={s.letter}>{letter}</div> : null
             last = letter
             return [head,
-              <div key={c.id} className={mergeClasses(s.item, selected?.id === c.id && s.sel)} onClick={() => { setSelected(c); setEdit(null) }}>
+              <div key={c.id} className={mergeClasses(s.item, (selected?.id === c.id || mx.selected.includes(c.id)) && s.sel)} onClick={e => clickRow(e, c)}
+                onContextMenu={e => rowMenu(e, c)} draggable={!mobile}
+                onDragStart={e => { e.dataTransfer.setData(DRAG, JSON.stringify(mx.selected.includes(c.id) ? mx.selected : [c.id])); e.dataTransfer.effectAllowed = 'copyMove' }}>
                 <Avatar name={c.displayName} size={32} color="colorful" />
                 <div style={{ minWidth: 0 }}>
                   <div>{c.displayName}{c.vip && <Star12Filled style={{ marginLeft: 4, color: tokens.colorPaletteYellowForeground1 }} />}</div>
@@ -201,6 +354,8 @@ export default function ContactsView() {
           })}
         </div>
       </div>
+      <div className={mergeClasses(mobile && open && ms.full)} style={mobile && !open ? { display: 'none' } : { display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, minHeight: 0 }}>
+      {mobile && <BackBar onBack={closeDetail} title={edit ? (edit.id ? t('Bearbeiten') : t('Neuer Kontakt')) : detail?.displayName} />}
       <div className={s.detail}>
         {edit ? <ContactForm initial={edit} books={books} onSave={save} onCancel={() => setEdit(null)} />
           : detail ? (
@@ -232,13 +387,16 @@ export default function ContactsView() {
               ))}
               {detail.org && <div className={s.row}><Building20Regular /><span className={s.label}>{t('Firma')}</span>{detail.org}</div>}
               {detail.birthday && <div className={s.row}><Gift20Regular /><span className={s.label}>{t('Geburtstag')}</span>{new Date(detail.birthday).toLocaleDateString(locale)}</div>}
-              {detail.urls.map((u, i) => <div key={'u' + i} className={s.row}><Globe20Regular /><span className={s.label}>{t('Web')}</span><Link href={u} target="_blank">{u}</Link></div>)}
+              {/* Nur http(s) verlinken - eine vCard aus fremder Quelle koennte javascript: als Webadresse haben */}
+              {detail.urls.map((u, i) => <div key={'u' + i} className={s.row}><Globe20Regular /><span className={s.label}>{t('Web')}</span>{/^https?:\/\//i.test(u.trim()) ? <Link href={u} target="_blank" rel="noopener noreferrer">{u}</Link> : <span>{u}</span>}</div>)}
               {detail.note && <div className={s.row}><span className={s.label}>{t('Notiz')}</span><span style={{ whiteSpace: 'pre-wrap' }}>{detail.note}</span></div>}
             </>
-          ) : <Text style={{ color: tokens.colorNeutralForeground3 }}>{t('Wähle einen Kontakt aus.')}</Text>}
+          ) : <Text style={{ color: tokens.colorNeutralForeground3 }}>{picked.length > 1 ? t('{n} Kontakte ausgewählt', { n: picked.length }) : t('Wähle einen Kontakt aus.')}</Text>}
       </div>
       </div>
       </div>
+      </div>
+      <ContextMenu at={cm.ctx?.at} onClose={cm.close}>{ctxMenu()}</ContextMenu>
       {bookDialog && <CollectionDialog kind="addressbooks" collection={bookDialog === 'new' ? null : bookDialog} onClose={c => { setBookDialog(null); if (c) loadBooks() }} />}
       </div>
     </div>
@@ -305,7 +463,7 @@ function ContactForm({ initial, books, onSave, onCancel }: { initial: Contact; b
         {c.addresses.map((a, i) => {
           const upd = (p: any) => set({ addresses: c.addresses.map((x, j) => j === i ? { ...x, ...p } : x) })
           return (
-            <div key={i} className={s.full} style={{ display: 'grid', gridTemplateColumns: '110px 1fr 100px 1fr auto', gap: 6 }}>
+            <div key={i} className={mergeClasses(s.full, s.address)}>
               <Dropdown style={{ minWidth: 100 }} aria-label={t('Typ')} value={typeLabel(emailTypes, a.type)} selectedOptions={[a.type]} onOptionSelect={(_, d) => upd({ type: d.optionValue })}>
                 {emailTypes.map(([k, l]) => <Option key={k} value={k}>{l}</Option>)}
               </Dropdown>

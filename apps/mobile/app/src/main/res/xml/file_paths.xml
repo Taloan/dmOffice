@@ -1,4 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
     <cache-path name="attachments" path="attachments/" />
+    <!-- Geladene Update-APK fuer den Android-Installer -->
+    <cache-path name="updates" path="updates/" />
+    <!-- Dateiablage: geoeffnete/geteilte Dateien und Kamerafotos vor dem Hochladen -->
+    <cache-path name="files" path="files/" />
+    <cache-path name="camera" path="camera/" />
+    <!-- Lokale Kopie der offline verfuegbaren Ordner (oeffnen/teilen ohne Netz) -->
+    <files-path name="offline" path="offline/data/" />
 </paths>

@@ -8,14 +8,31 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Updates von GitHub-Releases selbst installieren (kein App-Store) -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- Auf Wunsch: Kalender und Kontakte in die Android-Datenbanken spiegeln -->
     <uses-permission android:name="android.permission.READ_CALENDAR" />
     <uses-permission android:name="android.permission.WRITE_CALENDAR" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.WRITE_CONTACTS" />
+    <!-- Eigenes Konto mit Sync-Adapter: Aenderungen im Android-Kalender und in den Kontakten zurueck zu dmOffice -->
+    <uses-permission android:name="android.permission.READ_SYNC_SETTINGS" />
+    <uses-permission android:name="android.permission.WRITE_SYNC_SETTINGS" />
     <!-- Erinnerungen puenktlich: fuer Kalender-Apps erlaubt (Android 13+) -->
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" android:maxSdkVersion="32" />
+    <!-- Automatisches Hochladen: Fotos/Videos lesen (Android 13+ getrennt, 14+ auch Teilzugriff), Ortsangaben in
+         Fotos unveraendert lassen, auf Android 10 und aelter nach dem Hochladen loeschen, Fortschritt im Vordergrund -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
+    <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" />
+    <!-- Nur auf Wunsch (Regel "danach loeschen"): ohne Rueckfrage loeschen wie die Nextcloud-App; die App kommt nicht aus dem Play Store -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <application
@@ -26,7 +43,8 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.DmOffice"
         android:networkSecurityConfig="@xml/network_security_config"
-        android:enableOnBackInvokedCallback="true">
+        android:enableOnBackInvokedCallback="true"
+        android:requestLegacyExternalStorage="true">
 
         <activity
             android:name=".MainActivity"
@@ -45,6 +63,13 @@
                 <data android:scheme="dmoffice" android:host="pair" />
             </intent-filter>
         </activity>
+
+        <!-- Office-Editor (WebView): Drehen und Tastatur ohne Neuladen -->
+        <activity
+            android:name=".ui.OfficeActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|density"
+            android:windowSoftInputMode="adjustResize" />
 
         <activity
             android:name=".widget.WidgetConfigActivity"
@@ -103,6 +128,27 @@
             android:authorities="${applicationId}.firebaseinitprovider"
             tools:node="remove" />
 
+        <!-- Android-Konto "dmOffice" mit Sync-Adaptern fuer Kalender und Kontakte -->
+        <service android:name=".sync.AuthenticatorService" android:exported="true">
+            <intent-filter>
+                <action android:name="android.accounts.AccountAuthenticator" />
+            </intent-filter>
+            <meta-data android:name="android.accounts.AccountAuthenticator" android:resource="@xml/authenticator" />
+        </service>
+        <service android:name=".sync.CalendarSyncService" android:exported="true">
+            <intent-filter>
+                <action android:name="android.content.SyncAdapter" />
+            </intent-filter>
+            <meta-data android:name="android.content.SyncAdapter" android:resource="@xml/sync_calendar" />
+        </service>
+        <service android:name=".sync.ContactsSyncService" android:exported="true">
+            <intent-filter>
+                <action android:name="android.content.SyncAdapter" />
+            </intent-filter>
+            <meta-data android:name="android.content.SyncAdapter" android:resource="@xml/sync_contacts" />
+            <meta-data android:name="android.provider.CONTACTS_STRUCTURE" android:resource="@xml/contacts" />
+        </service>
+
         <receiver android:name=".notify.ReminderReceiver" android:exported="false" />
         <receiver android:name=".notify.BootReceiver" android:exported="false">
             <intent-filter>
@@ -119,6 +165,25 @@
             android:grantUriPermissions="true">
             <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />
         </provider>
+
+        <!-- Dateiablage als Speicherort in Android ("Dateien", Oeffnen-/Speichern-Dialoge) -->
+        <provider
+            android:name=".files.FilesProvider"
+            android:authorities="${applicationId}.documents"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
+
+        <!-- Automatisches Hochladen: Fortschritt als Vordergrunddienst (Android 14+: Typ noetig) und "Pausieren" -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
+        <receiver android:name=".upload.UploadActionReceiver" android:exported="false" />
 
         <!-- WorkManager ohne automatischen Start, Initialisierung in App -->
         <provider

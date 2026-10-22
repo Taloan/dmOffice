@@ -124,7 +124,8 @@ public sealed class NotesSync : BackgroundService
             foreach (var space in _spaces.All())
             {
                 var n = space.Settings.Notizi;
-                if (!n.Enabled || string.IsNullOrEmpty(n.E2eePassword) || string.IsNullOrEmpty(n.DbFolder)) continue;
+                if (!n.Enabled || string.IsNullOrEmpty(n.E2eePassword)) continue;
+                if (string.IsNullOrEmpty(n.DbFolder) && !await AutoPickAsync(space, stop)) continue;
                 var st = StateOf(space);
                 bool due = st.LastRun == null || DateTime.UtcNow - st.LastRun > TimeSpan.FromMinutes(1)
                            || (_due.TryGetValue(space.User.Id, out var at) && at <= DateTime.UtcNow);
@@ -155,23 +156,23 @@ public sealed class NotesSync : BackgroundService
                 db.RekeyBlobs(store.Crypto.BlobName);
                 space.UpdateSettings(s => s.Notizi.BlobKeyMark = keyMark);
             }
-            // Kennung: eine andere Datenbank im Ordner als beim letzten Mal - hier neu anfangen.
-            // Offene Aenderungen nicht wegwerfen: dann nur den Abgleich vergessen, der erste
-            // Durchgang fuehrt gleiche Notizen zusammen (wie beim Ortswechsel in den Einstellungen)
+            // Kennung der Datenbank im Ordner. Gehoeren die Notizen hier zu einer anderen Datenbank, wandern sie
+            // NIE hinueber - sonst landeten Notizen aus "notizi pr" in "crypt". Ohne offene Aenderungen wird hier
+            // geleert und frisch geladen; mit offenen Aenderungen bleibt alles stehen, bis der Benutzer zur
+            // bisherigen Datenbank zurueckkehrt und dort abgleicht.
             var id = await store.EnsureIdAsync(n.DbId ?? Guid.NewGuid().ToString("N"), ct);
-            if (id != n.DbId)
+            var origin = n.LocalDbId ?? n.DbId;
+            if (origin != null && origin != id)
             {
-                if (n.DbId != null)
+                if (db.PendingCount() > 0)
                 {
-                    if (db.PendingCount() > 0)
-                    {
-                        db.ForgetSync();
-                        _log.LogWarning("Notizen-Abgleich {User}: andere Datenbank im Ordner, offene Aenderungen werden zusammengefuehrt", space.User.Login);
-                    }
-                    else db.Clear();
+                    st.Error = "Hier liegen noch nicht abgeglichene Änderungen aus einer anderen Datenbank. Erst zurück zur bisherigen Datenbank wechseln und abgleichen.";
+                    _log.LogWarning("Notizen-Abgleich {User}: andere Datenbank, offene Aenderungen - nicht abgeglichen", space.User.Login);
+                    return;
                 }
-                space.UpdateSettings(s => s.Notizi.DbId = id);
+                db.Clear();
             }
+            if (id != n.DbId || n.LocalDbId != id) space.UpdateSettings(s => { s.Notizi.DbId = id; s.Notizi.LocalDbId = id; });
 
             var report = await new SyncEngine(store, db, "dmOffice").RunAsync(ct);
             st.Report = report.ToString();
@@ -227,6 +228,28 @@ public sealed class NotesSync : BackgroundService
             catch { /* dann vorlaeufig */ }
         }
         return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(data)).ToLowerInvariant();
+    }
+
+    private readonly ConcurrentDictionary<string, DateTime> _picked = new();
+
+    /// <summary>Noch keine Datenbank gewaehlt: die erste nehmen, zu der das E2EE-Passwort passt (gewechselt wird im
+    /// Notizen-Bereich). Hoechstens einmal je Minute nachsehen, solange notizi noch nichts abgeglichen hat.</summary>
+    private async Task<bool> AutoPickAsync(UserSpace space, CancellationToken ct)
+    {
+        if (_picked.TryGetValue(space.User.Id, out var last) && DateTime.UtcNow - last < TimeSpan.FromMinutes(1)
+            && !(_due.TryGetValue(space.User.Id, out var at) && at <= DateTime.UtcNow)) return false;
+        _picked[space.User.Id] = DateTime.UtcNow;
+        try
+        {
+            var n = space.Settings.Notizi;
+            if (FileStore.Get(space.Db, FileStore.Normalize(n.Root)) == null) return false;
+            var list = await SyncCatalog.ScanAsync(new DbTransport(space.Db, n.Root), folder => new DbTransport(space.Db, n.Root + "/" + folder), n.E2eePassword ?? "", ct);
+            var pick = list.FirstOrDefault(e => e.PasswordFits);
+            if (pick == null) return false;
+            space.UpdateSettings(s => { s.Notizi.DbFolder = pick.Folder; s.Notizi.SwitchDb(); });
+            return true;
+        }
+        catch (Exception) when (!ct.IsCancellationRequested) { return false; }
     }
 
     public static async Task<object> ScanAsync(UserSpace space, CancellationToken ct)

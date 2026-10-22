@@ -81,4 +81,35 @@ await file('Dokumente', 'Kfz-Versicherung.pdf', '%PDF-1.4 Beispiel '.repeat(1800
 await file('Dokumente', 'Urlaubsplanung.docx', 'Beispiel '.repeat(3000))
 await file('Dokumente', 'Rezepte.txt', 'Kürbissuppe\nApfelkuchen\n')
 await file('Dokumente', 'Grundriss EG.pdf', '%PDF-1.4 Beispiel '.repeat(12000))
+
+// ---------- Kontingente: mehrere Benutzer mit unterschiedlicher Grenze und Belegung (Verwaltung -> Benutzer) ----------
+// Vorgabe fuer alle ohne eigenes Kontingent: 200 MB. Alex nutzt davon einen Teil mit grossen Dateien.
+await file('Dokumente', 'Urlaubsvideo.mp4', 'Beispielbild '.repeat(5_000_000))
+await call('PUT', '/api/admin/settings', { defaultFileQuotaMb: 200 })
+const people = [
+  // login, Anzeigename, eigenes Kontingent in MB (null = Vorgabe, 0 = unbegrenzt), belegt in MB
+  ['sam', 'Sam Berger', 1024, 40],
+  ['lena', 'Lena Berger', 0, 20],
+  ['jonas', 'Jonas Weber', 120, 96],
+  ['marie', 'Marie Keller', 100, 93],
+]
+const admin = cookie
+for (const [login, name, quota, mb] of people) {
+  let users = await call('GET', '/api/admin/users')
+  let u = users.find(x => x.login === login)
+  if (!u) { await call('POST', '/api/admin/users', { login, displayName: name, password: password + '-' + login, isAdmin: false }); u = (await call('GET', '/api/admin/users')).find(x => x.login === login) }
+  if (quota != null) await call('PUT', `/api/admin/users/${u.id}`, { fileQuotaMb: quota })
+  cookie = ''
+  await call('POST', '/api/auth/login', { login, password: password + '-' + login })
+  const chunk = 'Beispieldaten fuer die Doku. '.repeat(1_000_000).slice(0, 20 * 1024 * 1024)
+  for (let done = 0, i = 1; done < mb; i++) {
+    const size = Math.min(20, mb - done)
+    const form = new FormData()
+    form.append('files', new Blob([chunk.slice(0, size * 1024 * 1024)]), `Archiv-${String(i).padStart(2, '0')}.zip`)
+    await call('POST', '/api/files/upload?path=', undefined, form)
+    done += size
+  }
+  cookie = admin
+}
+console.log('Kontingente fertig')
 console.log('Blog-Daten fertig')

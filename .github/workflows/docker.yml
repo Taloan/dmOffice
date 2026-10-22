@@ -1,9 +1,12 @@
-# Image fuer GitHub: baut das Dockerfile fuer linux/amd64 und legt es in die GitHub Container Registry.
-#   Push auf master  -> ghcr.io/<besitzer>/dmoffice:latest und :sha-<kurz>
-#   Tag v1.2.3       -> zusaetzlich :1.2.3, :1.2 und :latest
-# Aenderungen nur an der Android-App (apps/) oder an docs/ bauen kein neues Image; die App hat android.yml.
-# Die Versionsnummer in der Oberflaeche: beim Tag 1.2.3, sonst JJJJ.MM.TT-<kurz> wie in der Gitea.
-# Der Gitea-Workflow (.gitea/workflows/docker.yml) baut unabhaengig davon in die eigene Registry.
+# Image for GitHub: builds the Dockerfile for linux/amd64 and pushes it to the GitHub Container Registry.
+#   Push to master  -> ghcr.io/<owner>/dmoffice:edge and :sha-<short>   (tested dev builds)
+#   Tag v1.2.3      -> :1.2.3, :1.2 and :latest                          (releases only)
+# So :latest always points at a released version, never at an untested master commit. Pull :edge to track master.
+# Changes only to the Android app (apps/) or docs/ do not build a new image; the app has android.yml.
+# The version number in the interface: for tag 1.2.3 it is 1.2.3, otherwise YYYY.MM.DD-<short>, as in Gitea.
+# The Gitea workflow (.gitea/workflows/docker.yml) builds independently into its own registry.
+# TODO (hardening): pin every `uses:` to a commit SHA (Dependabot keeps them current) and sign the image
+# (cosign) with provenance/SBOM so pulls can be verified.
 name: docker
 on:
   push:
@@ -34,7 +37,8 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository_owner }}/dmoffice
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=edge,enable=${{ github.ref == 'refs/heads/master' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=sha-

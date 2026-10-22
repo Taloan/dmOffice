@@ -56,17 +56,9 @@ public static class Unsubscribe
         var rest = mailto["mailto:".Length..];
         var q = rest.IndexOf('?');
         var to = Uri.UnescapeDataString(q < 0 ? rest : rest[..q]);
-        string subject = "unsubscribe", body = "unsubscribe";
-        if (q >= 0)
-            foreach (var kv in rest[(q + 1)..].Split('&'))
-            {
-                var eq = kv.IndexOf('=');
-                if (eq <= 0) continue;
-                var key = kv[..eq].ToLowerInvariant();
-                var val = Uri.UnescapeDataString(kv[(eq + 1)..].Replace('+', ' '));
-                if (key == "subject" && val.Length > 0) subject = val;
-                else if (key == "body" && val.Length > 0) body = val;
-            }
+        // Betreff und Text NICHT aus der fremden Mail uebernehmen: sonst liesse sich ueber List-Unsubscribe eine
+        // beliebige Mail (Betreff, Text) vom Konto des Benutzers an die Abmeldeadresse verschicken. Immer "unsubscribe".
+        const string subject = "unsubscribe", body = "unsubscribe";
         var m = new MimeMessage();
         m.From.Add(new MailboxAddress(string.IsNullOrEmpty(account.DisplayName) ? null : account.DisplayName, account.Email));
         m.To.Add(MailboxAddress.Parse(to));
@@ -86,7 +78,8 @@ public static class Unsubscribe
     private static bool IsPublic(IPAddress a)
     {
         if (a.IsIPv4MappedToIPv6) a = a.MapToIPv4();
-        if (IPAddress.IsLoopback(a) || a.IsIPv6LinkLocal || a.IsIPv6SiteLocal || a.IsIPv6Multicast) return false;
+        if (IPAddress.IsLoopback(a) || a.IsIPv6LinkLocal || a.IsIPv6SiteLocal || a.IsIPv6Multicast
+            || a.Equals(IPAddress.Any) || a.Equals(IPAddress.IPv6Any)) return false;
         if (a.AddressFamily == AddressFamily.InterNetwork)
         {
             var b = a.GetAddressBytes();

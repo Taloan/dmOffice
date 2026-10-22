@@ -228,6 +228,8 @@ public static class PimStore
 
     private static Info Inspect(Collection coll, string data, TimeZoneInfo zone)
     {
+        // Roh gespeicherte Daten liest spaeter auch Ical.Net (Serien) - zu tief Verschachteltes gar nicht erst annehmen
+        if (Ics.TooDeep(data)) throw new ArgumentException("Zu tief verschachtelt.");
         var roots = Ics.Parse(data);
         if (coll.Kind == AddressBook)
         {

@@ -1,0 +1,355 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 2,
+    "identityHash": "5bc436bb43cd5580dbce06b4b4d6d258",
+    "entities": [
+      {
+        "tableName": "rules",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `enabled` INTEGER NOT NULL, `source` TEXT NOT NULL, `sourcePaths` TEXT NOT NULL, `sourceLabel` TEXT NOT NULL, `target` TEXT NOT NULL, `subfolders` TEXT NOT NULL, `types` TEXT NOT NULL, `conflict` TEXT NOT NULL, `deleteAfter` INTEGER NOT NULL, `wifiOnly` INTEGER NOT NULL, `chargingOnly` INTEGER NOT NULL, `roaming` INTEGER NOT NULL, `sinceMs` INTEGER NOT NULL, `keepStructure` INTEGER NOT NULL, `skipDuplicates` INTEGER NOT NULL DEFAULT 1, `created` INTEGER NOT NULL, `lastScan` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "enabled",
+            "columnName": "enabled",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "source",
+            "columnName": "source",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sourcePaths",
+            "columnName": "sourcePaths",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sourceLabel",
+            "columnName": "sourceLabel",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "target",
+            "columnName": "target",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "subfolders",
+            "columnName": "subfolders",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "types",
+            "columnName": "types",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "conflict",
+            "columnName": "conflict",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "deleteAfter",
+            "columnName": "deleteAfter",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "wifiOnly",
+            "columnName": "wifiOnly",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "chargingOnly",
+            "columnName": "chargingOnly",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "roaming",
+            "columnName": "roaming",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sinceMs",
+            "columnName": "sinceMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "keepStructure",
+            "columnName": "keepStructure",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "skipDuplicates",
+            "columnName": "skipDuplicates",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "1"
+          },
+          {
+            "fieldPath": "created",
+            "columnName": "created",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastScan",
+            "columnName": "lastScan",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        }
+      },
+      {
+        "tableName": "uploads",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `ruleId` INTEGER NOT NULL, `uri` TEXT NOT NULL, `sourcePath` TEXT NOT NULL, `name` TEXT NOT NULL, `mime` TEXT, `size` INTEGER NOT NULL, `modified` INTEGER NOT NULL, `taken` INTEGER NOT NULL, `targetDir` TEXT NOT NULL, `status` INTEGER NOT NULL, `attempts` INTEGER NOT NULL, `nextTry` INTEGER NOT NULL, `error` TEXT, `remotePath` TEXT, `added` INTEGER NOT NULL, `finished` INTEGER NOT NULL, `already` INTEGER NOT NULL, `deletePending` INTEGER NOT NULL, `localDeleted` INTEGER NOT NULL, `sha256` TEXT DEFAULT NULL, `backedUp` INTEGER NOT NULL DEFAULT 0, `localState` INTEGER NOT NULL DEFAULT 0)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "ruleId",
+            "columnName": "ruleId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "uri",
+            "columnName": "uri",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sourcePath",
+            "columnName": "sourcePath",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "mime",
+            "columnName": "mime",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "size",
+            "columnName": "size",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "modified",
+            "columnName": "modified",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "taken",
+            "columnName": "taken",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "targetDir",
+            "columnName": "targetDir",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "attempts",
+            "columnName": "attempts",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "nextTry",
+            "columnName": "nextTry",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "error",
+            "columnName": "error",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "remotePath",
+            "columnName": "remotePath",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "added",
+            "columnName": "added",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "finished",
+            "columnName": "finished",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "already",
+            "columnName": "already",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "deletePending",
+            "columnName": "deletePending",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "localDeleted",
+            "columnName": "localDeleted",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sha256",
+            "columnName": "sha256",
+            "affinity": "TEXT",
+            "defaultValue": "NULL"
+          },
+          {
+            "fieldPath": "backedUp",
+            "columnName": "backedUp",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "localState",
+            "columnName": "localState",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_uploads_ruleId_sourcePath",
+            "unique": false,
+            "columnNames": [
+              "ruleId",
+              "sourcePath"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_uploads_ruleId_sourcePath` ON `${TABLE_NAME}` (`ruleId`, `sourcePath`)"
+          },
+          {
+            "name": "index_uploads_status_nextTry",
+            "unique": false,
+            "columnNames": [
+              "status",
+              "nextTry"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_uploads_status_nextTry` ON `${TABLE_NAME}` (`status`, `nextTry`)"
+          }
+        ]
+      },
+      {
+        "tableName": "hash_cache",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`uri` TEXT NOT NULL, `size` INTEGER NOT NULL, `modified` INTEGER NOT NULL, `sha256` TEXT NOT NULL, `computed` INTEGER NOT NULL, PRIMARY KEY(`uri`, `size`, `modified`))",
+        "fields": [
+          {
+            "fieldPath": "uri",
+            "columnName": "uri",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "size",
+            "columnName": "size",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "modified",
+            "columnName": "modified",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sha256",
+            "columnName": "sha256",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "computed",
+            "columnName": "computed",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "uri",
+            "size",
+            "modified"
+          ]
+        }
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '5bc436bb43cd5580dbce06b4b4d6d258')"
+    ]
+  }
+}

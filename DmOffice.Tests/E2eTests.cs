@@ -58,6 +58,30 @@ public class E2eTests
     }
 
     [Fact]
+    public void Nach_Neustart_keine_Wiedereinspielung_der_letzten_Umschlaege()
+    {
+        // Frisch aus der Datenbank geladen (hoechster bisher 500): das _seen-Set ist leer.
+        var w = new E2e.CounterWindow(500);
+        Assert.False(w.Accept(500));   // schon benutzt
+        Assert.False(w.Accept(400));   // im Fenster, aber vor dem geladenen Stand - kein Wiedereinspielen
+        Assert.False(w.Accept(300));
+        Assert.True(w.Accept(501));    // neu
+        Assert.False(w.Accept(501));   // und nicht zweimal
+    }
+
+    [Fact]
+    public void Fingerabdruck_wie_in_der_App()
+    {
+        // Fester Punkt: SHA-256 ueber 0x04 || 64 Nullbytes, die ersten 16 Byte in Vierergruppen (E2e.kt rechnet gleich)
+        var raw = new byte[65]; raw[0] = 4;
+        var expected = Convert.ToHexString(SHA256.HashData(raw), 0, 16);
+        var fp = E2e.Fingerprint(E2e.Base64Url(raw));
+        Assert.Equal(39, fp.Length);
+        Assert.Equal(expected, fp.Replace(" ", ""));
+        Assert.Matches("^([0-9A-F]{4} ){7}[0-9A-F]{4}$", fp);
+    }
+
+    [Fact]
     public void Ungueltiger_Schluessel_wird_abgewiesen()
     {
         Assert.Throws<ArgumentException>(() => E2e.ImportPublic(E2e.Base64Url(new byte[10])));

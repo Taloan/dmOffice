@@ -10,3 +10,6 @@ data/
 *.db-wal
 *.db-shm
 .build/
+
+# Arbeitsordner der Claude-Sitzungen (Worktrees, interne Berichte)
+.claude/

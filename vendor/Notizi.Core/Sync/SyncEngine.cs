@@ -25,7 +25,7 @@ namespace Notizi.Sync
         public int Merged { get; set; }
 
         /// <summary>Was mit einem Element hier geschah, fuer die Anzeige am
-        /// Editor: "übernommen von DIRK-PC" und dergleichen.</summary>
+        /// Editor: "übernommen von BUERO-PC" und dergleichen.</summary>
         public Dictionary<string, string> Events { get; } = new();
 
         /// <summary>Elemente, die diesmal nicht gingen - sie kommen im

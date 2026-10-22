@@ -14,8 +14,12 @@ public static partial class MailHtml
 {
     public sealed record Result(string Html, bool HasRemoteImages);
 
-    public static Result Sanitize(string html, bool allowRemote, Func<string, string?> cidUrl)
+    /// <param name="junk">Junk: auch eingebettete Bilder (cid:, data:) sperren und Links nicht anklickbar machen -
+    /// wie in Outlook ohne Ausnahme; freigegeben wird erst, wenn die Mail als "Kein Junk" im Posteingang liegt.</param>
+    public static Result Sanitize(string html, bool allowRemote, Func<string, string?> cidUrl, bool junk = false)
     {
+        bool lockAll = junk;
+        if (junk) allowRemote = false;
         bool remote = false;
         var sanitizer = new HtmlSanitizer();
         sanitizer.AllowedTags.Add("style");
@@ -32,11 +36,18 @@ public static partial class MailHtml
         sanitizer.AllowedAtRules.Add(AngleSharp.Css.Dom.CssRuleType.Media);
         sanitizer.AllowDataAttributes = false;
         sanitizer.KeepChildNodes = true;
+        // Keine Formulare: absenden laesst sich zwar nirgends (Rahmen ohne allow-forms, App-WebView), aber ein
+        // echt aussehendes Anmeldeformular mit Passwortfeld taugt als Phishing-Kulisse. Beschriftungen
+        // (Knopftext) bleiben als Text, die Eingabefelder selbst fallen weg.
+        foreach (var tag in new[] { "form", "input", "button", "select", "option", "optgroup", "textarea", "datalist", "output", "keygen" })
+            sanitizer.AllowedTags.Remove(tag);
         // Inhalt von Skripten (auch JSON-LD aus Buchungsmails), Titel und Vorlagen ist kein
-        // lesbarer Text - diese Elemente samt Inhalt entfernen statt nur das Tag.
+        // lesbarer Text - diese Elemente samt Inhalt entfernen statt nur das Tag. Ebenso Auswahl- und
+        // Textfelder (ihr Inhalt waere nur vorbelegter Formulartext).
         sanitizer.RemovingTag += (_, e) =>
         {
-            if (e.Tag.LocalName is "script" or "style" or "title" or "template" or "xml" or "head")
+            if (e.Tag.LocalName is "script" or "style" or "title" or "template" or "xml" or "head"
+                or "select" or "textarea" or "datalist")
             {
                 e.Tag.Remove();
                 e.Cancel = true;
@@ -58,11 +69,29 @@ public static partial class MailHtml
             {
                 el.SetAttribute("target", "_blank");
                 el.SetAttribute("rel", "noopener noreferrer");
+                // data:-Links sind nur fuer Bilder da - als Link koennten sie eine fremde Seite aufmachen
+                if (el.GetAttribute("href") is { } target && target.TrimStart().StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+                    el.RemoveAttribute("href");
+                // Junk: Ziel nur als Hinweis zeigen, nicht klickbar
+                if (lockAll && el.GetAttribute("href") is { Length: > 0 } href)
+                {
+                    el.RemoveAttribute("href");
+                    el.SetAttribute("title", href);
+                    remote = true;
+                }
             }
             else if (el.LocalName == "img")
             {
                 var src = el.GetAttribute("src") ?? "";
-                if (src.StartsWith("http:", StringComparison.OrdinalIgnoreCase) ||
+                if (lockAll && src.Length > 0)
+                {
+                    // Junk: kein Bild, auch kein eingebettetes - ein Bild des Absenders ist oft der eigentliche Koeder
+                    remote = true;
+                    el.RemoveAttribute("src");
+                    el.RemoveAttribute("srcset");
+                    el.SetAttribute("alt", "[Bild gesperrt]");
+                }
+                else if (src.StartsWith("http:", StringComparison.OrdinalIgnoreCase) ||
                     src.StartsWith("https:", StringComparison.OrdinalIgnoreCase) || src.StartsWith("//"))
                 {
                     remote = true;

@@ -11,7 +11,7 @@ const useStyles = makeStyles({
     fontSize: '14px', fontFamily: 'inherit', padding: '4px 2px',
   },
   list: {
-    position: 'absolute', top: '100%', left: 0, zIndex: 20, minWidth: '320px', maxHeight: '280px', overflowY: 'auto',
+    position: 'absolute', top: '100%', left: 0, zIndex: 20, minWidth: 'min(320px, 80vw)', maxHeight: '280px', overflowY: 'auto',
     backgroundColor: tokens.colorNeutralBackground1, boxShadow: tokens.shadow16, borderRadius: tokens.borderRadiusMedium, padding: '4px',
   },
   item: { display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 8px', borderRadius: tokens.borderRadiusMedium, cursor: 'pointer' },

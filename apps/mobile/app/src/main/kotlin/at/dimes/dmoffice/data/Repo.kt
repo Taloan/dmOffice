@@ -111,6 +111,60 @@ class Repo(private val context: Context, private val db: AppDb) {
         saveTask(null, cal.href, Items.TaskInput(summary, null, due, 0, false, null, item = item, section = section, qty = qty, unit = unit))
     }
 
+    enum class Moved { Ok, NotPossible, NeedsConnection }
+
+    /**
+     * Termin um delta verschieben (Ziehen im Zeitraster). Mit Teilnehmern ueber den Server wie im Web - der schickt ihnen die
+     * neue Zeit (ueber CalDAV erfaehrt niemand davon); dafuer braucht es Verbindung. Ohne Teilnehmer lokal, auch offline.
+     */
+    suspend fun moveEvent(href: String, deltaMs: Long): Moved {
+        val item = db.items().byHref(href) ?: return Moved.NotPossible
+        val ics = Items.moveEvent(item.ics, deltaMs, zone) ?: return Moved.NotPossible
+        if (Regex("(?m)^ATTENDEE[;:]").containsMatchIn(item.ics)) return moveOnServer(item, deltaMs)
+        val entity = Items.fromIcs(item.href, item.calendarHref, item.etag, ics, zone, dirty = true) ?: return Moved.NotPossible
+        db.items().upsert(entity)
+        changed()
+        return Moved.Ok
+    }
+
+    @kotlinx.serialization.Serializable
+    private data class ServerEvent(val uri: String, val etag: String = "", val title: String = "", val location: String? = null,
+        val description: String? = null, val start: String, val end: String, val allDay: Boolean = false, val reminder: Int? = null,
+        val busy: Boolean = true, val categories: List<String> = emptyList())
+
+    /** Wie das Ziehen im Web: Termin holen, Zeit aendern, zurueck - der Server benachrichtigt die Teilnehmer. */
+    private suspend fun moveOnServer(item: ItemEntity, deltaMs: Long): Moved = kotlinx.coroutines.withContext(Dispatchers.IO) {
+        val api = App.get(context).api ?: return@withContext Moved.NeedsConnection
+        try {
+            val uri = ListTypes.uriOf(item.calendarHref)
+            if (ListTypes.byUri.value[uri] == null) ListTypes.refresh(context)
+            val cal = ListTypes.byUri.value[uri]?.id ?: return@withContext Moved.NeedsConnection
+            val name = item.href.substringAfterLast('/')
+            val from = java.time.Instant.ofEpochMilli((item.start ?: 0) - 86_400_000).toString()
+            val to = java.time.Instant.ofEpochMilli((item.end ?: item.start ?: 0) + 86_400_000).toString()
+            val list: List<ServerEvent> = api.get(api.url("/api/pim/events", "from" to from, "to" to to, "calendars" to cal.toString()))
+            val e = list.firstOrNull { it.uri == name } ?: return@withContext Moved.NotPossible
+            val body = kotlinx.serialization.json.buildJsonObject {
+                put("calendar", kotlinx.serialization.json.JsonPrimitive(cal)); put("uri", kotlinx.serialization.json.JsonPrimitive(e.uri))
+                put("etag", kotlinx.serialization.json.JsonPrimitive(e.etag)); put("title", kotlinx.serialization.json.JsonPrimitive(e.title))
+                e.location?.let { put("location", kotlinx.serialization.json.JsonPrimitive(it)) }
+                e.description?.let { put("description", kotlinx.serialization.json.JsonPrimitive(it)) }
+                put("start", kotlinx.serialization.json.JsonPrimitive(java.time.Instant.parse(e.start).plusMillis(deltaMs).toString()))
+                put("end", kotlinx.serialization.json.JsonPrimitive(java.time.Instant.parse(e.end).plusMillis(deltaMs).toString()))
+                put("allDay", kotlinx.serialization.json.JsonPrimitive(false))
+                put("reminder", e.reminder?.let { kotlinx.serialization.json.JsonPrimitive(it) } ?: kotlinx.serialization.json.JsonNull)
+                put("busy", kotlinx.serialization.json.JsonPrimitive(e.busy))
+                put("categories", kotlinx.serialization.json.JsonArray(e.categories.map { kotlinx.serialization.json.JsonPrimitive(it) }))
+                put("scope", kotlinx.serialization.json.JsonPrimitive("series"))
+            }
+            api.postText(api.url("/api/pim/events"), body.toString())
+            SyncWorker.now(context)
+            Moved.Ok
+        } catch (x: Exception) {
+            if (x is java.io.IOException && x !is at.dimes.dmoffice.api.ApiException) Moved.NeedsConnection else Moved.NotPossible
+        }
+    }
+
     suspend fun setCompleted(href: String, done: Boolean) {
         val item = db.items().byHref(href) ?: return
         if (item.completed == done) return
@@ -119,8 +173,22 @@ class Repo(private val context: Context, private val db: AppDb) {
     }
 
     suspend fun delete(href: String) {
+        deleteLocal(href)
+        changed()
+    }
+
+    /** Loeschen vormerken ohne Nacharbeit (auch fuer Loeschungen aus dem Android-Kalender). */
+    suspend fun deleteLocal(href: String) {
         val item = db.items().byHref(href) ?: return
         if (item.etag == null) db.items().delete(href) else db.items().upsert(item.copy(deleted = true, dirty = false))
-        changed()
+    }
+
+    /**
+     * Fertiges iCalendar als lokale Aenderung speichern (dirty, geht mit dem naechsten Abgleich zum Server) -
+     * fuer Aenderungen aus dem Android-Kalender; ohne Nacharbeit, die macht der laufende Abgleich.
+     */
+    suspend fun storeLocal(href: String, calendarHref: String, etag: String?, ics: String) {
+        val entity = Items.fromIcs(href, calendarHref, etag, ics, zone, dirty = true) ?: return
+        db.items().upsert(entity)
     }
 }

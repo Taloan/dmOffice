@@ -37,7 +37,25 @@ export interface UiPrefs {
   contactSort?: 'name' | 'family' | 'org'
   taskSort?: 'due' | 'created' | 'title' | 'importance'
   notePreview?: boolean
-  fileSort?: 'name' | 'modified' | 'size'
+  /** Notizliste: eigene Reihenfolge (wie in notizi), Geaendert, Erstellt oder Titel */
+  noteSort?: 'manual' | 'modified' | 'created' | 'title'
+  noteSortDesc?: boolean
+  fileSort?: 'name' | 'modified' | 'size' | 'kind'
+  /** Dateien: absteigend sortieren (Klick auf denselben Spaltenkopf) */
+  fileSortDesc?: boolean
+  /** Ansicht Fotos: eigene Reihenfolge, Vorgabe Aenderungsdatum, neueste zuerst */
+  photoSort?: 'name' | 'modified' | 'size'
+  photoSortDesc?: boolean
+  /** Ansicht Fotos: nach Monat (Vorgabe), Tag oder Jahr gruppieren */
+  photoGroup?: 'none' | 'day' | 'month' | 'year'
+  /** Dateien: Detailbereich rechts offen */
+  fileDetails?: boolean
+  /** Dateien: Details (Tabelle) oder Kacheln (grosse Symbole, Bildvorschau) */
+  fileView?: 'details' | 'tiles'
+  /** Dateien gruppieren: keine, nach Art oder nach Aenderungsdatum */
+  fileGroup?: 'none' | 'kind' | 'date'
+  /** Kachelgroesse in der Dateiablage */
+  fileTile?: 'small' | 'medium' | 'large'
   // Verfassen
   composeFont?: string
   composeSize?: string
@@ -61,6 +79,7 @@ export interface UiPrefs {
   searchDeleted?: boolean
   searchRelevance?: boolean
   searchSort?: 'newest' | 'oldest' | 'relevance' | 'from' | 'subject'   // Reihenfolge der Suchtreffer
+  listSort?: 'newest' | 'oldest' | 'from' | 'subject' | 'size' | 'attachment' | 'unread' | 'flagged'   // Reihenfolge der Mailliste
 }
 
 const KEY = 'dmoffice.ui'

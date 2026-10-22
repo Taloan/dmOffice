@@ -97,7 +97,7 @@ export function InviteCard({ item }: { item: MailItem }) {
           {invite.calendarName && invite.method === 'REQUEST' && (
             <Text size={200} className={s.muted}>{statusText(invite.myStatus) ?? ''} {t('Steht im Kalender „{name}“.', { name: invite.calendarName })}</Text>
           )}
-          {invite.outdated && <Text size={200} className={s.warn}><Warning16Regular /> {t('Im Kalender steht schon eine neuere Fassung dieser Einladung.')}</Text>}
+          {invite.outdated && <Text size={200} className={s.warn}><Warning16Regular /> {t('Im Kalender steht schon eine neuere Version dieser Einladung.')}</Text>}
           {invite.conflicts.length > 0 && invite.method === 'REQUEST' && (
             <Text size={200} className={s.warn}><Warning16Regular /> {t('Zur selben Zeit: {list}', { list: invite.conflicts.join(', ') })}</Text>
           )}

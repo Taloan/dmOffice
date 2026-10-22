@@ -8,9 +8,11 @@ import {
 } from '@fluentui/react-icons'
 import { useEffect, useRef, useState } from 'react'
 import { addrFull, api, fmtSize, MailItem, Message, q } from '../api'
+import { peek, remember } from './messageCache'
 import { useApp } from '../App'
 import { CategoryChips } from './Categories'
 import { InviteCard } from './InviteCard'
+import { PhishBar } from './PhishBar'
 import { SmartCard } from './SmartCard'
 import { fmtLong } from '../shell/hooks'
 import { useIsDark } from '../theme'
@@ -61,6 +63,8 @@ export function ReadingPane({ item, onLoaded, onReply, onForward, onAct }: Props
   // Newsletter abmelden: One-Click oder Mail erledigt der Server, sonst den Link im Browser oeffnen
   const unsubscribe = async () => {
     if (!message) return
+    // Nicht still abmelden: ein Klick kann eine Mail vom eigenen Konto ausloesen. Erst nachfragen.
+    if (!window.confirm(t('Vom Newsletter abmelden? Dabei wird ggf. eine Abmeldung an den Absender gesendet.'))) return
     try {
       const r = await api.post(`/api/mail/${encodeURIComponent(message.account)}/unsubscribe`, { folder: message.folder, uid: message.uid })
       if (r.done) { setUnsubDone(true); notify(t('Vom Newsletter abgemeldet'), r.how === 'mail' ? t('Die Abmelde-Mail ist verschickt.') : undefined) }
@@ -80,19 +84,25 @@ export function ReadingPane({ item, onLoaded, onReply, onForward, onAct }: Props
 
   useEffect(() => {
     let alive = true
-    setMessage(null)
     const url = `/api/mail/${item.account}/message?` + q({ folder: item.folder, uid: item.uid, images, markSeen: false })
     let loaded: Message | null = null
-    api.get<Message>(url).then(m => {
-      if (!alive) return
-      loaded = m
-      setMessage(m)
-      onLoaded(m)
-    }).catch(e => alive && fail(e))
+    // Schon vorgeladen (ohne entfernte Bilder): sofort zeigen
+    const early = images ? null : peek(item)
+    if (early) { loaded = early; setMessage(early); onLoaded(early) }
+    else {
+      setMessage(null)
+      api.get<Message>(url).then(m => {
+        if (!alive) return
+        loaded = m
+        if (!images) remember(item, m)
+        setMessage(m)
+        onLoaded(m)
+      }).catch(e => alive && fail(e))
+    }
     // Gelesen nach einer kurzen Pause, wie in Outlook - wer nur durchblaettert, laesst sie ungelesen
     const t = !item.seen ? setTimeout(() => {
       api.post(`/api/mail/${item.account}/flags`, { folder: item.folder, uids: [item.uid], seen: true })
-        .then(() => { if (alive && loaded) onLoaded({ ...loaded, seen: true }) })
+        .then(() => { if (loaded) remember(item, { ...loaded, seen: true }); if (alive && loaded) onLoaded({ ...loaded, seen: true }) })
         .catch(() => {})
     }, 1500) : undefined
     return () => { alive = false; if (t) clearTimeout(t) }
@@ -164,7 +174,18 @@ img[data-remote-src]{display:inline-block;min-width:16px;min-height:16px;backgro
         </div>
       </div>
 
-      {message.spam != null && message.spam >= 0.2 && message.spam < 0.9 && (
+      {/* Phishing-Verdacht: Absenderpruefung, Linktext gegen Linkziel, aehnliche Domains, erstmaliger Absender */}
+      {message.phish && <PhishBar found={message.phish} className={s.bar} onJunk={message.junk ? undefined : () => onAct('junk')} />}
+      {message.junk && (
+        // Wie Outlook: in Junk keine Bilder und keine Links - erst "Kein Junk" gibt die Mail frei
+        <MessageBar intent="error" className={s.bar} layout="multiline">
+          <MessageBarBody><ShieldError16Regular /> {t('Junk-E-Mail: Bilder und Links sind gesperrt. Zum Freigeben die Mail als „Kein Junk“ in den Posteingang verschieben.')}</MessageBarBody>
+          <MessageBarActions>
+            <Button size="small" onClick={() => onAct('notjunk')}>{t('Kein Junk')}</Button>
+          </MessageBarActions>
+        </MessageBar>
+      )}
+      {!message.junk && message.spam != null && message.spam >= 0.2 && message.spam < 0.9 && (
         <MessageBar intent="warning" className={s.bar} layout="multiline">
           <MessageBarBody><ShieldError16Regular /> {t('Der Spamfilter ist unsicher ({p} %).', { p: Math.round(message.spam * 100) })}</MessageBarBody>
           <MessageBarActions>
@@ -173,7 +194,7 @@ img[data-remote-src]{display:inline-block;min-width:16px;min-height:16px;backgro
           </MessageBarActions>
         </MessageBar>
       )}
-      {message.unsubscribe && (
+      {message.unsubscribe && !message.junk && (
         <MessageBar intent={unsubDone ? 'success' : 'info'} className={s.bar} layout="singleline" icon={null}>
           <MessageBarBody className={s.imgBar}>
             {unsubDone ? <Text size={200}>{t('Vom Newsletter abgemeldet')}</Text> : <>
@@ -183,7 +204,7 @@ img[data-remote-src]{display:inline-block;min-width:16px;min-height:16px;backgro
           </MessageBarBody>
         </MessageBar>
       )}
-      {message.hasRemoteImages && !message.imagesAllowed && (
+      {message.hasRemoteImages && !message.imagesAllowed && !message.junk && (
         // Einzeilig, Knopf vorne; die Begruendung steht im Tooltip statt als langer Satz
         <MessageBar intent="info" className={s.bar} layout="singleline" icon={null}>
           <MessageBarBody className={s.imgBar}>

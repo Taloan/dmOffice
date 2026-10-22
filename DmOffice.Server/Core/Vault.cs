@@ -79,13 +79,20 @@ public sealed class Vault
 public sealed class DataPaths
 {
     public string Root { get; }
-    public DataPaths(string root)
+
+    /// <summary>Inhalte der Dateiablage (BlobStore), je Benutzer ein Unterordner - Vorgabe &lt;Daten&gt;/blobs,
+    /// mit DMOFFICE_BLOBS auch anderswo (eigenes Volume auf dem Array).</summary>
+    public string Blobs { get; }
+
+    public DataPaths(string root, string? blobs = null)
     {
         Root = Path.GetFullPath(root);
+        Blobs = Path.GetFullPath(string.IsNullOrWhiteSpace(blobs) ? Path.Combine(Root, "blobs") : blobs);
         Directory.CreateDirectory(Root);
         Directory.CreateDirectory(Users);
     }
     public string Users => Path.Combine(Root, "users");
     public string UserDb(string id) => Path.Combine(Users, id + ".db");
+    public string UserBlobs(string id) => Path.Combine(Blobs, id);
     public string Keys => Path.Combine(Root, "keys");
 }

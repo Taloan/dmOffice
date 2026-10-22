@@ -6,7 +6,19 @@ namespace DmOffice.Pim;
 
 public sealed record EventDto(string Id, long Calendar, string Uri, string Etag, string? Uid, string Title, string? Location,
     string? Description, string Start, string End, bool AllDay, bool Recurring, string? RRule, string? RecurrenceId,
-    string? Status, int? Reminder, bool Busy, List<string> Categories, string? Url);
+    string? Status, int? Reminder, bool Busy, List<string> Categories, string? Url, bool CanWrite = true,
+    List<AttendeeDto>? Attendees = null, string? Organizer = null,
+    /// <summary>Essensplan: sync_id der Rezeptnotiz (X-DM-RECIPE)</summary>
+    string? Recipe = null);
+
+/// <summary>Teilnehmer eines Termins mit seiner Antwort (PARTSTAT): NEEDS-ACTION, ACCEPTED, TENTATIVE, DECLINED.</summary>
+public sealed record AttendeeDto(string Email, string? Name, string Status);
+
+public sealed class AttendeeInput
+{
+    public string Email { get; set; } = "";
+    public string? Name { get; set; }
+}
 
 public sealed class EventInput
 {
@@ -26,6 +38,8 @@ public sealed class EventInput
     public int? Reminder { get; set; }
     public bool Busy { get; set; } = true;
     public List<string>? Categories { get; set; }
+    /// <summary>Essensplan: sync_id der Rezeptnotiz. Null: bleibt; "": kein Rezept.</summary>
+    public string? Recipe { get; set; }
     /// <summary>series | instance - bei Serien: alle oder nur dieses Vorkommen.</summary>
     public string Scope { get; set; } = "series";
     /// <summary>Beginn des Vorkommens, das bearbeitet wurde (RECURRENCE-ID), ISO UTC.</summary>
@@ -34,6 +48,12 @@ public sealed class EventInput
     public long? MoveTo { get; set; }
     /// <summary>ETag des geladenen Stands (aus dem GET). Gesetzt: nur speichern, wenn er noch gilt; sonst 409.</summary>
     public string? Etag { get; set; }
+    /// <summary>Teilnehmer; null: unveraendert lassen, leer: keine.</summary>
+    public List<AttendeeInput>? Attendees { get; set; }
+    /// <summary>Mailkonto, das als Organisator einlaedt (null: das erste).</summary>
+    public string? Account { get; set; }
+    /// <summary>Einladungen bzw. Aenderungen an die Teilnehmer schicken.</summary>
+    public bool Notify { get; set; } = true;
 }
 
 public sealed record TaskDto(string Id, long List, string Uri, string Etag, string? Uid, string Title, string? Description,
@@ -151,7 +171,48 @@ public static class CalendarModel
             RRule: e.Get("RRULE")?.Value, RecurrenceId: ridText, Status: e.Text("STATUS"), Reminder: reminder,
             Busy: !string.Equals(e.Text("TRANSP"), "TRANSPARENT", StringComparison.OrdinalIgnoreCase),
             Categories: e.All("CATEGORIES").SelectMany(p => p.Value.Split(',')).Select(Ics.Unescape).Where(x => x.Length > 0).ToList(),
-            Url: e.Text("URL"));
+            Url: e.Text("URL"),
+            Attendees: e.All("ATTENDEE").Select(a => new AttendeeDto(Mail.Invites.Mailto(a) ?? "", a.Param("CN"), (a.Param("PARTSTAT") ?? "NEEDS-ACTION").ToUpperInvariant()))
+                .Where(a => a.Email.Length > 0).ToList() is { Count: > 0 } att ? att : null,
+            Organizer: Mail.Invites.Mailto(e.Get("ORGANIZER")), Recipe: e.Text("X-DM-RECIPE"));
+    }
+
+    /// <summary>
+    /// Teilnehmer setzen: bekannte behalten ihre Antwort, neue bekommen NEEDS-ACTION und RSVP. Mit Teilnehmern steht der
+    /// Organisator (eigenes Mailkonto) im Termin; ohne Teilnehmer faellt ein eigener Organisator wieder weg.
+    /// </summary>
+    public static void ApplyAttendees(Component e, List<AttendeeInput> list, MailAccount? organizer, ICollection<string> mine)
+    {
+        var known = e.All("ATTENDEE").Where(a => Mail.Invites.Mailto(a) != null)
+            .GroupBy(a => Mail.Invites.Mailto(a)!.ToLowerInvariant()).ToDictionary(g => g.Key, g => g.First());
+        e.Remove("ATTENDEE");
+        var seen = new HashSet<string>();
+        foreach (var a in list)
+        {
+            var email = (a.Email ?? "").Trim();
+            if (email.StartsWith("mailto:", StringComparison.OrdinalIgnoreCase)) email = email[7..];
+            if (!MimeKit.MailboxAddress.TryParse(email, out _) || !email.Contains('@') || !seen.Add(email.ToLowerInvariant())) continue;
+            var p = new Prop("ATTENDEE", "mailto:" + email);
+            var name = string.IsNullOrWhiteSpace(a.Name) ? known.GetValueOrDefault(email.ToLowerInvariant())?.Param("CN") : a.Name.Trim();
+            if (!string.IsNullOrEmpty(name)) p.With("CN", name);
+            p.With("ROLE", "REQ-PARTICIPANT");
+            var status = known.GetValueOrDefault(email.ToLowerInvariant())?.Param("PARTSTAT") ?? "NEEDS-ACTION";
+            p.With("PARTSTAT", status);
+            if (status.Equals("NEEDS-ACTION", StringComparison.OrdinalIgnoreCase)) p.With("RSVP", "TRUE");
+            e.Props.Add(p);
+        }
+        var org = Mail.Invites.Mailto(e.Get("ORGANIZER"));
+        if (seen.Count == 0)
+        {
+            if (org == null || mine.Contains(org.ToLowerInvariant())) e.Remove("ORGANIZER");
+            return;
+        }
+        if (org == null && organizer != null)
+        {
+            var o = new Prop("ORGANIZER", "mailto:" + organizer.Email);
+            if (!string.IsNullOrEmpty(organizer.DisplayName)) o.With("CN", organizer.DisplayName);
+            e.Props.Add(o);
+        }
     }
 
     // ---------------- Termine schreiben ----------------
@@ -228,8 +289,18 @@ public static class CalendarModel
                 Fill(target, input, zone);
                 if (recurring) ShiftExceptions(vcal, master, oldStart, zone);
             }
-            Touch(master);
-            if (target != master) Touch(target);
+            // Einladung eines anderen: SEQUENCE zaehlt nur der Organisator hoch (RFC 5546) - sonst hielte die eigene Kopie
+            // seine naechste Aenderung fuer veraltet
+            var invited = Invited(space, master);
+            Touch(master, !invited);
+            if (target != master) Touch(target, !invited);
+        }
+
+        if (input.Attendees != null)
+        {
+            var accounts = space.Settings.MailAccounts;
+            var organizer = accounts.FirstOrDefault(a => a.Id == input.Account) ?? accounts.FirstOrDefault();
+            ApplyAttendees(target, input.Attendees, organizer, accounts.Select(a => a.Email.ToLowerInvariant()).ToHashSet());
         }
 
         if (!input.AllDay && !vcal.Of("VTIMEZONE").Any(t => t.Text("TZID") == zone.Id) && zone != TimeZoneInfo.Utc)
@@ -264,8 +335,8 @@ public static class CalendarModel
         var when = ParseIso(instance, out var allDay);
         var ex = TimeProp("EXDATE", master.Get("DTSTART"), when, allDay, space.Zone);
         master.Props.Add(ex);
-        vcal.Children.RemoveAll(e => e.Name == "VEVENT" && e.Get("RECURRENCE-ID") is { } p && p.Value == ex.Value);
-        Touch(master);
+        vcal.Children.RemoveAll(e => e.Name == "VEVENT" && e.Get("RECURRENCE-ID") is { } p && Ics.Time(p, space.Zone, out _) == when);
+        Touch(master, !Invited(space, master));
         PimStore.Put(db, coll, uri, vcal.ToString(), ifMatch: obj.Etag, zone: space.Zone);
     }
 
@@ -318,6 +389,12 @@ public static class CalendarModel
         }
         // EXDATE einer Serie, deren Beginn sich geaendert hat, passen in der Zeitform nicht mehr - nur bei Ganztaegig/Zeit-Wechsel loeschen
         if (e.Get("EXDATE") is { } exd && (exd.Param("VALUE") == "DATE") != input.AllDay) e.Remove("EXDATE");
+
+        if (input.Recipe != null)
+        {
+            e.Remove("X-DM-RECIPE");
+            if (input.Recipe.Length > 0) e.Set("X-DM-RECIPE", Ics.Escape(input.Recipe));
+        }
 
         if (input.Busy) e.Remove("TRANSP"); else e.Set("TRANSP", "TRANSPARENT");
         if (input.Categories != null)
@@ -437,11 +514,34 @@ public static class CalendarModel
     private static DateTime Wall(DateTime utc, TimeZoneInfo tz) =>
         DateTime.SpecifyKind(TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(utc, DateTimeKind.Utc), tz), DateTimeKind.Unspecified);
 
-    private static void Touch(Component e)
+    private static void Touch(Component e, bool sequence = true)
     {
         e.Set("DTSTAMP", Ics.Stamp());
         e.Set("LAST-MODIFIED", Ics.Stamp());
-        e.Set("SEQUENCE", ((int.TryParse(e.Text("SEQUENCE"), out var s) ? s : 0) + 1).ToString());
+        if (sequence) e.Set("SEQUENCE", ((int.TryParse(e.Text("SEQUENCE"), out var s) ? s : 0) + 1).ToString());
+    }
+
+    /// <summary>Termin aus einer Einladung: der Organisator ist jemand anderes.</summary>
+    private static bool Invited(UserSpace space, Component master) =>
+        Mail.Invites.Mailto(master.Get("ORGANIZER")) is { } org
+        && !space.Settings.MailAccounts.Any(a => a.Email.Equals(org, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Ein Vorkommen der Serie als eigene Komponente (RECURRENCE-ID): die vorhandene oder eine neue aus der Serie, mit Beginn
+    /// und Ende dieses Vorkommens. Fuer Antworten und Absagen, die nur einen Termin der Serie betreffen.
+    /// </summary>
+    internal static Component Occurrence(Component vcal, DateTime utc, TimeZoneInfo zone)
+    {
+        var master = vcal.Of("VEVENT").First(e => e.Get("RECURRENCE-ID") == null);
+        if (vcal.Of("VEVENT").FirstOrDefault(e => e.Get("RECURRENCE-ID") is { } p && Ics.Time(p, zone, out _) == utc) is { } found) return found;
+        var dtstart = master.Get("DTSTART");
+        var start = Ics.Time(dtstart, zone, out var allDay) ?? utc;
+        var end = Ics.Time(master.Get("DTEND"), zone, out _);
+        if (end == null && master.Text("DURATION") is { } dur && PimStore.TryDuration(dur, out var d)) end = start + d;
+        var o = NewOverride(vcal, master, TimeProp("RECURRENCE-ID", dtstart, utc, allDay, zone));
+        o.Props.Add(TimeProp("DTSTART", dtstart, utc, allDay, zone));
+        o.Props.Add(TimeProp("DTEND", dtstart, utc + ((end ?? start) - start), allDay, zone));
+        return o;
     }
 
     /// <summary>RECURRENCE-ID/EXDATE in derselben Zeitform wie DTSTART der Serie.</summary>

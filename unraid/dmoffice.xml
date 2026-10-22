@@ -1,11 +1,11 @@
 <?xml version="1.0"?>
 <!--
-  Unraid-Vorlage fuer dmOffice (Community Applications). Das Image baut .github/workflows/docker.yml nach
-  ghcr.io/taloan/dmoffice. Wer stattdessen das Image der eigenen Gitea nimmt (.gitea/workflows/docker.yml),
-  traegt unter Repository 127.0.0.1:<port>/<besitzer>/dmoffice:latest ein. Einrichtung: README.md, Abschnitt "Unraid".
+  Unraid template for dmOffice (Community Applications). The image is built by .github/workflows/docker.yml to
+  ghcr.io/taloan/dmoffice. To use the image of your own Gitea instead (.gitea/workflows/docker.yml), enter
+  127.0.0.1:<port>/<owner>/dmoffice:latest under Repository. Setup: README of https://github.com/Taloan/dmOffice, section "Unraid".
 
-  DMOFFICE_MASTER_KEY packt die Schluessel der Benutzerdatenbanken ein. Er steht nur hier (auf dem USB-Stick), nicht
-  im Datenverzeichnis - wer appdata kopiert, kann damit nichts lesen. Verloren heisst: Daten verloren. Gut aufheben.
+  DMOFFICE_MASTER_KEY wraps the keys of the user databases. It is stored only here (on the USB flash drive), not in
+  the data directory - anyone who copies appdata cannot read anything with it. Losing it means losing the data. Keep it safe.
 -->
 <Container version="2">
   <Name>dmOffice</Name>
@@ -18,21 +18,28 @@
   <Support>https://github.com/Taloan/dmOffice/issues</Support>
   <Project>https://github.com/Taloan/dmOffice</Project>
   <ReadMe>https://github.com/Taloan/dmOffice#readme</ReadMe>
-  <Overview>dmOffice is a self-hosted office suite in the browser that looks and works like Outlook: mail (IMAP/SMTP, many accounts, local copy with attachments, full-text search, rules, learning junk filter), calendar, contacts, tasks, notes (notizi sync) and files.&#xD;
+  <Overview>dmOffice is a self-hosted office suite in the browser: mail, calendar, contacts, tasks, notes and files. Mail has IMAP/SMTP with many accounts, a local copy with attachments, full-text search, rules, categories and a learning junk filter. Files come with previews, full-text search, recycle bin, previous versions, sharing with other users and by link, and editing of Word, Excel and PowerPoint documents in the browser through your own Collabora or ONLYOFFICE server.&#xD;
 &#xD;
-It ships its own CalDAV, CardDAV and WebDAV server with app passwords, so phones, Thunderbird and the Windows Explorer connect directly - no Nextcloud needed. Multiple users, every user database encrypted with SQLCipher, two-factor sign-in (TOTP), light and dark theme.&#xD;
+It ships its own CalDAV, CardDAV and WebDAV server with app passwords, so phones, Thunderbird and the Windows Explorer connect directly, and an Android app is available. Multiple users, every user database encrypted with SQLCipher, every stored file encrypted on its own, two-factor sign-in (TOTP), light and dark theme.&#xD;
 &#xD;
-Set DMOFFICE_MASTER_KEY to a long random value (e.g. openssl rand -hex 32) and keep it safe: without it the databases cannot be opened. The first visit of the web UI creates the admin account. For access from outside use HTTPS through your reverse proxy.</Overview>
+Set DMOFFICE_MASTER_KEY to a long random value (e.g. openssl rand -hex 32) and keep it safe: without it the databases cannot be opened. The first visit of the web UI creates the admin account. For access from outside use HTTPS through your reverse proxy. More at https://dmoffice.de (German) and in the README on GitHub.</Overview>
   <Category>Productivity: Cloud:</Category>
+  <Changes>[b]Updating[/b]
+Before a data change dmOffice checks the free space, makes its own encrypted backup of the databases (appdata/pre-update, removed after 14 days) and asks before big conversions (Administration, Updates). If there is not enough space nothing is changed and the page says how much is missing. A copy of the appdata folder before the update is still the best insurance. To go back: pin the previous image version (e.g. ghcr.io/taloan/dmoffice:1.1.0) and copy the databases from pre-update back into users. Details: https://github.com/Taloan/dmOffice/blob/master/docs/updating.md
+
+[b]Data changes since 1.1[/b]
+Schema 11: fixed file numbers for Nextcloud clients (rewrites the file table, needs about the size of the file contents in extra space). 12-15: app password scope, recycle bin and versions, full-text search, link limits. 16: file contents move out of the database into encrypted files (background, pausable; the database only shrinks after Settings, Statistics, Compact database). 17: note tags. 18: SHA-256 checksum per file.</Changes>
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>
-  <TemplateURL>https://raw.githubusercontent.com/Taloan/dmOffice/master/unraid/dmoffice.xml</TemplateURL>
-  <Icon>https://raw.githubusercontent.com/Taloan/dmOffice/master/unraid/dmoffice.png</Icon>
+  <TemplateURL>https://raw.githubusercontent.com/Taloan/unraid-templates/main/dmoffice.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/Taloan/unraid-templates/main/dmoffice.png</Icon>
   <ExtraParams>--restart unless-stopped</ExtraParams>
   <PostArgs/>
   <CPUset/>
   <Config Name="Web UI" Target="8080" Default="8080" Mode="tcp" Description="Port for the browser and DAV clients (CalDAV, CardDAV, WebDAV)" Type="Port" Display="always" Required="true" Mask="false">8080</Config>
   <Config Name="Data" Target="/data" Default="/mnt/user/appdata/dmoffice" Mode="rw" Description="Users and encrypted databases (mail, calendar, contacts, files, notes)" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/dmoffice</Config>
+  <Config Name="File contents" Target="/blobs" Default="" Mode="rw" Description="Optional: own folder (e.g. on the array) for the contents of the file storage - every file encrypted on its own. Also set DMOFFICE_BLOBS to /blobs. Empty: inside Data (blobs/)" Type="Path" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="DMOFFICE_BLOBS" Target="DMOFFICE_BLOBS" Default="" Mode="" Description="Optional: where the file contents live inside the container, /blobs together with 'File contents'. Empty: /data/blobs. Back it up together with Data." Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="DMOFFICE_MASTER_KEY" Target="DMOFFICE_MASTER_KEY" Default="" Mode="" Description="Master key that wraps the database keys, e.g. 64 characters from 'openssl rand -hex 32'. Empty: dmOffice stores a key file in appdata (weaker). Losing it means losing the data!" Type="Variable" Display="always" Required="false" Mask="true"/>
-  <Config Name="DMOFFICE_MS_CLIENT_ID" Target="DMOFFICE_MS_CLIENT_ID" Default="" Mode="" Description="Optional: application (client) ID of your own Microsoft app registration for Outlook.com/Hotmail/Live accounts (OAuth2). Empty = the built-in dmOffice registration, off = disable. See README." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="DMOFFICE_MS_CLIENT_ID" Target="DMOFFICE_MS_CLIENT_ID" Default="" Mode="" Description="Optional: application (client) ID of your own Microsoft app registration for Outlook.com/Hotmail/Live accounts (OAuth2). Empty = the built-in dmOffice registration, off = disable. See the README." Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="TZ" Target="TZ" Default="Europe/Berlin" Mode="" Description="Time zone of the container (logs)" Type="Variable" Display="advanced" Required="false" Mask="false">Europe/Berlin</Config>
 </Container>

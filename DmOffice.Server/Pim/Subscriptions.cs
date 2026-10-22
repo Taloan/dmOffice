@@ -42,7 +42,10 @@ public static class Subscriptions
 
     static Subscriptions() => Http.DefaultRequestHeaders.UserAgent.ParseAdd("dmOffice-Kalenderabo/1.0");
 
-    private static bool Blocked(IPAddress a) =>
+    private static bool Blocked(IPAddress a) => BlockedCore(a.IsIPv4MappedToIPv6 ? a.MapToIPv4() : a);
+
+    // ::ffff:127.0.0.1 erst auf IPv4 abbilden - IsLoopback erkennt die gemappte Form nicht
+    private static bool BlockedCore(IPAddress a) =>
         IPAddress.IsLoopback(a) || a.IsIPv6LinkLocal ||
         (a.AddressFamily == AddressFamily.InterNetwork && a.GetAddressBytes() is [169, 254, ..]) ||
         a.Equals(IPAddress.Any) || a.Equals(IPAddress.IPv6Any);
@@ -90,7 +93,7 @@ public static class Subscriptions
                 Update(db, coll.Id, s => { s.LastFetch = DateTime.UtcNow; s.LastError = null; });
                 return -1;
             }
-            if (!res.IsSuccessStatusCode) throw new HttpRequestException($"Der Server antwortet mit {(int)res.StatusCode} {res.ReasonPhrase}.");
+            if (!res.IsSuccessStatusCode) throw new HttpRequestException($"Der Server antwortet mit Fehler {(int)res.StatusCode}.");
             if (res.Content.Headers.ContentLength > MaxBytes) throw new InvalidOperationException("Der Kalender ist zu groß (über 20 MB).");
             await using var stream = await res.Content.ReadAsStreamAsync(ct);
             using var buffer = new MemoryStream();
@@ -104,6 +107,9 @@ public static class Subscriptions
             var text = System.Text.Encoding.UTF8.GetString(buffer.ToArray());
             if (!text.Contains("BEGIN:VCALENDAR", StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException("Unter der Adresse liegt kein Kalender (kein iCalendar/.ics).");
+            if (Dav.Ics.TooDeep(text)) throw new InvalidOperationException("Der Kalender ist ungewöhnlich tief verschachtelt und wird nicht übernommen.");
+            // Abruf schon jetzt vermerken: scheitert die Verarbeitung hart, wird nicht sofort wieder abgerufen
+            Update(db, coll.Id, s => s.LastFetch = DateTime.UtcNow);
 
             // Abgleich nach UID: gleiche UID behaelt ihre Adresse, Neues kommt dazu, Fehlendes geht
             var existing = PimStore.Objects(db, coll.Id).Where(o => o.Uid != null).GroupBy(o => o.Uid!).ToDictionary(g => g.Key, g => g.First());
@@ -130,7 +136,8 @@ public static class Subscriptions
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
-            var msg = ex is TaskCanceledException ? "Zeitüberschreitung beim Abrufen." : ex.InnerException is SocketException se ? "Keine Verbindung: " + se.Message : ex.Message;
+            // Keine Socket-Einzelheiten zurueckgeben - sie verraten, welche Adressen und Ports im Netz antworten
+            var msg = ex is TaskCanceledException ? "Zeitüberschreitung beim Abrufen." : ex.InnerException is SocketException || ex is HttpRequestException { StatusCode: null } ? "Keine Verbindung zum Kalender-Server." : ex.Message;
             Update(db, coll.Id, s => { s.LastFetch = DateTime.UtcNow; s.LastError = msg; });
             throw new InvalidOperationException(msg, ex);
         }
@@ -156,9 +163,11 @@ public sealed class SubscriptionSync : BackgroundService
                 foreach (var sub in subs)
                 {
                     if (sub.LastFetch is DateTime last && DateTime.UtcNow - last < TimeSpan.FromMinutes(Math.Max(15, sub.Interval))) continue;
+                    using var activity = Activity.Start(space.User.Id, Activity.Subscriptions, sub.Url);
                     try { await Subscriptions.FetchAsync(space, sub, stop); }
                     catch (OperationCanceledException) when (stop.IsCancellationRequested) { return; }
-                    catch (Exception ex) { _log.LogInformation("Kalenderabo {Url}: {Error}", sub.Url, ex.Message); }
+                    // Nur der Host ins Log: die Adresse privater Abos enthaelt oft ein geheimes Token
+                    catch (Exception ex) { activity.Fail(ex.Message); _log.LogInformation("Kalenderabo {Host}: {Error}", Uri.TryCreate(sub.Url, UriKind.Absolute, out var su) ? su.Host : "?", ex.Message); }
                 }
             }
             try { await Task.Delay(TimeSpan.FromMinutes(5), stop); } catch (OperationCanceledException) { break; }

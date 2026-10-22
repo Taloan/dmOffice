@@ -77,7 +77,10 @@ fun MailScreen(onOpen: (account: String, folder: String, uid: Long) -> Unit, onC
     val settings by app.prefs.settings.collectAsState()
     var accounts by remember { mutableStateOf<List<MailAccount>>(emptyList()) }
     var account by rememberSaveable { mutableStateOf(settings.mailAccount) }
-    var folder by rememberSaveable { mutableStateOf("INBOX") }
+    // Zuletzt offener Ordner (auch "Alle Posteingaenge") bleibt beim Wechsel in Kalender & Co. und zurueck erhalten
+    val uiState = remember { ctx.getSharedPreferences("mail_ui", android.content.Context.MODE_PRIVATE) }
+    var folder by rememberSaveable { mutableStateOf(uiState.getString("folder", null) ?: "INBOX") }
+    LaunchedEffect(folder) { uiState.edit().putString("folder", folder).apply() }
     var refreshing by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var hasMore by remember { mutableStateOf(false) }

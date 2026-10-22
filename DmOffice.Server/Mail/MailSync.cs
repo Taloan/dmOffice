@@ -121,6 +121,12 @@ public sealed class MailSync : BackgroundService
 
     private async Task RunAccount(UserSpace space, MailAccount account, State state, bool full, string[] kicked, CancellationToken stop)
     {
+        // Kontingent ausgeschoepft: nichts Neues abrufen, bis wieder Platz ist (Aufbewahrung, Papierkorb leeren, Versionen, Mails loeschen)
+        if (UserStorage.Exceeded(space.Db))
+        {
+            state.Error = "Kontingent ausgeschöpft – neue Mails werden erst wieder abgerufen, wenn Platz frei ist.";
+            return;
+        }
         await _parallel.WaitAsync(stop);
         state.Running = true;
         string? folderError = null;
@@ -308,6 +314,10 @@ public sealed class MailSync : BackgroundService
                 MessageSummaryItems.Flags | MessageSummaryItems.InternalDate | MessageSummaryItems.Size |
                 MessageSummaryItems.BodyStructure | MessageSummaryItems.References, ct);
             MailStore.Insert(db, account.Id, row.Path, summaries);
+            // Gerade von hier gesendet: den Inhalt hat der Server schon - gleich ablegen statt spaeter vom Anbieter zu holen
+            foreach (var s in summaries)
+                if (SentCache.Take(user, account.Id, row.Path, s.Envelope?.MessageId) is { } raw)
+                    MailStore.StoreRaw(db, account.Id, row.Path, s.UniqueId.Id, raw, MimeMessage.Load(new MemoryStream(raw)));
         }
 
         // Flags der schon bekannten
@@ -369,7 +379,7 @@ public sealed class MailSync : BackgroundService
     private const int MaxRuleTries = 10;
 
     /// <summary>Seit wann bearbeitete Mails gemerkt werden. Vorher Liegendes im Posteingang ist schon
-    /// bearbeitet (alte Fassung ohne Liste) und laeuft nicht noch einmal.</summary>
+    /// bearbeitet (alte Version ohne Liste) und laeuft nicht noch einmal.</summary>
     private static DateTime TrackedSince(UserDb db, MailAccount a)
     {
         var key = $"mail.{a.Id}.processedSince";

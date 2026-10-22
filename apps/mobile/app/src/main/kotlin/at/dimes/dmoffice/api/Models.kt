@@ -46,8 +46,19 @@ import kotlinx.serialization.Serializable
     val attachments: List<Attachment> = emptyList(), val messageId: String? = null, val inReplyTo: String? = null,
     val references: List<String> = emptyList(), val seen: Boolean = false, val flagged: Boolean = false,
     val imagesAllowed: Boolean = false, val imagesTrusted: Boolean = false,
+    /** Junk: Bilder und Links gesperrt, bis die Mail als "Kein Junk" im Posteingang liegt. */
+    val junk: Boolean = false,
     /** Newsletter: Abmeldewege aus List-Unsubscribe (wie im Web). */
     val unsubscribe: Unsub? = null,
+    /** Phishing-Merkmale vom Server (Mail/PhishCheck.cs): Warnbalken wie im Web. */
+    val phish: List<PhishFinding>? = null,
+)
+
+/** kind: auth (domain, detail dmarc|spf), link (shown, target), lookalike (domain, like, detail sender|link|mixed),
+ *  newsender (domain = Absenderadresse, target). strong: allein schon Grund zur Warnung. */
+@Serializable data class PhishFinding(
+    val kind: String = "", val strong: Boolean = false, val domain: String? = null, val shown: String? = null,
+    val target: String? = null, val like: String? = null, val detail: String? = null,
 )
 
 @Serializable data class Unsub(val url: String? = null, val mailto: String? = null, val oneClick: Boolean = false)
@@ -66,6 +77,8 @@ import kotlinx.serialization.Serializable
     val replyFolder: String? = null, val replyUid: Long? = null,
     val forwardFolder: String? = null, val forwardUid: Long? = null, val forwardAttachments: List<Int> = emptyList(),
     val forwardAsAttachment: Boolean = false, val draftUid: Long? = null, val highPriority: Boolean = false, val readReceipt: Boolean = false,
+    /** Aus der Dateiablage anhaengen (Pfade); als Freigabelink: Pfade bzw. Namen der hochgeladenen Dateien. */
+    val filePaths: List<String> = emptyList(), val linkPaths: List<String> = emptyList(), val linkUploads: List<String> = emptyList(),
 )
 
 // ---------------- Kontakte ----------------
@@ -97,16 +110,19 @@ import kotlinx.serialization.Serializable
 @Serializable data class NoteItem(
     val id: Long, val syncId: String? = null, val folder: String? = null, val title: String = "", val snippet: String = "",
     val color: String? = null, val modified: String = "", val created: String = "", val important: Boolean = false,
-    val attachments: Int = 0, val archived: Boolean = false, val deleted: Boolean = false,
+    val attachments: Int = 0, val archived: String? = null, val deleted: String? = null,
 )
 @Serializable data class NotesList(val archived: Int = 0, val trashed: Int = 0, val items: List<NoteItem> = emptyList())
-@Serializable data class NoteFolder(val id: String, val name: String = "", val parent: String? = null, val count: Int = 0)
+/** Ordner der Notizen; der Server liefert sync_id als syncId. */
+@Serializable data class NoteFolder(val syncId: String, val name: String = "", val parent: String? = null, val sortOrder: Double = 0.0)
 @Serializable data class NoteAttachment(val name: String = "", val mime: String = "", val size: Long = 0, val blob: String = "")
+/** archived, deleted: Zeitpunkt des Weglegens (wie in notizi), null = aktiv. */
 @Serializable data class NoteDetail(
     val id: Long, val syncId: String? = null, val folder: String? = null, val customTitle: String? = null, val title: String = "",
     val color: String? = null, val important: Boolean = false, val modified: String = "", val created: String = "",
-    val archived: Boolean = false, val deleted: Boolean = false, val blocks: List<String> = emptyList(),
+    val archived: String? = null, val deleted: String? = null, val blocks: List<String> = emptyList(),
     val protected: List<Boolean> = emptyList(), val readOnly: Boolean = false, val attachments: List<NoteAttachment> = emptyList(),
     val pending: Boolean = false, val version: String = "",
 )
 @Serializable data class NoteSaveResult(val saved: Boolean = false, val version: String = "")
+@Serializable data class NoteMeta(val customTitle: String? = null, val clearCustomTitle: Boolean = false, val color: String? = null, val important: Boolean? = null, val folder: String? = null)

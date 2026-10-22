@@ -182,6 +182,8 @@ export const mail: Record<string, string> = {
   'Keine Farbe': 'No colour',
   'Ordneranzahl ändern': 'Change folder count',
   'Automatisch leeren': 'Empty automatically',
+  'Alle Posteingänge': 'All inboxes',
+  'Junk-E-Mail: Bilder und Links sind gesperrt. Zum Freigeben die Mail als „Kein Junk“ in den Posteingang verschieben.': 'Junk email: pictures and links are blocked. To unblock, move the message to the inbox with “Not junk”.',
   'Postfach': 'Mailbox',
   'Elemente älter als {n} Tage': 'Items older than {n} days',
   'Wird nicht mehr automatisch geleert': 'No longer emptied automatically',
@@ -258,7 +260,7 @@ export const mail: Record<string, string> = {
   '{name} hat abgesagt.': '{name} declined.',
   '{name} hat geantwortet.': '{name} responded.',
   'Steht im Kalender „{name}“.': 'In calendar “{name}”.',
-  'Im Kalender steht schon eine neuere Fassung dieser Einladung.': 'The calendar already has a newer version of this invitation.',
+  'Im Kalender steht schon eine neuere Version dieser Einladung.': 'The calendar already has a newer version of this invitation.',
   'Zur selben Zeit: {list}': 'At the same time: {list}',
   'Zusagen': 'Accept',
   'Mit Vorbehalt': 'Tentative',
@@ -320,6 +322,16 @@ export const mail: Record<string, string> = {
   'Absender': 'Sender',
   'Neueste zuerst': 'Newest first',
   'Älteste zuerst': 'Oldest first',
+  'Vom Computer': 'From this computer',
+  'Aus den dmOffice-Dateien': 'From dmOffice files',
+  'Anfügen ({n})': 'Attach ({n})',
+  'Wird als Link gesendet – klicken für Anhang': 'Sent as a link – click to attach instead',
+  'Wird angehängt – klicken für Link': 'Attached – click to send as a link',
+  'Anhang': 'Attachment',
+  'Größte zuerst': 'Largest first',
+  'Mit Anhang zuerst': 'With attachment first',
+  'Ungelesene zuerst': 'Unread first',
+  'Gekennzeichnete zuerst': 'Flagged first',
   'Postausgang': 'Outbox',
   'Nichts zu senden.': 'Nothing to send.',
   'Nicht gesendet: {error}': 'Not sent: {error}',
@@ -345,6 +357,7 @@ export const mail: Record<string, string> = {
   '{n} Sekunden': '{n} seconds',
   // Newsletter abmelden
   'Vom Newsletter abmelden': 'Unsubscribe',
+  'Vom Newsletter abmelden? Dabei wird ggf. eine Abmeldung an den Absender gesendet.': 'Unsubscribe from this newsletter? This may send an unsubscribe message to the sender.',
   'Vom Newsletter abgemeldet': 'Unsubscribed',
   'Die Abmelde-Mail ist verschickt.': 'The unsubscribe email has been sent.',
   'Diese Mail kommt von einer Verteilerliste.': 'This email comes from a mailing list.',
@@ -358,4 +371,19 @@ export const mail: Record<string, string> = {
   'Künftige Mails dieses Absenders landen auch dort.': 'Future emails from this sender go there too.',
   'Nur diese Mail': 'Only this email',
   'Immer für diesen Absender': 'Always for this sender',
+  // Phishing-Warnung
+  'Vorsicht: Diese Mail könnte ein Betrugsversuch sein.': 'Caution: this email may be a scam.',
+  'Bei dieser Mail ist etwas ungewöhnlich.': 'Something about this email is unusual.',
+  'Im Zweifel keinen Link anklicken und keine Zugangsdaten eingeben. Die Website besser selbst im Browser aufrufen.':
+    'If in doubt, don’t click any links or enter your sign-in details. Open the website yourself in your browser instead.',
+  'Die Absenderadresse ist vermutlich gefälscht: Der Mailserver konnte nicht bestätigen, dass die Mail wirklich von {domain} kommt.':
+    'The sender address is probably forged: the mail server couldn’t confirm that this email really comes from {domain}.',
+  'Die Mail kam nicht über einen Server, den {domain} für seine Mails angibt.': 'This email didn’t come through a server that {domain} lists for its email.',
+  'Ein Link zeigt „{shown}“ an, führt aber zu „{target}“.': 'A link shows “{shown}” but actually goes to “{target}”.',
+  'Die Adresse {domain} mischt Buchstaben aus verschiedenen Alphabeten. So lassen sich bekannte Namen täuschend echt nachbauen.':
+    'The address {domain} mixes letters from different alphabets. That’s a way to make convincing copies of well-known names.',
+  'Die Absenderadresse gehört zu {domain}. Das sieht aus wie {like}, ist es aber nicht.': 'The sender address belongs to {domain}. It looks like {like}, but it isn’t.',
+  'Ein Link führt zu {domain}. Das sieht aus wie {like}, ist es aber nicht.': 'A link goes to {domain}. It looks like {like}, but it isn’t.',
+  'Von {sender} kam bisher keine Mail, und diese enthält einen Link zum Anmelden oder Bestätigen von Daten ({target}).':
+    'You’ve never had an email from {sender} before, and this one contains a link to sign in or confirm your details ({target}).',
 }

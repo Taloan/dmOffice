@@ -22,7 +22,14 @@ fun com.android.build.api.dsl.VariantDimension.firebaseFields(packageName: Strin
 }
 
 /** Version aus dem Release-Tag (-PappVersion=1.1.0); versionCode steigt mit jeder Version, sonst nimmt Android kein Update an. */
-val appVersion = (project.findProperty("appVersion") as String?)?.takeIf { it.matches(Regex("\\d+\\.\\d+\\.\\d+")) } ?: "0.1.0"
+val releaseVersion = (project.findProperty("appVersion") as String?)?.takeIf { it.matches(Regex("\\d+\\.\\d+\\.\\d+")) }
+/** Ohne Release-Tag (eigene Builds): Version des Zweigs aus DmOffice.Server/release.txt ("1.5" -> 1.5.0) statt 0.1.0. */
+val branchVersion = rootProject.file("../../DmOffice.Server/release.txt").takeIf { it.exists() }?.readText()?.trim()
+    ?.takeIf { it.matches(Regex("\\d+\\.\\d+")) }?.let { "$it.0" } ?: "0.1.0"
+val appVersion = releaseVersion ?: branchVersion
+/** Eigene Builds zeigen dazu den Stand: "1.5.0-dev (53f15a2)". */
+val gitShort = runCatching { providers.exec { commandLine("git", "rev-parse", "--short", "HEAD"); isIgnoreExitValue = true }.standardOutput.asText.get().trim() }.getOrDefault("")
+val appVersionName = releaseVersion ?: (appVersion + "-dev" + (if (gitShort.isNotEmpty()) " ($gitShort)" else ""))
 val appVersionCode = appVersion.split('.').map { it.toInt() }.let { (a, b, c) -> a * 10000 + b * 100 + c }.coerceAtLeast(1)
 
 plugins {
@@ -42,13 +49,16 @@ android {
         minSdk = 26
         targetSdk = 36
         versionCode = appVersionCode
-        versionName = appVersion
+        versionName = appVersionName
         vectorDrawables.useSupportLibrary = true
+        // Eigener Android-Kontotyp fuer Kalender und Kontakte (Abgleich in beide Richtungen)
+        resValue("string", "account_type", "at.dimes.dmoffice.account")
     }
 
     buildTypes {
         debug {
             applicationIdSuffix = ".debug"
+            resValue("string", "account_type", "at.dimes.dmoffice.debug.account")
             firebaseFields("at.dimes.dmoffice.debug")
         }
         release {

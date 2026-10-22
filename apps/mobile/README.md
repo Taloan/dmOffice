@@ -1,202 +1,145 @@
-# dmOffice für Android
+# dmOffice for Android
 
-Kalender und Aufgaben aus dmOffice auf dem Handy, mit Widgets für den Startbildschirm.
-Native Android-App: Kotlin, Jetpack Compose, Glance-Widgets, Room, WorkManager, OkHttp.
-Die App spricht CalDAV mit dem dmOffice-Server (`/dav/calendars/<login>/`) und meldet sich
-mit einem App-Passwort an.
+[Deutsch](README.de.md) · **English**
 
-## Was die App kann
+Calendar, tasks, mail, contacts, notes and files from dmOffice on your phone, with home screen widgets. Native Android app: Kotlin, Jetpack Compose, Glance widgets, Room, WorkManager, OkHttp. It speaks CalDAV with the dmOffice server (`/dav/calendars/<login>/`), uses the server’s web API for the rest, and signs in with an app password.
 
-- **Einrichtung per QR-Code**: in dmOffice unter Einstellungen → Konto → Geräte & Sync →
-  „Handy-App koppeln“. Der Code enthält `dmoffice://pair?v=1&url=…&user=…&token=…&name=…`.
-  Alternativ von Hand mit Adresse, Anmeldename und App-Passwort. Wird der Code mit der
-  Kamera-App gescannt, öffnet sich dmOffice direkt (Deep Link `dmoffice://pair`).
-- **Agenda** (die nächsten 90 Tage), **Tag**, **Woche**, **Monat**.
-- **Termine** anlegen und bearbeiten: ganztägig oder mit Uhrzeit, Ort, Notizen, Erinnerung,
-  einfache Wiederholung (täglich, wöchentlich, monatlich, jährlich). Serien vom Server werden
-  ausgefaltet (FREQ, INTERVAL, COUNT, UNTIL, BYDAY, BYMONTHDAY, BYMONTH, EXDATE,
-  RECURRENCE-ID-Ausnahmen). Änderungen gelten für die ganze Serie.
-- **Aufgaben** mit Fälligkeit (Datum, optional Uhrzeit), Priorität, Notizen und Abhaken;
-  Schnell-Eingabe oben in der Aufgabenliste. Fällige Aufgaben erscheinen auch in Agenda und Kalender.
-- **Datum und Uhrzeit aus dem Text** (Deutsch und Englisch): „Zahnarzt morgen Nachmittag“,
-  „Bericht nächsten Mittwoch Viertel nach 3“, „Weihnachtsfeier 24.12. 14 Uhr“, „Paket in 3 Tagen“,
-  „Workshop Freitag von 9 bis 11“, „Dentist tomorrow 3pm“. Die Schnell-Eingabe übernimmt das
-  direkt (mit Vorschau unter dem Feld); in den Editoren für Aufgabe und Termin erscheint unter dem
-  Titel ein Chip „Erkannt: … – antippen zum Übernehmen“, der Datum/Zeit setzt und den Titel kürzt.
-  Stunden 1–6 ohne Zusatz gelten als nachmittags („um 3“ = 15:00), Tageszeiten: früh 8, vormittags 10,
-  mittags 12, nachmittags 14, abends 19, nachts 22 Uhr.
-- **Widgets**: „dmOffice Agenda“, „dmOffice Aufgaben“ (Abhaken direkt im Widget) und
-  „dmOffice Monat“. Einstellungen je Widget, Details im Abschnitt „Widgets“ unten.
-- **Erinnerungen** als lokale Benachrichtigungen (VALARM), mit Schlummern und „Erledigt“ bei Aufgaben.
-- **Synchronisierung**: `sync-collection` (RFC 6578) je Kalender mit Token, ETags, `If-Match`
-  beim Schreiben, `If-None-Match: *` beim Anlegen. Offline-Cache in Room; lokale Änderungen
-  werden beim nächsten Sync hochgeladen. Bei `412` gewinnt der Server, die eigene Fassung
-  bleibt als „(Konfliktkopie)“ erhalten. Hintergrund-Sync alle 15 Minuten plus sofort nach
-  jeder Änderung.
-- **E-Mail** über die Web-API von dmOffice (Reiter „Mail“): Konten und Ordner, Posteingang mit
-  Cache (offline lesbar), Lesen im WebView mit serverseitig bereinigtem HTML (externe Bilder auf
-  Wunsch), Anhänge öffnen, Antworten, Allen antworten, Weiterleiten, Senden über den Server
-  (SMTP des Kontos, Kopie in Gesendet), Markieren, Ungelesen, Papierkorb.
-- **Kontakte** (Mehr → Kontakte): Liste mit Suche, Karte mit Anrufen, SMS, Mail, Karte; lokal gecacht.
-- **Notizen** (Mehr → Notizen): Liste mit Suche, Lesen; Bearbeiten absatzweise mit Versionsprüfung
-  (gesperrte Blöcke und Notizen mit Tabellen/Bildern bleiben unverändert).
-- **Android-Kalender und -Kontakte** (Optionen): auf Wunsch werden Kalender und Kontakte in die
-  Android-Datenbanken gespiegelt (CalendarContract als lokales Konto „dmOffice“, nur lesbar;
-  Kontakte als Gerätekontakte). Samsung-Kalender, Telefon, WhatsApp usw. sehen sie dann.
-  Einbahnstraße dmOffice → Android, die Kopien liegen dort unverschlüsselt; abschaltbar, beim
-  Ausschalten oder Entfernen des Kontos werden sie gelöscht.
-- **Sicherheit**: lokale Datenbank mit SQLCipher verschlüsselt (Schlüssel im Keystore-geschützten
-  Speicher), optionale App-Sperre per Fingerabdruck, Gesicht oder Geräte-PIN. Der Server nimmt das
-  App-Passwort für die Web-API nur für Mail, Kalender, Kontakte, Notizen und Dateien an, nie für
-  Verwaltung oder Anmeldeeinstellungen.
-- **Verschlüsselter Umschlag** (zusätzlich zu TLS, Server `E2e.cs`, App `api/E2e.kt`): beim Koppeln
-  holt die App den öffentlichen Serverschlüssel (aus dem QR-Code, Parameter `spk`, sonst von
-  `/api/e2e/key`), erzeugt ein eigenes P-256-Schlüsselpaar und registriert es mit dem App-Passwort
-  (`/api/e2e/register`). Aus ECDH und HKDF-SHA256 entsteht ein AES-256-GCM-Schlüssel; danach geht jede
-  Anfrage (Web-API und CalDAV) als Chiffrat an `/api/e2e/{user}/{device}` und die Antwort kommt
-  genauso zurück. Proxy, Netz und TLS-Endpunkt sehen nur Chiffrat, entschlüsselt wird erst in
-  dmOffice. Zähler gegen Wiederholung, Widerruf des App-Passworts löscht den Geräteschlüssel. Ein
-  Server ohne `/api/e2e/key` wird mit TLS allein bedient; der Zustand steht in den Optionen unter
-  „Sicherheit“.
-- Hell und Dunkel nach System (Material You), Deutsch und Englisch nach Systemsprache.
+## What the app does
 
-## Bauen
+- **Setup by QR code**: in dmOffice under Settings → Account → Devices & sync → “Pair phone app”. The code contains `dmoffice://pair?v=1&url=…&user=…&token=…&name=…`. Alternatively set it up by hand with address, username and app password. If the code is scanned with the camera app, dmOffice opens directly (deep link `dmoffice://pair`).
+- **Agenda** (the next 90 days), **day**, **week**, **month**.
+- **Events**: create and edit, all-day or timed, location, notes, reminder, simple recurrence (daily, weekly, monthly, yearly). Recurring series from the server are expanded (FREQ, INTERVAL, COUNT, UNTIL, BYDAY, BYMONTHDAY, BYMONTH, EXDATE, RECURRENCE-ID exceptions). Changes apply to the whole series.
+- **Tasks** with due date (date, optional time), priority, notes and ticking off; quick entry at the top of the task list. Due tasks also show up in the agenda and calendar.
+- **Date and time from text** (German and English): “Dentist tomorrow afternoon”, “Report next Wednesday quarter past 3”, “Christmas party 24.12. 2pm”, “Parcel in 3 days”, “Workshop Friday from 9 to 11”. Quick entry applies this directly (with a preview below the field); in the task and event editors a chip “Recognised: … – tap to apply” appears under the title, sets date/time and shortens the title. Hours 1–6 without a suffix count as afternoon (“at 3” = 15:00); times of day: early 8, morning 10, noon 12, afternoon 14, evening 19, night 22.
+- **Widgets**: “dmOffice Agenda”, “dmOffice Tasks” (tick off directly in the widget) and “dmOffice Month”. Settings per widget, details in the “Widgets” section below.
+- **Reminders** as local notifications (VALARM), with snooze and “Done” for tasks.
+- **Sync**: `sync-collection` (RFC 6578) per calendar with tokens, ETags, `If-Match` on write, `If-None-Match: *` on create. Offline cache in Room; local changes are uploaded on the next sync. On `412` the server wins and your own version is kept as “(conflict copy)”. Background sync every 15 minutes plus immediately after each change.
+- **Mail** through dmOffice’s web API (“Mail” tab): accounts and folders, inbox with cache (readable offline), reading in a WebView with HTML sanitised on the server (external images on request), opening attachments, reply, reply all, forward, sending through the server (the account’s SMTP, copy in Sent), flagging, unread, trash. Notifications for new mail can be set per account.
+- **Contacts** (More → Contacts): list with search, card with call, SMS, mail, map; cached locally.
+- **Notes** (More → Notes): list with search, reading; editing paragraph by paragraph with version check (locked blocks and notes with tables/images stay unchanged).
+- **Files** (Files tab): browse, search, list or tiles, preview (pictures, PDF, text, video), open in other apps, rename, delete, create folders, upload, previous versions, share links (view, upload, upload only; expiry and password). **Available offline** keeps a copy of marked files or folders on the phone and keeps it in sync. Office documents open in the editor of your office server (see [docs/office.md](../../docs/office.md)).
+- **Auto upload**: rules that upload new photos, videos or other files from a folder on the phone to a folder in your dmOffice files.
+  - Sources: camera, screenshots, WhatsApp media, any media folder or a folder chosen by hand.
+  - Target folder in dmOffice, optionally with subfolders by year, month or day, or keeping the source’s subfolders.
+  - File types: photos and videos, photos only, videos only, or all files.
+  - Same name but different file: keep both (adds a number), skip, or replace (the old one is kept as a previous version).
+  - After uploading: keep on the device, or delete from the device (asks for confirmation each time; Android only allows deleting without asking with “All files access”).
+  - When: Wi-Fi only, also when roaming, only while charging. Start date, or also upload existing files.
+  - New photos and videos are detected within seconds, even when the app is closed; as a safety net it also checks every 15 minutes. The app remembers what it has uploaded. A file whose contents are already anywhere in dmOffice (same SHA-256, also from another device) is not transferred again. An upload queue with history shows progress; failed uploads can be retried.
+- **Free up space**: lists photos and videos that the server has confirmed as backed up by checksum (`POST /api/files/hashes`) and that have not changed on the device since, and deletes them on request. Right before deleting, the app asks the server once more. By default the last 30 days stay on the device (0, 7, 30, 90 or 365 days to choose). In dmOffice the files stay; each device frees up only its own files.
+- **Android calendar and contacts** (Options): optionally mirrors calendars and contacts into the Android databases (CalendarContract as a local account “dmOffice”, read-only; contacts as device contacts). Samsung Calendar, Phone, WhatsApp and so on then see them. One-way street dmOffice → Android; the copies are stored unencrypted there; can be turned off, and are deleted when turned off or when the account is removed.
+- **Security**: local database encrypted with SQLCipher (key in Keystore-protected storage), optional app lock with fingerprint, face or device PIN. The server accepts the app password for the web API only for mail, calendar, contacts, notes and files, never for administration or sign-in settings.
+- **Encrypted envelope** (in addition to TLS, server `E2e.cs`, app `api/E2e.kt`): when pairing, the app fetches the server’s public key (from the QR code, parameter `spk`, otherwise from `/api/e2e/key`), generates its own P-256 key pair and registers it with the app password (`/api/e2e/register`). ECDH and HKDF-SHA256 yield an AES-256-GCM key; from then on every request (web API and CalDAV) goes as ciphertext to `/api/e2e/{user}/{device}` and the reply comes back the same way. Proxy, network and TLS endpoint only see ciphertext; decryption happens inside dmOffice. A counter protects against replay; revoking the app password deletes the device key. A server without `/api/e2e/key` is served with TLS alone; the state is shown in Options under “Security”.
+- **Updates**: the app checks GitHub for new releases at start and once a day (Options → “Check for updates”), shows what is new and installs the APK after verifying that it is signed with the same key. Android asks once to allow installing from this source. Developer builds are signed differently and do not update this way.
+- Light and dark following the system (Material You), German and English following the system language.
 
-Voraussetzungen: JDK 17 und das Android SDK (Plattform 36). Android Studio ist nicht nötig.
+## Building
+
+Requirements: JDK 17 and the Android SDK (platform 36). Android Studio is not needed.
 
 ```bash
-# JDK, z. B. unter Windows
+# JDK, e.g. on Windows
 winget install Microsoft.OpenJDK.17
 
-# SDK-Pfad eintragen (einmalig), Vorwärts-Schrägstriche auch unter Windows
+# set the SDK path (once), forward slashes also on Windows
 echo "sdk.dir=C:/Users/<name>/AppData/Local/Android/Sdk" > apps/mobile/local.properties
 
 cd apps/mobile
 ./gradlew :app:assembleDebug          # -> app/build/outputs/apk/debug/app-debug.apk
-./gradlew :app:testDebugUnitTest      # Parser, Serienregeln, DAV-XML
+./gradlew :app:testDebugUnitTest      # parser, recurrence rules, DAV XML
 ```
 
-Unter Windows `gradlew.bat` statt `./gradlew`; `JAVA_HOME` muss auf das JDK 17 zeigen.
-Der erste Build lädt Gradle-Abhängigkeiten und dauert einige Minuten.
+On Windows use `gradlew.bat` instead of `./gradlew`; `JAVA_HOME` must point to JDK 17. The first build downloads Gradle dependencies and takes a few minutes.
 
-Die Debug-Variante heißt `at.dimes.dmoffice.debug` und kann neben einer Release-Version
-installiert sein.
+The debug variant is called `at.dimes.dmoffice.debug` and can be installed next to a release version.
 
-## Auf dem Handy installieren und gegen eine lokale Instanz testen
+Release APKs are built and signed by `.github/workflows/android.yml` for every version tag (`v1.2.3`) and attached to the GitHub release as `dmOffice-1.2.3.apk` and `dmOffice.apk`. The signing key lives in repository secrets, never in the repository; always use the same key, because Android only installs an update with the same signature.
+
+## Installing on the phone and testing against a local instance
 
 ```bash
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 
-# dmOffice lokal auf Port 5099 laufen lassen und den Port aufs Handy durchreichen
+# run dmOffice locally on port 5099 and pass the port through to the phone
 adb reverse tcp:5099 tcp:5099
 ```
 
-Dann in der App „Von Hand einrichten“: Adresse `http://127.0.0.1:5099`, Anmeldename und ein
-App-Passwort aus den dmOffice-Einstellungen. Klartext-HTTP ist nur für `127.0.0.1`,
-`localhost` und `10.0.2.2` (Emulator) erlaubt (`res/xml/network_security_config.xml`);
-produktiv braucht es HTTPS.
+Then choose “Set up by hand” in the app: address `http://127.0.0.1:5099`, username and an app password from the dmOffice settings. Plain HTTP is only allowed for `127.0.0.1`, `localhost` and `10.0.2.2` (emulator) (`res/xml/network_security_config.xml`); production needs HTTPS.
 
-Ohne Tippen geht die Kopplung auch per Intent:
+Pairing also works without typing, by intent:
 
 ```bash
-adb shell am start -a android.intent.action.VIEW -d "'dmoffice://pair?v=1&url=http%3A%2F%2F127.0.0.1%3A5099&user=<login>&token=<app-passwort>&name=<name>'"
+adb shell am start -a android.intent.action.VIEW -d "'dmoffice://pair?v=1&url=http%3A%2F%2F127.0.0.1%3A5099&user=<login>&token=<app-password>&name=<name>'"
 ```
 
-## Bedienung
+## Using the app
 
-- **Agenda**: nach Tagen gruppiert, Haken bei fälligen Aufgaben. Plus-Knopf: neuer Termin.
-- **Kalender**: oben zwischen Tag, Woche und Monat umschalten, Pfeile blättern, das
-  Kalender-Symbol springt zu heute. In der Monatsansicht einen Tag antippen, darunter
-  erscheint seine Liste. Der Plus-Knopf legt den Termin am gewählten Tag an.
-- **Aufgaben**: Schnell-Eingabe oben (nur Titel, kommt in den ersten Aufgaben-Kalender),
-  Gruppen überfällig / heute / später / ohne Datum. Erledigte lassen sich in den
-  Optionen einblenden.
-- **Optionen**: Konto, Sync jetzt, letzte Synchronisierung und Fehler, Kalender
-  ein- und ausblenden, Standard-Erinnerung, Konto entfernen.
-- **Widgets**: Startbildschirm lange drücken → Widgets → dmOffice. Alle Widgets lassen sich
-  in der Größe ändern. Ein Tipp auf einen Eintrag öffnet ihn in der App, der Haken im
-  Aufgaben-Widget erledigt die Aufgabe sofort und stößt den Sync an.
+- **Agenda**: grouped by day, tick boxes for due tasks. Plus button: new event.
+- **Calendar**: switch between day, week and month at the top, arrows page through, the calendar icon jumps to today. In the month view tap a day and its list appears below. The plus button creates the event on the selected day.
+- **Tasks**: quick entry at the top (title only, goes into the first task calendar), groups overdue / today / later / no date. Completed ones can be shown in the options.
+- **Files**: Tap a file to open it, long-press to select; the three-dot menu has rename, delete, versions, share and “Available offline”. Upload button: files, photos, new folder, new Office document.
+- **Options**: account, sync now, last sync and errors, show and hide calendars, default reminder, auto upload and free up space, updates, remove account.
+- **Widgets**: long-press the home screen → Widgets → dmOffice. All widgets can be resized. Tapping an entry opens it in the app; the tick in the tasks widget completes the task immediately and triggers a sync.
 
 ## Widgets
 
-Drei Widgets, jedes mit eigenen Einstellungen (Zahnrad in der Titelzeile oder beim Anlegen),
-gespeichert je Widget-Instanz in `data/WidgetPrefs.kt`:
+Three widgets, each with its own settings (cog in the title row or when adding), stored per widget instance in `data/WidgetPrefs.kt`:
 
-- **dmOffice Agenda**: die nächsten Tage als Liste mit Tagesköpfen.
-- **dmOffice Aufgaben**: offene Aufgaben mit Haken zum Erledigen.
-- **dmOffice Monat**: Monatsraster, darunter wahlweise die Liste des gewählten Tages.
-  Tag antippen wechselt die Liste, Pfeile blättern den Monat, ein Tipp auf den Monatsnamen
-  springt zurück zu heute. Monat und gewählter Tag bleiben je Widget erhalten.
+- **dmOffice Agenda**: the next days as a list with day headers.
+- **dmOffice Tasks**: open tasks with a tick to complete them.
+- **dmOffice Month**: month grid, below it optionally the list of the selected day. Tapping a day switches the list, arrows page through the month, tapping the month name jumps back to today. Month and selected day are kept per widget.
 
-Einstellungen nach dem Vorbild von Business Calendar 2:
-
-| Bereich | Optionen |
+| Area | Options |
 |---|---|
-| Inhalt | Termine und Aufgaben / nur Termine / nur Aufgaben; Zeitraum in Tagen; mehrtägige Termine (an jedem Tag, nur erster und letzter Tag, nur am laufenden Tag); Höchstzahl Einträge; nur Aufgaben mit Fälligkeit; erledigte Aufgaben |
-| Monatsraster | Agenda-Widget: „Monatsraster oben einblenden“ (die Liste beginnt dann am gewählten Tag); Monats-Widget: Liste des gewählten Tages ein/aus; Tage mit Einträgen als Punkte oder kleine Balken in den Kalenderfarben (bis zu drei je Tag) |
-| Darstellung | Zeilenlayout kompakt (eine Zeile: Zeit und Titel) / normal (Titel, darunter Zeit und Ort) / ausführlich (Titel, Zeit, Ort, Kalendername); Kalenderfarbe als Balken, Punkt oder gar nicht; Zeitangabe links neben oder unter dem Titel; Tageskopf relativ (Heute/Morgen/Wochentag) oder immer als Datum; Schriftgröße; Deckkraft des Hintergrunds; Titelzeile; Ort |
+| Content | Events and tasks / events only / tasks only; period in days; multi-day events (on every day, first and last day only, only on the current day); maximum number of entries; only tasks with a due date; completed tasks |
+| Month grid | Agenda widget: “show month grid on top” (the list then starts at the selected day); Month widget: list of the selected day on/off; days with entries as dots or small bars in the calendar colours (up to three per day) |
+| Appearance | Row layout compact (one line: time and title) / normal (title, below it time and place) / detailed (title, time, place, calendar name); calendar colour as bar, dot or none; time to the left of or below the title; day header relative (Today/Tomorrow/weekday) or always as a date; font size; background opacity; title row; place |
 
-Mehrtägige Termine folgen in allen Widgets derselben Regel (`MultiDayRule`), auch im Monatsraster.
-Die Umsetzung liegt in `widget/Widgets.kt` (gemeinsame Bausteine, Agenda, Aufgaben, Raster) und
-`widget/MonthWidget.kt`.
+Multi-day events follow the same rule (`MultiDayRule`) in all widgets, including the month grid. The implementation is in `widget/Widgets.kt` (shared building blocks, agenda, tasks, grid) and `widget/MonthWidget.kt`.
 
-## Push über Firebase (optional)
+## Push through Firebase (optional)
 
-Ohne Push fragt die App alle 15 Minuten nach Neuem. Mit Push schickt dmOffice bei jeder Änderung
-(Mail, Termine, Aufgaben, Kontakte, Notizen) ein inhaltsloses Signal über Google Firebase Cloud
-Messaging, und die App gleicht sofort ab. Über Google läuft dabei nur „es gibt Neues“; die Daten
-holt die App selbst über den verschlüsselten Umschlag von dmOffice.
+Without push the app asks for news every 15 minutes. With push, dmOffice sends a content-free signal through Google Firebase Cloud Messaging on every change (mail, events, tasks, contacts, notes), and the app syncs immediately. Only “there is news” travels through Google; the app fetches the data itself through dmOffice’s encrypted envelope.
 
-Einmalig einrichten:
+One-time setup:
 
-1. **Firebase-Projekt**: <https://console.firebase.google.com> → Projekt hinzufügen (Google
-   Analytics ist nicht nötig).
-2. **Android-Apps**: Im Projekt zwei Android-Apps anlegen, mit den Paketnamen
-   `at.dimes.dmoffice` (Release) und `at.dimes.dmoffice.debug` (Debug). Danach unter
-   Projekteinstellungen → Allgemein die Datei `google-services.json` herunterladen; sie enthält
-   beide Apps.
-3. **Für die App**: `google-services.json` nach `apps/mobile/app/` legen (steht in `.gitignore`)
-   und die App neu bauen. Ohne die Datei baut die App genauso, nur ohne Push.
-4. **Für den Server**: Projekteinstellungen → Dienstkonten → „Neuen privaten Schlüssel
-   generieren“. Die JSON-Datei als `keys/fcm.json` in den Datenordner von dmOffice legen
-   (auf dem Unraid unter appdata, neben `keys/master.key`) oder den Pfad in der
-   Umgebungsvariable `DMOFFICE_FCM_CREDENTIALS` angeben, dann den Container neu starten.
-   Der Schlüssel ist geheim, er gehört nicht ins Repo.
+1. **Firebase project**: <https://console.firebase.google.com> → add project (Google Analytics is not needed).
+2. **Android apps**: in the project create two Android apps with the package names `at.dimes.dmoffice` (release) and `at.dimes.dmoffice.debug` (debug). Then download `google-services.json` under Project settings → General; it contains both apps.
+3. **For the app**: put `google-services.json` in `apps/mobile/app/` (it is in `.gitignore`) and rebuild the app. Without the file the app builds just the same, only without push.
+4. **For the server**: Project settings → Service accounts → “Generate new private key”. Put the JSON file as `keys/fcm.json` into dmOffice’s data folder (on Unraid under appdata, next to `keys/master.key`) or give the path in the environment variable `DMOFFICE_FCM_CREDENTIALS`, then restart the container. The key is secret and does not belong in the repository.
 
-Im Server-Log steht danach nicht mehr „Push: kein FCM-Schluessel“. Die App meldet ihr Token beim
-Start an; es hängt am App-Passwort und fällt mit dessen Widerruf weg.
+The server log then no longer says “Push: kein FCM-Schluessel”. The app registers its token at start; it is tied to the app password and goes away when that is revoked.
 
-Technik: `DmOffice.Server/Push.cs` prüft alle 10 Sekunden für Benutzer mit angemeldetem Handy einen
-Fingerabdruck aus Mail-Version, Kalender-Synctokens und Notizen-Stand und schickt höchstens alle
-15 Sekunden ein Signal (FCM HTTP v1, Datennachricht mit hoher Priorität). In der App startet
-`sync/PushService.kt` daraufhin den Abgleich.
+Technique: `DmOffice.Server/Push.cs` checks every 10 seconds, for users with a signed-in phone, a fingerprint made of mail version, calendar sync tokens and notes state, and sends a signal at most every 15 seconds (FCM HTTP v1, high-priority data message). In the app `sync/PushService.kt` then starts the sync.
 
-## Aufbau des Codes
+## Code layout
 
-| Ordner | Inhalt |
+| Folder | Contents |
 |---|---|
-| `data/NaturalDate.kt` | Datum/Uhrzeit aus Text (de/en), `data/WidgetPrefs.kt` Einstellungen je Widget |
-| `api/` | Web-API-Client (App-Passwort, JSON) und Datenformate wie web/src/api.ts |
-| `mail/` | Mail-Repository mit Cache; `data/ContactsRepo.kt`, `data/NotesRepo.kt` ebenso |
-| `sync/ProviderSync.kt` | Spiegel in CalendarContract und ContactsContract |
-| `sync/PushService.kt` | Push über Firebase: Token anmelden, Signal startet den Abgleich |
-| `ical/` | iCalendar-Leser/-Schreiber (Rundreise unbekannter Eigenschaften) und RRULE-Ausfaltung |
-| `dav/` | CalDAV-Client (OkHttp) und namespace-bewusster Multistatus-Parser (XmlPullParser) |
-| `data/` | Room-Datenbank, Konto (verschlüsselt), Modell/Feldableitung aus ICS, Repository |
-| `sync/` | Sync-Engine (hochladen, sync-collection, Konflikte) und WorkManager-Worker |
-| `notify/` | Erinnerungen über AlarmManager, Benachrichtigungen, Boot-Receiver |
-| `widget/` | Glance-Widgets für Agenda, Aufgaben und Monat, Einstellungs-Activity |
-| `ui/` | Compose-Oberfläche: Einrichtung, Agenda, Kalender, Aufgaben, Editoren, Optionen |
+| `data/NaturalDate.kt` | Date/time from text (de/en), `data/WidgetPrefs.kt` settings per widget |
+| `api/` | Web API client (app password, JSON), the encrypted envelope and data formats as in web/src/api.ts |
+| `mail/` | Mail repository with cache; `data/ContactsRepo.kt`, `data/NotesRepo.kt` likewise |
+| `files/` | File repository, offline copies, thumbnails, document provider, Office editor glue |
+| `upload/` | Auto upload (scanner, queue, rules) and the logic for “free up space” |
+| `update/` | Update check, download and signature verification |
+| `sync/ProviderSync.kt` | Mirror into CalendarContract and ContactsContract |
+| `sync/PushService.kt` | Push through Firebase: register token, signal starts the sync |
+| `ical/` | iCalendar reader/writer (round trip of unknown properties) and RRULE expansion |
+| `dav/` | CalDAV client (OkHttp) and a namespace-aware multistatus parser (XmlPullParser) |
+| `data/` | Room database, account (encrypted), model/field derivation from ICS, repository |
+| `sync/` | Sync engine (upload, sync-collection, conflicts) and WorkManager workers |
+| `notify/` | Reminders via AlarmManager, mail notifications, notifications, boot receiver |
+| `widget/` | Glance widgets for agenda, tasks and month, settings activity |
+| `ui/` | Compose interface: setup, agenda, calendar, tasks, files, editors, options |
 
-Der Multistatus-Parser vergleicht Namespace und lokalen Namen, nie das Präfix. Damit ist
-die App unabhängig davon, ob der Server `d:`, `D:` oder gar kein Präfix schreibt.
+The multistatus parser compares namespace and local name, never the prefix. This makes the app independent of whether the server writes `d:`, `D:` or no prefix at all.
 
-## Noch offen
+## Still open
 
-- Serien nur als Ganzes bearbeiten (keine Einzelinstanz-Ausnahmen anlegen).
-- Keine Zeitraster-Ansicht für Tag und Woche; es sind Listen.
-- Keine Unteraufgaben, keine Vorlagen, keine Jahresansicht.
-- Widgets: keine Wochenansicht, kein Zeitraster, keine freie Farbwahl für Text und Hintergrund.
-- Mail: keine Suche, kein Verschieben in andere Ordner, keine Entwürfe, nur Text beim Schreiben.
-- Kontakte nur lesen, Notizen ohne Formatierung, Anhänge, Ordner.
-- Android-Spiegel ohne Aufgaben und ohne Einzelausnahmen von Serien.
+- Recurring series can only be edited as a whole (no single-instance exceptions).
+- No time-grid view for day and week; they are lists.
+- No subtasks, no templates, no year view.
+- Widgets: no week view, no time grid, no free colour choice for text and background.
+- Mail: plain text only when writing.
+- Contacts read-only; notes without formatting, attachments or folders.
+- The Android mirror has no tasks and no single exceptions of series.

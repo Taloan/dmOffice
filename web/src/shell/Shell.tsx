@@ -6,7 +6,7 @@ import {
   bundleIcon, Mail24Filled, Mail24Regular, CalendarLtr24Filled, CalendarLtr24Regular, People24Filled, People24Regular,
   TaskListSquareLtr24Filled, TaskListSquareLtr24Regular, Note24Filled, Note24Regular, Folder24Filled, Folder24Regular,
   Settings24Regular, Settings24Filled, ShieldPersonRegular, ShieldPersonFilled, SignOut20Regular, WeatherMoon20Regular,
-  ArrowSync20Regular,
+  ArrowSync20Regular, CloudOff20Regular,
 } from '@fluentui/react-icons'
 import { Component, lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { e2eForget } from '../e2e'
@@ -14,9 +14,14 @@ import { api } from '../api'
 import { useApp } from '../App'
 import { t, tError } from '../i18n'
 import { storedTheme, storeTheme, ThemeChoice } from '../theme'
-import { usePoll } from './hooks'
+import { REACHABLE_RECHECK, usePoll, useReachable, useVersion } from './hooks'
+import { StorageInfo } from './StorageInfo'
+import { HelpMenu } from './Help'
+import { copyText } from './browser'
 import { Notifier } from './Notifier'
 import { Bookmarks } from './Bookmarks'
+import { ActivityButton } from './Activity'
+import { useIsMobile } from './mobile'
 
 // Nach einem Update gibt es die Teilstuecke des alten Builds nicht mehr - dann einmal neu laden
 function load<T>(f: () => Promise<T>): () => Promise<T> {
@@ -81,7 +86,8 @@ const useStyles = makeStyles({
     height: '48px', flexShrink: 0, display: 'flex', alignItems: 'center', gap: '8px', padding: '0 12px',
     backgroundColor: tokens.colorNeutralBackground3, color: tokens.colorNeutralForeground1,
   },
-  brand: { display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 600, fontSize: '16px', width: '220px' },
+  brand: { display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 600, fontSize: '16px', minWidth: '220px' },
+  release: { fontWeight: 400, fontSize: '13px', color: tokens.colorNeutralForeground2, whiteSpace: 'nowrap', cursor: 'pointer' },
   spacer: { flex: 1 },
   topButton: { color: tokens.colorNeutralForeground2, minWidth: 'auto', ':hover': { color: tokens.colorNeutralForeground1, backgroundColor: tokens.colorNeutralBackground3Hover } },
   body: { flex: 1, display: 'flex', minHeight: 0 },
@@ -105,6 +111,16 @@ const useStyles = makeStyles({
     overflow: 'hidden', boxShadow: tokens.shadow4,
   },
   loading: { margin: 'auto' },
+  // Handy: Kopfzeile ohne feste Markenbreite, Bereiche als Leiste unten, Inhalt ohne Rahmen
+  brandMobile: { minWidth: 'auto' },
+  bodyMobile: { flexDirection: 'column' },
+  railMobile: {
+    width: 'auto', height: 'auto', flexDirection: 'row', justifyContent: 'space-around', paddingTop: 0, gap: 0, order: 2,
+    padding: '2px 4px calc(2px + env(safe-area-inset-bottom, 0px))', borderTop: `1px solid ${tokens.colorNeutralStroke2}`,
+  },
+  railButtonMobile: { width: '42px', minWidth: '42px', height: '42px' },
+  railActiveMobile: { '::before': { left: '12px', right: '12px', top: 'auto', bottom: '-2px', width: 'auto', height: '3px' } },
+  mainMobile: { borderTopLeftRadius: 0, boxShadow: 'none', position: 'relative' },
 })
 
 function currentModule(): Module {
@@ -114,6 +130,7 @@ function currentModule(): Module {
 
 export function Shell() {
   const s = useStyles()
+  const mobile = useIsMobile()
   // Fensterrahmen der installierten App (Titelleiste, Fensterknoepfe) in der Farbe der Kopfleiste -
   // folgt Akzentfarbe und Hell/Dunkel, die sich auch in den Einstellungen aendern koennen
   const headerRef = useRef<HTMLElement>(null)
@@ -127,7 +144,7 @@ export function Shell() {
     const timer = setInterval(sync, 1500)
     return () => clearInterval(timer)
   }, [])
-  const { me } = useApp()
+  const { me, notify } = useApp()
   const [module, setModule] = useState<Module>(currentModule())
   const [theme, setTheme] = useState<ThemeChoice>(storedTheme())
   const status = usePoll(() => api.get('/api/mail/status'), 20000, 'dmoffice:mailstatus')
@@ -142,6 +159,13 @@ export function Shell() {
   const go = (m: Module) => { location.hash = '#/' + m }
   const unread = status ? Object.values<any>(status.accounts).reduce((n, a) => n + (a.unread || 0), 0) : 0
   const syncing = status ? Object.values<any>(status.accounts).some(a => a.running) : false
+  const reachable = useReachable()
+  const version = useVersion()
+  // Klick auf die Versionsnummer: Version und Build in die Zwischenablage
+  const copyVersion = () => {
+    const text = `v${version.release}${version.build ? ` (${t('Build')} ${version.build})` : ''}`
+    copyText(text).then(ok => ok && notify(t('Version kopiert'), text))
+  }
   // Ohne Mailkonto kein Mail-Bereich (Konten legt man in den Einstellungen an); solange der Stand fehlt, bleibt er sichtbar
   const hasMail = !status || Object.keys(status.accounts ?? {}).length > 0
   useEffect(() => { if (!hasMail && module === 'mail') go('calendar') }, [hasMail, module]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -162,6 +186,11 @@ export function Shell() {
   const logout = async () => {
     e2eForget()
     await api.post('/api/auth/logout')
+    // Reste des Benutzers auf einem geteilten Rechner entfernen: Einstellungen, zuletzt geoeffnete Ordner usw.
+    try {
+      for (const store of [localStorage, sessionStorage])
+        for (const k of Object.keys(store)) if (k.startsWith('dmoffice.')) store.removeItem(k)
+    } catch { /* privat */ }
     location.hash = ''
     location.reload()
   }
@@ -170,16 +199,25 @@ export function Shell() {
     <div className={s.root}>
       <Notifier status={status} />
       <header className={mergeClasses(s.top, 'dm-titlebar')} ref={headerRef}>
-        <div className={s.brand}>
+        <div className={mergeClasses(s.brand, mobile && s.brandMobile)}>
           <img src="/favicon.svg" width={22} height={22} alt="" />
           <span className="dm-brand-name">dmOffice</span>
+          {version.release && (
+            <Tooltip content={version.build ? `${t('Build')} ${version.build} – ${t('Klick kopiert die Version')}` : t('Klick kopiert die Version')} relationship="description">
+              <span className={s.release} role="button" tabIndex={0} onClick={copyVersion}
+                onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') copyVersion() }}>v{version.release}</span>
+            </Tooltip>
+          )}
         </div>
         <div className={s.spacer} />
-        <Tooltip content={syncing ? t('Wird synchronisiert …') : t('Jetzt synchronisieren')} relationship="label">
+        <StorageInfo mobile={mobile} />
+        <Tooltip content={!reachable ? t('Server nicht erreichbar') : syncing ? t('Wird synchronisiert …') : t('Jetzt synchronisieren')} relationship="label">
           <Button appearance="transparent" className={s.topButton}
-            icon={syncing ? <Spinner size="extra-tiny" /> : <ArrowSync20Regular />}
-            onClick={() => api.post('/api/mail/sync')} aria-label={syncing ? t('Wird synchronisiert …') : t('Jetzt synchronisieren')} />
+            icon={!reachable ? <CloudOff20Regular style={{ color: tokens.colorPaletteRedForeground1 }} /> : syncing ? <Spinner size="extra-tiny" /> : <ArrowSync20Regular />}
+            onClick={() => { if (reachable) api.post('/api/mail/sync'); else window.dispatchEvent(new Event(REACHABLE_RECHECK)) }}
+            aria-label={!reachable ? t('Server nicht erreichbar') : syncing ? t('Wird synchronisiert …') : t('Jetzt synchronisieren')} />
         </Tooltip>
+        <ActivityButton mobile={mobile} className={s.topButton} />
         <Menu>
           <MenuTrigger disableButtonEnhancement>
             <Tooltip content={t('Darstellung')} relationship="label">
@@ -194,6 +232,7 @@ export function Shell() {
             </MenuList>
           </MenuPopover>
         </Menu>
+        <HelpMenu className={s.topButton} release={version.release} build={version.build} />
         <Menu>
           <MenuTrigger disableButtonEnhancement>
             <Button appearance="transparent" className={s.topButton} aria-label={t('Konto')}>
@@ -205,36 +244,38 @@ export function Shell() {
               <MenuItem disabled><Text weight="semibold">{me.displayName}</Text> <Text size={200}>({me.login})</Text></MenuItem>
               <MenuDivider />
               <MenuItem icon={<Settings24Regular />} onClick={() => go('settings')}>{t('Einstellungen')}</MenuItem>
+              {mobile && me.isAdmin && <MenuItem icon={<ShieldPersonRegular />} onClick={() => go('admin')}>{t('Verwaltung')}</MenuItem>}
               <MenuItem icon={<SignOut20Regular />} onClick={logout}>{t('Abmelden')}</MenuItem>
             </MenuList>
           </MenuPopover>
         </Menu>
       </header>
-      <div className={s.body}>
-        <nav className={s.rail}>
+      <div className={mergeClasses(s.body, mobile && s.bodyMobile)}>
+        <nav className={mergeClasses(s.rail, mobile && s.railMobile)}>
           {modules.filter(m => (m.key !== 'files' || me.files !== false) && (m.key !== 'mail' || hasMail)).map(m => (
-            <Tooltip key={m.key} content={m.label} relationship="label" positioning="after">
+            <Tooltip key={m.key} content={m.label} relationship="label" positioning={mobile ? 'above' : 'after'}>
               {/* Zaehler neben dem Knopf, nicht darin - sonst wird der Knopf breiter als die Leiste */}
               <div style={{ position: 'relative' }}>
-                <Button appearance="subtle" className={mergeClasses(s.railButton, module === m.key && s.railActive, s.tinted)}
+                <Button appearance="subtle" className={mergeClasses(s.railButton, mobile && s.railButtonMobile, module === m.key && s.railActive, module === m.key && mobile && s.railActiveMobile, s.tinted)}
                   icon={<m.icon />} onClick={() => go(m.key)} aria-current={module === m.key ? 'page' : undefined} />
                 {m.key === 'mail' && unread > 0 && <CounterBadge className={s.badge} count={unread} size="small" overflowCount={999} />}
               </div>
             </Tooltip>
           ))}
-          <Bookmarks />
-          <div className={s.spacer} />
-          {me.isAdmin && (
+          {/* Handy: Lesezeichen und Verwaltung passen nicht in die Leiste unten - Verwaltung steht im Kontomenue */}
+          {!mobile && <Bookmarks />}
+          {!mobile && <div className={s.spacer} />}
+          {me.isAdmin && !mobile && (
             <Tooltip content={t('Verwaltung')} relationship="label" positioning="after">
               <Button appearance="subtle" className={mergeClasses(s.railButton, module === 'admin' && s.railActive, s.tinted)} icon={<AdminIcon />} onClick={() => go('admin')} />
             </Tooltip>
           )}
-          <Tooltip content={t('Einstellungen')} relationship="label" positioning="after">
-            <Button appearance="subtle" className={mergeClasses(s.railButton, module === 'settings' && s.railActive, s.tinted)} icon={<SettingsIcon />} onClick={() => go('settings')} />
+          <Tooltip content={t('Einstellungen')} relationship="label" positioning={mobile ? 'above' : 'after'}>
+            <Button appearance="subtle" className={mergeClasses(s.railButton, mobile && s.railButtonMobile, module === 'settings' && s.railActive, module === 'settings' && mobile && s.railActiveMobile, s.tinted)} icon={<SettingsIcon />} onClick={() => go('settings')} />
           </Tooltip>
-          <div style={{ height: 8 }} />
+          {!mobile && <div style={{ height: 8 }} />}
         </nav>
-        <main className={s.main}>
+        <main className={mergeClasses(s.main, mobile && s.mainMobile)}>
           <Boundary resetKey={module}>
           <Suspense fallback={<Spinner className={s.loading} />}>
             {module === 'mail' && <MailView status={status} />}

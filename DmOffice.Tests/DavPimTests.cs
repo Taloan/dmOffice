@@ -22,6 +22,29 @@ public class DavPimTests
     // ---------------- Sommerzeit-Luecke (#10) ----------------
 
     [Fact]
+    public void Tief_verschachtelte_Kalenderdaten_werden_begrenzt()
+    {
+        // Echte Daten bleiben erhalten (VCALENDAR > VEVENT > VALARM)
+        var ok = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nSUMMARY:Termin\r\nBEGIN:VALARM\r\nACTION:DISPLAY\r\nEND:VALARM\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        Assert.False(Ics.TooDeep(ok));
+        var cal = Ics.Parse(ok).First();
+        Assert.Equal("Termin", cal.Of("VEVENT").First().Text("SUMMARY"));
+
+        // Tiefer als MaxDepth verschachtelt: als zu tief erkannt, und Parse verwirft das Tiefe (kein Absturz)
+        var sb = new System.Text.StringBuilder("BEGIN:VCALENDAR\r\n");
+        for (int i = 0; i < 2000; i++) sb.Append("BEGIN:X\r\n");
+        sb.Append("SUMMARY:zu tief\r\n");
+        for (int i = 0; i < 2000; i++) sb.Append("END:X\r\n");
+        sb.Append("END:VCALENDAR\r\n");
+        var deep = sb.ToString();
+        Assert.True(Ics.TooDeep(deep));
+        var parsed = Ics.Parse(deep);                 // laeuft durch, ohne Stack-Ueberlauf
+        var round = new System.Text.StringBuilder();
+        Ics.Write(parsed.First(), round);             // rekursives Schreiben bleibt flach genug
+        Assert.True(round.Length < 10_000);
+    }
+
+    [Fact]
     public void Zeit_in_der_Sommerzeit_Luecke_rueckt_vor()
     {
         var p = new Prop("DTSTART", "20270328T023000").With("TZID", "Europe/Berlin");
@@ -185,6 +208,20 @@ public class DavPimTests
 
     private static ContactDto Load(UserSpace space, Collection book) =>
         ContactModel.Read(PimStore.Object(space.Db, book.Id, "k1.vcf")!, withPhoto: true)!;
+
+    [Fact]
+    public void Einzelner_Kontakt_als_vcf_unveraendert_mit_Dateiname()
+    {
+        var space = NewSpace();
+        var book = Book(space);
+        PimStore.Put(space.Db, book, "k1.vcf", Card);
+        var (data, name) = ContactModel.Export(space.Db, book.Id, "k1.vcf");
+        Assert.Equal(PimStore.Object(space.Db, book.Id, "k1.vcf")!.Data, System.Text.Encoding.UTF8.GetString(data));
+        Assert.EndsWith(".vcf", name);
+        Assert.DoesNotContain('/', name);
+        Assert.Equal(Load(space, book).DisplayName + ".vcf", name);
+        Assert.Throws<KeyNotFoundException>(() => ContactModel.Export(space.Db, book.Id, "fehlt.vcf"));
+    }
 
     [Fact]
     public void Kontakt_speichern_behaelt_Unveraendertes()

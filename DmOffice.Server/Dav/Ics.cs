@@ -83,31 +83,52 @@ public static class Ics
 {
     // ---------------- Lesen ----------------
 
+    /// <summary>Hoechste Verschachtelung, die gelesen wird. Echte Daten brauchen 3 (VCALENDAR › VEVENT › VALARM,
+    /// VTIMEZONE › STANDARD); tiefer Verschachteltes wird samt Inhalt verworfen. Ohne Grenze liesse eine
+    /// fremde Datei (Abo, Einladung, Import) das rekursive Schreiben den Stack ueberlaufen - Prozessende.</summary>
+    public const int MaxDepth = 8;
+
     /// <summary>Alle Komponenten der obersten Ebene (VCALENDAR, VCARD).</summary>
     public static List<Component> Parse(string text)
     {
         var roots = new List<Component>();
         var stack = new Stack<Component>();
+        int skipped = 0;
         foreach (var line in Unfold(text))
         {
             var p = ParseLine(line);
             if (p == null) continue;
             if (p.Name == "BEGIN")
             {
+                if (skipped > 0 || stack.Count >= MaxDepth) { skipped++; continue; }
                 var c = new Component(p.Value.Trim());
                 if (stack.Count > 0) stack.Peek().Children.Add(c); else roots.Add(c);
                 stack.Push(c);
             }
             else if (p.Name == "END")
             {
-                if (stack.Count > 0) stack.Pop();
+                if (skipped > 0) skipped--;
+                else if (stack.Count > 0) stack.Pop();
             }
-            else if (stack.Count > 0)
+            else if (skipped == 0 && stack.Count > 0)
             {
                 stack.Peek().Props.Add(p);
             }
         }
         return roots;
+    }
+
+    /// <summary>Ist die Verschachtelung tiefer als <see cref="MaxDepth"/>? Fuer Daten, die roh gespeichert und spaeter
+    /// auch von Ical.Net gelesen werden.</summary>
+    public static bool TooDeep(string text)
+    {
+        int depth = 0;
+        foreach (var line in Unfold(text))
+        {
+            if (line.StartsWith("BEGIN:", StringComparison.OrdinalIgnoreCase)) { if (++depth > MaxDepth) return true; }
+            else if (line.StartsWith("END:", StringComparison.OrdinalIgnoreCase)) depth = Math.Max(0, depth - 1);
+        }
+        return false;
     }
 
     private static IEnumerable<string> Unfold(string text)

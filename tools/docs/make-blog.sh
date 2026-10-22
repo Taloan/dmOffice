@@ -18,7 +18,7 @@ dotnet build "$ROOT/DmOffice.Server" -v q >/dev/null
 dotnet build "$ROOT/DmOffice.Tests" -v q >/dev/null
 
 start() {
-  DMOFFICE_DATA="$DATA" ASPNETCORE_URLS="$BASE" dotnet run --project "$ROOT/DmOffice.Server" --no-build >"$DATA.log" 2>&1 &
+  DMOFFICE_VERSION=1.5.0 DMOFFICE_SETUP_CODE=blog-setup DMOFFICE_DATA="$DATA" ASPNETCORE_URLS="$BASE" dotnet run --project "$ROOT/DmOffice.Server" --no-build >"$DATA.log" 2>&1 &
   SERVER=$!
   for _ in $(seq 1 60); do curl -sf "$BASE/api/auth/state" >/dev/null && return; sleep 1; done
   echo "Server startet nicht, siehe $DATA.log"; exit 1
@@ -28,7 +28,7 @@ trap stop EXIT
 
 start
 curl -sf -X POST "$BASE/api/auth/setup" -H 'Content-Type: application/json' \
-  -d "{\"login\":\"alex\",\"displayName\":\"Alex Berger\",\"password\":\"$PASS\"}" >/dev/null
+  -d "{\"code\":\"blog-setup\",\"login\":\"alex\",\"displayName\":\"Alex Berger\",\"password\":\"$PASS\"}" >/dev/null
 stop
 # Mails ohne IMAP-Server direkt in die Datenbank (Server dabei aus)
 DMOFFICE_DOCS_BLOG=1 DMOFFICE_DOCS_SEED="$DATA" dotnet test "$ROOT/DmOffice.Tests" --no-build --filter "FullyQualifiedName~DocsSeed" -v q >/dev/null

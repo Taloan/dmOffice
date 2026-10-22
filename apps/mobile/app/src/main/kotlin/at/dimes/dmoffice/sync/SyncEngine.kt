@@ -24,7 +24,7 @@ import java.time.ZoneId
 /**
  * Abgleich mit dem Server: erst lokale Aenderungen hochladen (PUT mit If-Match,
  * DELETE mit If-Match), dann je Kalender sync-collection (RFC 6578). Bei 412
- * gewinnt der Server; die lokale Fassung bleibt als Kopie unter neuer UID.
+ * gewinnt der Server; die lokale Version bleibt als Kopie unter neuer UID.
  */
 class SyncEngine(private val context: Context, private val db: AppDb) {
     companion object {
@@ -73,7 +73,8 @@ class SyncEngine(private val context: Context, private val db: AppDb) {
                         conflict = true
                         resolveConflict(dav, item, zone)
                     } catch (e: DavException) {
-                        if (e.code == 404 && item.deleted) db.items().delete(item.href)
+                        if (e.code == 403) rejectLocal(dav, item, zone)   // nur lesend geteilter Kalender: Aenderung verwerfen
+                        else if (e.code == 404 && item.deleted) db.items().delete(item.href)
                         else if (e.code == 404 && item.etag != null) {
                             // Auf dem Server inzwischen weg: als neu anlegen
                             val etag = dav.put(item.href, item.ics, null)
@@ -147,7 +148,19 @@ class SyncEngine(private val context: Context, private val db: AppDb) {
         db.items().upsert(entity)
     }
 
-    /** 412: Serverfassung uebernehmen, eigene Fassung als Kopie behalten (bei Loeschung: Loeschung verwerfen). */
+    /** 403: Der Kalender ist nur zum Lesen geteilt - lokale Aenderung verwerfen, Serverfassung wiederherstellen (neu angelegt: weg). */
+    private suspend fun rejectLocal(dav: DavClient, item: ItemEntity, zone: ZoneId) {
+        if (item.etag == null) { db.items().delete(item.href); return }
+        try {
+            val (ics, etag) = dav.get(item.href)
+            val server = Items.fromIcs(item.href, item.calendarHref, etag, ics, zone)
+            if (server != null) db.items().upsert(server) else db.items().delete(item.href)
+        } catch (e: DavException) {
+            if (e.code == 404) db.items().delete(item.href) else throw e
+        }
+    }
+
+    /** 412: Serverfassung uebernehmen, eigene Version als Kopie behalten (bei Loeschung: Loeschung verwerfen). */
     private suspend fun resolveConflict(dav: DavClient, item: ItemEntity, zone: ZoneId) {
         val (ics, etag) = try { dav.get(item.href) } catch (e: DavException) {
             if (e.code == 404) { db.items().delete(item.href); return } else throw e

@@ -25,6 +25,10 @@ public sealed class NoteRow
     public bool Important { get; init; }
     public List<string> Images { get; init; } = new();
     public List<AttachmentRef> Attachments { get; init; } = new();
+    /// <summary>Schlagwoerter aus dem Abgleich (Rezepte: "recipe"). Null: von einem Geraet vor den Tags.</summary>
+    public List<string>? Tags { get; init; }
+    /// <summary>Nur in Suchergebnissen: gefunden in diesem Bild/Anhang (Volltextsuche, Search/TextIndex.cs).</summary>
+    public DmOffice.Search.AttachmentMatch? Match { get; init; }
 
     public string DisplayTitle => string.IsNullOrWhiteSpace(CustomTitle)
         ? (string.IsNullOrWhiteSpace(Title) ? "(ohne Titel)" : Title)
@@ -98,7 +102,7 @@ public sealed class NotesDb : ISyncLocal
     // ==================================================================
 
     private const string NoteColumns =
-        "id, sync_id, folder, title, custom_title, color, html, plain, modified, archived, deleted, images, attachments, important, created";
+        "id, sync_id, folder, title, custom_title, color, html, plain, modified, archived, deleted, images, attachments, important, created, tags";
 
     private static NoteRow ReadNote(SqliteDataReader r) => new()
     {
@@ -116,7 +120,8 @@ public sealed class NotesDb : ISyncLocal
         Images = JsonSerializer.Deserialize<List<string>>(r.GetString(11)) ?? new(),
         Attachments = JsonSerializer.Deserialize<List<AttachmentRef>>(r.GetString(12)) ?? new(),
         Important = r.GetInt64(13) != 0,
-        Created = Time(r.GetString(14))
+        Created = Time(r.GetString(14)),
+        Tags = r.IsDBNull(15) ? null : JsonSerializer.Deserialize<List<string>>(r.GetString(15))
     };
 
     private List<NoteRow> QueryNotes(string where, params (string, object?)[] args)
@@ -157,14 +162,31 @@ public sealed class NotesDb : ISyncLocal
         return (r.GetInt32(0), r.GetInt32(1));
     }
 
+    /// <summary>Titel und Text (notes_fts) und - mit eingeschalteter Volltextsuche - Bilder und Anhaenge. Woerter wie in der
+    /// Mail- und Dateisuche: Praefix, alle muessen vorkommen. Treffer nur im Anhang tragen <see cref="NoteRow.Match"/>.</summary>
     public List<NoteRow> Search(string text)
     {
-        var words = text.Split(' ', StringSplitOptions.RemoveEmptyEntries)
-                        .Select(w => "\"" + w.Replace("\"", "") + "\"*");
-        var match = string.Join(" ", words);
+        var match = DmOffice.Search.TextIndex.FtsQuery(text);
         if (match.Length == 0) return new();
-        return QueryNotes("WHERE n.id IN (SELECT rowid FROM notes_fts WHERE notes_fts MATCH $q) AND deleted IS NULL ORDER BY modified DESC",
-                          ("$q", match));
+        var notes = QueryNotes("WHERE n.id IN (SELECT rowid FROM notes_fts WHERE notes_fts MATCH $q) AND deleted IS NULL ORDER BY modified DESC",
+                               ("$q", match));
+        var att = DmOffice.Search.TextIndex.SearchNoteAttachments(_db, text);
+        var known = notes.Select(n => n.SyncId).ToHashSet();
+        var extra = att.Keys.Where(k => !known.Contains(k)).ToList();
+        if (extra.Count == 0) return notes;
+        var more = new List<NoteRow>();
+        foreach (var chunk in extra.Chunk(500))
+        {
+            var args = chunk.Select((id, i) => ("$s" + i, (object?)id)).ToArray();
+            more.AddRange(QueryNotes($"WHERE sync_id IN ({string.Join(",", args.Select(a => a.Item1))}) AND deleted IS NULL", args)
+                .Select(n => new NoteRow
+                {
+                    Id = n.Id, SyncId = n.SyncId, Folder = n.Folder, Title = n.Title, CustomTitle = n.CustomTitle, Color = n.Color,
+                    Html = n.Html, Plain = n.Plain, Modified = n.Modified, Created = n.Created, Archived = n.Archived, Deleted = n.Deleted,
+                    Important = n.Important, Images = n.Images, Attachments = n.Attachments, Match = att[n.SyncId]
+                }));
+        }
+        return notes.Concat(more).OrderByDescending(n => n.Modified).ToList();
     }
 
     public NoteRow? GetNote(long id) => QueryNotes("WHERE id = $id", ("$id", id)).FirstOrDefault();
@@ -186,6 +208,55 @@ public sealed class NotesDb : ISyncLocal
                 SortOrder = r.GetDouble(3)
             }
             : null;
+    }
+
+    /// <summary>
+    /// Ordner in einen anderen Ordner haengen (null: oberste Ebene). Nicht in sich selbst oder einen
+    /// eigenen Unterordner. notizi gleicht den neuen Elternordner ab (sync_rev).
+    /// </summary>
+    public void MoveFolder(string id, string? parent)
+    {
+        if (GetFolder(id) == null) throw new KeyNotFoundException();
+        for (var p = parent; p != null; p = GetFolder(p)?.Parent)
+        {
+            if (p == id) throw new ArgumentException("Ein Ordner kann nicht in sich selbst oder einen seiner Unterordner.");
+            if (GetFolder(p) == null) throw new KeyNotFoundException();
+        }
+        Exec("UPDATE note_folders SET parent=$p, modified=$m, sync_rev=sync_rev+1 WHERE sync_id=$s;", ("$p", parent), ("$m", Now()), ("$s", id));
+    }
+
+    /// <summary>Der Ordner und alle Unterordner darunter (sync_id) - der Bereich einer Freigabe.</summary>
+    public HashSet<string> FolderTree(string root)
+    {
+        var all = _db.Query("SELECT sync_id, parent FROM note_folders", r => (Id: r.GetString(0), Parent: r.IsDBNull(1) ? null : r.GetString(1)));
+        var tree = new HashSet<string>();
+        if (all.All(f => f.Id != root)) return tree;
+        tree.Add(root);
+        // Bis nichts mehr dazukommt (auch bei kaputten Kreisen in den Daten sicher)
+        for (bool grew = true; grew;)
+        {
+            grew = false;
+            foreach (var f in all) if (f.Parent != null && tree.Contains(f.Parent) && tree.Add(f.Id)) grew = true;
+        }
+        return tree;
+    }
+
+    public List<NoteFolder> AllFolders() =>
+        _db.Query("SELECT sync_id, parent, name, sort_order FROM note_folders ORDER BY sort_order, name",
+            r => new NoteFolder { SyncId = r.GetString(0), Parent = r.IsDBNull(1) ? null : r.GetString(1), Name = r.GetString(2), SortOrder = r.GetDouble(3) });
+
+    /// <summary>Kommt das Bild bzw. der Anhang in einer aktiven Notiz dieser Ordner vor?</summary>
+    public bool BlobUsedIn(string name, ICollection<string> folders)
+    {
+        if (folders.Count == 0) return false;
+        var args = folders.Select((f, i) => ("$f" + i, (object?)f)).Append(("$n", (object?)name)).ToArray();
+        var list = string.Join(",", args.Take(folders.Count).Select(a => a.Item1));
+        // Genau zuordnen, nicht per Teilstring: Schriebe ein Mitglied einen Blob-Namen nur als Text in eine geteilte
+        // Notiz, waere sonst das Bild des Besitzers mit diesem Namen lesbar - auch aus privaten Notizen.
+        // images/attachments sind JSON (Name in Anfuehrungszeichen), im HTML steht src="blob:<name>".
+        return _db.Scalar($@"SELECT 1 FROM notes WHERE deleted IS NULL AND archived IS NULL AND folder IN ({list})
+                             AND (instr(images, '""' || $n || '""') > 0 OR instr(attachments, '""' || $n || '""') > 0
+                                  OR instr(html, 'blob:' || $n || '""') > 0) LIMIT 1", args) != null;
     }
 
     public List<NoteFolder> GetFolders(string? parent)
@@ -275,6 +346,26 @@ public sealed class NotesDb : ISyncLocal
 
     public void PutBlob(string name, byte[] data) =>
         Exec("INSERT OR IGNORE INTO note_blobs (name, data) VALUES ($n, $d);", ("$n", name), ("$d", data));
+
+    /// <summary>
+    /// Eine Notiz einer anderen Datenbank hier ablegen (eigene Notiz in einen geteilten Ordner): neue sync_id, neue Revision,
+    /// Bilder und Anhaenge unter den hier gueltigen Namen (renamed: alter Name -> neuer; die Bytes liegen schon hier).
+    /// Alarm und Quellen bleiben beim Absender.
+    /// </summary>
+    public long ImportFrom(NotesDb src, long srcId, string folder, Dictionary<string, string> renamed)
+    {
+        var n = src.GetNote(srcId) ?? throw new KeyNotFoundException();
+        var editor = src._db.Scalar("SELECT editor FROM notes WHERE id=$i", ("$i", srcId)) as string;
+        var (html, images, atts) = Renamed(n.Html, n.Images, n.Attachments, renamed);
+        var syncId = Guid.NewGuid().ToString("N");
+        Exec(@"INSERT INTO notes (sync_id, sync_rev, folder, title, custom_title, color, important, created, modified, html, plain, editor, images, attachments, tags)
+               VALUES ($s, 1, $f, $t, $ct, $c, $i, $cr, $m, $h, $p, $e, $im, $at, $tg);",
+             ("$s", syncId), ("$f", folder), ("$t", n.Title), ("$ct", n.CustomTitle), ("$c", n.Color), ("$i", n.Important ? 1 : 0),
+             ("$cr", Iso(n.Created)), ("$m", Now()), ("$h", html), ("$p", n.Plain), ("$e", editor),
+             ("$im", JsonSerializer.Serialize(images)), ("$at", JsonSerializer.Serialize(atts)),
+             ("$tg", n.Tags == null ? null : JsonSerializer.Serialize(n.Tags)));
+        return QueryNotes("WHERE sync_id = $s", ("$s", syncId)).Single().Id;
+    }
 
     public long CreateNote(string? folder)
     {
@@ -419,7 +510,7 @@ SELECT (SELECT COUNT(*) FROM notes n LEFT JOIN note_sync_state s ON s.sync_id = 
         using var conn = Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = @"SELECT sync_rev, folder, sort_order, title, custom_title, color, important, alarm, alarm_active,
-                                   archived, deleted, created, modified, html, plain, editor, images, attachments, sources
+                                   archived, deleted, created, modified, html, plain, editor, images, attachments, sources, tags
                             FROM notes WHERE sync_id=$s;";
         cmd.Parameters.AddWithValue("$s", id);
         using var r = cmd.ExecuteReader();
@@ -460,7 +551,9 @@ SELECT (SELECT COUNT(*) FROM notes n LEFT JOIN note_sync_state s ON s.sync_id = 
             Html = html, Plain = r.GetString(14), Editor = r.IsDBNull(15) ? null : r.GetString(15),
             Images = images,
             Attachments = attachments,
-            Sources = JsonSerializer.Deserialize<List<SourceRef>>(r.GetString(18)) ?? new()
+            Sources = JsonSerializer.Deserialize<List<SourceRef>>(r.GetString(18)) ?? new(),
+            // Fehlt das Feld (NULL), bleibt es auch im Element weg: "weiss nichts davon"
+            Tags = r.IsDBNull(19) ? null : JsonSerializer.Deserialize<List<string>>(r.GetString(19))
         };
     }
 
@@ -538,11 +631,11 @@ SELECT (SELECT COUNT(*) FROM notes n LEFT JOIN note_sync_state s ON s.sync_id = 
         }
 
         Exec(@"INSERT INTO notes (sync_id, sync_rev, folder, sort_order, title, custom_title, color, important, alarm, alarm_active,
-                                  archived, deleted, created, modified, html, plain, editor, images, attachments, sources)
-               VALUES ($s, $r, $f, $o, $t, $ct, $c, $i, $a, $aa, $ar, $d, $cr, $m, $h, $p, $e, $im, $at, $so)
+                                  archived, deleted, created, modified, html, plain, editor, images, attachments, sources, tags)
+               VALUES ($s, $r, $f, $o, $t, $ct, $c, $i, $a, $aa, $ar, $d, $cr, $m, $h, $p, $e, $im, $at, $so, $tg)
                ON CONFLICT(sync_id) DO UPDATE SET sync_rev=$r, folder=$f, sort_order=$o, title=$t, custom_title=$ct, color=$c,
                    important=$i, alarm=$a, alarm_active=$aa, archived=$ar, deleted=$d, modified=$m, html=$h, plain=$p,
-                   editor=$e, images=$im, attachments=$at, sources=$so;",
+                   editor=$e, images=$im, attachments=$at, sources=$so, tags=COALESCE($tg, tags);",
              ("$s", item.Id), ("$r", item.Rev), ("$f", item.Folder), ("$o", item.SortOrder),
              ("$t", string.IsNullOrEmpty(item.Title) ? TitleOf(item.Plain) : item.Title), ("$ct", item.CustomTitle),
              ("$c", item.Color), ("$i", item.Important ? 1 : 0), ("$a", item.Alarm is DateTime al ? Iso(al) : null),
@@ -550,7 +643,9 @@ SELECT (SELECT COUNT(*) FROM notes n LEFT JOIN note_sync_state s ON s.sync_id = 
              ("$d", item.Deleted is DateTime d ? Iso(d) : null), ("$cr", Iso(item.Created)), ("$m", Iso(item.Modified)),
              ("$h", item.Html), ("$p", item.Plain), ("$e", item.Editor),
              ("$im", JsonSerializer.Serialize(item.Images)), ("$at", JsonSerializer.Serialize(item.Attachments)),
-             ("$so", JsonSerializer.Serialize(item.Sources)));
+             ("$so", JsonSerializer.Serialize(item.Sources)),
+             // Ohne Feld (Geraet vor den Tags): vorhandene Tags nicht anfassen
+             ("$tg", item.Tags == null ? null : JsonSerializer.Serialize(item.Tags)));
         return true;
     }
 

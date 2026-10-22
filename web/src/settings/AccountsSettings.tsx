@@ -10,7 +10,7 @@ import { t, tError } from '../i18n'
 import { RichEditor, RichEditorHandle } from '../shell/RichEditor'
 
 const useStyles = makeStyles({
-  grid: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '12px 16px' },
+  grid: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '12px 16px', '@media (max-width: 767px)': { gridTemplateColumns: 'minmax(0, 1fr)' } },
   full: { gridColumn: '1 / -1' },
   section: { gridColumn: '1 / -1', fontWeight: 600, marginTop: '8px' },
   sig: { border: `1px solid ${tokens.colorNeutralStroke1}`, borderRadius: tokens.borderRadiusMedium, height: '180px', display: 'flex', flexDirection: 'column' },
@@ -42,8 +42,8 @@ function CleanupDrop({ days, onChange }: { days: number; onChange: (d: number) =
 
 const blank: AccountForm = {
   name: '', email: '', displayName: '', imapHost: '', imapPort: 993, imapSecurity: 'Ssl', imapUser: '', smtpHost: '', smtpPort: 465,
-  smtpSecurity: 'Ssl', smtpUser: '', signature: '', language: 'de', acceptAnyCertificate: false, saveSentCopy: true, syncMonths: 12, maxCachedMb: 50, trashDays: 0, junkDays: 0, focusedInbox: true,
-  storage: 'full', slimDays: 30, slimMb: 200,
+  smtpSecurity: 'Ssl', smtpUser: '', signature: '', language: 'de', acceptAnyCertificate: false, saveSentCopy: true, syncMonths: 12, maxCachedMb: 50, trashDays: 30, junkDays: 30, focusedInbox: true,
+  storage: 'slim', slimDays: 30, slimMb: 200,
 }
 
 // Speichermodus "Schlank": wie lange und wie viel Mail-Inhalt hier bleibt
@@ -89,7 +89,7 @@ export function AccountsSettings() {
   useEffect(() => { load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const remove = async (a: AccountForm) => {
-    if (!confirm(t('Konto „{name}“ entfernen? Die hier gespeicherten Mails werden gelöscht – auf dem Server bleibt alles.', { name: a.name }))) return
+    if (!confirm(t('Konto „{name}“ entfernen? Alle hier gespeicherten Mails und Daten dieses Kontos werden gelöscht. Beim Anbieter bleibt alles unverändert.', { name: a.name }))) return
     try { await api.del(`/api/settings/accounts/${a.id}`); load() } catch (e) { fail(e) }
   }
 
@@ -250,10 +250,9 @@ function AccountWizard({ onManual, onDone }: { onManual: (f: AccountForm) => voi
       const res = await api.post('/api/settings/accounts/test', form(found.settings, flow))
       setTest(res)
       if (res.imap !== 'ok' || res.smtp !== 'ok') { setStep('idle'); return }
-      setStep('save')
-      await api.post('/api/settings/accounts', form(found.settings, flow))
-      notify(t('Konto eingerichtet'), t('Der erste Sync läuft – je nach Postfach einige Minuten.'))
-      onDone()
+      // Erst im Formular Speichermodus und Aufbewahrungsfristen bestaetigen - gespeichert (und synchronisiert) wird dort
+      setStep('idle')
+      onManual(form(found.settings, flow))
     } catch (e) { fail(e); setStep('idle') }
   }
 
@@ -263,7 +262,7 @@ function AccountWizard({ onManual, onDone }: { onManual: (f: AccountForm) => voi
   const progress = busy && step !== 'microsoft' && (
     <div className={s.full} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
       <Spinner size="tiny" />
-      <Text>{step === 'search' ? t('Suche Einstellungen …') : step === 'test' ? t('Prüfe die Anmeldung …') : t('Richte das Konto ein …')}</Text>
+      <Text>{step === 'search' ? t('Suche Einstellungen …') : t('Prüfe die Anmeldung …')}</Text>
     </div>
   )
 
@@ -325,7 +324,7 @@ function AccountWizard({ onManual, onDone }: { onManual: (f: AccountForm) => voi
         )}
 
         <div className={s.full} style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <Button appearance="primary" type="submit" disabled={busy || (!microsoft && !password)}>{microsoft ? t('Mit Microsoft anmelden') : t('Einrichten')}</Button>
+          <Button appearance="primary" type="submit" disabled={busy || (!microsoft && !password)}>{microsoft ? t('Mit Microsoft anmelden') : t('Weiter')}</Button>
           <Button disabled={busy} onClick={() => { setFound(null); setTest(null); setPassword('') }}>{t('Zurück')}</Button>
           <Button disabled={busy} onClick={() => onManual(form(d))}>{t('Manuell einrichten')}</Button>
           <Button disabled={busy} onClick={onDone}>{t('Abbrechen')}</Button>
@@ -445,12 +444,12 @@ function AccountEditor({ initial, microsoft, onDone }: { initial: AccountForm; m
         </Field>
         {a.storage === 'slim' ? (
           <div style={{ display: 'flex', gap: 8 }}>
-            <Field label={t('Inhalte behalten')} hint={t('neue und zuletzt geöffnete Mails')} style={{ flex: 1 }}>
+            <Field label={t('Inhalte behalten')} hint={t('vollständig in dmOffice: Mails, die in dieser Zeit kamen oder geöffnet wurden')} style={{ flex: 1 }}>
               <Dropdown value={t('{n} Tage', { n: a.slimDays })} selectedOptions={[String(a.slimDays)]} onOptionSelect={(_, d) => set({ slimDays: Number(d.optionValue) })}>
                 {withValue(slimDayList, a.slimDays).map(d => <Option key={d} value={String(d)} text={t('{n} Tage', { n: d })}>{t('{n} Tage', { n: d })}</Option>)}
               </Dropdown>
             </Field>
-            <Field label={t('höchstens')} hint={t('älteres wird verworfen')} style={{ flex: 1 }}>
+            <Field label={t('höchstens')} hint={t('zusammen; wird es mehr, weichen die ältesten Inhalte zuerst – beim Anbieter bleibt alles')} style={{ flex: 1 }}>
               <Dropdown value={mbLabel(a.slimMb)} selectedOptions={[String(a.slimMb)]} onOptionSelect={(_, d) => set({ slimMb: Number(d.optionValue) })}>
                 {withValue(slimMbList, a.slimMb).map(m => <Option key={m} value={String(m)} text={mbLabel(m)}>{mbLabel(m)}</Option>)}
               </Dropdown>

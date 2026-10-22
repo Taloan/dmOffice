@@ -59,6 +59,9 @@ namespace Notizi.Sync
             merged.Images = mine.Images.Union(theirs.Images).Where(i => html.Contains("blob:" + i)).ToList();
             merged.Attachments = MergeSet(origin.Attachments, mine.Attachments, theirs.Attachments, a => a.Sha256 + "/" + a.Name);
             merged.Sources = MergeSet(origin.Sources, mine.Sources, theirs.Sources, s => s.Url + "/" + s.Title + "/" + s.App);
+            if (mine.Tags != null || theirs.Tags != null)
+                merged.Tags = MergeSet(origin.Tags ?? new List<string>(), mine.Tags ?? new List<string>(), theirs.Tags ?? new List<string>(),
+                                       t => t.ToLowerInvariant());
             merged.Rev = Math.Max(mine.Rev, theirs.Rev) + 1;
             merged.Modified = theirsLater ? theirs.Modified : mine.Modified;
             merged.Editor = null;

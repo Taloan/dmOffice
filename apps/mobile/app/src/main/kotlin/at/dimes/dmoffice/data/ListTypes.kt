@@ -18,21 +18,38 @@ object ListTypes {
     /** Vorschlag beim Tippen: was schon einmal auf der Liste stand oder eingelesen wurde (Web: Vorschlaege uebernehmen). */
     @Serializable data class Known(val name: String = "", val unit: String? = null, val section: String? = null, val count: Int = 0)
 
-    data class Info(val id: Long, val type: String, val sections: List<String>, val history: List<Known> = emptyList(), val done: String? = null)
+    @Serializable data class Info(val id: Long, val type: String, val sections: List<String>, val history: List<Known> = emptyList(), val done: String? = null)
 
-    @Serializable private data class Coll(val id: Long, val uri: String = "", val listType: String? = null)
+    @Serializable private data class Coll(val id: Long, val uri: String = "", val listType: String? = null, val calendarKind: String? = null)
     @Serializable private data class Meta(val type: String = TASKS, val sections: List<String> = emptyList(), val history: List<Known> = emptyList(), val done: String? = null)
 
     private val state = MutableStateFlow<Map<String, Info>>(emptyMap())
     val byUri: StateFlow<Map<String, Info>> = state
 
+    /** Kalender der Art Essensplan (Kennung am Ende der CalDAV-Adresse): nur in der Ansicht Essensplan, nicht in den uebrigen. */
+    private val meals = MutableStateFlow<Set<String>>(emptySet())
+    val mealUris: StateFlow<Set<String>> = meals
+
     fun uriOf(calendarHref: String) = calendarHref.trimEnd('/').substringAfterLast('/')
+
+    // Letzter Stand auf dem Geraet: ohne Netz (Einkaufen im Funkloch) bleibt die Einkaufsliste nach einem Neustart eine Einkaufsliste
+    private const val PREFS = "listtypes"
+    private val store = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+
+    private fun loadSaved(context: Context) {
+        if (state.value.isNotEmpty()) return
+        meals.value = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getStringSet("meals", null)?.toSet() ?: emptySet()
+        val saved = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("byUri", null) ?: return
+        try { state.value = store.decodeFromString<Map<String, Info>>(saved) } catch (_: Exception) { }
+    }
 
     /** Neu holen; ohne Netz bleibt der letzte Stand (oder alles als normale Aufgabenliste). */
     suspend fun refresh(context: Context) = withContext(Dispatchers.IO) {
+        loadSaved(context)
         val api = App.get(context).api ?: return@withContext
         try {
             val colls: List<Coll> = api.get(api.url("/api/pim/collections/calendars"))
+            meals.value = colls.filter { it.calendarKind == "meal" && it.uri.isNotEmpty() }.map { it.uri }.toSet()
             state.value = colls.filter { it.uri.isNotEmpty() }.associate { c ->
                 val type = c.listType ?: TASKS
                 val meta = if (type == TASKS) null else try {
@@ -40,6 +57,8 @@ object ListTypes {
                 } catch (_: Exception) { null }
                 c.uri to Info(c.id, type, meta?.sections.orEmpty(), meta?.history.orEmpty().filter { it.name.isNotBlank() }, meta?.done)
             }
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("byUri", store.encodeToString(state.value))
+                .putStringSet("meals", meals.value).apply()
         } catch (_: Exception) { /* offline: alter Stand */ }
     }
 

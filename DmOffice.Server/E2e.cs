@@ -94,17 +94,21 @@ public static class E2e
     public sealed class CounterWindow
     {
         private long _highest;
+        private readonly long _floor;
         private readonly HashSet<long> _seen = new();
         private const int Window = 256;
         public long Highest => _highest;
 
-        public CounterWindow(long highest) { _highest = highest; }
+        public CounterWindow(long highest) { _highest = highest; _floor = highest; }
 
         public bool Accept(long counter)
         {
             lock (_seen)
             {
                 if (counter <= 0) return false;
+                // Nach Neustart/Cache-Verlust ist _seen leer. Alles bis zum geladenen Stand gilt als schon
+                // benutzt - sonst liessen sich die letzten bis zu 256 Umschlaege erneut einspielen.
+                if (counter <= _floor) return false;
                 if (counter > _highest)
                 {
                     _highest = counter;
@@ -140,7 +144,22 @@ public static class E2e
                 File.WriteAllText(file, vault.Wrap(Key.ExportPkcs8PrivateKey()));
             }
             Public = ExportPublic(Key);
+            Fingerprint = E2e.Fingerprint(Public);
         }
+
+        /// <summary>Zum Vergleich mit der App (Koppeln ohne QR-Code, Umstieg auf den Umschlag), siehe <see cref="E2e.Fingerprint"/>.</summary>
+        public string Fingerprint { get; }
+    }
+
+    /// <summary>
+    /// Fingerabdruck eines oeffentlichen Schluessels zum Vergleichen mit dem Auge: die ersten 16 Byte von SHA-256 ueber
+    /// den rohen Punkt, hex in Vierergruppen ("1A2B 3C4D ..."). Die App rechnet genauso (E2e.kt).
+    /// </summary>
+    public static string Fingerprint(string publicKey)
+    {
+        var hash = SHA256.HashData(FromBase64Url(publicKey));
+        var hex = Convert.ToHexString(hash, 0, 16);
+        return string.Join(" ", Enumerable.Range(0, hex.Length / 4).Select(i => hex.Substring(i * 4, 4)));
     }
 
     // ---------------- Geraete und Sitzungen ----------------
@@ -218,20 +237,25 @@ public static class E2e
         // Abmelden im Browser (auch per sendBeacon beim Schliessen des Tabs)
         api.MapPost("/unregister/{deviceId}", (string deviceId, HttpContext http) =>
         {
-            Unregister(http.Space().Db, deviceId);
-            foreach (var k in Keys.Keys.Where(k => k.Contains("/" + deviceId + "/")).ToArray()) Keys.TryRemove(k, out _);
+            var space = http.Space();
+            Unregister(space.Db, deviceId);
+            // Nur Eintraege des eigenen Benutzers - sonst setzte eine fremde deviceId (sie steht in der URL) das
+            // Zaehlerfenster eines anderen Geraets zurueck
+            foreach (var k in Keys.Keys.Where(k => k.StartsWith(space.User.Id + "/" + deviceId + "/", StringComparison.Ordinal)).ToArray()) Keys.TryRemove(k, out _);
             return Results.Ok();
         }).RequireAuthorization().DisableAntiforgery();
 
         api.MapPost("/{userId}/{deviceId}", async (string userId, string deviceId, HttpContext http, ServerKey key, UserStore users, Spaces spaces,
             IServer server, IHttpClientFactory clients, CancellationToken ct) =>
         {
-            var ip = http.Connection.RemoteIpAddress?.ToString() ?? "?";
+            // Eigener Zaehler fuer den Umschlag: Fehlversuche anderswo (DAV-Programm mit altem Passwort, Link mit falschem Kennwort)
+            // sperren sonst die Oberflaeche derselben Adresse mit "429 Too Many Requests"
+            var ip = "umschlag:" + Auth.IpKey(http.Connection.RemoteIpAddress);
             if (Auth.Blocked(ip)) return Results.StatusCode(429);
             var user = users.ById(userId);
             var space = user == null ? null : spaces.Get(user.Id);
             var device = space == null ? null : FindDevice(space.Db, deviceId);
-            if (user == null || space == null || device == null) { Auth.Failed(ip); return Results.StatusCode(404); }
+            if (user == null || space == null || device == null) { Auth.Failed(ip, "Umschlag: Geraet unbekannt"); return Results.StatusCode(404); }
             // Browser-Geraet: nach Passwortwechsel (neuer Stempel) oder 30 Tagen ungueltig
             if (device.Browser && (device.Stamp != user.Stamp || device.Created < DateTime.UtcNow.AddDays(-30)))
             {
@@ -246,20 +270,40 @@ public static class E2e
                 using var pub = ImportPublic(device.PubKey);
                 return (DeriveKey(key.Key, pub, device.PubKey, key.Public), new CounterWindow(device.Counter));
             });
-            if (!entry.Window.Accept(counter)) { Auth.Failed(ip); return Results.StatusCode(409); }
-            space.Db.Exec("UPDATE e2e_devices SET counter=$c WHERE id=$i AND counter<$c", ("$c", entry.Window.Highest), ("$i", deviceId));
-
             using var ms = new MemoryStream();
             await http.Request.Body.CopyToAsync(ms, ct);
             byte[] plain;
+            // Erst entschluesseln (AEAD prueft die Echtheit), dann den Zaehler verbrauchen. Sonst koennte eine
+            // unechte Anfrage mit hohem Zaehler echte Anfragen des Geraets als "Replay" aussperren.
             try { plain = Open(entry.Key, ms.ToArray(), Aad(deviceId, counter, false)); }
-            catch (CryptographicException) { Auth.Failed(ip); return Results.StatusCode(400); }
+            catch (CryptographicException) { Auth.Failed(ip, "Umschlag: nicht entschluesselbar"); return Results.StatusCode(400); }
+            // Entschluesselt: ein angemeldetes Geraet - zaehlt nicht fuer die Bremse ohne Anmeldung
+            http.Items[AnonThrottle.TrustedItem] = true;
+            // Ein doppelt eingespielter Umschlag war echt (die Pruefung oben ist bestanden) - das ist kein Angriffsversuch und sperrt nichts
+            if (!entry.Window.Accept(counter)) return Results.StatusCode(409);
+            // Zaehler im Hintergrund festhalten: ein Schreibzugriff je Anfrage wartete sonst auf den Mail-Abgleich
+            // (SQLite: nur ein Schreiber) - jeder Klick in der Oberflaeche dauerte dann Sekunden
+            PersistCounter(space, deviceId, entry.Window);
             Auth.Succeeded(ip);
 
             var inner = JsonSerializer.Deserialize<Inner>(plain, Json) ?? throw new ArgumentException("Leer.");
             if (!inner.Path.StartsWith("/") || inner.Path.Contains("://")) return Results.StatusCode(400);
+            // Kein Ausbrechen aus der erlaubten Freigabe ueber "..": weder roh noch kodiert. Der Innenteil liefe
+            // sonst gegen einen anderen Pfad als den geprueften (z. B. /api/mail/../auth/...). Nur den Pfadteil
+            // pruefen - ".." in einem Query-Wert (etwa ein Dateiname) ist harmlos. Die eigentliche Pruefung
+            // laeuft danach auf dem kanonisierten Pfad, genau dem, den der Innenteil zu sehen bekommt.
+            var rawPath = inner.Path.Split('?', 2)[0];
+            var rawPathLower = rawPath.ToLowerInvariant();
+            if (rawPath.Contains('\\') || rawPath.Contains("..") || rawPathLower.Contains("%2e") || rawPathLower.Contains("%2f") || rawPathLower.Contains("%5c"))
+                return Results.StatusCode(400);
+            var address = LocalAddress(server);
+            Uri innerUri;
+            try { innerUri = new Uri(new Uri(address), inner.Path); }
+            catch (UriFormatException) { return Results.StatusCode(400); }
+            // Muss auf dieselbe Loopback-Adresse zeigen (sonst waere der Pfad doch absolut gewesen)
+            if (innerUri.Host != new Uri(address).Host || innerUri.Port != new Uri(address).Port) return Results.StatusCode(400);
             // App: nur die Freigabe des App-Passworts; Browser: alles unter /api wie mit dem Cookie
-            var innerPath = inner.Path.Split('?')[0];
+            var innerPath = innerUri.AbsolutePath;
             if (device.Browser ? !innerPath.StartsWith("/api/", StringComparison.OrdinalIgnoreCase) : !Auth.AppPasswordAllowed(innerPath)) return Results.StatusCode(403);
 
             // Innenteil ueber Loopback durch die eigene Pipeline, angemeldet per einmaligem Zeichen
@@ -267,8 +311,8 @@ public static class E2e
             Sessions[token] = new Session(user.Id, device.AppPasswordId, DateTime.UtcNow.AddSeconds(60));
             foreach (var (k, v) in Sessions.ToArray()) if (v.Expires < DateTime.UtcNow) Sessions.TryRemove(k, out _);
 
-            var address = LocalAddress(server);
-            using var req = new HttpRequestMessage(new HttpMethod(inner.Method.ToUpperInvariant()), address + inner.Path);
+            // Gegen den kanonisierten Pfad senden - nicht gegen den rohen inner.Path
+            using var req = new HttpRequestMessage(new HttpMethod(inner.Method.ToUpperInvariant()), address + innerUri.PathAndQuery);
             req.Headers.TryAddWithoutValidation(SessionHeader, token);
             // Browser-Geraet: das Anmelde-Cookie mitgeben, damit der Innenteil genau wie bisher laeuft (auth/state, Admin, Antiforgery)
             if (device.Browser && http.Request.Headers.Cookie.Count > 0) req.Headers.TryAddWithoutValidation("Cookie", http.Request.Headers.Cookie.ToString());
@@ -295,10 +339,29 @@ public static class E2e
             var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (var h in res.Headers.Concat(res.Content.Headers)) headers[h.Key] = string.Join(", ", h.Value);
             headers.Remove("Transfer-Encoding");
+            // Kein Set-Cookie durch den Umschlag: ein Cookie des Innenteils (z. B. aus einer Neuausstellung)
+            // soll kein vollwertiges Anmelde-Cookie an das Geraet geben.
+            headers.Remove("Set-Cookie");
             var outer = JsonSerializer.SerializeToUtf8Bytes(new { status = (int)res.StatusCode, headers, body = Convert.ToBase64String(resBody) }, Json);
             var sealedOut = Seal(entry.Key, outer, Aad(deviceId, counter, true));
             return Results.Bytes(sealedOut, "application/octet-stream");
         }).AllowAnonymous().DisableAntiforgery();
+    }
+
+    private static readonly ConcurrentDictionary<string, byte> PendingCounters = new();
+
+    /// <summary>Hoechsten Zaehler eines Geraets gesammelt und ausserhalb der Anfrage speichern. Kurz nach einem Absturz
+    /// koennte eine gerade abgefangene Anfrage einmal wiederholt werden - der Zeitraum ist eine halbe Sekunde.</summary>
+    private static void PersistCounter(UserSpace space, string deviceId, CounterWindow window)
+    {
+        if (!PendingCounters.TryAdd(deviceId, 0)) return;
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(500);
+            PendingCounters.TryRemove(deviceId, out _);
+            try { space.Db.Exec("UPDATE e2e_devices SET counter=$c WHERE id=$i AND counter<$c", ("$c", window.Highest), ("$i", deviceId)); }
+            catch (Exception) { /* naechste Anfrage versucht es wieder */ }
+        });
     }
 
     private static string? _address;

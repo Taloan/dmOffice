@@ -14,7 +14,7 @@ public sealed record InviteDto(
     string? MyStatus,
     /// <summary>Kalender, in dem der Termin schon steht (null: noch nirgends).</summary>
     long? CalendarId, string? CalendarName,
-    /// <summary>Im Kalender steht schon eine neuere Fassung (hoehere SEQUENCE).</summary>
+    /// <summary>Im Kalender steht schon eine neuere Version (hoehere SEQUENCE).</summary>
     bool Outdated,
     /// <summary>Andere Termine zur selben Zeit.</summary>
     List<string> Conflicts,
@@ -47,7 +47,7 @@ public static class Invites
     private static Component? Master(Component vcal) =>
         vcal.Of("VEVENT").FirstOrDefault(e => e.Get("RECURRENCE-ID") == null) ?? vcal.Of("VEVENT").FirstOrDefault();
 
-    private static string? Mailto(Prop? p) =>
+    public static string? Mailto(Prop? p) =>
         p == null ? null : p.Value.StartsWith("mailto:", StringComparison.OrdinalIgnoreCase) ? p.Value[7..].Trim() : p.Value.Trim();
 
     private static HashSet<string> MyAddresses(UserSpace space) =>
@@ -156,7 +156,45 @@ public static class Invites
         var existing = Existing(space, uid);
         var db = space.Db;
 
-        if (response == "remove" || response == "decline")
+        // Ein vorhandener Termin darf nur geaendert oder geloescht werden, wenn die Einladung wirklich von seinem
+        // Organisator kommt. Sonst koennte ein Fremder, der nur die UID kennt, fremde Termine ueberschreiben oder loeschen.
+        if (existing is { } cur)
+        {
+            var storedOrg = Mailto(Ics.Parse(cur.Obj.Data).FirstOrDefault(c => c.Name == "VCALENDAR")?.Of("VEVENT").FirstOrDefault()?.Get("ORGANIZER"))?.ToLowerInvariant();
+            var mailOrg = Mailto(ev.Get("ORGANIZER"))?.ToLowerInvariant();
+            var mine = MyAddresses(space);
+            // Eigene Termine (ich bin Organisator) nie durch fremde REQUEST/CANCEL aendern
+            if (storedOrg != null && mine.Contains(storedOrg) && response != "apply")
+                throw new ArgumentException("Dieser Termin gehört dir - eine fremde Einladung ändert ihn nicht.");
+            // Organisator der Einladung muss zum gespeicherten passen
+            if (storedOrg != null && mailOrg != null && storedOrg != mailOrg)
+                throw new ArgumentException("Die Einladung kommt nicht vom Organisator dieses Termins.");
+            // Und der Mail-Absender muss der Organisator sein (bzw. bei einer Antwort der antwortende Teilnehmer)
+            var from = (m.From.Mailboxes.FirstOrDefault()?.Address ?? m.Sender?.Address)?.ToLowerInvariant();
+            if (response == "apply")
+            {
+                var who = Mailto(ev.Get("ATTENDEE"))?.ToLowerInvariant();
+                if (from != null && who != null && from != who)
+                    throw new ArgumentException("Die Antwort passt nicht zum Absender.");
+            }
+            else if (from != null && mailOrg != null && from != mailOrg)
+                throw new ArgumentException("Die Einladung kommt nicht vom Organisator dieses Termins.");
+        }
+
+        // Mail betrifft nur einzelne Termine einer Serie (RECURRENCE-ID ohne die Serie selbst) - so schicken Outlook und
+        // Google "nur dieses Vorkommen"; dann nur diese Termine aendern, die Serie bleibt
+        var occurrences = vcal.Of("VEVENT").All(e => e.Get("RECURRENCE-ID") != null)
+            && existing is { } se && Ics.Parse(se.Obj.Data).First(c => c.Name == "VCALENDAR").Of("VEVENT").Any(e => e.Get("RECURRENCE-ID") == null && e.Get("RRULE") != null);
+
+        if ((response == "remove" || response == "decline") && occurrences)
+        {
+            var ex = existing!.Value;
+            foreach (var e in vcal.Of("VEVENT"))
+                if (Ics.Time(e.Get("RECURRENCE-ID"), space.Zone, out var day) is DateTime t)
+                    CalendarModel.DeleteEvent(space, ex.Coll.Id, ex.Obj.Uri, day ? t.ToString("yyyy-MM-dd") : t.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'"));
+            if (response == "remove") return false;
+        }
+        else if (response == "remove" || response == "decline")
         {
             if (existing is { } ex) PimStore.Delete(db, ex.Coll, ex.Obj.Uri);
             if (response == "remove") return false;
@@ -167,7 +205,12 @@ public static class Invites
             if (existing is not { } ex || ev.Get("ATTENDEE") is not { } reply) return false;
             var stored = Ics.Parse(ex.Obj.Data).First(c => c.Name == "VCALENDAR");
             var who = Mailto(reply)?.ToLowerInvariant();
-            foreach (var e in stored.Of("VEVENT"))
+            // Antwort fuer einen Termin der Serie: nur dort vermerken
+            var targets = stored.Of("VEVENT").ToList();
+            if (Ics.Time(ev.Get("RECURRENCE-ID"), space.Zone, out _) is DateTime rid
+                && targets.Any(e => e.Get("RECURRENCE-ID") == null && e.Get("RRULE") != null))
+                targets = [CalendarModel.Occurrence(stored, rid, space.Zone)];
+            foreach (var e in targets)
                 foreach (var a in e.All("ATTENDEE").Where(a => Mailto(a)?.ToLowerInvariant() == who))
                     a.With("PARTSTAT", reply.Param("PARTSTAT") ?? "NEEDS-ACTION");
             PimStore.Put(db, ex.Coll, ex.Obj.Uri, stored.ToString(), zone: space.Zone);
@@ -192,7 +235,22 @@ public static class Invites
                 me.Params.RemoveAll(p => p.Key.Equals("RSVP", StringComparison.OrdinalIgnoreCase));
                 if (response == "tentative") e.Set("STATUS", "TENTATIVE"); else e.Remove("STATUS");
             }
-            if (existing is { } ex) PimStore.Put(db, ex.Coll, ex.Obj.Uri, copy.ToString(), zone: space.Zone);
+            if (occurrences)
+            {
+                // Die geaenderten Termine ersetzen ihre Vorgaenger in der gespeicherten Serie
+                var ex = existing!.Value;
+                var stored = Ics.Parse(ex.Obj.Data).First(c => c.Name == "VCALENDAR");
+                foreach (var e in copy.Of("VEVENT").ToList())
+                {
+                    var t = Ics.Time(e.Get("RECURRENCE-ID"), space.Zone, out _);
+                    stored.Children.RemoveAll(o => o.Name == "VEVENT" && o.Get("RECURRENCE-ID") is { } r && Ics.Time(r, space.Zone, out _) == t);
+                    stored.Children.Add(e);
+                }
+                foreach (var tz in copy.Of("VTIMEZONE").Where(z => !stored.Of("VTIMEZONE").Any(x => x.Text("TZID") == z.Text("TZID"))))
+                    stored.Children.Insert(0, tz);
+                PimStore.Put(db, ex.Coll, ex.Obj.Uri, stored.ToString(), zone: space.Zone);
+            }
+            else if (existing is { } ex) PimStore.Put(db, ex.Coll, ex.Obj.Uri, copy.ToString(), zone: space.Zone);
             else PimStore.Put(db, DefaultCalendar(space), PimStore.NewUri(".ics"), copy.ToString(), zone: space.Zone);
         }
 
@@ -205,6 +263,111 @@ public static class Invites
         await smtp.SendAsync(reply2, ct);
         await smtp.DisconnectAsync(true, ct);
         return true;
+    }
+
+    private static readonly HashSet<string> ForAttendees =
+        ["SUMMARY", "LOCATION", "DESCRIPTION", "DTSTART", "DTEND", "DURATION", "RRULE", "RDATE", "EXDATE", "RECURRENCE-ID", "STATUS"];
+
+    /// <summary>
+    /// Hat sich etwas geaendert, das die Teilnehmer angeht - Zeit, Ort, Titel, Beschreibung, Wiederholung, gestrichene Termine?
+    /// Eigene Erinnerung, frei/beschaeftigt oder ein anderer Kalender gehen sie nichts an.
+    /// </summary>
+    public static bool Changed(string? before, string? after)
+    {
+        static string Key(string ics)
+        {
+            try
+            {
+                var vcal = Ics.Parse(ics).First(c => c.Name == "VCALENDAR");
+                return string.Join('\n', vcal.Of("VEVENT").SelectMany(e => e.Props.Where(p => ForAttendees.Contains(p.Name))
+                    .Select(p => p.Name + string.Concat(p.Params.Select(x => ";" + x.Key + "=" + x.Value)) + ":" + p.Value)).Order());
+            }
+            catch { return ics; }
+        }
+        return before == null || after == null || Key(before) != Key(after);
+    }
+
+    /// <summary>Teilnehmer eines gespeicherten Termins (Kleinbuchstaben), ohne die eigenen Adressen.</summary>
+    public static HashSet<string> Attendees(UserSpace space, string? ics)
+    {
+        if (string.IsNullOrEmpty(ics)) return new();
+        try
+        {
+            var vcal = Ics.Parse(ics).FirstOrDefault(c => c.Name == "VCALENDAR");
+            var mine = MyAddresses(space);
+            return vcal == null ? new() : vcal.Of("VEVENT").SelectMany(e => e.All("ATTENDEE")).Select(Mailto)
+                .Where(m => m != null && !mine.Contains(m.ToLowerInvariant())).Select(m => m!.ToLowerInvariant()).ToHashSet();
+        }
+        catch { return new(); }
+    }
+
+    /// <summary>
+    /// Eigene Einladung verschicken (RFC 6047): METHOD:REQUEST an die Teilnehmer, METHOD:CANCEL bei Absage. Geht ueber den
+    /// Postausgang des Organisator-Kontos (mit Wiederholung bei Fehlern, danach im Ordner Gesendet). Nur wenn der Organisator
+    /// ein eigenes Mailkonto ist. Gibt die Zahl der Empfaenger zurueck.
+    /// </summary>
+    public static int Send(UserSpace space, string ics, string method, IReadOnlyCollection<string>? only = null)
+    {
+        var vcal = Ics.Parse(ics).FirstOrDefault(c => c.Name == "VCALENDAR");
+        var master = vcal == null ? null : Master(vcal);
+        if (vcal == null || master == null) return 0;
+        var org = Mailto(master.Get("ORGANIZER"));
+        var account = org == null ? null : space.Settings.MailAccounts.FirstOrDefault(a => a.Email.Equals(org, StringComparison.OrdinalIgnoreCase));
+        if (account == null) return 0;
+        var mine = MyAddresses(space);
+        var attendees = master.All("ATTENDEE").Where(a => Mailto(a) is { } m && !mine.Contains(m.ToLowerInvariant())
+            && (only == null || only.Contains(m.ToLowerInvariant()))).ToList();
+        if (only != null)
+            foreach (var x in only.Where(x => !attendees.Any(a => Mailto(a)!.Equals(x, StringComparison.OrdinalIgnoreCase))))
+                attendees.Add(new Prop("ATTENDEE", "mailto:" + x));
+        if (attendees.Count == 0) return 0;
+
+        var cancel = method == "CANCEL";
+        var cal = Ics.Parse(vcal.ToString()).First(c => c.Name == "VCALENDAR");
+        cal.Set("METHOD", method);
+        foreach (var e in cal.Of("VEVENT"))
+        {
+            e.Set("DTSTAMP", Ics.Stamp());
+            e.Children.RemoveAll(c => c.Name == "VALARM");
+            if (!cancel) continue;
+            e.Set("STATUS", "CANCELLED");
+            if (only != null)
+            {
+                e.Remove("ATTENDEE");
+                e.Props.AddRange(attendees);
+            }
+        }
+
+        var en = account.Language == "en";
+        var seq = Seq(master);
+        var title = master.Text("SUMMARY") ?? "";
+        var prefix = cancel ? (en ? "Cancelled: " : "Abgesagt: ") : seq > 0 ? (en ? "Updated: " : "Aktualisiert: ") : (en ? "Invitation: " : "Einladung: ");
+        var start = Ics.Time(master.Get("DTSTART"), space.Zone, out var allDay);
+        var culture = System.Globalization.CultureInfo.GetCultureInfo(en ? "en-GB" : "de-DE");
+        var when = start is DateTime s
+            ? allDay ? s.ToString(en ? "dddd, d MMMM yyyy" : "dddd, d. MMMM yyyy", culture)
+                     : TimeZoneInfo.ConvertTimeFromUtc(s, space.Zone).ToString(en ? "dddd, d MMMM yyyy, HH:mm" : "dddd, d. MMMM yyyy, HH:mm 'Uhr'", culture)
+            : "";
+        var text = new StringBuilder();
+        text.AppendLine(cancel ? (en ? "This event has been cancelled." : "Dieser Termin wurde abgesagt.") : title);
+        if (cancel) text.AppendLine(title);
+        if (when.Length > 0) text.AppendLine((en ? "When: " : "Wann: ") + when);
+        if (master.Text("LOCATION") is { Length: > 0 } loc) text.AppendLine((en ? "Where: " : "Wo: ") + loc);
+        if (!cancel && master.Text("DESCRIPTION") is { Length: > 0 } desc) text.AppendLine().AppendLine(desc);
+
+        var m = new MimeMessage();
+        m.From.Add(new MailboxAddress(string.IsNullOrEmpty(account.DisplayName) ? null : account.DisplayName, account.Email));
+        foreach (var a in attendees) m.To.Add(new MailboxAddress(a.Param("CN"), Mailto(a)!));
+        m.Subject = prefix + title;
+        var body = new TextPart("plain") { Text = text.ToString() };
+        var calPart = new TextPart("calendar") { Text = cal.ToString() };
+        calPart.ContentType.Parameters.Add("method", method);
+        calPart.ContentType.Charset = "utf-8";
+        m.Body = new MultipartAlternative { body, calPart };
+
+        var draft = new MailCompose.Draft { To = string.Join(", ", m.To.Mailboxes.Select(x => x.Address)), Subject = m.Subject };
+        MailQueue.Add(space.Db, account.Id, account.Id, draft, m, DateTime.UtcNow);
+        return attendees.Count;
     }
 
     /// <summary>Antwort an den Organisator: METHOD:REPLY mit der eigenen Teilnahme (RFC 5546 3.2.3).</summary>

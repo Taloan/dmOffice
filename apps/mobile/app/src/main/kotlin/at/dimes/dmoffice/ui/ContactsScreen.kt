@@ -65,7 +65,7 @@ import kotlinx.coroutines.launch
 /** Kontaktliste mit Suche, gruppiert nach Anfangsbuchstaben des Nachnamens. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ContactsScreen(onOpen: (String) -> Unit, onClose: () -> Unit) {
+fun ContactsScreen(onOpen: (String) -> Unit, onClose: (() -> Unit)?) {
     val ctx = LocalContext.current
     val app = App.get(ctx)
     val scope = rememberCoroutineScope()
@@ -76,9 +76,11 @@ fun ContactsScreen(onOpen: (String) -> Unit, onClose: () -> Unit) {
 
     LaunchedEffect(Unit) { loading = true; try { app.contacts.refresh() } catch (e: Exception) { error = e.message } finally { loading = false } }
 
-    Scaffold(topBar = {
-        TopAppBar(title = { Text(stringResource(R.string.contacts)) },
-            navigationIcon = { IconButton(onClick = onClose) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.close)) } },
+    // Als Reiter (onClose == null): ohne Zurueck-Pfeil, Systemleisten beruecksichtigt schon der Hauptbildschirm
+    val insets = if (onClose == null) androidx.compose.foundation.layout.WindowInsets(0) else null
+    Scaffold(contentWindowInsets = insets ?: androidx.compose.material3.ScaffoldDefaults.contentWindowInsets, topBar = {
+        TopAppBar(title = { Text(stringResource(R.string.contacts)) }, windowInsets = insets ?: androidx.compose.material3.TopAppBarDefaults.windowInsets,
+            navigationIcon = { if (onClose != null) IconButton(onClick = onClose) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.close)) } },
             actions = { IconButton(onClick = { scope.launch { loading = true; try { app.contacts.refresh() } catch (e: Exception) { error = e.message } finally { loading = false } } }) { Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.refresh)) } })
     }) { pad ->
         Column(Modifier.padding(pad).fillMaxSize()) {

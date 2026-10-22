@@ -51,6 +51,9 @@ const specialNames: Record<string, string> = {
 const specialOrder = ['inbox', 'drafts', 'sent', 'snoozed', 'flagged', 'archive', 'junk', 'trash']
 const folderColors = ['#D13438', '#CA5010', '#C19C00', '#13A10E', '#038387', '#0F6CBD', '#8764B8', '#C239B3', '#69797E']
 
+/** Virtueller Ordner "Alle Posteingaenge" (Server: MailStore.UnifiedFolder). */
+export const UNIFIED = '__unified'
+
 export const folderLabel = (f?: Folder | null) => (f ? (f.special && specialNames[f.special]) || f.name : '')
 
 function FolderIcon({ special }: { special: string | null }) {
@@ -335,13 +338,31 @@ export function FolderPane({ accounts, folders, selection, status, onSelect, onD
     </div>
   )
 
+  // Alle Posteingaenge (ab zwei Konten): die Posteingaenge aller Konten zusammen, ganz oben
+  const inboxes = accounts.map(a => (folders[a.id] || []).find(f => f.special === 'inbox')).filter(Boolean) as Folder[]
+  const unifiedUnread = inboxes.reduce((n, f) => n + (f.unread || 0), 0)
+  const unifiedActive = selection?.folder === UNIFIED
+  const unifiedRow = accounts.length > 1 && inboxes.length > 1 && (
+    <div style={{ marginBottom: 10 }}>
+      <div className={mergeClasses(s.item, unifiedActive && s.active)} style={{ paddingLeft: 4 }}
+        onClick={() => onSelect({ account: accounts[0].id, folder: UNIFIED })}>
+        <span className={s.twisty} />
+        <span className={s.icon}><Mail20Regular /></span>
+        <span className={s.name}>{t('Alle Posteingänge')}</span>
+        {unifiedUnread > 0 && <CounterBadge count={unifiedUnread} size="small" overflowCount={9999} />}
+      </div>
+    </div>
+  )
+
   const mf = menu?.folder ?? null
   const virtual = mf?.special === 'flagged'
   const mk = menu && mf ? key(menu.account, mf) : ''
   const countMode = mf ? prefs.folderCount?.[mk] ?? (mf.special === 'drafts' ? 'total' : 'unread') : 'unread'
 
   return (
-    <div className={s.root} onClick={() => setMenu(null)}>
+    <div className={s.root} onClick={() => setMenu(null)}
+      onContextMenu={e => { if (e.defaultPrevented || !accounts.length) return; e.preventDefault(); setMenu({ account: (selection?.account && selection.folder !== UNIFIED ? selection.account : accounts[0].id), folder: null, x: e.clientX, y: e.clientY }) }}>
+      {unifiedRow}
       {(prefs.pinFavorites ?? true) && favSection}
       {accounts.map(a => {
         const list = folders[a.id] || []
@@ -386,7 +407,7 @@ export function FolderPane({ accounts, folders, selection, status, onSelect, onD
                   <MenuItem icon={<FolderAdd20Regular />} disabled={virtual} onClick={() => create(menu.account, mf.path)}>{t('Neuer Unterordner …')}</MenuItem>
                   <MenuItem icon={<Rename20Regular />} disabled={!!mf.special} onClick={() => rename(menu.account, mf)}>{t('Umbenennen')}</MenuItem>
                   <Menu>
-                    <MenuTrigger disableButtonEnhancement><MenuItem icon={<Color20Regular />}>{t('Farbe ändern')}</MenuItem></MenuTrigger>
+                    <MenuTrigger disableButtonEnhancement><MenuItem icon={<Color20Regular />}>{t('Farbe')}</MenuItem></MenuTrigger>
                     <MenuPopover>
                       <div className={s.swatches}>
                         {folderColors.map(c => <button key={c} className={s.swatch} style={{ background: c }} title={c} onClick={() => { setColor(menu.account, mf, c); setMenu(null) }} />)}
@@ -425,7 +446,8 @@ export function FolderPane({ accounts, folders, selection, status, onSelect, onD
                   <MenuDivider />
                   <MenuItem icon={<Open20Regular />} disabled={!mf.selectable} onClick={() => openInTab(menu.account, mf)}>{t('In neuer Registerkarte öffnen')}</MenuItem>
                   <MenuItem icon={<DataBarVertical20Regular />} onClick={() => { location.hash = '#/settings/stats' }}>{t('Statistik …')}</MenuItem>
-                  {!mf.special && <MenuItem icon={<Delete20Regular />} onClick={() => remove(menu.account, mf)}>{t('Ordner löschen')}</MenuItem>}
+                  {!mf.special && <MenuDivider />}
+                  {!mf.special && <MenuItem icon={<Delete20Regular />} onClick={() => remove(menu.account, mf)}>{t('Löschen')}</MenuItem>}
                 </>
               ) : (
                 <>

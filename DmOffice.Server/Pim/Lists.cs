@@ -1,5 +1,6 @@
 using System.Text.Json;
 using DmOffice.Core;
+using DmOffice.Dav;
 
 namespace DmOffice.Pim;
 
@@ -91,6 +92,29 @@ public static class Lists
         if (m.History.Count > MaxHistory)
             m.History = m.History.OrderByDescending(h => h.Last).Take(MaxHistory).ToList();
         Save(db, id, m);
+    }
+
+    /// <summary>
+    /// Aus einer Aufgabe, die ueber CalDAV kam: neuer Artikel oder geaenderter Artikel/Abteilung - wie CalendarModel.SaveTask
+    /// (nicht jedes Abhaken). Fehlerhafte Daten werden still uebergangen, die Aufgabe ist da schon gespeichert.
+    /// </summary>
+    public static void LearnFromIcs(UserDb db, long id, string? before, string after)
+    {
+        static (string? Item, string? Unit, string? Section) Read(string? ics)
+        {
+            if (ics == null) return (null, null, null);
+            try
+            {
+                var t = Ics.Parse(ics).First(r => r.Name == "VCALENDAR").Of("VTODO").FirstOrDefault();
+                return t == null ? (null, null, null) : (t.Text("X-DM-ITEM"), t.Text("X-DM-UNIT"), t.Text("X-DM-SECTION"));
+            }
+            catch { return (null, null, null); }
+        }
+        var now = Read(after);
+        if (string.IsNullOrWhiteSpace(now.Item)) return;
+        var was = Read(before);
+        if (string.Equals(was.Item, now.Item, StringComparison.OrdinalIgnoreCase) && was.Section == now.Section) return;
+        Learn(db, id, now.Item, now.Unit, now.Section);
     }
 
     /// <summary>Einen Vorschlag vergessen (Tippfehler).</summary>

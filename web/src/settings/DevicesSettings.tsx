@@ -1,5 +1,5 @@
 import {
-  Button, Card, Dropdown, Field, Input, Option, Switch, Table, TableBody, TableCell, TableHeader, TableHeaderCell, TableRow, Text,
+  Button, Card, Field, Input, Switch, Table, TableBody, TableCell, TableHeader, TableHeaderCell, TableRow, Text,
   makeStyles, tokens, MessageBar, MessageBarBody, Dialog, DialogSurface, DialogBody, DialogTitle, DialogContent, DialogActions, Spinner,
 } from '@fluentui/react-components'
 import { Copy16Regular, Delete20Regular, Key20Regular, QrCode20Regular } from '@fluentui/react-icons'
@@ -8,10 +8,11 @@ import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { useApp } from '../App'
 import { copyText } from '../shell/browser'
+import { useSort } from '../shell/sort'
 import { t, locale, tError } from '../i18n'
 
 const useStyles = makeStyles({
-  urls: { display: 'grid', gridTemplateColumns: '160px 1fr auto', gap: '6px 12px', alignItems: 'center', padding: '14px 16px' },
+  urls: { display: 'grid', gridTemplateColumns: '160px 1fr auto', gap: '6px 12px', alignItems: 'center', padding: '14px 16px', '@media (max-width: 767px)': { gridTemplateColumns: 'minmax(0, 1fr) auto', padding: '10px', '& > :nth-child(3n+1)': { gridColumn: '1 / -1' } } },
   mono: { fontFamily: 'Consolas, monospace', fontSize: '13px', wordBreak: 'break-all' },
   muted: { color: tokens.colorNeutralForeground3 },
   token: { fontFamily: 'Consolas, monospace', fontSize: '22px', letterSpacing: '1px', padding: '14px', textAlign: 'center', backgroundColor: tokens.colorNeutralBackground3, borderRadius: tokens.borderRadiusMedium },
@@ -35,6 +36,9 @@ export function DevicesSettings() {
   const { fail, notify, me } = useApp()
   const [dav, setDav] = useState<any>(null)
   const [list, setList] = useState<any[]>([])
+  const { sorted, header } = useSort(list, {
+    name: p => p.name, created: p => Date.parse(p.created), lastUsed: p => p.lastUsed ? Date.parse(p.lastUsed) : null,
+  })
   const [name, setName] = useState('')
   const [created, setCreated] = useState<string | null>(null)
   const [pair, setPair] = useState<{ qr: string; uri: string; token: string } | null>(null)
@@ -108,6 +112,12 @@ export function DevicesSettings() {
           {t('Der Code erscheint nur ein einziges Mal. Das App-Passwort steht danach als „Handy-App“ in der Liste unten und kann dort jederzeit widerrufen werden.')}
         </Text>
         <div><Button appearance="primary" icon={<QrCode20Regular />} onClick={pairPhone} disabled={!dav || pairing}>{pairing ? <Spinner size="tiny" /> : t('QR-Code erzeugen')}</Button></div>
+        {dav?.serverKeyFingerprint && (
+          <Text size={200} className={s.muted}>
+            {t('Fingerabdruck des Serverschlüssels – die App zeigt ihn beim Koppeln ohne QR-Code und in ihren Einstellungen, er muss genau übereinstimmen:')}
+            <br /><span className={s.mono}>{dav.serverKeyFingerprint}</span>
+          </Text>
+        )}
       </Card>
 
       <Text weight="semibold" style={{ marginTop: 8 }}>{t('App-Passwörter')}</Text>
@@ -117,11 +127,11 @@ export function DevicesSettings() {
       </form>
       {list.length > 0 && (
         <Table size="small" style={{ maxWidth: 720 }}>
-          <TableHeader><TableRow><TableHeaderCell>{t('Gerät')}</TableHeaderCell><TableHeaderCell>{t('Erstellt')}</TableHeaderCell><TableHeaderCell>{t('Zuletzt benutzt')}</TableHeaderCell><TableHeaderCell /></TableRow></TableHeader>
+          <TableHeader><TableRow><TableHeaderCell {...header('name')}>{t('Gerät')}</TableHeaderCell><TableHeaderCell {...header('created')}>{t('Erstellt')}</TableHeaderCell><TableHeaderCell {...header('lastUsed')}>{t('Zuletzt benutzt')}</TableHeaderCell><TableHeaderCell /></TableRow></TableHeader>
           <TableBody>
-            {list.map(p => (
+            {sorted.map(p => (
               <TableRow key={p.id}>
-                <TableCell>{p.name}</TableCell>
+                <TableCell>{p.name}{p.scope === 'notizi' && <Text size={200} className={s.muted}> · {t('nur notizi-Ordner')}</Text>}</TableCell>
                 <TableCell>{new Date(p.created).toLocaleDateString(locale)}</TableCell>
                 <TableCell>{p.lastUsed ? new Date(p.lastUsed).toLocaleString(locale) : t('noch nie')}</TableCell>
                 <TableCell><Button appearance="subtle" icon={<Delete20Regular />} onClick={() => revoke(p)} title={t('Widerrufen')} /></TableCell>
@@ -178,28 +188,31 @@ export function NotesSettings() {
   const s = useStyles()
   const { fail, notify } = useApp()
   const [data, setData] = useState<any>(null)
-  const [dav, setDav] = useState<any>(null)
   const [enabled, setEnabled] = useState(false)
   const [root, setRoot] = useState('notizisync')
   const [password, setPassword] = useState('')
-  const [folder, setFolder] = useState('')
   const [busy, setBusy] = useState(false)
-  const [appPassword, setAppPassword] = useState<string | null>(null)
+  const [conn, setConn] = useState<{ url: string; login: string; password: string; link: string; qr: string } | null>(null)
 
   const load = () => api.get('/api/settings/notizi').then(d => {
-    setData(d); setEnabled(d.enabled); setRoot(d.root); setFolder(d.dbFolder)
+    setData(d); setEnabled(d.enabled); setRoot(d.root)
   }).catch(fail)
-  useEffect(() => { load(); api.get('/api/settings/dav').then(setDav).catch(fail) }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const copy = async (text: string) => { if (await copyText(text)) notify(t('Kopiert')) }
   // Eigenes App-Passwort fuer notizi - einmal anzeigen, unter "Geraete & Sync" widerrufbar
-  const createAppPassword = async () => {
-    try { setAppPassword((await api.post('/api/settings/app-passwords', { name: 'notizi' })).password) } catch (e) { fail(e) }
+  // Eigener notizi-Zugang: sieht nur den Abgleichordner; QR-Code bzw. Link liest notizi ein
+  const connect = async () => {
+    try {
+      const r = await api.post('/api/settings/notizi/connect')
+      setConn({ ...r, qr: await QRCode.toDataURL(r.link, { width: 360, margin: 1 }) })
+    } catch (e) { fail(e) }
   }
   const save = async () => {
     setBusy(true)
     try {
-      await api.put('/api/settings/notizi', { enabled, root, dbFolder: folder, e2eePassword: password || undefined })
+      // Die Datenbank waehlt dmOffice selbst (die erste, zu der das Passwort passt); gewechselt wird im Notizen-Bereich
+      await api.put('/api/settings/notizi', { enabled, root, dbFolder: data.dbFolder ?? '', e2eePassword: password || undefined })
       setPassword('')
       notify(t('Gespeichert'))
       await load()
@@ -227,18 +240,26 @@ export function NotesSettings() {
       <Text>{t('Am PC von notizi.de herunterladen und einmal starten – Version 1.5 oder neuer.')}</Text>
 
       <Text weight="semibold">{t('2. In notizi mit dmOffice verbinden')}</Text>
-      <Text>{t('In notizi unter Einstellungen → Sync → Verbindung → WebDAV diese Angaben eintragen:')}</Text>
-      <Card>
-        <div className={s.urls}>
-          {dav && row(t('Adresse'), dav.notizi)}
-          {dav && row(t('Benutzer'), dav.login)}
-          <Text>{t('Passwort')}</Text>
-          {appPassword ? <span className={s.mono}>{appPassword}</span>
-            : <span><Button size="small" icon={<Key20Regular />} onClick={createAppPassword}>{t('App-Passwort für notizi erzeugen')}</Button></span>}
-          {appPassword ? <Button size="small" appearance="subtle" icon={<Copy16Regular />} onClick={() => copy(appPassword)} aria-label={t('Kopieren')} title={t('Kopieren')} /> : <span />}
-        </div>
-      </Card>
-      {appPassword && <Text size={200} className={s.muted}>{t('Das App-Passwort wird nur jetzt angezeigt. Widerrufen lässt es sich unter „Geräte & Sync“.')}</Text>}
+      <Text>{t('dmOffice legt dafür einen eigenen Zugang an, der nur den Notizen-Ordner sieht – nicht deine anderen Dateien, Mails oder Termine.')}</Text>
+      {!conn ? (
+        <div><Button appearance="primary" icon={<Key20Regular />} onClick={connect}>{t('notizi verbinden')}</Button></div>
+      ) : (
+        <Card>
+          <div className={s.pairBox}>
+            <Text>{t('In notizi unter Einstellungen → Sync → Verbindung → WebDAV den QR-Code scannen oder den Link einfügen – oder die drei Angaben eintragen:')}</Text>
+            <img className={s.qr} src={conn.qr} alt={t('QR-Code für notizi')} />
+            <div><Button size="small" icon={<Copy16Regular />} onClick={() => copy(conn.link)}>{t('Link kopieren')}</Button></div>
+            <div className={s.urls} style={{ padding: 0 }}>
+              {row(t('Adresse'), conn.url)}
+              {row(t('Benutzer'), conn.login)}
+              {row(t('Passwort'), conn.password)}
+            </div>
+            <Text size={200} className={s.muted}>{t('Der QR-Code bleibt hier stehen, bis du die Seite verlässt – scanne ihn mit allen Geräten, auf denen notizi läuft. Jeder Code ist ein eigener Zugang; ältere bleiben gültig und lassen sich unter „Geräte & Sync“ einzeln entfernen.')}</Text>
+            <Text size={200} className={s.muted}>{t('Sobald sich ein notizi-Zugang angemeldet hat, sehen andere Zugänge (Explorer, Nextcloud, DAVx⁵) den Notizen-Ordner nicht mehr – auch ein allgemeines App-Passwort, das notizi bisher benutzt hat.')}</Text>
+            <div><Button size="small" icon={<Key20Regular />} onClick={connect}>{t('Neuen Zugang anlegen')}</Button></div>
+          </div>
+        </Card>
+      )}
       <Text>{t('Dort legst du auch ein E2EE-Passwort fest – damit sind die Notizen verschlüsselt, bevor sie dmOffice erreichen. Merk es dir gut, du brauchst es gleich noch einmal. Dann in notizi einmal abgleichen.')}</Text>
 
       <Text weight="semibold">{t('3. Hier einschalten')}</Text>
@@ -247,13 +268,9 @@ export function NotesSettings() {
         <Field label={t('E2EE-Passwort')} hint={data.hasPassword ? t('leer lassen: bleibt') : t('dasselbe wie in notizi')}>
           <Input type="password" value={password} onChange={(_, d) => setPassword(d.value)} autoComplete="new-password" />
         </Field>
-        <Field label={t('Datenbank')} hint={dbs.length > 0 ? t('die Notizsammlung aus notizi') : t('erscheint hier, sobald notizi einmal abgeglichen hat')}>
-          {dbs.length > 0 ? (
-            <Dropdown value={dbs.find(d => d.folder === folder)?.title ?? folder} selectedOptions={[folder]} onOptionSelect={(_, d) => setFolder(d.optionValue!)}>
-              {dbs.map(d => <Option key={d.folder} value={d.folder} text={d.title}>{d.title}{!d.passwordFits && ' ' + t('(Passwort passt nicht)')}</Option>)}
-            </Dropdown>
-          ) : <Input value={folder} onChange={(_, d) => setFolder(d.value)} placeholder={t('z. B. notizi pr')} />}
-        </Field>
+        {data.dbFolder
+          ? <Text size={200} className={s.muted}>{t('Datenbank: {name} – wechseln im Notizen-Bereich unter „Datenbank“.', { name: dbs.find(d => d.folder === data.dbFolder)?.title ?? data.dbFolder })}</Text>
+          : <Text size={200} className={s.muted}>{t('Die Datenbank wählt dmOffice selbst, sobald notizi einmal abgeglichen hat – wechseln lässt sie sich im Notizen-Bereich.')}</Text>}
         <details>
           <summary className={s.muted} style={{ cursor: 'pointer' }}>{t('Erweitert')}</summary>
           <Field label={t('Wurzel im WebDAV')} hint={t('nur ändern, wenn notizi einen anderen Ordner nutzt')} style={{ marginTop: 8 }}>

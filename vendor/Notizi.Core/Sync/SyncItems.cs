@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -107,8 +108,19 @@ namespace Notizi.Sync
         [JsonPropertyName("plain")] public string Plain { get; set; } = "";
         [JsonPropertyName("images")] public List<string> Images { get; set; } = new();
 
+        /// <summary>
+        /// Schlagwoerter der Notiz, etwa "Rezept". Fehlt das Feld ganz (ein
+        /// Geraet aus der Zeit vor den Tags), heisst das "weiss nichts davon"
+        /// und laesst die Tags hier unberuehrt - eine leere Liste dagegen
+        /// heisst "keine".
+        /// </summary>
+        [JsonPropertyName("tags")] public List<string>? Tags { get; set; }
+
         [JsonPropertyName("attachments")] public List<AttachmentRef> Attachments { get; set; } = new();
         [JsonPropertyName("sources")] public List<SourceRef> Sources { get; set; } = new();
+
+        private static string TagKey(List<string>? tags) =>
+            tags == null ? "" : string.Join("|", tags.ConvertAll(t => t.ToLowerInvariant()).OrderBy(t => t, StringComparer.Ordinal));
 
         /// <summary>Alle Blobs, die die Notiz braucht.</summary>
         public IEnumerable<string> Blobs()
@@ -129,6 +141,7 @@ namespace Notizi.Sync
             && Title == other.Title && CustomTitle == other.CustomTitle && Color == other.Color
             && Important == other.Important && Nullable.Equals(Alarm, other.Alarm) && AlarmActive == other.AlarmActive
             && Html == other.Html
+            && TagKey(Tags) == TagKey(other.Tags)
             && string.Join("|", Attachments.ConvertAll(a => a.Sha256 + "/" + a.Name))
                == string.Join("|", other.Attachments.ConvertAll(a => a.Sha256 + "/" + a.Name))
             && string.Join("|", Sources.ConvertAll(s => s.Url + "/" + s.Title + "/" + s.App))

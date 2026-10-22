@@ -12,6 +12,9 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.ui.zIndex
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextDecoration
 import java.time.Instant
@@ -72,7 +75,7 @@ import java.time.temporal.WeekFields
 
 /** Ansichten wie im Web (Tag, Arbeitswoche, Woche, Monat, Liste) und die Agenda (fortlaufend ab heute). */
 enum class CalMode(val label: Int) {
-    Agenda(R.string.agenda), Day(R.string.day), WorkWeek(R.string.work_week), Week(R.string.week), Month(R.string.month), List(R.string.list_view)
+    Agenda(R.string.agenda), Day(R.string.day), WorkWeek(R.string.work_week), Week(R.string.week), Month(R.string.month), List(R.string.list_view), MealPlan(R.string.meal_plan)
 }
 
 /** Zuletzt gewaehlte Kalenderansicht, bleibt ueber Neustarts erhalten. */
@@ -86,7 +89,7 @@ object CalendarPrefs {
 
 /** Kalender mit Agenda, Tag, Arbeitswoche, Woche, Monat und Liste. Die Auswahl des Tages bleibt beim Umschalten erhalten. */
 @Composable
-fun CalendarScreen(day: LocalDate, onDay: (LocalDate) -> Unit, onOpen: (String) -> Unit, onNewEventAt: (Long) -> Unit = {}, onNewEvent: (LocalDate) -> Unit) {
+fun CalendarScreen(day: LocalDate, onDay: (LocalDate) -> Unit, onOpen: (String) -> Unit, onNewEventAt: (Long) -> Unit = {}, onOpenNote: (Long) -> Unit = {}, onNewEvent: (LocalDate) -> Unit) {
     val ctx = LocalContext.current
     val app = App.get(ctx)
     val scope = rememberCoroutineScope()
@@ -104,11 +107,16 @@ fun CalendarScreen(day: LocalDate, onDay: (LocalDate) -> Unit, onOpen: (String) 
         CalMode.WorkWeek, CalMode.Week -> monday to monday.plusWeeks(1)
         CalMode.Month -> day.withDayOfMonth(1).with(TemporalAdjusters.previousOrSame(weekStart)).let { it to it.plusWeeks(6) }
         CalMode.List -> day.withDayOfMonth(1).let { it to it.plusMonths(1) }
+        CalMode.MealPlan -> day to day
     }
     val flow = remember(from, to) { app.repo.occurrences(from.epochMillis(zone), to.epochMillis(zone)) }
     val occ by flow.collectAsState(initial = emptyList())
     val settings by app.prefs.settings.collectAsState()
-    val shown = remember(occ, settings) { occ.filter { (settings.showCompleted || !(it.isTask && it.item.completed)) && (settings.agendaShowTasks || !it.isTask) } }
+    // Essensplan-Kalender erscheinen nur in der Ansicht Essensplan (wie im Web)
+    val meals by at.dimes.dmoffice.data.ListTypes.mealUris.collectAsState()
+    androidx.compose.runtime.LaunchedEffect(Unit) { at.dimes.dmoffice.data.ListTypes.refresh(ctx) }
+    val shown = remember(occ, settings, meals) { occ.filter { (settings.showCompleted || !(it.isTask && it.item.completed)) && (settings.agendaShowTasks || !it.isTask)
+        && at.dimes.dmoffice.data.ListTypes.uriOf(it.item.calendarHref) !in meals } }
 
     fun byDay(d: LocalDate): List<Occurrence> = shown.filter { o -> o.startDate(zone) <= d && o.endDate(zone) >= d }
     fun step(n: Long) = onDay(when (mode) {
@@ -118,13 +126,20 @@ fun CalendarScreen(day: LocalDate, onDay: (LocalDate) -> Unit, onOpen: (String) 
     })
     val toggle: (String, Boolean) -> Unit = { h, d -> scope.launch { app.repo.setCompleted(h, d) } }
     val openDay: (LocalDate) -> Unit = { onDay(it); CalendarPrefs.setMode(ctx, CalMode.Day) }
+    val move: (String, Long) -> Unit = { h, delta -> scope.launch {
+        when (app.repo.moveEvent(h, delta)) {
+            at.dimes.dmoffice.data.Repo.Moved.NotPossible -> android.widget.Toast.makeText(ctx, R.string.move_not_possible, android.widget.Toast.LENGTH_SHORT).show()
+            at.dimes.dmoffice.data.Repo.Moved.NeedsConnection -> android.widget.Toast.makeText(ctx, R.string.move_needs_connection, android.widget.Toast.LENGTH_LONG).show()
+            else -> {}
+        }
+    } }
 
     Column(Modifier.fillMaxSize()) {
         // Ansichten als Chips (sechs passen nicht in eine Segmentleiste)
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             for (m in CalMode.entries) FilterChip(selected = mode == m, onClick = { CalendarPrefs.setMode(ctx, m) }, label = { Text(stringResource(m.label)) })
         }
-        if (mode != CalMode.Agenda) Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (mode != CalMode.Agenda && mode != CalMode.MealPlan) Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { step(-1) }) { Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = null) }
             Text(
                 when (mode) {
@@ -139,7 +154,7 @@ fun CalendarScreen(day: LocalDate, onDay: (LocalDate) -> Unit, onOpen: (String) 
         } else Spacer(Modifier.height(4.dp))
         // Nach links/rechts wischen: vor bzw. zurueck (nicht in der fortlaufenden Agenda)
         var drag by remember { mutableStateOf(0f) }
-        val swipe = if (mode == CalMode.Agenda) Modifier else Modifier.pointerInput(mode, day) {
+        val swipe = if (mode == CalMode.Agenda || mode == CalMode.MealPlan) Modifier else Modifier.pointerInput(mode, day) {
             detectHorizontalDragGestures(
                 onDragStart = { drag = 0f },
                 onDragEnd = { if (kotlin.math.abs(drag) > 80.dp.toPx()) step(if (drag < 0) 1 else -1); drag = 0f },
@@ -148,11 +163,12 @@ fun CalendarScreen(day: LocalDate, onDay: (LocalDate) -> Unit, onOpen: (String) 
         }
         Box(Modifier.fillMaxSize().then(swipe)) { when (mode) {
             CalMode.Agenda -> AgendaScreen(onOpen, onNewEvent)
-            CalMode.Day -> TimeGrid(listOf(day), today, ::byDay, {}, onOpen, toggle, onNewEventAt)
-            CalMode.WorkWeek -> TimeGrid((0..4).map { monday.plusDays(it.toLong()) }, today, ::byDay, openDay, onOpen, toggle, onNewEventAt)
-            CalMode.Week -> TimeGrid((0..6).map { monday.plusDays(it.toLong()) }, today, ::byDay, openDay, onOpen, toggle, onNewEventAt)
+            CalMode.Day -> TimeGrid(listOf(day), today, ::byDay, {}, onOpen, toggle, onNewEventAt, move)
+            CalMode.WorkWeek -> TimeGrid((0..4).map { monday.plusDays(it.toLong()) }, today, ::byDay, openDay, onOpen, toggle, onNewEventAt, move)
+            CalMode.Week -> TimeGrid((0..6).map { monday.plusDays(it.toLong()) }, today, ::byDay, openDay, onOpen, toggle, onNewEventAt, move)
             CalMode.Month -> MonthView(day, from, today, ::byDay, onDay, onOpen, toggle)
             CalMode.List -> MonthList(from, to, today, ::byDay, onOpen, toggle, onNewEvent)
+            CalMode.MealPlan -> MealPlanScreen(onOpenNote)
         } }
     }
 }
@@ -183,8 +199,12 @@ private fun MonthList(from: LocalDate, to: LocalDate, today: LocalDate, byDay: (
  */
 @Composable
 private fun TimeGrid(days: List<LocalDate>, today: LocalDate, byDay: (LocalDate) -> List<Occurrence>, onDayClick: (LocalDate) -> Unit,
-                     onOpen: (String) -> Unit, onToggle: (String, Boolean) -> Unit, onNewAt: (Long) -> Unit) {
+                     onOpen: (String) -> Unit, onToggle: (String, Boolean) -> Unit, onNewAt: (Long) -> Unit, onMove: (String, Long) -> Unit) {
     val ctx = LocalContext.current
+    val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
+    // Halten und ziehen: welcher Termin und wie weit (Pixel); losgelassen wird auf Viertelstunden und ganze Tage gerundet
+    var dragged by remember { mutableStateOf<String?>(null) }
+    var dragOff by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
     val zone = ZoneId.systemDefault()
     val hourH = if (days.size == 1) 60.dp else 52.dp
     val gutter = 40.dp
@@ -260,14 +280,35 @@ private fun TimeGrid(days: List<LocalDate>, today: LocalDate, byDay: (LocalDate)
                         val top = hourH * ((b.start - dayStart) / 3_600_000f)
                         val height = hourH * ((b.end - b.start) / 3_600_000f)
                         val w = colW / b.lanes
+                        // Ziehbar: einzelne Termine mit Uhrzeit (keine Aufgaben, keine Serien)
+                        val movable = !o.isTask && !o.item.recurring
+                        val isDragged = dragged == o.item.href
+                        val hourPx = with(density) { hourH.toPx() }
+                        val colPx = with(density) { colW.toPx() }
+                        fun snapped(): Long {
+                            val dayShift = if (days.size > 1) kotlin.math.round(dragOff.x / colPx).toLong().coerceIn(-i.toLong(), (days.size - 1 - i).toLong()) else 0L
+                            val quarters = kotlin.math.round(dragOff.y / hourPx * 4).toLong()
+                            return dayShift * 86_400_000L + quarters * 15 * 60_000L
+                        }
                         Column(
-                            Modifier.offset(x = w * b.lane, y = top).width(w).height(height).padding(1.dp)
+                            Modifier.offset(x = w * b.lane, y = top).width(w).height(height)
+                                .zIndex(if (isDragged) 1f else 0f)
+                                .graphicsLayer { if (isDragged) { translationX = dragOff.x; translationY = dragOff.y; shadowElevation = 12f } }
+                                .then(if (movable) Modifier.pointerInput(o.item.href, o.start) {
+                                    detectDragGesturesAfterLongPress(
+                                        onDragStart = { dragged = o.item.href; dragOff = androidx.compose.ui.geometry.Offset.Zero; haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress) },
+                                        onDrag = { ch, amount -> ch.consume(); dragOff += amount },
+                                        onDragEnd = { val delta = snapped(); dragged = null; dragOff = androidx.compose.ui.geometry.Offset.Zero; if (delta != 0L) onMove(o.item.href, delta) },
+                                        onDragCancel = { dragged = null; dragOff = androidx.compose.ui.geometry.Offset.Zero },
+                                    )
+                                } else Modifier)
+                                .padding(1.dp)
                                 .clip(RoundedCornerShape(4.dp)).background(colorOf(o.color).copy(alpha = if (o.isTask && o.item.completed) 0.45f else 0.9f))
                                 .clickable { onOpen(o.item.href) }.padding(horizontal = 3.dp, vertical = 1.dp)
                         ) {
                             Text(o.item.summary.ifBlank { "–" }, color = Color.White, fontSize = 11.sp, lineHeight = 12.sp, fontWeight = FontWeight.Medium,
                                 maxLines = if (height < 36.dp) 1 else 3, overflow = TextOverflow.Ellipsis)
-                            if (height >= 36.dp) Text(Fmt.time(ctx, o.start), color = Color.White.copy(alpha = 0.85f), fontSize = 10.sp, lineHeight = 11.sp, maxLines = 1)
+                            if (height >= 36.dp || isDragged) Text(Fmt.time(ctx, o.start + if (isDragged) snapped() else 0L), color = Color.White.copy(alpha = 0.85f), fontSize = 10.sp, lineHeight = 11.sp, maxLines = 1)
                         }
                     }
                     // Jetzt-Linie

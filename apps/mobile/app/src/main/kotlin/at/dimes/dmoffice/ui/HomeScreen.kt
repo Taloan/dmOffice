@@ -15,6 +15,9 @@ import androidx.compose.material.icons.automirrored.filled.StickyNote2
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
+import androidx.compose.material.icons.filled.Contacts
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
@@ -35,16 +38,16 @@ import androidx.compose.ui.res.stringResource
 import at.dimes.dmoffice.App
 import at.dimes.dmoffice.R
 
-enum class Tab(val route: String, val label: Int) { Mail("mail", R.string.mail), Calendar("calendar", R.string.calendar), Tasks("tasks", R.string.tasks), Notes("notes", R.string.notes_tab), More("more", R.string.more) }
+enum class Tab(val route: String, val label: Int) { Mail("mail", R.string.mail), Calendar("calendar", R.string.calendar), Tasks("tasks", R.string.tasks), Notes("notes", R.string.notes_tab), Contacts("contacts", R.string.contacts), Files("files", R.string.files), Settings("settings", R.string.settings), More("more", R.string.more) }
 
 /** Reiter zu einer Adresse; "agenda" (alte Widgets, Benachrichtigungen) ist jetzt eine Ansicht im Kalender. */
-private fun tabOf(route: String?): Tab? = if (route == "agenda") Tab.Calendar else Tab.entries.firstOrNull { it.route == route }
+private fun tabOf(route: String?): Tab? = if (route == "agenda" || route == "more") Tab.Calendar else Tab.entries.firstOrNull { it.route == route }
 
 /** Hauptbildschirm mit fuenf Reitern; der Plus-Knopf legt je nach Reiter Termin oder Aufgabe an. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(initialTab: String?, onOpen: (String) -> Unit, onNewEvent: (Long) -> Unit, onNewTask: () -> Unit, onNavigate: (String) -> Unit,
-               openList: Pair<String, Long>? = null) {
+               openList: Pair<String, Long>? = null, onSignedOut: () -> Unit = {}) {
     val ctx = LocalContext.current
     val app = App.get(ctx)
     var tab by rememberSaveable { mutableStateOf(tabOf(initialTab) ?: Tab.Calendar) }
@@ -70,25 +73,30 @@ fun HomeScreen(initialTab: String?, onOpen: (String) -> Unit, onNewEvent: (Long)
     Scaffold(
         snackbarHost = { SnackbarHost(snack) },
         bottomBar = {
+            // Alle Bereiche als Reiter, nur Symbole (Name als Beschreibung fuer Bedienungshilfen und langes Druecken)
             NavigationBar {
-                for (t in Tab.entries.filter { it != Tab.Mail || hasMail }) {
-                    // Bereichssymbole einheitlich in der Akzentfarbe (wie die Leiste links im Web)
-                    val iconColor = androidx.compose.material3.MaterialTheme.colorScheme.primary
+                val iconColor = androidx.compose.material3.MaterialTheme.colorScheme.primary
+                val colors = androidx.compose.material3.NavigationBarItemDefaults.colors(
+                    selectedIconColor = iconColor, unselectedIconColor = iconColor,
+                    indicatorColor = iconColor.copy(alpha = 0.18f),
+                )
+                for (t in Tab.entries.filter { it != Tab.More && (it != Tab.Mail || hasMail) }) {
                     NavigationBarItem(
-                        selected = tab == t, onClick = { tab = t },
-                        icon = { Icon(when (t) { Tab.Mail -> Icons.Default.Email; Tab.Calendar -> Icons.Default.CalendarMonth; Tab.Tasks -> Icons.Default.Checklist; Tab.Notes -> Icons.AutoMirrored.Filled.StickyNote2; Tab.More -> Icons.Default.MoreHoriz }, contentDescription = null) },
-                        label = { Text(stringResource(t.label)) },
-                        colors = androidx.compose.material3.NavigationBarItemDefaults.colors(
-                            selectedIconColor = iconColor, unselectedIconColor = iconColor,
-                            indicatorColor = iconColor.copy(alpha = 0.18f),
-                        )
+                        selected = tab == t, onClick = { tab = t }, label = null, alwaysShowLabel = false,
+                        icon = { Icon(when (t) {
+                            Tab.Mail -> Icons.Default.Email; Tab.Calendar -> Icons.Default.CalendarMonth; Tab.Tasks -> Icons.Default.Checklist
+                            Tab.Notes -> Icons.AutoMirrored.Filled.StickyNote2; Tab.Contacts -> Icons.Default.Contacts; Tab.Files -> Icons.Default.Folder
+                            Tab.Settings -> Icons.Default.Settings; Tab.More -> Icons.Default.MoreHoriz
+                        }, contentDescription = stringResource(t.label)) },
+                        colors = colors,
                     )
                 }
             }
         },
         floatingActionButton = {
             when (tab) {
-                Tab.Calendar -> ExtendedFloatingActionButton(
+                // Im Essensplan traegt man ueber das Plus je Mahlzeit ein
+                Tab.Calendar -> if (CalendarPrefs.mode.value != CalMode.MealPlan) ExtendedFloatingActionButton(
                     onClick = { onNewEvent(selectedDay.epochMillis()) },
                     icon = { Icon(Icons.Default.Event, contentDescription = null) }, text = { Text(stringResource(R.string.new_event)) })
                 Tab.Tasks -> ExtendedFloatingActionButton(onClick = onNewTask, icon = { Icon(Icons.Default.Add, contentDescription = null) }, text = { Text(stringResource(R.string.new_task)) })
@@ -100,11 +108,14 @@ fun HomeScreen(initialTab: String?, onOpen: (String) -> Unit, onNewEvent: (Long)
             when (tab) {
                 Tab.Mail -> MailScreen(onOpen = { acc, folder, uid -> onNavigate("message/" + at.dimes.dmoffice.MainActivity.enc(acc) + "/" + at.dimes.dmoffice.MainActivity.enc(folder) + "/" + uid) },
                     onCompose = { acc -> onNavigate("compose/" + ComposeInit(acc).encode()) })
-                Tab.Calendar -> CalendarScreen(selectedDay, { selectedDay = it }, onOpen, onNewEventAt = onNewEvent) { d -> onNewEvent(d.epochMillis()) }
+                Tab.Calendar -> CalendarScreen(selectedDay, { selectedDay = it }, onOpen, onNewEventAt = onNewEvent, onOpenNote = { id -> onNavigate("note/$id") }) { d -> onNewEvent(d.epochMillis()) }
                 Tab.Tasks -> TasksScreen(onOpen, openList, onOpenMail = { acc, folder, uid ->
                     onNavigate("message/" + at.dimes.dmoffice.MainActivity.enc(acc) + "/" + at.dimes.dmoffice.MainActivity.enc(folder) + "/" + uid) })
                 Tab.Notes -> NotesScreen(onOpen = { id -> onNavigate("note/$id") }, onClose = null)
-                Tab.More -> MoreScreen(onContacts = { onNavigate("contacts") }, onSettings = { onNavigate("settings") })
+                Tab.Contacts -> ContactsScreen(onOpen = { id -> onNavigate("contact/" + at.dimes.dmoffice.MainActivity.enc(id)) }, onClose = null)
+                Tab.Files -> FilesScreen(onClose = null, onAutoUpload = { onNavigate("autoupload") })
+                Tab.Settings -> SettingsScreen(onSignedOut = onSignedOut, onNavigate = onNavigate)
+                Tab.More -> MoreScreen(onContacts = { onNavigate("contacts") }, onFiles = { onNavigate("files") }, onSettings = { onNavigate("settings") })
             }
         }
     }

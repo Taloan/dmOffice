@@ -6,6 +6,7 @@ import { useState } from 'react'
 import { api, Collection } from '../api'
 import { useApp } from '../App'
 import { t } from '../i18n'
+import { CALENDAR_KINDS } from './kinds'
 
 const palette = ['#0F6CBD', '#13A10E', '#CA5010', '#C239B3', '#E3008C', '#986F0B', '#038387', '#8764B8', '#D13438', '#69797E']
 
@@ -22,9 +23,43 @@ export async function importInto(id: number, file: File) {
   return api.form<{ added: number; failed: number }>(`/api/pim/import/${id}`, f)
 }
 
+/**
+ * Kalender, Aufgabenliste oder Adressbuch loeschen - mit Rueckfrage (Name eintippen).
+ * Aus der Aufgabenansicht wird ein Kalender mit Terminen nicht geloescht, dort nur die Aufgaben abgeschaltet.
+ * true: geloescht bzw. geaendert.
+ */
+export async function removeCollection(collection: Collection, kind: 'calendars' | 'addressbooks', tasks?: boolean): Promise<boolean> {
+  const mixed = kind === 'calendars' && collection.components.includes('VEVENT') && collection.components.includes('VTODO')
+  if (tasks && mixed) {
+    const n = collection.tasks ?? 0
+    const ev = collection.events ?? 0
+    const msg = [
+      t('In „{name}“ keine Aufgaben mehr führen?', { name: collection.name }),
+      n === 1 ? t('Die 1 Aufgabe darin wird nicht mehr angezeigt.') : n ? t('Die {n} Aufgaben darin werden nicht mehr angezeigt.', { n }) : '',
+      ev === 1 ? t('Der 1 Termin bleibt.') : t('Die {n} Termine bleiben.', { n: ev }),
+    ].filter(Boolean).join(' ')
+    if (!confirm(msg)) return false
+    await api.put(`/api/pim/collections/${collection.id}`, { components: 'VEVENT' })
+    return true
+  }
+  const count = (n: number, one: string, many: string) => n === 1 ? t(one) : t(many, { n })
+  const what = kind === 'addressbooks' ? count(collection.count, '1 Kontakt', '{n} Kontakte')
+    : t('{events} und {tasks}', {
+      events: count(collection.events ?? 0, '1 Termin', '{n} Termine'),
+      tasks: count(collection.tasks ?? 0, '1 Aufgabe', '{n} Aufgaben'),
+    })
+  const answer = prompt(t('„{name}“ endgültig löschen – mit {what}, auch auf allen verbundenen Geräten.', { name: collection.name, what })
+    + '\n\n' + t('Zum Bestätigen den Namen eingeben:'))
+  if (answer?.trim() !== collection.name) return false
+  await api.del(`/api/pim/collections/${collection.id}`)
+  return true
+}
+
 /** Kalender, Aufgabenliste oder Adressbuch anlegen, umbenennen, einfaerben, loeschen. */
-export function CollectionDialog({ kind, collection, onClose, tasks }: {
+export function CollectionDialog({ kind, collection, onClose, tasks, defaultKind }: {
   kind: 'calendars' | 'addressbooks'; collection: Collection | null; onClose: (changed: boolean) => void; tasks?: boolean
+  /** Art eines neuen Kalenders (Vorgabe: normal) */
+  defaultKind?: string
 }) {
   const s = useStyles()
   const { fail } = useApp()
@@ -35,13 +70,17 @@ export function CollectionDialog({ kind, collection, onClose, tasks }: {
   // Aufgabenliste, Einkaufsliste oder Checkliste (Lists.cs)
   const [listType, setListType] = useState<string>(collection?.listType ?? 'tasks')
 
+  // Art des Kalenders (CalendarKinds.cs): bestimmt der Besitzer
+  const [calKind, setCalKind] = useState<string>(collection?.calendarKind ?? defaultKind ?? 'normal')
+
   const components = [withEvents && 'VEVENT', withTasks && 'VTODO'].filter(Boolean).join(',')
 
   const save = async () => {
     try {
       let id = collection?.id
-      if (collection) await api.put(`/api/pim/collections/${collection.id}`, { name, color, components: kind === 'calendars' ? components : undefined })
-      else id = (await api.post<{ id: number }>(`/api/pim/collections/${kind}`, { name, color, components: kind === 'calendars' ? components : undefined })).id
+      const calendarKind = kind === 'calendars' && withEvents ? calKind : undefined
+      if (collection) await api.put(`/api/pim/collections/${collection.id}`, { name, color, components: kind === 'calendars' ? components : undefined, calendarKind })
+      else id = (await api.post<{ id: number }>(`/api/pim/collections/${kind}`, { name, color, components: kind === 'calendars' ? components : undefined, calendarKind })).id
       if (id && withTasks && kind === 'calendars' && listType !== (collection?.listType ?? 'tasks'))
         await api.put(`/api/pim/lists/${id}`, { type: listType })
       onClose(true)
@@ -52,28 +91,7 @@ export function CollectionDialog({ kind, collection, onClose, tasks }: {
   const fromTasksOnly = !!tasks && mixed
   const remove = async () => {
     if (!collection) return
-    if (fromTasksOnly) {
-      const n = collection.tasks ?? 0
-      const ev = collection.events ?? 0
-      const msg = [
-        t('In „{name}“ keine Aufgaben mehr führen?', { name: collection.name }),
-        n === 1 ? t('Die 1 Aufgabe darin wird nicht mehr angezeigt.') : n ? t('Die {n} Aufgaben darin werden nicht mehr angezeigt.', { n }) : '',
-        ev === 1 ? t('Der 1 Termin bleibt.') : t('Die {n} Termine bleiben.', { n: ev }),
-      ].filter(Boolean).join(' ')
-      if (!confirm(msg)) return
-      try { await api.put(`/api/pim/collections/${collection.id}`, { components: 'VEVENT' }); onClose(true) } catch (e) { fail(e) }
-      return
-    }
-    const count = (n: number, one: string, many: string) => n === 1 ? t(one) : t(many, { n })
-    const what = kind === 'addressbooks' ? count(collection.count, '1 Kontakt', '{n} Kontakte')
-      : t('{events} und {tasks}', {
-        events: count(collection.events ?? 0, '1 Termin', '{n} Termine'),
-        tasks: count(collection.tasks ?? 0, '1 Aufgabe', '{n} Aufgaben'),
-      })
-    const answer = prompt(t('„{name}“ endgültig löschen – mit {what}, auch auf allen verbundenen Geräten.', { name: collection.name, what })
-      + '\n\n' + t('Zum Bestätigen den Namen eingeben:'))
-    if (answer?.trim() !== collection.name) return
-    try { await api.del(`/api/pim/collections/${collection.id}`); onClose(true) } catch (e) { fail(e) }
+    try { if (await removeCollection(collection, kind, tasks)) onClose(true) } catch (e) { fail(e) }
   }
 
   const noun = kind === 'addressbooks' ? 'Adressbuch' : tasks && !mixed ? 'Aufgabenliste' : 'Kalender'
@@ -101,6 +119,13 @@ export function CollectionDialog({ kind, collection, onClose, tasks }: {
                       <Switch label={t('Aufgaben')} checked={withTasks} onChange={(_, d) => setWithTasks(d.checked)} />
                     </div>
                   </Field>
+                  {withEvents && (
+                    <Field label={t('Art')} hint={CALENDAR_KINDS.find(k => k.key === calKind)?.hint()}>
+                      <RadioGroup layout="horizontal" value={calKind} onChange={(_, d) => setCalKind(d.value)}>
+                        {CALENDAR_KINDS.map(k => <Radio key={k.key} value={k.key} label={k.label()} />)}
+                      </RadioGroup>
+                    </Field>
+                  )}
                   {withTasks && (
                     <Field label={t('Listentyp')} hint={listType === 'shop'
                       ? t('Mit Menge, Einheit und Abteilungen; Vorschläge aus früheren Einträgen.')

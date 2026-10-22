@@ -20,20 +20,25 @@ public static class NoteTasks
     public static List<NoteTask> All(NotesDb db)
     {
         var result = new List<NoteTask>();
-        foreach (var note in db.GetAllActive())
+        foreach (var note in db.GetAllActive()) result.AddRange(Of(note));
+        return result;
+    }
+
+    /// <summary>Die Kaestchen einer Notiz.</summary>
+    public static List<NoteTask> Of(NoteRow note)
+    {
+        var result = new List<NoteTask>();
+        if (note.Html.IndexOf(Open) < 0 && note.Html.IndexOf(Done) < 0) return result;
+        if (NoteMerge.Split(note.Html) is not { } split) return result;
+        for (int b = 0; b < split.Blocks.Count; b++)
         {
-            if (note.Html.IndexOf(Open) < 0 && note.Html.IndexOf(Done) < 0) continue;
-            if (NoteMerge.Split(note.Html) is not { } split) continue;
-            for (int b = 0; b < split.Blocks.Count; b++)
+            int n = 0;
+            foreach (var pos in Boxes(split.Blocks[b]))
             {
-                int n = 0;
-                foreach (var pos in Boxes(split.Blocks[b]))
-                {
-                    var text = TextAfter(split.Blocks[b], pos);
-                    if (text.Length > 0)
-                        result.Add(new NoteTask(note.Id, note.DisplayTitle, note.Folder, b, n, text, split.Blocks[b][pos] == Done, note.Modified));
-                    n++;
-                }
+                var text = TextAfter(split.Blocks[b], pos);
+                if (text.Length > 0)
+                    result.Add(new NoteTask(note.Id, note.DisplayTitle, note.Folder, b, n, text, split.Blocks[b][pos] == Done, note.Modified));
+                n++;
             }
         }
         return result;

@@ -68,6 +68,15 @@ public static class ContactModel
         return result.OrderBy(c => c.DisplayName, StringComparer.CurrentCultureIgnoreCase).ToList();
     }
 
+    /// <summary>Ein Kontakt als .vcf-Datei (Rechtsklick "Exportieren"): die gespeicherte vCard unveraendert, Dateiname aus dem Namen.</summary>
+    public static (byte[] Data, string Name) Export(UserDb db, long book, string uri)
+    {
+        var obj = PimStore.Object(db, book, uri) ?? throw new KeyNotFoundException();
+        var name = Read(obj, withPhoto: false)?.DisplayName ?? "";
+        name = string.Concat(name.Split(Path.GetInvalidFileNameChars())).Trim();
+        return (System.Text.Encoding.UTF8.GetBytes(obj.Data), (name.Length > 0 ? name : "Kontakt") + ".vcf");
+    }
+
     public static ContactDto? Read(DavObject obj, bool withPhoto)
     {
         Component card;

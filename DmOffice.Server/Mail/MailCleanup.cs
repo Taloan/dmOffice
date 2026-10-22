@@ -73,19 +73,22 @@ public sealed class MailCleanup(Spaces spaces, ImapPool pool, MailSync sync, ILo
         {
             foreach (var space in spaces.All())
             {
+                if (!space.Settings.MailAccounts.Any(a => a.Slim)) continue;
+                using var activity = Activity.Start(space.User.Id, Activity.MailSlim);
                 try { if (Slim(space, log).Count > 0) sync.Touch(space.User.Id); }
-                catch (Exception e) { log.LogWarning("Schlank aufraeumen {User}: {Error}", space.User.Id, e.Message); }
+                catch (Exception e) { activity.Fail(e.Message); log.LogWarning("Schlank aufraeumen {User}: {Error}", space.User.Id, e.Message); }
             }
             foreach (var space in spaces.All())
                 foreach (var account in space.Settings.MailAccounts.Where(a => a.TrashDays > 0 || a.JunkDays > 0).ToList())
                 {
+                    using var activity = Activity.Start(space.User.Id, Activity.MailTrash, account.Email);
                     try
                     {
                         var n = await RunAsync(space, account, pool, sync, stop);
                         if (n > 0) log.LogInformation("Aufgeraeumt {Account}: {Count} alte Mails aus Papierkorb/Junk", account.Email, n);
                     }
                     catch (OperationCanceledException) when (stop.IsCancellationRequested) { return; }
-                    catch (Exception e) { log.LogWarning("Aufraeumen {Account}: {Error}", account.Email, e.Message); }
+                    catch (Exception e) { activity.Fail(e.Message); log.LogWarning("Aufraeumen {Account}: {Error}", account.Email, e.Message); }
                 }
             try { await Task.Delay(TimeSpan.FromHours(1), stop); } catch (OperationCanceledException) { break; }
         }

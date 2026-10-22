@@ -12,11 +12,19 @@
     <PackageReference Include="MailKit" Version="4.18.1" />
     <PackageReference Include="HtmlSanitizer" Version="9.2.1039" />
     <PackageReference Include="Ical.Net" Version="4.3.1" />
+    <!-- Volltextsuche (Search/TextExtract.cs): Text aus PDF (Apache-2.0) und Office-Dateien (MIT) -->
+    <PackageReference Include="PdfPig" Version="0.1.16" />
+    <PackageReference Include="DocumentFormat.OpenXml" Version="3.5.1" />
     <!-- von MimeKit mitgebracht; 10.0.0 hat bekannte Luecken -->
     <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.13" />
     <!-- SQLCipher: jede Benutzerdatenbank ist verschluesselt -->
     <PackageReference Include="Microsoft.Data.Sqlite.Core" Version="10.0.0" />
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlcipher" Version="2.1.11" />
+    <!-- Vorschaubilder der Dateiablage: SkiaSharp (MIT, Skia BSD-3) fuer Bilder, PDFtoImage (MIT) mit PDFium
+         (BSD-3/Apache-2.0) fuer die erste PDF-Seite. NoDependencies: laeuft im schlanken Docker-Image ohne fontconfig. -->
+    <PackageReference Include="SkiaSharp" Version="4.150.1" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="4.150.1" />
+    <PackageReference Include="PDFtoImage" Version="5.4.0" />
   </ItemGroup>
 
   <ItemGroup>
@@ -25,6 +33,11 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="DmOffice.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Name der Version (1.5, 2.0 ...) fuer die Titelzeile; liegt neben der Assembly im Image -->
+    <Content Include="release.txt" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

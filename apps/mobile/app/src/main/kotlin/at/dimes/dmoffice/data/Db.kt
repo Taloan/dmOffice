@@ -271,9 +271,105 @@ interface NoteDao {
     suspend fun clear()
 }
 
+/**
+ * Ohne Netz gespeicherte Notiz: Ausgangsstand vom Server (Version und Bloecke) und die eigene Fassung als HTML-Bloecke.
+ * Der Abgleich fuehrt beides mit dem dann aktuellen Serverstand zusammen (NotesRepo.flushPending).
+ */
+@Entity(tableName = "note_pending")
+data class NotePendingEntity(@PrimaryKey val id: Long, val version: String, val baseJson: String, val mineJson: String, val plain: String)
+
+@Dao
+interface NotePendingDao {
+    @Query("SELECT * FROM note_pending")
+    suspend fun all(): List<NotePendingEntity>
+
+    @Query("SELECT * FROM note_pending WHERE id = :id")
+    suspend fun byId(id: Long): NotePendingEntity?
+
+    @Query("SELECT COUNT(*) FROM note_pending")
+    fun count(): Flow<Int>
+
+    @Upsert
+    suspend fun upsert(e: NotePendingEntity)
+
+    @Query("DELETE FROM note_pending WHERE id = :id")
+    suspend fun delete(id: Long)
+
+    @Query("DELETE FROM note_pending")
+    suspend fun clear()
+}
+
+@Entity(tableName = "note_folders")
+data class NoteFolderEntity(@PrimaryKey val id: String, val parent: String?, val name: String, val sortOrder: Double)
+
+@Dao
+interface NoteFolderDao {
+    @Query("SELECT * FROM note_folders ORDER BY sortOrder, name")
+    fun all(): Flow<List<NoteFolderEntity>>
+
+    @Transaction
+    suspend fun replace(list: List<NoteFolderEntity>) { clear(); insert(list) }
+
+    @Upsert
+    suspend fun insert(list: List<NoteFolderEntity>)
+
+    @Query("DELETE FROM note_folders")
+    suspend fun clear()
+}
+
+/**
+ * Metadaten der Dateiablage (nur Angaben, keine Inhalte): Ordner sofort anzeigen und ohne Netz durchblaettern.
+ * Inhalte und Vorschaubilder liegen nur im Cache bzw. in den Offline-Ordnern.
+ */
+@Entity(tableName = "file_meta", indices = [Index("parent")])
+data class FileMetaEntity(
+    @PrimaryKey val path: String,
+    val parent: String,
+    val name: String,
+    val isDir: Boolean,
+    val size: Long,
+    val mime: String?,
+    val modified: String?,
+    val etag: String?,
+    val fileId: Long,
+    val favorite: Boolean,
+    val shared: Boolean,
+)
+
+@Dao
+interface FileMetaDao {
+    @Query("SELECT * FROM file_meta WHERE parent = :parent")
+    suspend fun children(parent: String): List<FileMetaEntity>
+
+    @Query("SELECT * FROM file_meta WHERE parent = :parent")
+    fun childrenBlocking(parent: String): List<FileMetaEntity>
+
+    @Query("SELECT COUNT(*) FROM file_meta WHERE path = :path AND isDir = 1")
+    fun isKnownDir(path: String): Int
+
+    @Query("DELETE FROM file_meta WHERE parent = :parent")
+    fun deleteChildren(parent: String)
+
+    @Upsert
+    fun upsert(list: List<FileMetaEntity>)
+
+    @Transaction
+    fun replaceChildren(parent: String, list: List<FileMetaEntity>) { deleteChildren(parent); upsert(list) }
+
+    @Query("UPDATE file_meta SET favorite = :on WHERE path = :path")
+    fun setFavorite(path: String, on: Boolean)
+
+    /** Geloescht oder verschoben: der Eintrag und alles darunter. */
+    @Query("DELETE FROM file_meta WHERE path = :path OR path LIKE :prefix ESCAPE '\\'")
+    fun deleteTree(path: String, prefix: String)
+
+    @Query("DELETE FROM file_meta")
+    suspend fun clear()
+}
+
 @Database(
-    entities = [CalendarEntity::class, ItemEntity::class, MailFolderEntity::class, MailItemEntity::class, MailBodyEntity::class, ContactEntity::class, NoteEntity::class],
-    version = 2, exportSchema = true
+    entities = [CalendarEntity::class, ItemEntity::class, MailFolderEntity::class, MailItemEntity::class, MailBodyEntity::class, ContactEntity::class, NoteEntity::class, NoteFolderEntity::class, FileMetaEntity::class, NotePendingEntity::class],
+    version = 5, exportSchema = true
 )
 abstract class AppDb : RoomDatabase() {
     abstract fun calendars(): CalendarDao
@@ -281,12 +377,15 @@ abstract class AppDb : RoomDatabase() {
     abstract fun mail(): MailDao
     abstract fun contacts(): ContactDao
     abstract fun notes(): NoteDao
+    abstract fun noteFolders(): NoteFolderDao
+    abstract fun fileMeta(): FileMetaDao
+    abstract fun notePending(): NotePendingDao
 
     @Transaction
     suspend fun clearAll() {
         items().clear(); calendars().clear()
         mail().clearAllFolders(); mail().clearAllItems(); mail().clearAllBodies()
-        contacts().clear(); notes().clear()
+        contacts().clear(); notes().clear(); noteFolders().clear(); fileMeta().clear(); notePending().clear()
     }
 
     companion object {
@@ -307,6 +406,12 @@ abstract class AppDb : RoomDatabase() {
             System.loadLibrary("sqlcipher")
             fun build() = Room.databaseBuilder(app, AppDb::class.java, "dmoffice.db")
                 .openHelperFactory(net.zetetic.database.sqlcipher.SupportOpenHelperFactory(key))
+                // 4 -> 5: offline gespeicherte Notizen; ohne Neuanlage, sonst gingen noch nicht hochgeladene Aenderungen verloren
+                .addMigrations(object : androidx.room.migration.Migration(4, 5) {
+                    override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                        db.execSQL("CREATE TABLE IF NOT EXISTS `note_pending` (`id` INTEGER NOT NULL, `version` TEXT NOT NULL, `baseJson` TEXT NOT NULL, `mineJson` TEXT NOT NULL, `plain` TEXT NOT NULL, PRIMARY KEY(`id`))")
+                    }
+                })
                 .fallbackToDestructiveMigration(true)
                 .build()
             val db = build()

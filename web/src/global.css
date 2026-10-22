@@ -65,3 +65,6 @@ body { font-family: 'Segoe UI', 'Segoe UI Web (West European)', -apple-system, B
 .dm-app:not(.dm-wco) .dm-brand-name { display: none; }
 /* Ueberlagerungen (Hinweis "Neue Version") nie als Ziehflaeche des Fensters - sonst nicht klickbar */
 .dm-nodrag, .dm-nodrag * { app-region: no-drag; -webkit-app-region: no-drag; }
+
+/* Felder mit Hinweis darunter: die Eingabezeile bleibt oben, auch wenn die Nachbarzelle hoeher ist */
+.fui-Field { align-content: start; }

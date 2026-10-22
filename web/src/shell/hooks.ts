@@ -29,6 +29,43 @@ export function usePoll<T>(load: () => Promise<T>, everyMs: number, refreshEvent
   return data
 }
 
+/** Name der Version ("1.5") und Build ("2026.10.22-a643818") des Servers aus /api/health (ohne Anmeldung); leer, solange sie nicht da sind. */
+export function useVersion(): { release: string; build: string } {
+  const [v, setV] = useState({ release: '', build: '' })
+  useEffect(() => {
+    fetch('/api/health', { cache: 'no-store' }).then(r => r.json()).then(d => setV({ release: String(d.release ?? ''), build: String(d.version ?? '') })).catch(() => {})
+  }, [])
+  return v
+}
+
+/** Ist der Server erreichbar? Prueft regelmaessig /api/health; false bei Netzfehler, Zeitueberschreitung oder 5xx vom Proxy. */
+export const REACHABLE_RECHECK = 'dmoffice:reachable'
+export function useReachable(): boolean {
+  const [ok, setOk] = useState(true)
+  useEffect(() => {
+    let alive = true
+    const check = async () => {
+      if (document.hidden) return
+      const ctl = new AbortController()
+      const timer = setTimeout(() => ctl.abort(), 8000)
+      try {
+        const r = await fetch('/api/health', { cache: 'no-store', signal: ctl.signal })
+        if (alive) setOk(r.ok)
+      } catch { if (alive) setOk(false) } finally { clearTimeout(timer) }
+    }
+    check()
+    const t = setInterval(check, 15000)
+    const on = () => { check() }
+    window.addEventListener('online', on); window.addEventListener('offline', () => alive && setOk(false))
+    window.addEventListener(REACHABLE_RECHECK, on); document.addEventListener('visibilitychange', on)
+    return () => {
+      alive = false; clearInterval(t)
+      window.removeEventListener('online', on); window.removeEventListener(REACHABLE_RECHECK, on); document.removeEventListener('visibilitychange', on)
+    }
+  }, [])
+  return ok
+}
+
 /** Daten laden mit Neuladen auf Zuruf. */
 export function useLoad<T>(load: () => Promise<T>, deps: unknown[]): [T | null, () => void, boolean] {
   const [data, setData] = useState<T | null>(null)

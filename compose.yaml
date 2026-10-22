@@ -1,19 +1,30 @@
-# dmOffice als ein Container. Aus dem Checkout: `docker compose up -d --build`.
-# DMOFFICE_MASTER_KEY in .env setzen (eine lange Zufallsfolge, z. B. `openssl rand -hex 32`) und gut aufheben:
-# Ohne ihn lassen sich die Benutzerdatenbanken nicht mehr oeffnen. Fehlt er, legt dmOffice ihn als Datei in /data an.
+# dmOffice as a single container. From the checkout: `docker compose up -d --build`.
+# Set DMOFFICE_MASTER_KEY in .env (a long random string, e.g. `openssl rand -hex 32`) and keep it safe:
+# without it the user databases can no longer be opened. If it is missing, dmOffice creates it as a file in /data
+# (the whole data volume is then no longer protected at rest - the key sits next to the data).
 services:
   dmoffice:
     image: ghcr.io/taloan/dmoffice:latest
     build: .
     ports:
-      - "8080:8080"
+      # Bound to localhost by default: put a TLS reverse proxy in front (it reaches dmOffice over the
+      # Docker network). To expose dmOffice directly on the LAN instead, change this to "8080:8080" -
+      # but then only over HTTPS, never plain on the open internet.
+      - "127.0.0.1:8080:8080"
     environment:
       DMOFFICE_MASTER_KEY: ${DMOFFICE_MASTER_KEY:-}
-      # Outlook.com/Hotmail/Live als Mailkonto: Client-ID einer eigenen Azure-App (siehe README), sonst leer
+      # Outlook.com/Hotmail/Live as a mail account: client ID of your own Azure app (see README), otherwise empty
       DMOFFICE_MS_CLIENT_ID: ${DMOFFICE_MS_CLIENT_ID:-}
+      # Behind a reverse proxy: set its address so only it may send X-Forwarded-* headers, e.g. 172.18.0.1/32.
+      DMOFFICE_TRUSTED_PROXIES: ${DMOFFICE_TRUSTED_PROXIES:-}
       TZ: Europe/Berlin
     volumes:
       - dmoffice-data:/data
+    # Hardening: no extra Linux capabilities, no privilege gain.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     restart: unless-stopped
 
 volumes:

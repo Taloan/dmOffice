@@ -184,6 +184,27 @@ object Items {
         return cal.toString()
     }
 
+    /**
+     * Termin verschieben (Halten und Ziehen im Zeitraster): Beginn und Ende um delta, die Dauer bleibt. Nur einzelne Termine mit
+     * Uhrzeit - Serien und ganztaegige nicht (null).
+     */
+    fun moveEvent(existing: String, deltaMs: Long, zone: ZoneId): String? {
+        val cal = parseCalendar(existing) ?: return null
+        val m = cal.of("VEVENT").firstOrNull { it.get("RECURRENCE-ID") == null } ?: return null
+        if (m.get("RRULE") != null) return null
+        val s = Ical.time(m.get("DTSTART"), zone) ?: return null
+        if (s.allDay || s.instant == null) return null
+        val dur = Recurrence.durationOf(m, zone)
+        val ns = s.instant.plusMillis(deltaMs)
+        Ical.setTime(m, "DTSTART", s.copy(instant = ns), zone)
+        m.remove("DURATION")
+        Ical.setTime(m, "DTEND", IcalTime(null, ns.plusSeconds(dur), s.zone), zone)
+        m.set("DTSTAMP", Ical.stamp())
+        m.set("LAST-MODIFIED", Ical.stamp())
+        m.set("SEQUENCE", ((m.text("SEQUENCE")?.toIntOrNull() ?: 0) + 1).toString())
+        return cal.toString()
+    }
+
     fun writeTask(existing: String?, uid: String, input: TaskInput, zone: ZoneId): String {
         val cal = existing?.let { parseCalendar(it) } ?: newCalendar()
         val m = cal.of("VTODO").firstOrNull() ?: Component("VTODO").also { cal.children.add(it) }

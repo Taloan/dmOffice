@@ -1,11 +1,12 @@
 import {
   Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Dropdown, Field, Input, Option, Switch,
-  Textarea, makeStyles,
+  Textarea, makeStyles, mergeClasses, tokens,
 } from '@fluentui/react-components'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { FluentProvider } from '@fluentui/react-components'
-import { api, Collection } from '../api'
+import { Account, api, Attendee, Collection } from '../api'
+import { AddressInput } from '../mail/AddressInput'
 import { useApp } from '../App'
 import { darkTheme, lightTheme, storedTheme } from '../theme'
 import { locale, t } from '../i18n'
@@ -28,11 +29,42 @@ export interface EventDraft {
   busy: boolean
   recurring?: boolean
   instance?: string
+  /** Teilnehmer und Organisator (Mailadresse) - bei fremden Einladungen nur zum Ansehen */
+  attendees?: Attendee[]
+  organizer?: string | null
+}
+
+/** "Name" <adresse> bzw. adresse aus dem Empfaengerfeld */
+const parseAddress = (v: string): Attendee => {
+  const m = v.match(/^"?([^"<]*)"?\s*<(.+)>$/)
+  return m ? { email: m[2].trim(), name: m[1].trim() || null } : { email: v.trim(), name: null }
+}
+const formatAddress = (a: Attendee) => (a.name ? `"${a.name.replace(/"/g, '')}" <${a.email}>` : a.email)
+const statusLabel = (s?: string) => ({ ACCEPTED: t('Zugesagt'), TENTATIVE: t('Mit Vorbehalt'), DECLINED: t('Abgesagt') } as Record<string, string>)[(s ?? '').toUpperCase()] ?? t('Keine Antwort')
+const statusColor = (s?: string) => ({ ACCEPTED: '#2E7D32', TENTATIVE: '#E8A33D', DECLINED: '#C62828' } as Record<string, string>)[(s ?? '').toUpperCase()] ?? 'var(--colorNeutralForeground3)'
+
+/** Vorschlag fuer den Beginn aus einem Text: das erste kuenftige Datum darin ("21.10.2026 10:00", "21.10. um 10 Uhr", "21.10.26"),
+ *  sonst die naechste volle Stunde. */
+export function guessStart(text: string): Date {
+  let start = new Date(); start.setMinutes(0, 0, 0); start.setHours(start.getHours() + 1)
+  const rx = /\b(\d{1,2})\.(\d{1,2})\.(\d{2,4})?(?:[^\d\n]{0,12}?(\d{1,2})(?:[:.](\d{2}))?\s*(?:Uhr|h)?)?/g
+  for (const hit of text.matchAll(rx)) {
+    const day = Number(hit[1]), month = Number(hit[2]) - 1
+    let year = hit[3] ? Number(hit[3]) : new Date().getFullYear()
+    if (year < 100) year += 2000
+    const hour = hit[4] ? Number(hit[4]) : 9, minute = hit[5] ? Number(hit[5]) : 0
+    const d = new Date(year, month, day, hour, minute)
+    if (d.getDate() === day && d > new Date() && hour < 24) { start = d; break }
+  }
+  return start
 }
 
 const useStyles = makeStyles({
-  grid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 12px' },
+  grid: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: '10px 12px', '@media (max-width: 767px)': { gridTemplateColumns: 'minmax(0, 1fr)' } },
   full: { gridColumn: '1 / -1' },
+  addresses: { border: `1px solid ${tokens.colorNeutralStroke1}`, borderBottomColor: tokens.colorNeutralStrokeAccessible, borderRadius: tokens.borderRadiusMedium, padding: '0 8px', backgroundColor: tokens.colorNeutralBackground1 },
+  people: { display: 'flex', flexWrap: 'wrap', gap: '4px 14px', fontSize: '13px', color: tokens.colorNeutralForeground2 },
+  dot: { display: 'inline-block', width: '8px', height: '8px', borderRadius: '4px', marginRight: '6px' },
 })
 
 const pad = (n: number) => String(n).padStart(2, '0')
@@ -66,12 +98,23 @@ const reminders = [
 
 export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; calendars: Collection[]; onClose: (changed: boolean) => void }) {
   const s = useStyles()
-  const { fail } = useApp()
+  const { fail, notify } = useApp()
   const [d, setD] = useState<EventDraft>(draft)
+  // Teilnehmer: eigene Termine (oder neue) einladen; Einladungen anderer nur ansehen
+  const [accounts, setAccounts] = useState<Account[]>([])
+  useEffect(() => { api.get<Account[]>('/api/mail/accounts').then(setAccounts).catch(() => {}) }, [])
+  const mine = accounts.map(a => a.email.toLowerCase())
+  const foreign = !!draft.organizer && accounts.length > 0 && !mine.includes(draft.organizer.toLowerCase())
+  const [people, setPeople] = useState<string[]>((draft.attendees ?? []).filter(a => !mine.includes(a.email.toLowerCase())).map(formatAddress))
+  const [account, setAccount] = useState<string | undefined>(undefined)
+  const [notifyPeople, setNotifyPeople] = useState(true)
+  const hadPeople = (draft.attendees ?? []).length > 0
   const [moveTo, setMoveTo] = useState<number | undefined>(draft.calendar)
   const [busy, setBusy] = useState(false)
   // Termin aus einem abonnierten Kalender: nur ansehen
-  const readOnly = !!calendars.find(c => c.id === draft.calendar)?.subscription && !!draft.uri
+  const home = calendars.find(c => c.id === draft.calendar)
+  const sharedRO = home?.canWrite === false && !!draft.uri
+  const readOnly = (!!home?.subscription && !!draft.uri) || sharedRO
   const set = (p: Partial<EventDraft>) => setD(x => ({ ...x, ...p }))
   // Neuer Termin: Datum aus dem Titel ("Zahnarzt morgen 15 Uhr") - laufend uebernehmen, mit x verwerfen
   const [nl, setNl] = useState<NaturalDate | null>(null)
@@ -109,12 +152,17 @@ export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; 
         return localDate(y)
       }
       const endDay = d.allDay ? lastDay(d.start, d.end) : d.end
-      await api.post('/api/pim/events', {
+      const r = await api.post('/api/pim/events', {
         calendar: draft.calendar ?? d.calendar, uri: d.uri, etag: d.etag, title: nl && !nlOff && !d.uri ? nl.title : d.title, location: d.location, description: d.description,
         start: iso(d.start), end: d.allDay ? iso(endDay, true) : iso(d.end), allDay: d.allDay,
         rRule: scope === 'instance' ? null : custom ? null : d.rRule, reminder: d.reminder, busy: d.busy,
         scope, instance: d.instance, moveTo: moveTo !== draft.calendar ? moveTo : undefined,
-      })
+        // Teilnehmer nur bei eigenen Terminen; null laesst sie unveraendert
+        attendees: foreign || readOnly ? null : people.map(parseAddress).filter(a => a.email.includes('@')),
+        account: account ?? accounts[0]?.id, notify: notifyPeople,
+      }) as { invited?: number; cancelled?: number; error?: string }
+      if (r?.error) notify(r.error, undefined, 'warning')
+      else if (r?.invited || r?.cancelled) notify(r.invited ? t('Einladung an {n} Teilnehmer im Postausgang', { n: r.invited }) : t('Absage an {n} Teilnehmer im Postausgang', { n: r.cancelled ?? 0 }))
       onClose(true)
     } catch (e) { fail(e) } finally { setBusy(false) }
   }
@@ -126,9 +174,10 @@ export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; 
       const r = await askScope(t('Termin löschen'))
       if (!r) return
       if (r === 'instance') instance = d.instance
-    } else if (!confirm(t('Termin löschen?'))) return
+    } else if (!confirm(hadPeople && !foreign ? t('Termin löschen? Die Teilnehmer bekommen eine Absage.') : t('Termin löschen?'))) return
     try {
-      await api.del(`/api/pim/events/${draft.calendar}/${encodeURIComponent(d.uri)}` + (instance ? `?instance=${encodeURIComponent(instance)}` : ''))
+      const r = await api.del(`/api/pim/events/${draft.calendar}/${encodeURIComponent(d.uri)}` + (instance ? `?instance=${encodeURIComponent(instance)}` : '')) as { cancelled?: number } | undefined
+      if (r?.cancelled) notify(t('Absage an {n} Teilnehmer im Postausgang', { n: r.cancelled }))
       onClose(true)
     } catch (e) { fail(e) }
   }
@@ -163,6 +212,42 @@ export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; 
                 {nl && !nlOff && !d.uri && <DateHint nd={nl} onIgnore={() => { setNlOff(true); set({ ...orig }) }} />}
               </Field>
               <Field label={t('Ort')} className={s.full}><Input value={d.location ?? ''} onChange={(_, v) => set({ location: v.value })} /></Field>
+              {foreign || readOnly ? (hadPeople && (
+                <Field label={t('Teilnehmer')} className={s.full}>
+                  <div className={s.people}>
+                    {draft.organizer && <span>{t('Organisator: {who}', { who: draft.organizer })}</span>}
+                    {(draft.attendees ?? []).map(a => (
+                      <span key={a.email} title={a.email}><span className={s.dot} style={{ backgroundColor: statusColor(a.status) }} />{a.name || a.email} · {statusLabel(a.status)}</span>
+                    ))}
+                  </div>
+                </Field>
+              )) : <>
+                <Field label={t('Teilnehmer einladen')} className={s.full} hint={people.length ? undefined : t('Adressen oder Namen aus den Kontakten – die Einladung geht per Mail, auch an Adressen außerhalb von dmOffice.')}>
+                  <div className={s.addresses}><AddressInput value={people} onChange={setPeople} /></div>
+                </Field>
+                {(draft.attendees ?? []).some(a => !mine.includes(a.email.toLowerCase())) && (
+                  <div className={mergeClasses(s.full, s.people)}>
+                    {(draft.attendees ?? []).filter(a => !mine.includes(a.email.toLowerCase())).map(a => (
+                      <span key={a.email} title={a.email}><span className={s.dot} style={{ backgroundColor: statusColor(a.status) }} />{a.name || a.email} · {statusLabel(a.status)}</span>
+                    ))}
+                  </div>
+                )}
+                {(people.length > 0 || hadPeople) && accounts.length === 0 && (
+                  <span className={mergeClasses(s.full, s.people)}>{t('Zum Einladen braucht es ein Mailkonto – die Teilnehmer werden gespeichert, aber nicht benachrichtigt.')}</span>
+                )}
+                {(people.length > 0 || hadPeople) && accounts.length > 0 && <>
+                  {accounts.length > 1 && !draft.organizer && (
+                    <Field label={t('Einladen als')}>
+                      <Dropdown value={(accounts.find(a => a.id === account) ?? accounts[0])?.email ?? ''} selectedOptions={[account ?? accounts[0]?.id ?? '']}
+                        onOptionSelect={(_, v) => setAccount(v.optionValue)}>
+                        {accounts.map(a => <Option key={a.id} value={a.id}>{a.email}</Option>)}
+                      </Dropdown>
+                    </Field>
+                  )}
+                  <Switch className={accounts.length > 1 && !draft.organizer ? undefined : s.full} checked={notifyPeople} onChange={(_, v) => setNotifyPeople(v.checked)}
+                    label={d.uri ? t('Teilnehmer über die Änderung informieren') : t('Einladung per Mail senden')} />
+                </>}
+              </>}
               <Field label={t('Beginn')}>
                 <Input type={d.allDay ? 'date' : 'datetime-local'} value={d.allDay ? localDate(d.start) : localDateTime(d.start)} onChange={(_, v) => setStart(v.value)} />
               </Field>
@@ -186,9 +271,9 @@ export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; 
                 </Dropdown>
               </Field>
               <Field label={t('Kalender')} className={s.full}>
-                <Dropdown value={calendars.find(c => c.id === moveTo)?.name ?? ''} selectedOptions={[String(moveTo)]}
+                <Dropdown value={(c => c?.owner ? t('{name} (von {owner})', { name: c.name, owner: c.owner }) : c?.name ?? '')(calendars.find(c => c.id === moveTo))} selectedOptions={[String(moveTo)]}
                   onOptionSelect={(_, v) => setMoveTo(Number(v.optionValue))}>
-                  {calendars.map(c => <Option key={c.id} value={String(c.id)}>{c.name}</Option>)}
+                  {calendars.filter(c => c.canWrite !== false || c.id === moveTo).map(c => <Option key={c.id} value={String(c.id)}>{c.owner ? t('{name} (von {owner})', { name: c.name, owner: c.owner }) : c.name}</Option>)}
                 </Dropdown>
               </Field>
               <Field label={t('Beschreibung')} className={s.full}>
@@ -198,7 +283,7 @@ export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; 
             </form>
           </DialogContent>
           <DialogActions>
-            {readOnly && <span style={{ marginRight: 'auto', color: 'var(--colorNeutralForeground3)' }}>{t('Aus einem abonnierten Kalender – nur lesbar.')}</span>}
+            {readOnly && <span style={{ marginRight: 'auto', color: 'var(--colorNeutralForeground3)' }}>{sharedRO ? t('Der Besitzer hat diesen Kalender nur zum Lesen mit dir geteilt.') : t('Aus einem abonnierten Kalender – nur lesbar.')}</span>}
             {d.uri && !readOnly && <Button onClick={remove} style={{ marginRight: 'auto' }}>{t('Löschen')}</Button>}
             <Button onClick={() => onClose(false)}>{readOnly ? t('Schließen') : t('Abbrechen')}</Button>
             {!readOnly && <Button appearance="primary" onClick={save} disabled={busy}>{t('Speichern')}</Button>}

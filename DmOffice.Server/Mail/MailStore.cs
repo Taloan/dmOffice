@@ -14,7 +14,12 @@ public sealed record FolderRow(string Account, string Path, string Name, string 
 
 public sealed record MailRow(long Id, string Account, string Folder, uint Uid, string? MessageId, string Subject,
     Addr? From, List<Addr> To, List<Addr> Cc, DateTimeOffset Date, long Size, bool Seen, bool Flagged, bool Answered,
-    bool Forwarded, bool HasAttachments, string Preview, double? Spam, bool Cached, List<string> Keywords, bool? Focus = null);
+    bool Forwarded, bool HasAttachments, string Preview, double? Spam, bool Cached, List<string> Keywords, bool? Focus = null)
+{
+    /// <summary>Nur in Suchergebnissen: gefunden im Inhalt dieses Anhangs (Search/TextIndex.cs).</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public DmOffice.Search.AttachmentMatch? Match { get; init; }
+}
 
 /// <summary>
 /// Die Mails eines Benutzers in seiner Datenbank: Kopfzeilen sofort,
@@ -85,6 +90,10 @@ public static class MailStore
         UserDb.Exec(conn, "DELETE FROM kv WHERE key LIKE $k", ("$k", "mail." + account + ".%"));
         UserDb.Exec(conn, "DELETE FROM mail_processed WHERE account=$a", ("$a", account));
         UserDb.Exec(conn, "DELETE FROM mail_fetch_failed WHERE account=$a", ("$a", account));
+        // alles, was sonst noch am Konto haengt (Wiedervorlagen, Postausgang, Terminerkennung) - falls die Tabellen schon angelegt sind
+        foreach (var table in new[] { "mail_followup", "mail_queue", "smart_done" })
+            if (UserDb.Query(conn, "SELECT 1 FROM sqlite_master WHERE type='table' AND name=$n", r => 1, ("$n", table)).Count > 0)
+                UserDb.Exec(conn, $"DELETE FROM {table} WHERE account=$a", ("$a", account));
     }
 
     // ---------------- Eigene Tabellen ----------------
@@ -493,7 +502,21 @@ public static class MailStore
         db.Query($"SELECT COUNT(*), COALESCE(SUM(seen=0),0) FROM mail WHERE account=$a AND flagged=1{NotDeleted}",
             r => (r.GetInt32(0), r.GetInt32(1)), ("$a", account)).First();
 
-    public static (int Total, List<MailRow> Items) List(UserDb db, string account, string folder, int page, int size, string? filter)
+    /// <summary>Reihenfolge der Mailliste: "newest" (Vorgabe), "oldest", "from", "subject", "size", "attachment", "unread", "flagged".
+    /// Gleiche Werte werden nach Datum, neueste zuerst, geordnet. <paramref name="p"/> ist das Tabellenkuerzel samt Punkt.</summary>
+    public static string OrderBy(string? sort, string p = "") => sort switch
+    {
+        "oldest" => $"{p}date ASC, {p}id ASC",
+        "from" => $"COALESCE(NULLIF({p}from_name,''), {p}from_addr) COLLATE NOCASE ASC, {p}date DESC",
+        "subject" => $"{p}subject COLLATE NOCASE ASC, {p}date DESC",
+        "size" => $"{p}size DESC, {p}date DESC",
+        "attachment" => $"{p}has_att DESC, {p}date DESC",
+        "unread" => $"{p}seen ASC, {p}date DESC",
+        "flagged" => $"{p}flagged DESC, {p}date DESC",
+        _ => $"{p}date DESC",
+    };
+
+    public static (int Total, List<MailRow> Items) List(UserDb db, string account, string folder, int page, int size, string? filter, string? sort = null)
     {
         var scope = folder == FlaggedFolder ? "account=$a AND flagged=1" + NotDeleted : "account=$a AND folder=$f";
         var where = scope + filter switch
@@ -510,7 +533,7 @@ public static class MailStore
         };
         var kw = filter != null && filter.StartsWith("cat:") ? "% " + filter[4..].ToLowerInvariant() + " %" : null;
         var total = Convert.ToInt32(db.Scalar($"SELECT COUNT(*) FROM mail WHERE {where}", ("$a", account), ("$f", folder), ("$kw", kw)));
-        var items = db.Query($"SELECT {RowColumns} FROM mail WHERE {where} ORDER BY date DESC LIMIT $n OFFSET $o", ReadRow,
+        var items = db.Query($"SELECT {RowColumns} FROM mail WHERE {where} ORDER BY {OrderBy(sort)} LIMIT $n OFFSET $o", ReadRow,
             ("$a", account), ("$f", folder), ("$n", size), ("$o", page * size), ("$kw", kw));
         return (total, items);
     }
@@ -546,7 +569,7 @@ public static class MailStore
     public const string CategoryPrefix = "cat:";
 
     /// <summary>Mails nach Kriterien ueber alle Konten - fuer Suchordner und Kategorie-Ordner.</summary>
-    public static (int Total, int Unread, List<MailRow> Items) Query(UserDb db, MailCriteria c, int page, int size, string? filter = null)
+    public static (int Total, int Unread, List<MailRow> Items) Query(UserDb db, MailCriteria c, int page, int size, string? filter = null, string? sort = null)
     {
         var where = new List<string>();
         var args = new List<(string, object?)>();
@@ -580,7 +603,7 @@ public static class MailStore
         var (total, unread) = db.Query($"SELECT COUNT(*), COALESCE(SUM(m.seen=0),0) FROM mail m{join} WHERE {w}",
             r => (r.GetInt32(0), r.GetInt32(1)), args.ToArray()).First();
         var all = args.Concat(new (string, object?)[] { ("$n", size), ("$o", page * size) }).ToArray();
-        var items = db.Query($"SELECT {Prefixed} FROM mail m{join} WHERE {w} ORDER BY m.date DESC LIMIT $n OFFSET $o", ReadRow, all);
+        var items = db.Query($"SELECT {Prefixed} FROM mail m{join} WHERE {w} ORDER BY {OrderBy(sort, "m.")} LIMIT $n OFFSET $o", ReadRow, all);
         return (total, unread, items);
     }
 
@@ -606,9 +629,31 @@ public static class MailStore
             where += " AND NOT EXISTS (SELECT 1 FROM mail_folders mf WHERE mf.account=m.account AND mf.path=m.folder AND mf.special IN ('trash','junk'))";
         // Betreff und Absender wiegen mehr als der Text
         var order = relevance ? "bm25(mail_fts, 10.0, 5.0, 2.0, 1.0), m.date DESC" : "m.date DESC";
-        return db.Query($@"SELECT {Prefixed} FROM mail_fts JOIN mail m ON m.id = mail_fts.rowid
+        using var conn = db.Open();
+        var rows = UserDb.Query(conn, $@"SELECT {Prefixed} FROM mail_fts JOIN mail m ON m.id = mail_fts.rowid
                            WHERE mail_fts MATCH $q AND {where} ORDER BY {order} LIMIT $l", ReadRow,
             ("$q", match), ("$a", account), ("$f", folder), ("$l", limit));
+
+        // Dazu Treffer im Inhalt der Anhaenge (Volltextsuche, wenn eingeschaltet). Feldangaben (von:, betreff:)
+        // gelten der Mail selbst, die freien Woerter dem Anhang.
+        var fields = string.Join(" AND ", match.Split(" AND ").Where(p => p.Contains(":\"")));
+        var attWhere = where + (fields.Length > 0 ? " AND m.id IN (SELECT rowid FROM mail_fts WHERE mail_fts MATCH $fq)" : "");
+        var att = DmOffice.Search.TextIndex.SearchMailAttachments(conn, query, attWhere,
+            new (string, object?)[] { ("$a", account), ("$f", folder), ("$fq", fields) }, limit);
+        if (att.Count == 0) return rows;
+        // Nur Mails, die erst ueber den Anhang gefunden werden, bekommen den Hinweis "im Anhang"
+        var result = rows;
+        var known = rows.Select(r => r.Id).ToHashSet();
+        var extra = att.Keys.Where(id => !known.Contains(id)).ToList();
+        if (extra.Count > 0)
+        {
+            var more = UserDb.Query(conn, $"SELECT {Prefixed} FROM mail m WHERE m.id IN ({string.Join(",", extra)})", ReadRow)
+                .Select(r => r with { Match = att[r.Id] });
+            // Nach Datum einsortieren; bei Relevanz kommen Treffer im Anhang hinter die im Text
+            result = relevance ? result.Concat(more.OrderByDescending(r => r.Date)).ToList()
+                : result.Concat(more).OrderByDescending(r => r.Date).ToList();
+        }
+        return result.Take(limit).ToList();
     }
 
     internal static string FtsQuery(string query)

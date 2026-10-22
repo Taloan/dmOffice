@@ -66,6 +66,8 @@ export interface MailItem {
   from: Addr | null; to: Addr[]; cc: Addr[]; date: string; size: number
   seen: boolean; flagged: boolean; answered: boolean; forwarded: boolean; hasAttachments: boolean
   preview: string; spam: number | null; cached: boolean; keywords: string[]
+  /** Nur in Suchergebnissen: gefunden im Inhalt dieses Anhangs (Ausschnitt mit Markierungen, shell/Snippet) */
+  match?: { name: string; part: number; method: string; snippet: string } | null
 }
 
 export interface Attachment { index: number; name: string; mime: string; size: number; inline: boolean }
@@ -76,8 +78,19 @@ export interface Message {
   html: string; hasRemoteImages: boolean; text: string; attachments: Attachment[]
   messageId?: string; inReplyTo?: string; references: string[]; seen: boolean; flagged: boolean
   spam: number | null; cached: boolean; imagesAllowed: boolean; imagesTrusted: boolean
+  /** Junk: Bilder und Links gesperrt, bis die Mail als "Kein Junk" im Posteingang liegt */
+  junk?: boolean
   /** Newsletter: Abmeldewege aus List-Unsubscribe; oneClick erledigt der Server */
   unsubscribe?: { url?: string | null; mailto?: string | null; oneClick: boolean } | null
+  /** Phishing-Merkmale (Mail/PhishCheck.cs): Warnbalken */
+  phish?: PhishFinding[] | null
+}
+
+/** kind: auth (domain, detail dmarc|spf), link (shown, target), lookalike (domain, like, detail sender|link|mixed),
+ * newsender (domain = Absenderadresse, target). strong: allein schon Grund zur Warnung */
+export interface PhishFinding {
+  kind: 'auth' | 'link' | 'lookalike' | 'newsender'; strong: boolean
+  domain?: string | null; shown?: string | null; target?: string | null; like?: string | null; detail?: string | null
 }
 
 export interface Collection { id: number; uri: string; name: string; color: string | null; description: string | null; components: string[]; count: number; events?: number; tasks?: number
@@ -85,15 +98,28 @@ export interface Collection { id: number; uri: string; name: string; color: stri
   subscription?: { url: string; interval: number; lastFetch: string | null; lastError: string | null } | null
   /** Aufgabenlisten: normale Liste, Einkaufsliste oder Checkliste */
   listType?: 'tasks' | 'shop' | 'check' | null
+  /** Art des Kalenders (nur Web, Besitzer bestimmt): 'normal' oder 'meal' (Essensplan); spaeter weitere. Null bei reinen Aufgabenlisten */
+  calendarKind?: string | null
   /** Geteilt: mit wem (eigene Liste) bzw. wem sie gehoert (mit mir geteilt, Id negativ) */
-  sharedWith?: { id: string; name: string }[] | null
-  owner?: string | null }
+  sharedWith?: { id: string; name: string; readOnly?: boolean }[] | null
+  owner?: string | null
+  /** Eigene Sammlung oder mit Bearbeitungsrecht geteilt; false: nur lesbar */
+  canWrite?: boolean }
 
 export interface CalEvent {
   id: string; calendar: number; uri: string; etag: string; uid?: string; title: string; location?: string
   description?: string; start: string; end: string; allDay: boolean; recurring: boolean; rRule?: string
   recurrenceId?: string; status?: string; reminder?: number | null; busy: boolean; categories: string[]; url?: string
+  /** false: der Kalender ist nur lesend mit mir geteilt */
+  canWrite?: boolean
+  /** Teilnehmer mit Antwort (NEEDS-ACTION, ACCEPTED, TENTATIVE, DECLINED) und Organisator (Mailadresse) */
+  attendees?: Attendee[] | null
+  organizer?: string | null
+  /** Essensplan: sync_id der Rezeptnotiz */
+  recipe?: string | null
 }
+
+export interface Attendee { email: string; name?: string | null; status?: string }
 
 export interface Task {
   id: string; list: number; uri: string; etag: string; uid?: string; title: string; description?: string | null
@@ -116,7 +142,9 @@ export interface Contact {
 }
 
 export const fmtSize = (n: number) =>
-  n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(0)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`
+  n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(0)} KB`
+    : n < 1024 * 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB`
+    : n < 1024 ** 4 ? `${(n / 1024 / 1024 / 1024).toFixed(1)} GB` : `${(n / 1024 ** 4).toFixed(1)} TB`
 
 export const addrText = (a?: Addr | null) => (a ? (a.name ? `${a.name}` : a.address) : '')
 export const addrFull = (a: Addr) => (a.name ? `${a.name} <${a.address}>` : a.address)

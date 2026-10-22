@@ -1,8 +1,8 @@
 import {
   Button, Checkbox, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Dropdown, Field, Input,
-  Menu, MenuItem, MenuList, MenuPopover, Option, Text, Tooltip, makeStyles, mergeClasses, tokens,
+  Menu, MenuItem, MenuList, MenuPopover, Option, Popover, PopoverSurface, PopoverTrigger, Tag, Text, Tooltip, makeStyles, mergeClasses, tokens,
 } from '@fluentui/react-components'
-import { Add16Regular, ChevronDown16Regular, ChevronRight16Regular, FolderSearch20Regular } from '@fluentui/react-icons'
+import { Add16Regular, ChevronDown16Regular, ChevronRight16Regular, FolderSearch20Regular, Search16Regular } from '@fluentui/react-icons'
 import { useCallback, useEffect, useState } from 'react'
 import { Account, api, Folder } from '../api'
 import { useApp } from '../App'
@@ -137,6 +137,8 @@ export function VirtualFolders({ accounts, folders, selection, onSelect, refresh
             // Die id vergibt der Server - den neuen Ordner in der gespeicherten Liste suchen
             save(next).then(saved => {
               const created = edit === 'new' && saved?.find(x => !list.some(o => o.id === x.id))
+              // Der geaenderte Suchordner: Name ueber der Liste und Trefferliste neu laden (nicht aus dem Zwischenspeicher)
+              window.dispatchEvent(new CustomEvent(SEARCH_FOLDERS_CHANGED, { detail: { id: result.id } }))
               if (created) open('sf:' + created.id)
             })
           }} />
@@ -146,6 +148,83 @@ export function VirtualFolders({ accounts, folders, selection, onSelect, refresh
 }
 
 const periods: [string, string][] = [['', 'Jederzeit'], ['7', 'Letzte 7 Tage'], ['30', 'Letzte 30 Tage'], ['90', 'Letzte 3 Monate'], ['365', 'Letztes Jahr'], ['custom', 'Zeitraum wählen …']]
+
+/**
+ * Ordner fuer einen Suchordner waehlen: ein Knopf oeffnet eine Liste je Konto (einklappbar, eingerueckt nach Ordnerebene) mit
+ * Suchfeld. Statt einer einzigen langen Liste aller Ordner aller Konten.
+ */
+function FolderMultiPicker({ accounts, folders, value, onChange }: {
+  accounts: Account[]; folders: Record<string, Folder[]>; value: string[]; onChange: (v: string[]) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [filter, setFilter] = useState('')
+  const [closed, setClosed] = useState<Record<string, boolean>>({})
+  const term = filter.trim().toLowerCase()
+  const groups = accounts.map(a => {
+    const list = (folders[a.id] ?? []).filter(f => f.selectable && f.special !== 'flagged')
+      .map(f => ({ f, key: a.id + '|' + f.path, depth: Math.max(0, f.path.split(f.delimiter || '/').length - 1), label: folderLabel(f) }))
+    return { a, name: a.name || a.email, list: term ? list.filter(x => (x.label + ' ' + x.f.path).toLowerCase().includes(term)) : list }
+  }).filter(g => g.list.length > 0)
+  const labelOf = (key: string) => {
+    const [acc, ...rest] = key.split('|')
+    const path = rest.join('|')
+    const a = accounts.find(x => x.id === acc)
+    const f = (folders[acc] ?? []).find(x => x.path === path)
+    return (accounts.length > 1 && a ? (a.name || a.email) + ' › ' : '') + (f ? folderLabel(f) : path)
+  }
+  const toggle = (key: string, on: boolean) => onChange(on ? [...value, key] : value.filter(k => k !== key))
+  const toggleAll = (keys: string[], on: boolean) => onChange(on ? [...new Set([...value, ...keys])] : value.filter(k => !keys.includes(k)))
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <Popover open={open} onOpenChange={(_, d) => setOpen(d.open)} positioning="below-start">
+        <PopoverTrigger disableButtonEnhancement>
+          <Button style={{ justifyContent: 'space-between' }} iconPosition="after" icon={<ChevronDown16Regular />}>
+            {value.length === 0 ? t('Alle Ordner') : value.length === 1 ? labelOf(value[0]) : t('{n} Ordner gewählt', { n: value.length })}
+          </Button>
+        </PopoverTrigger>
+        <PopoverSurface style={{ width: 340, maxHeight: 420, display: 'flex', flexDirection: 'column', gap: 6, padding: 8 }}>
+          <Input value={filter} onChange={(_, d) => setFilter(d.value)} placeholder={t('Ordner suchen')} contentBefore={<Search16Regular />} autoFocus />
+          <div style={{ overflowY: 'auto', flex: 1, minHeight: 0 }}>
+            {groups.length === 0 && <Text size={200} style={{ padding: 8, color: tokens.colorNeutralForeground3 }}>{t('Keine passenden Ordner.')}</Text>}
+            {groups.map(g => {
+              const keys = g.list.map(x => x.key)
+              const all = keys.every(k => value.includes(k))
+              const some = keys.some(k => value.includes(k))
+              const collapsed = !term && (closed[g.a.id] ?? (accounts.length > 1 && !some))
+              return (
+                <div key={g.a.id}>
+                  {accounts.length > 1 && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 2, padding: '2px 0' }}>
+                      <Button appearance="transparent" size="small" icon={collapsed ? <ChevronRight16Regular /> : <ChevronDown16Regular />}
+                        onClick={() => setClosed(c => ({ ...c, [g.a.id]: !collapsed }))} aria-label={collapsed ? t('Aufklappen') : t('Einklappen')} />
+                      <Checkbox checked={all ? true : some ? 'mixed' : false} onChange={(_, d) => toggleAll(keys, !!d.checked)}
+                        label={<Text weight="semibold">{g.name}</Text>} />
+                    </div>
+                  )}
+                  {!collapsed && g.list.map(x => (
+                    <div key={x.key} style={{ paddingLeft: (accounts.length > 1 ? 28 : 4) + x.depth * 16 }}>
+                      <Checkbox checked={value.includes(x.key)} onChange={(_, d) => toggle(x.key, !!d.checked)} label={x.label} />
+                    </div>
+                  ))}
+                </div>
+              )
+            })}
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <Button size="small" appearance="subtle" disabled={value.length === 0} onClick={() => onChange([])}>{t('Alle Ordner')}</Button>
+            <Button size="small" onClick={() => setOpen(false)}>{t('Fertig')}</Button>
+          </div>
+        </PopoverSurface>
+      </Popover>
+      {value.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+          {value.slice(0, 6).map(k => <Tag key={k} size="small" dismissible dismissIcon={{ onClick: () => toggle(k, false), 'aria-label': t('Entfernen') }}>{labelOf(k)}</Tag>)}
+          {value.length > 6 && <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>{t('und {n} weitere', { n: value.length - 6 })}</Text>}
+        </div>
+      )}
+    </div>
+  )
+}
 
 function SearchFolderDialog({ folder, accounts, folders, onClose }: {
   folder: SearchFolder | null; accounts: Account[]; folders: Record<string, Folder[]>; onClose: (f: SearchFolder | null) => void
@@ -166,8 +245,6 @@ function SearchFolderDialog({ folder, accounts, folders, onClose }: {
     return () => clearTimeout(timer)
   }, [c])
 
-  const folderOptions = accounts.flatMap(a => (folders[a.id] ?? []).filter(f => f.selectable && f.special !== 'flagged')
-    .map(f => ({ key: a.id + '|' + f.path, label: (accounts.length > 1 ? (a.name || a.email) + ' › ' : '') + folderLabel(f) })))
   const chosenFolders = c.folders ?? []
   const chosenCats = c.categories ?? []
 
@@ -189,11 +266,7 @@ function SearchFolderDialog({ folder, accounts, folders, onClose }: {
               </Field>
               <div className={s.row}>
                 <Field label={t('Ordner')} style={{ flex: 1, minWidth: 220 }}>
-                  <Dropdown multiselect placeholder={t('Alle Ordner')} selectedOptions={chosenFolders}
-                    value={chosenFolders.length ? folderOptions.filter(o => chosenFolders.includes(o.key)).map(o => o.label).join(', ') : ''}
-                    onOptionSelect={(_, d) => set({ folders: d.selectedOptions })}>
-                    {folderOptions.map(o => <Option key={o.key} value={o.key}>{o.label}</Option>)}
-                  </Dropdown>
+                  <FolderMultiPicker accounts={accounts} folders={folders} value={chosenFolders} onChange={v => set({ folders: v })} />
                 </Field>
                 <Field label={t('Kategorien')} style={{ flex: 1, minWidth: 180 }}>
                   <Dropdown multiselect placeholder={t('Beliebig')} selectedOptions={chosenCats}
@@ -246,12 +319,22 @@ function SearchFolderDialog({ folder, accounts, folders, onClose }: {
 }
 
 /** Name eines virtuellen Ordners fuer die Titelzeile der Liste. */
+/** Wird gesendet, wenn ein Suchordner gespeichert wurde: Name und Trefferliste muessen neu geholt werden. */
+export const SEARCH_FOLDERS_CHANGED = 'dmoffice:search-folders-changed'
+
 export function useVirtualName(folder: string | undefined): string | null {
   const categories = useCategories()
   const [list, setList] = useState<SearchFolder[]>([])
   const isSearch = !!folder?.startsWith('sf:')
-  useEffect(() => { if (isSearch) api.get<SearchFolder[]>('/api/settings/search-folders').then(setList).catch(() => {}) }, [isSearch, folder])
+  const [rev, setRev] = useState(0)
+  useEffect(() => {
+    const on = () => setRev(r => r + 1)
+    window.addEventListener(SEARCH_FOLDERS_CHANGED, on)
+    return () => window.removeEventListener(SEARCH_FOLDERS_CHANGED, on)
+  }, [])
+  useEffect(() => { if (isSearch) api.get<SearchFolder[]>('/api/settings/search-folders').then(setList).catch(() => {}) }, [isSearch, folder, rev])
   if (!folder) return null
+  if (folder === '__unified') return t('Alle Posteingänge')
   if (folder.startsWith('sf:')) return list.find(f => 'sf:' + f.id === folder)?.name ?? t('Suchordner')
   if (folder.startsWith('cat:')) return categories.find(c => 'cat:' + c.key === folder)?.name ?? t('Kategorie')
   return null

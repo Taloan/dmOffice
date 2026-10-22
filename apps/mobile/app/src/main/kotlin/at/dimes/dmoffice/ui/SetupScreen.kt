@@ -26,7 +26,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -67,6 +66,8 @@ fun SetupScreen(initial: Account?, onDone: () -> Unit) {
     var manual by remember { mutableStateOf(initial != null) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    /** Koppeln ohne Schluessel im QR-Code: Konto und angebotener Serverschluessel, bis der Fingerabdruck verglichen ist. */
+    var unconfirmed by remember { mutableStateOf<Pair<Account, String>?>(null) }
 
     fun connect(a0: Account) {
         busy = true; error = null
@@ -78,6 +79,8 @@ fun SetupScreen(initial: Account?, onDone: () -> Unit) {
                 app.prefs.setAccount(a)
                 at.dimes.dmoffice.sync.Push.register(ctx, force = true)
                 onDone()
+            } catch (e: E2e.KeyUnconfirmed) {
+                unconfirmed = a0 to e.key
             } catch (e: Exception) {
                 error = ctx.getString(R.string.setup_failed, if (e is DavException && e.code == 401) ctx.getString(R.string.unauthorized) else (e.message ?: e.javaClass.simpleName))
             } finally { busy = false }
@@ -92,8 +95,45 @@ fun SetupScreen(initial: Account?, onDone: () -> Unit) {
         connect(a)
     }
 
-    // Per Deep-Link (Kamera-App) gekommen: direkt verbinden
-    LaunchedEffect(initial) { if (initial != null && !busy) connect(initial) }
+    // Per Deep-Link (Kamera-App, aber auch jeder Link auf einer Webseite oder in einer Nachricht) gekommen: erst fragen.
+    // Sonst koennte ein fremder Link die App unbemerkt mit dem Server eines anderen verbinden.
+    var confirm by remember(initial) { mutableStateOf(initial) }
+    confirm?.let { a ->
+        val host = try { java.net.URI(a.baseUrl).host } catch (_: Exception) { null } ?: a.baseUrl
+        val cancel = { confirm = null; url = ""; user = ""; token = ""; name = "" }
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = cancel,
+            title = { Text(stringResource(R.string.pair_confirm_title)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(stringResource(R.string.pair_confirm_text))
+                    Text(host, style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.primary)
+                    Text(stringResource(R.string.pair_confirm_details, a.baseUrl, a.login), style = MaterialTheme.typography.bodySmall)
+                    Text(stringResource(R.string.pair_confirm_hint), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            },
+            confirmButton = { TextButton(onClick = { confirm = null; connect(a) }) { Text(stringResource(R.string.connect)) } },
+            dismissButton = { TextButton(onClick = cancel) { Text(stringResource(R.string.cancel)) } },
+        )
+    }
+
+    // Schluessel nur vom Netz (Eingabe von Hand, QR-Code eines aelteren Servers): Fingerabdruck vergleichen lassen
+    unconfirmed?.let { (a, key) ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { unconfirmed = null },
+            title = { Text(stringResource(R.string.key_confirm_title)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(stringResource(R.string.key_confirm_text))
+                    Text(E2e.fingerprint(key), style = MaterialTheme.typography.titleMedium, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.primary)
+                    Text(stringResource(R.string.key_confirm_hint), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            },
+            confirmButton = { TextButton(onClick = { unconfirmed = null; connect(a.copy(serverKey = key)) }) { Text(stringResource(R.string.key_confirm_ok)) } },
+            dismissButton = { TextButton(onClick = { unconfirmed = null }) { Text(stringResource(R.string.cancel)) } },
+        )
+    }
 
     Scaffold(topBar = { TopAppBar(title = { Text(stringResource(R.string.setup_title)) }) }) { pad ->
         Column(
@@ -103,6 +143,9 @@ fun SetupScreen(initial: Account?, onDone: () -> Unit) {
         ) {
             Icon(Icons.Default.QrCodeScanner, contentDescription = null, modifier = Modifier.size(72.dp), tint = MaterialTheme.colorScheme.primary)
             Text(stringResource(R.string.setup_intro), style = MaterialTheme.typography.bodyMedium)
+            // Keystore-Fehler: die Zugangsdaten sind weg (nie im Klartext abgelegt), also neu koppeln
+            if (app.prefs.secureVolatile) Text(stringResource(R.string.setup_keystore_volatile), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+            else if (app.prefs.secureLost) Text(stringResource(R.string.setup_keystore_lost), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
             Button(
                 onClick = {
                     val opts = ScanOptions().setDesiredBarcodeFormats(ScanOptions.QR_CODE).setPrompt(ctx.getString(R.string.scan_prompt)).setBeepEnabled(false).setOrientationLocked(true)

@@ -95,6 +95,7 @@ export function PreviewPaneSettings() {
         {server && (
           <RadioGroup value={server.openOnFolder ?? 'last'} onChange={(_, d) => saveServer({ openOnFolder: d.value })}>
             <Radio value="last" label={t('Die zuletzt gewählte Mail anzeigen')} />
+            <Radio value="unread" label={t('Die neueste ungelesene Mail anzeigen')} />
             <Radio value="first" label={t('Die neueste Mail anzeigen')} />
             <Radio value="none" label={t('Nichts auswählen')} />
           </RadioGroup>

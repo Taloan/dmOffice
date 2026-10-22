@@ -10,6 +10,8 @@ import { currentPrefs, PrefsContext, usePrefsState, usePrefsVersion } from './pr
 import { Shell } from './shell/Shell'
 import { MailWindow, isMailWindow } from './mail/MailWindow'
 import { applyUpdate, usePwa } from './pwa'
+import { useIsMobile } from './shell/mobile'
+import { UpdateGate, UpdateState } from './admin/UpdatePanel'
 
 interface AppCtx {
   me: Me
@@ -30,6 +32,10 @@ const useStyles = makeStyles({
   logo: { display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' },
   foot: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px', color: tokens.colorNeutralForeground3, fontSize: tokens.fontSizeBase200 },
   langs: { display: 'flex', gap: '2px' },
+  attention: {
+    position: 'fixed', bottom: 'calc(env(safe-area-inset-bottom, 0px) + 72px)', left: '50%', transform: 'translateX(-50%)', zIndex: 1000000,
+    maxWidth: 'calc(100vw - 32px)', boxShadow: tokens.shadow16,
+  },
   update: {
     // In der installierten App unter der Titelleiste - dort waere sie Ziehflaeche des Fensters und nicht klickbar
     position: 'fixed', top: 'calc(env(titlebar-area-height, 0px) + 8px)', left: '50%', transform: 'translateX(-50%)', zIndex: 1000000,
@@ -49,7 +55,10 @@ export function App() {
 }
 
 function Root() {
-  const [state, setState] = useState<{ setupNeeded: boolean; loggedIn: boolean; user: Me | null } | null>(null)
+  const [state, setState] = useState<{ setupNeeded: boolean; setupCode?: boolean; loggedIn: boolean; user: Me | null } | null>(null)
+  const [upd, setUpd] = useState<UpdateState | null>(null)
+  // Remount der Programme, sobald die Datenaenderung des Benutzers durch ist
+  const [round, setRound] = useState(0)
   const toasterId = useId('toaster')
   const { dispatchToast } = useToastController(toasterId)
 
@@ -63,11 +72,26 @@ function Root() {
     return () => window.removeEventListener('dmoffice:unauthorized', onUnauth)
   }, [])
 
+  // Datenaenderung (Update-Sicherheit): wartet die Datenbank dieses Benutzers noch, zeigt die Oberflaeche den Assistenten
+  // statt der Programme und fragt oefter nach; der Verwaltung faellt zusaetzlich auf, wenn irgendwo etwas wartet
+  const waiting = upd?.mine.pending ?? false
+  useEffect(() => {
+    if (!state?.loggedIn) { setUpd(null); return }
+    let alive = true
+    const poll = () => api.get<UpdateState>('/api/update/state').then(u => {
+      if (!alive) return
+      setUpd(prev => { if (prev?.mine.pending && !u.mine.pending) setRound(r => r + 1); return u })
+    }).catch(() => { if (alive) setUpd(prev => prev ?? { isAdmin: false, mine: { pending: false, state: 'current', from: 0, to: 0, missingBytes: 0, backupMissingBytes: 0, needsConsent: false }, attention: false }) })
+    poll()
+    const id = window.setInterval(poll, waiting ? 4000 : 60000)
+    return () => { alive = false; clearInterval(id) }
+  }, [state?.loggedIn, waiting])
+
   // Hell/Dunkel aus den Einstellungen des Benutzers uebernehmen
   useEffect(() => {
     if (!state?.loggedIn) return
     api.get('/api/settings/').then(s => storeTheme((s.theme as ThemeChoice) || 'system')).catch(() => {})
-  }, [state?.loggedIn])
+  }, [state?.loggedIn, round])
 
   const notify = useCallback((title: string, body?: string, intent: 'success' | 'error' | 'info' | 'warning' = 'success') =>
     dispatchToast(<Toast><ToastTitle>{title}</ToastTitle>{body && <ToastBody>{body}</ToastBody>}</Toast>, { intent, timeout: intent === 'error' ? 8000 : 3000 }),
@@ -79,11 +103,12 @@ function Root() {
     <>
       <Toaster toasterId={toasterId} position="bottom-end" />
       <UpdateBar />
-      {state.setupNeeded ? <Setup onDone={load} />
+      {state.setupNeeded ? <Setup onDone={load} needCode={state.setupCode} />
         : !state.loggedIn || !state.user ? <Login onDone={load} />
         : (
           <Ctx.Provider value={{ me: state.user, notify, fail, refreshMe: load }}>
-            <WithPrefs>{isMailWindow() ? <MailWindow /> : <Shell />}</WithPrefs>
+            {!upd ? <Center><Spinner /></Center> : waiting ? <UpdateGate state={upd} /> : <WithPrefs key={round}>{isMailWindow() ? <MailWindow /> : <Shell />}</WithPrefs>}
+            {!waiting && upd?.attention && !isMailWindow() && <UpdateAttention />}
           </Ctx.Provider>
         )}
     </>
@@ -180,19 +205,20 @@ function Login({ onDone }: { onDone: () => void }) {
   )
 }
 
-function Setup({ onDone }: { onDone: () => void }) {
+function Setup({ onDone, needCode }: { onDone: () => void; needCode?: boolean }) {
   const s = useStyles()
   const [login, setLogin] = useState('')
   const [displayName, setDisplayName] = useState('')
   const [password, setPassword] = useState('')
   const [repeat, setRepeat] = useState('')
+  const [code, setCode] = useState('')
   const [error, setError] = useState<string | null>(null)
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (password !== repeat) { setError(t('Die Passwörter sind verschieden.')); return }
     try {
-      await api.post('/api/auth/setup', { login, displayName, password })
+      await api.post('/api/auth/setup', { login, displayName, password, code })
       onDone()
     } catch (err: any) {
       setError(err.message)
@@ -204,8 +230,13 @@ function Setup({ onDone }: { onDone: () => void }) {
       <form className={s.card} onSubmit={submit}>
         <Logo />
         <Text>{t('Erster Start: Lege das Verwaltungskonto an. Weitere Benutzer kommen danach unter Verwaltung dazu.')}</Text>
+        {needCode && (
+          <Field label={t('Einrichtungscode')} hint={t('Steht im Server-Protokoll (docker logs).')}>
+            <Input value={code} onChange={(_, d) => setCode(d.value)} autoFocus />
+          </Field>
+        )}
         <Field label={t('Anmeldename')} hint={t('a–z, 0–9, Punkt, Bindestrich')}>
-          <Input value={login} onChange={(_, d) => setLogin(d.value)} autoFocus />
+          <Input value={login} onChange={(_, d) => setLogin(d.value)} autoFocus={!needCode} />
         </Field>
         <Field label={t('Anzeigename')}><Input value={displayName} onChange={(_, d) => setDisplayName(d.value)} /></Field>
         <Field label={t('Passwort')} hint={t('mindestens 8 Zeichen')}><Input type="password" value={password} onChange={(_, d) => setPassword(d.value)} /></Field>
@@ -218,13 +249,32 @@ function Setup({ onDone }: { onDone: () => void }) {
   )
 }
 
+/** Fuer die Verwaltung: irgendwo wartet eine Datenaenderung auf Platz oder Freigabe - unten einblenden, ein Klick fuehrt zum Assistenten. */
+function UpdateAttention() {
+  const s = useStyles()
+  const narrow = useIsMobile()
+  const open = () => {
+    try { localStorage.setItem('dmoffice.admin.tab', 'updates') } catch { /* egal */ }
+    if (location.hash.replace(/^#\/?/, '') === 'admin') location.reload()
+    else location.hash = '#admin'
+  }
+  return (
+    <MessageBar intent="warning" className={mergeClasses(s.attention, 'dm-nodrag')} layout={narrow ? 'multiline' : 'singleline'}>
+      <MessageBarBody>{t('Eine Datenänderung wartet auf Platz oder deine Freigabe.')}</MessageBarBody>
+      <MessageBarActions><Button size="small" appearance="primary" onClick={open}>{t('Öffnen')}</Button></MessageBarActions>
+    </MessageBar>
+  )
+}
+
 /** Neue Version auf dem Server: oben einblenden, ein Klick laedt neu. */
 function UpdateBar() {
   const s = useStyles()
   const { update } = usePwa()
+  // Handy: Text und Knopf untereinander, sonst ragt der Knopf aus dem Bild
+  const narrow = useIsMobile()
   if (!update) return null
   return (
-    <MessageBar intent="info" className={mergeClasses(s.update, 'dm-nodrag')} layout="singleline">
+    <MessageBar intent="info" className={mergeClasses(s.update, 'dm-nodrag')} layout={narrow ? 'multiline' : 'singleline'}>
       <MessageBarBody>{t('Neue Version von dmOffice verfügbar.')}</MessageBarBody>
       <MessageBarActions><Button size="small" appearance="primary" onClick={applyUpdate}>{t('Neu laden')}</Button></MessageBarActions>
     </MessageBar>

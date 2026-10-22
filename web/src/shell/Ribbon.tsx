@@ -1,8 +1,9 @@
 import { Button, Menu, MenuItemRadio, MenuList, MenuPopover, MenuTrigger, makeStyles, mergeClasses, tokens } from '@fluentui/react-components'
-import { ChevronLeft20Regular, ChevronRight20Regular, SlideText20Regular } from '@fluentui/react-icons'
+import { ChevronLeft20Regular, ChevronRight20Regular, Eye20Regular, Navigation20Regular, SlideText20Regular } from '@fluentui/react-icons'
 import { forwardRef, useCallback, useEffect, useRef, useState } from 'react'
 import { t } from '../i18n'
 import { usePrefs } from '../prefs'
+import { useIsMobile } from './mobile'
 
 // Menueband wie in Office: Symbol oben, Beschriftung darunter (bis zu zwei Zeilen), Gruppen mit Trennstrich.
 // Bricht nicht um - wird es zu eng, schieben Pfeile links/rechts die Leiste weiter (wie "Scrollband rechts" in Outlook).
@@ -41,10 +42,16 @@ const useStyles = makeStyles({
     '::after': { content: '""', position: 'absolute', left: '10px', right: '10px', bottom: 0, height: '2px', borderRadius: '1px', backgroundColor: tokens.colorBrandBackground },
   },
   pressed: { backgroundColor: tokens.colorNeutralBackground1Selected },
+  // Handy: eine Zeile - Menue-Knopf, Symbolleiste (wischbar), Umschalter Start/Ansicht
+  mobileRow: { display: 'flex', alignItems: 'center', minWidth: 0, borderBottom: `1px solid ${tokens.colorNeutralStroke2}`, paddingLeft: '4px' },
+  mobileWrap: { flex: 1, minWidth: 0, borderBottom: 'none' },
+  mobileRibbon: { padding: '4px 2px' },
+  mobileDivider: { margin: '10px 2px' },
 })
 
-export function Ribbon({ children, className }: { children: React.ReactNode; className?: string }) {
+export function Ribbon({ children, className, wrapClassName }: { children: React.ReactNode; className?: string; wrapClassName?: string }) {
   const s = useStyles()
+  const mobile = useIsMobile()
   const bar = useRef<HTMLDivElement>(null)
   const [edge, setEdge] = useState({ left: false, right: false })
   const check = useCallback(() => {
@@ -63,8 +70,8 @@ export function Ribbon({ children, className }: { children: React.ReactNode; cla
   }, [check])
   const by = (dir: number) => bar.current?.scrollBy({ left: dir * Math.max(120, bar.current.clientWidth * 0.6) })
   return (
-    <div className={s.wrap}>
-      <div ref={bar} role="toolbar" className={mergeClasses(s.ribbon, className)} onScroll={check}>{children}</div>
+    <div className={mergeClasses(s.wrap, wrapClassName)}>
+      <div ref={bar} role="toolbar" className={mergeClasses(s.ribbon, mobile && s.mobileRibbon, className)} onScroll={check}>{children}</div>
       {edge.left && <Button className={s.scroll} style={{ left: 2 }} appearance="subtle" icon={<ChevronLeft20Regular />}
         onClick={() => by(-1)} aria-label={t('Menüband links')} title={t('Menüband links')} />}
       {edge.right && <Button className={s.scroll} style={{ right: 2 }} appearance="subtle" icon={<ChevronRight20Regular />}
@@ -89,11 +96,20 @@ export function RibbonTabs({ tabs, value, onChange }: { tabs: [string, string][]
  * Kopf eines Bereichs wie bei den Mails: Reiter "Start" und "Ansicht", darunter das Menueband.
  * Der gewaehlte Reiter bleibt je Bereich gespeichert.
  */
-export function RibbonHeader({ area, start, view, before, after }: {
+export function RibbonHeader({ area, start, view, before, after, onMenu }: {
   area: string; start: React.ReactNode; view: React.ReactNode; before?: React.ReactNode; after?: React.ReactNode
+  /** Handy: Knopf links, der die Navigationsspalte aufklappt */
+  onMenu?: () => void
 }) {
   const { prefs, update } = usePrefs()
   const tab = prefs.ribbonTabs?.[area] ?? 'start'
+  const mobile = useIsMobile()
+  if (mobile) return (
+    <MobileRibbonRow onMenu={onMenu} view={tab === 'view'} onView={() => update({ ribbonTabs: { ...prefs.ribbonTabs, [area]: tab === 'view' ? 'start' : 'view' } })}
+      before={before} after={after}>
+      {tab === 'view' ? view : start}
+    </MobileRibbonRow>
+  )
   return (
     <>
       <div style={{ display: 'flex', alignItems: 'center', minWidth: 0 }}>
@@ -109,11 +125,38 @@ export function RibbonHeader({ area, start, view, before, after }: {
   )
 }
 
-/** Navigationsbereich links ein-/ausblenden, je Bereich gespeichert. */
-export function useSidePane(area: string): [boolean, () => void] {
+/**
+ * Menueband auf dem Handy: eine Zeile mit Menue-Knopf (Navigationsspalte), den Knoepfen nur als Symbol
+ * (seitlich wischbar) und rechts dem Umschalter zwischen Start und Ansicht.
+ */
+export function MobileRibbonRow({ onMenu, view, onView, before, after, children }: {
+  onMenu?: () => void; view?: boolean; onView?: () => void; before?: React.ReactNode; after?: React.ReactNode; children: React.ReactNode
+}) {
+  const s = useStyles()
+  return (
+    <div className={s.mobileRow}>
+      {onMenu && <Button appearance="subtle" icon={<Navigation20Regular />} onClick={onMenu} aria-label={t('Ordnerbereich')} title={t('Ordnerbereich')} />}
+      {before}
+      <Ribbon wrapClassName={s.mobileWrap}>{children}</Ribbon>
+      {after}
+      {onView && <Button appearance={view ? 'primary' : 'subtle'} icon={<Eye20Regular />} onClick={onView}
+        aria-label={t('Ansicht')} title={t('Ansicht')} aria-pressed={view} style={{ marginRight: 4 }} />}
+    </div>
+  )
+}
+
+/**
+ * Navigationsbereich links ein-/ausblenden, je Bereich gespeichert.
+ * Auf dem Handy klappt er nur voruebergehend auf (dritter Wert schliesst ihn wieder).
+ */
+export function useSidePane(area: string): [boolean, () => void, () => void] {
   const { prefs, update } = usePrefs()
+  const mobile = useIsMobile()
+  const [drawer, setDrawer] = useState(false)
+  useEffect(() => { if (!mobile) setDrawer(false) }, [mobile])
+  if (mobile) return [drawer, () => setDrawer(o => !o), () => setDrawer(false)]
   const on = prefs.sidePane?.[area] ?? true
-  return [on, () => update({ sidePane: { ...prefs.sidePane, [area]: !on } })]
+  return [on, () => update({ sidePane: { ...prefs.sidePane, [area]: !on } }), () => {}]
 }
 
 /** Menueband: Symbole und Text, nur Symbole oder nur Text - fuer alle Bereiche gleich. */
@@ -135,7 +178,8 @@ export function RibbonDisplayMenu() {
 
 export function RibbonDivider() {
   const s = useStyles()
-  return <div className={s.divider} role="separator" />
+  const mobile = useIsMobile()
+  return <div className={mergeClasses(s.divider, mobile && s.mobileDivider)} role="separator" />
 }
 
 /**
@@ -168,7 +212,10 @@ type Props = Omit<React.ComponentProps<typeof Button>, 'icon' | 'children'> & {
 /** Ein Knopf im Menueband. Mit forwardRef, damit er als Ausloeser eines Menues dienen kann. */
 export const RibbonButton = forwardRef<HTMLButtonElement, Props>(function RibbonButton({ icon, label, primary, pressed, className, ...rest }, ref) {
   const s = useStyles()
-  const mode = usePrefs().prefs.ribbonLabels ?? 'both'
+  // Auf dem Handy immer nur Symbole - die Beschriftung steht im Tooltip/title
+  const mobile = useIsMobile()
+  const labels = usePrefs().prefs.ribbonLabels ?? 'both'
+  const mode = mobile ? 'icons' : labels
   return (
     <Button ref={ref} appearance={primary ? 'primary' : 'subtle'} className={mergeClasses(s.button, mode === 'icons' && s.iconsOnly, mode === 'text' && s.textOnly, pressed && s.pressed, className)} title={label} aria-pressed={pressed} {...(rest as any)}>
       {mode !== 'text' && <span className={s.icon} style={!primary && !rest.disabled && tintOf(icon) ? { color: tintOf(icon) } : undefined}>{icon}</span>}

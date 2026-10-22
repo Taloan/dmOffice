@@ -2,6 +2,7 @@ import { Avatar, Button, Spinner, Text, makeStyles, mergeClasses, tokens } from 
 import { Attach16Regular, Flag16Filled, Flag16Regular, ArrowReply16Regular, ArrowForward16Regular, ShieldError16Regular } from '@fluentui/react-icons'
 import { useEffect, useMemo, useRef } from 'react'
 import { addrText, Folder, MailItem } from '../api'
+import { Snippet } from '../shell/Snippet'
 import { fmtDate } from '../shell/hooks'
 import { folderLabel } from './FolderPane'
 import { usePrefs } from '../prefs'
@@ -25,10 +26,13 @@ const useStyles = makeStyles({
   subject: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '13px' },
   bold: { fontWeight: 600 },
   brand: { color: tokens.colorBrandForeground1 },
+  // Treffer im Anhang: zwei Zeilen, damit das gefundene Wort sichtbar bleibt
+  match: { lineHeight: '16px', minWidth: 0, fontSize: '12px', color: tokens.colorNeutralForeground3, overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflowWrap: 'anywhere' },
   preview: { lineHeight: '16px', minWidth: 0, fontSize: '12px', color: tokens.colorNeutralForeground3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   date: { fontSize: '12px', color: tokens.colorNeutralForeground3, flexShrink: 0 },
-  flag: { opacity: 0, minWidth: '20px', height: '20px', padding: 0 },
-  flagOn: { opacity: 1, color: tokens.colorPaletteRedForeground1 },
+  // Nicht gekennzeichnet: grauer Umriss beim Darueberfahren (nicht in der Markenfarbe - das sah aus wie gesetzt); gekennzeichnet: rote Flagge
+  flag: { opacity: 0, minWidth: '20px', height: '20px', padding: 0, color: tokens.colorNeutralForeground3, ':hover': { color: tokens.colorNeutralForeground1 } },
+  flagOn: { opacity: 1, color: tokens.colorPaletteRedForeground1, ':hover': { color: tokens.colorPaletteRedForeground1 } },
   // Eine Zeile, gekuerzt - sonst wird die Zeile hoeher als die anderen
   tag: { fontSize: '11px', lineHeight: '16px', padding: '0 4px', borderRadius: '3px', backgroundColor: tokens.colorNeutralBackground3, color: tokens.colorNeutralForeground2,
     whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '40%', flexShrink: 0 },
@@ -182,7 +186,10 @@ export function MessageList({ items, selected, onSelect, loading, showFolder, fo
                 {snoozeOf?.(item) && <span className={s.tag} title={t('Wiedervorlage')}>⏰ {fmtDate(snoozeOf(item)!)}</span>}
                 {unsure && <span className={mergeClasses(s.tag, s.unsure)}><ShieldError16Regular style={{ verticalAlign: -3 }} /> {t('unsicher')}</span>}
                 {folder && <span className={s.tag} title={folder.path}>{folderLabel(folder)}</span>}
-                {preview && <span className={s.preview}>{item.preview || (item.cached ? '' : '…')}</span>}
+                {preview && !item.match && <span className={s.preview}>{item.preview || (item.cached ? '' : '…')}</span>}
+              </div>}
+              {item.match && <div className={s.row}>
+                <span className={s.match} title={item.match.name}><Attach16Regular style={{ verticalAlign: -3 }} /> {t('im Anhang {name}', { name: item.match.name })}: <Snippet text={item.match.snippet} /></span>
               </div>}
             </div>
           </div>]

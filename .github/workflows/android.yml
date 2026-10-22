@@ -1,14 +1,22 @@
-# Android-App (apps/mobile): baut bei jedem Versions-Tag v1.2.3 (auch android-v1.2.3) die Release-APK, signiert sie
-# und haengt sie als dmOffice-1.2.3.apk und dmOffice.apk an genau diesen Release - so hat
-# releases/latest/download/dmOffice.apk (Einstellungen -> Apps installieren -> Android-App) immer eine APK.
-# Von Hand (workflow_dispatch) mit "release" = vorhandener Tag: APK nachtraeglich an diesen Release haengen;
-# ohne: nur ein Build-Artefakt.
-# Der Signaturschluessel liegt nie im Repo, sondern in vier Geheimnissen (Settings -> Secrets and variables -> Actions):
-#   ANDROID_KEYSTORE_BASE64   Keystore-Datei als Base64 (base64 -w0 dmoffice.jks)
-#   ANDROID_KEYSTORE_PASSWORD Passwort des Keystores
-#   ANDROID_KEY_ALIAS         Alias des Schluessels
-#   ANDROID_KEY_PASSWORD      Passwort des Schluessels (oft gleich dem Keystore-Passwort)
-# Immer denselben Schluessel nehmen: Android installiert ein Update nur mit derselben Signatur.
+# Android app (apps/mobile): for every version tag v1.2.3 (also android-v1.2.3) builds the release APK, signs it
+# and attaches it as dmOffice-1.2.3.apk and dmOffice.apk to exactly that release - so
+# releases/latest/download/dmOffice.apk (Settings -> Install apps -> Android app) always has an APK.
+# By hand (workflow_dispatch) with "release" = an existing tag: attach the APK to that release afterwards;
+# without it: only a build artifact.
+#
+# Security: build and signing run in SEPARATE jobs. The gradle build (which runs third-party plugin and
+# dependency code) never sees the signing key, and never has write access to the repo or releases. The signing
+# job runs in the GitHub environment "android-release" - configure it with required reviewers so a human
+# approves before the signing key is used (Settings -> Environments). The signing key stays in secrets:
+#   ANDROID_KEYSTORE_BASE64   keystore file as Base64 (base64 -w0 dmoffice.jks)
+#   ANDROID_KEYSTORE_PASSWORD password of the keystore
+#   ANDROID_KEY_ALIAS         alias of the key
+#   ANDROID_KEY_PASSWORD      password of the key (often the same as the keystore password)
+# Always use the same key: Android only installs an update with the same signature.
+# Push needs GOOGLE_SERVICES_JSON_BASE64 = google-services.json from the Firebase console as Base64.
+#
+# TODO (hardening): pin every `uses:` to a commit SHA (Dependabot keeps them current - see .github/dependabot.yml),
+# and add build provenance (actions/attest-build-provenance) once the signing job is settled.
 name: android
 on:
   push:
@@ -16,62 +24,105 @@ on:
   workflow_dispatch:
     inputs:
       release:
-        description: 'Vorhandener Release-Tag (z. B. v1.1.0), an den die APK soll - leer: nur Artefakt'
+        description: 'Existing release tag (e.g. v1.1.0) to attach the APK to - empty: artifact only'
         required: false
+
+# Least privilege for the whole workflow; the signing job raises its own contents:write.
 permissions:
-  contents: write
+  contents: read
+
 jobs:
-  apk:
+  build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
     defaults:
       run:
         working-directory: apps/mobile
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
       - name: version
+        id: version
         env:
           RELEASE_INPUT: ${{ github.event.inputs.release }}
         run: |
           tag="$RELEASE_INPUT"
           if [ "$GITHUB_REF_TYPE" = tag ]; then tag="$GITHUB_REF_NAME"; fi
           v="${tag#android-}"; v="${v#v}"
-          echo "TAG=$tag" >> "$GITHUB_ENV"
-          echo "VERSION=${v:-dev-${GITHUB_SHA::7}}" >> "$GITHUB_ENV"
-      - name: bauen
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${v:-dev-${GITHUB_SHA::7}}" >> "$GITHUB_OUTPUT"
+      # Push (Firebase Cloud Messaging): google-services.json is gitignored, so it comes from a secret.
+      - name: firebase
+        env:
+          GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+        run: |
+          if [ -n "$GOOGLE_SERVICES_JSON_BASE64" ]; then
+            echo "$GOOGLE_SERVICES_JSON_BASE64" | base64 -d > app/google-services.json
+            echo "Firebase push: on"
+          else
+            echo "::warning::Secret GOOGLE_SERVICES_JSON_BASE64 is missing - the APK has no push (see the top of android.yml)"
+          fi
+      - name: build
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           echo "sdk.dir=$ANDROID_HOME" > local.properties
           bash ./gradlew --no-daemon :app:assembleRelease -PappVersion="$VERSION"
-      - name: signieren
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk-unsigned
+          path: apps/mobile/app/build/outputs/apk/release/app-release-unsigned.apk
+          retention-days: 1
+
+  sign:
+    needs: build
+    runs-on: ubuntu-latest
+    # Human approval before the signing key is used (configure required reviewers for this environment).
+    environment: android-release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: apk-unsigned
+          path: in
+      - name: sign
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          TAG: ${{ needs.build.outputs.tag }}
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
           set -eu
-          if [ -z "$KEYSTORE_BASE64" ]; then echo "::error::Geheimnis ANDROID_KEYSTORE_BASE64 fehlt - siehe Kopf von android.yml"; exit 1; fi
-          v="$VERSION"
+          if [ -z "$KEYSTORE_BASE64" ]; then echo "::error::Secret ANDROID_KEYSTORE_BASE64 is missing - see the top of android.yml"; exit 1; fi
           tools=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
           echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/dmoffice.jks"
           mkdir -p out
-          "$tools/zipalign" -f -p 4 app/build/outputs/apk/release/app-release-unsigned.apk out/aligned.apk
+          "$tools/zipalign" -f -p 4 in/app-release-unsigned.apk out/aligned.apk
           "$tools/apksigner" sign --ks "$RUNNER_TEMP/dmoffice.jks" --ks-pass env:KEYSTORE_PASSWORD \
-            --ks-key-alias "$KEY_ALIAS" --key-pass env:KEY_PASSWORD --out "out/dmOffice-$v.apk" out/aligned.apk
-          "$tools/apksigner" verify "out/dmOffice-$v.apk"
+            --ks-key-alias "$KEY_ALIAS" --key-pass env:KEY_PASSWORD --out "out/dmOffice-$VERSION.apk" out/aligned.apk
+          "$tools/apksigner" verify "out/dmOffice-$VERSION.apk"
           rm -f out/aligned.apk "$RUNNER_TEMP/dmoffice.jks"
-          if [ -n "$TAG" ]; then cp "out/dmOffice-$v.apk" out/dmOffice.apk; fi
+          if [ -n "$TAG" ]; then cp "out/dmOffice-$VERSION.apk" out/dmOffice.apk; fi
       - uses: actions/upload-artifact@v4
         with:
           name: dmOffice-apk
-          path: apps/mobile/out/*.apk
-      # An den Release dieses Tags haengen (gibt es ihn schon, bleiben Titel und Text erhalten)
-      - if: env.TAG != ''
+          path: out/*.apk
+      # Attach to the release of this tag (if it exists already, title and text are kept)
+      - if: needs.build.outputs.tag != ''
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.TAG }}
-          files: apps/mobile/out/*.apk
+          tag_name: ${{ needs.build.outputs.tag }}
+          files: out/*.apk

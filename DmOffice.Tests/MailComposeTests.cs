@@ -7,6 +7,13 @@ namespace DmOffice.Tests;
 public class MailComposeTests
 {
     [Fact]
+    public void Message_id_carries_the_senders_domain()
+    {
+        var m = MailCompose.Build(new MailAccount { Email = "anna@beispiel.de" }, new MailCompose.Draft { To = "x@example.org", Html = "<p>x</p>" }, Array.Empty<(string, string, byte[])>());
+        Assert.EndsWith("@beispiel.de", m.MessageId);
+    }
+
+    [Fact]
     public void Suchwort_nur_aus_Satzzeichen_faellt_weg()
     {
         Assert.Equal("", MailStore.FtsQuery("-"));

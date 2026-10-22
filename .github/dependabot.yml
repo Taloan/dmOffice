@@ -1,0 +1,23 @@
+# Keeps dependencies and GitHub Actions current, so security fixes arrive and pinned action SHAs get bumped.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: nuget
+    directory: /DmOffice.Server
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+  - package-ecosystem: gradle
+    directory: /apps/mobile
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly

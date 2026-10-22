@@ -57,8 +57,12 @@ const useStyles = makeStyles({
  * Einkaufs- oder Checkliste: Eingabe mit Vorschlaegen, nach Abteilungen gruppiert.
  * Ein Klick auf einen Eintrag hakt ab - und stellt einen abgehakten wieder her.
  */
-export function ShoppingList({ meta, tasks, showHidden, selectedId, inputRef, onAdd, onToggle, onEdit, onForget, color }: {
+export function ShoppingList({ meta, tasks, showHidden, selectedId, inputRef, onAdd, onToggle, onEdit, onForget, color, onContext, onDragStart }: {
   meta: ListMeta; tasks: Task[]; showHidden: boolean; selectedId?: string
+  /** Rechtsklick auf einen Eintrag (Kontextmenue der Aufgabenansicht) */
+  onContext?: (e: React.MouseEvent, task: Task) => void
+  /** Ziehen auf eine andere Liste */
+  onDragStart?: (e: React.DragEvent, task: Task) => void
   /** Farbe der Liste fuer die Abteilungsbalken; ohne: Akzentfarbe. */
   color?: string | null
   inputRef: React.RefObject<HTMLInputElement>
@@ -115,6 +119,7 @@ export function ShoppingList({ meta, tasks, showHidden, selectedId, inputRef, on
     const it = itemOf(x)
     return (
       <div key={x.id} className={mergeClasses(s.item, selectedId === x.id && s.sel)} onClick={() => onToggle(x)}
+        onContextMenu={onContext ? e => onContext(e, x) : undefined} draggable={!!onDragStart} onDragStart={onDragStart ? e => onDragStart(e, x) : undefined}
         title={x.completed ? t('Klicken stellt den Eintrag wieder her') : undefined}>
         <Checkbox checked={x.completed} shape="circular" onClick={e => e.stopPropagation()} onChange={() => onToggle(x)}
           aria-label={x.completed ? t('Als nicht erledigt markieren') : t('Als erledigt markieren')} />

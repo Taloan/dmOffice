@@ -127,6 +127,30 @@ public sealed class UserStore
         }
     }
 
+    /// <summary>Das erste Verwaltungskonto - Pruefung auf "noch leer" und Anlegen unter einer Sperre, damit nicht
+    /// zwei gleichzeitige Anfragen zwei Admins erzeugen. Gibt null zurueck, wenn schon eingerichtet.</summary>
+    public UserRecord? CreateFirstAdmin(string login, string displayName, string password)
+    {
+        login = Normalize(login);
+        if (!ValidLogin(login)) throw new ArgumentException("Anmeldename: 2–40 Zeichen, nur a–z, 0–9, Punkt, Bindestrich, Unterstrich.");
+        if (password.Length < 8) throw new ArgumentException("Passwort: mindestens 8 Zeichen.");
+        lock (_lock)
+        {
+            if (_users.Count != 0) return null;
+            var user = new UserRecord
+            {
+                Login = login,
+                DisplayName = string.IsNullOrWhiteSpace(displayName) ? login : displayName.Trim(),
+                PasswordHash = Passwords.Hash(password),
+                IsAdmin = true,
+                WrappedKey = _vault.Wrap(RandomNumberGenerator.GetBytes(32))
+            };
+            _users.Add(user);
+            Save();
+            return Copy(user);
+        }
+    }
+
     public void Update(string id, Action<UserRecord> change)
     {
         lock (_lock)
@@ -170,6 +194,19 @@ public static class Passwords
         var salt = RandomNumberGenerator.GetBytes(16);
         var hash = Rfc2898DeriveBytes.Pbkdf2(password, salt, Iterations, HashAlgorithmName.SHA256, 32);
         return $"pbkdf2${Iterations}${Convert.ToBase64String(salt)}${Convert.ToBase64String(hash)}";
+    }
+
+    // Hoechstens so viele Passwortpruefungen ohne Anmeldung gleichzeitig: jede rechnet 210 000 PBKDF2-Runden.
+    // Ohne Grenze legte eine Flut von Anmeldeversuchen alle Kerne lahm - auch fuer die Angemeldeten.
+    private static readonly SemaphoreSlim AnonGate = new(Math.Max(1, Environment.ProcessorCount / 2));
+
+    /// <summary>Wie <see cref="Verify"/>, aber fuer Wege ohne Anmeldung (Login, Login-Flow, Link-Passwort): begrenzt
+    /// gleichzeitig. Null, wenn der Server zu lange beschaeftigt ist (dann 503 statt Warteschlange ohne Ende).</summary>
+    public static async Task<bool?> VerifyLimitedAsync(string password, string? stored, CancellationToken ct = default)
+    {
+        if (!await AnonGate.WaitAsync(TimeSpan.FromSeconds(15), ct)) return null;
+        try { return Verify(password, stored); }
+        finally { AnonGate.Release(); }
     }
 
     public static bool Verify(string password, string? stored)

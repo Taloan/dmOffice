@@ -167,7 +167,17 @@ public sealed class NotiziSettings
     /// <summary>Ordner der Datenbank unter der Wurzel.</summary>
     public string DbFolder { get; set; } = "";
     public string? DbId { get; set; }
+    /// <summary>Zu welcher Datenbank (Kennung) die Notizen hier gehoeren. Null: noch nie abgeglichen - dann
+    /// gehen sie in die erste Datenbank. Sonst wandern sie nie in eine andere (siehe NotesSync.RunAsync).</summary>
+    public string? LocalDbId { get; set; }
     public string? BlobKeyMark { get; set; }
+
+    /// <summary>Andere Datenbank gewaehlt: Kennung vergessen, Herkunft der Notizen hier aber behalten.</summary>
+    public void SwitchDb()
+    {
+        LocalDbId ??= DbId;
+        DbId = null;
+    }
 }
 
 public sealed class UserSettings
@@ -195,4 +205,6 @@ public sealed class UserSettings
     public bool SmartCalendar { get; set; } = true;
     /// <summary>Kalender fuer angenommene Einladungen. Null: der erste Kalender fuer Termine.</summary>
     public long? InviteCalendar { get; set; }
+    /// <summary>Volltextsuche in Anhaengen und Dateien, auf Wunsch mit OCR (Search/TextIndex.cs). Standard aus.</summary>
+    public Search.TextIndexSettings TextIndex { get; set; } = new();
 }

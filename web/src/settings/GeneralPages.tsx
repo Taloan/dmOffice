@@ -13,6 +13,7 @@ import { fmtDay, fmtTime } from '../shell/hooks'
 import { desktopPossible } from '../shell/Notifier'
 import { install, isIos, pwaPossible, usePwa } from '../pwa'
 import { Hint, PageTitle, Section } from './parts'
+import { TextIndexSection } from './TextIndexSection'
 
 const useStyles = makeStyles({
   field: { maxWidth: '400px' },
@@ -202,11 +203,12 @@ export function SearchSettings() {
         </RadioGroup>
         <Hint>{t('Über „Alle Konten“ in der Suchleiste lässt sich jederzeit über alle Konten suchen.')}</Hint>
       </Section>
-      <Section title={t('Suchergebnisse')} last>
+      <Section title={t('Suchergebnisse')}>
         <Checkbox label={t('Gelöschte Elemente und Junk-E-Mail einschließen')} checked={prefs.searchDeleted ?? true} onChange={(_, d) => update({ searchDeleted: !!d.checked })} />
         <Checkbox label={t('Relevanteste Suchergebnisse oben anzeigen')} checked={(prefs.searchSort ?? (prefs.searchRelevance ? 'relevance' : 'newest')) === 'relevance'} onChange={(_, d) => update({ searchRelevance: !!d.checked, searchSort: d.checked ? 'relevance' : 'newest' })} />
         <Hint>{t('Gesucht wird in Betreff, Absender, Empfängern und Text – mit „von:“, „an:“ und „betreff:“ gezielt in einem Feld.')}</Hint>
       </Section>
+      <TextIndexSection />
     </>
   )
 }
