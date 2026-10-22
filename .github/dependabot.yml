@@ -1,23 +1,39 @@
 # Keeps dependencies and GitHub Actions current, so security fixes arrive and pinned action SHAs get bumped.
+# Once a month, and per area one grouped pull request instead of one per package.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
+    groups:
+      actions:
+        patterns: ['*']
   - package-ecosystem: nuget
     directory: /DmOffice.Server
     schedule:
-      interval: weekly
+      interval: monthly
+    groups:
+      server:
+        patterns: ['*']
   - package-ecosystem: npm
     directory: /web
     schedule:
-      interval: weekly
+      interval: monthly
+    groups:
+      web:
+        patterns: ['*']
   - package-ecosystem: gradle
     directory: /apps/mobile
     schedule:
-      interval: weekly
+      interval: monthly
+    groups:
+      app:
+        patterns: ['*']
   - package-ecosystem: docker
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
+    groups:
+      docker:
+        patterns: ['*']
