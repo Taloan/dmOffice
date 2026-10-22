@@ -1,6 +1,6 @@
 # Dreistufig: Node baut die Oberflaeche, das SDK den Server, das Laufzeit-Image traegt nur das Ergebnis.
 # Die Oberflaeche liegt als wwwroot im Server. Alles Weitere (Daten, Schluessel) unter /data.
-FROM node:22-alpine AS web
+FROM node:25-alpine AS web
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci --no-audit --no-fund
