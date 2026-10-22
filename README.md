@@ -4,6 +4,16 @@
 
 **Website: [dmoffice.de](https://dmoffice.de)** (in German) – features, guides and news · **Source code and issues:** here on GitHub
 
+> ## 🎉 New in 1.5
+> - **Files:** your own file storage with sharing (people and links), previous versions, recycle bin, full-text search with text recognition, a **Photos** timeline – and **Office editing in the browser** (Collabora / ONLYOFFICE)
+> - **Invitations** to people inside and outside dmOffice, **shared calendars, task and shopping lists, note folders**
+> - **Meal plan:** breakfast, lunch and dinner per week, recipes from your notes, ingredients straight onto the shopping list
+> - **Mail:** attach from your files or as a share link, phishing warning, sortable mail list
+> - **Android app:** file storage and automatic photo upload, meal plan, drag to move events, **checklists you can tick off offline**
+> - **Storage quota per user**, update safety (backup before data changes), security audit
+>
+> [Release notes](https://github.com/Taloan/dmOffice/releases/tag/v1.5.0) · [Download the Android app](https://github.com/Taloan/dmOffice/releases/latest/download/dmOffice.apk)
+
 A self-hosted office suite in the browser: mail, calendar, contacts, tasks, notes and files – plus a server of its own. Everything lives in one container, with one encrypted database per user.
 
 | Area | What it does |

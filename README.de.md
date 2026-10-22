@@ -4,6 +4,16 @@
 
 **Webseite: [dmoffice.de](https://dmoffice.de)** (deutsch) – Funktionen, Anleitungen und Neuigkeiten · **Quellcode und Fehlermeldungen:** hier auf GitHub
 
+> ## 🎉 Neu in 1.5
+> - **Dateien:** eigene Dateiablage mit Teilen (Personen und Links), früheren Versionen, Papierkorb, Volltextsuche mit Texterkennung, **Fotos** als Zeitleiste – und **Office-Bearbeitung im Browser** (Collabora / ONLYOFFICE)
+> - **Einladungen** an Personen in und außerhalb von dmOffice, **geteilte Kalender, Aufgaben- und Einkaufslisten, Notizordner**
+> - **Essensplan:** Frühstück, Mittag und Abend je Woche, Rezepte aus den Notizen, Zutaten direkt auf die Einkaufsliste
+> - **Mail:** Anhänge aus der Dateiablage oder als Freigabelink, Phishing-Warnung, sortierbare Mailliste
+> - **Android-App:** Dateiablage und automatisches Hochladen von Fotos, Essensplan, Termine per Ziehen verschieben, **Checklisten auch offline abhaken**
+> - **Kontingent je Benutzer**, Update-Sicherheit (Sicherung vor Datenänderungen), Sicherheitsaudit
+>
+> [Release-Notes](https://github.com/Taloan/dmOffice/releases/tag/v1.5.0) · [Android-App herunterladen](https://github.com/Taloan/dmOffice/releases/latest/download/dmOffice.apk)
+
 Ein selbst gehostetes Büro im Browser: E-Mail, Kalender, Kontakte, Aufgaben, Notizen und Dateien – mit einem eigenen Server dazu. Alles läuft in einem Container, mit einer verschlüsselten Datenbank je Benutzer.
 
 | Bereich | Was es kann |
