@@ -1,6 +1,8 @@
 // Englische Texte: Rahmen, Anmeldung, Einstellungen und Verwaltung
 // Begriffe angelehnt an die englischen Outlook-Einstellungen
 export const app: Record<string, string> = {
+  'Stadt oder Region suchen': 'Search city or region',
+  '{n} Treffer': '{n} matches',
   // Einstellungen: Bereiche und Seiten
   'Einstellungen': 'Settings',
   'Einstellungen suchen': 'Search settings',
@@ -840,4 +842,8 @@ export const app: Record<string, string> = {
   'Was der Server für dich im Hintergrund erledigt: läuft, wartet, zuletzt fertig oder mit Fehler. Die Anzeige aktualisiert sich von selbst.': 'What the server does for you in the background: running, waiting, last finished or failed. The list updates by itself.',
   'Passwort anzeigen': 'Show password',
   'Passwort verbergen': 'Hide password',
+  'Demo – alle Inhalte sind erfunden und werden jede Nacht zurückgesetzt.': 'Demo – all content is made up and reset every night.',
+  'Demo-Zugang: Anmeldename „{login}“, Passwort „{password}“. Alles ist erfunden und wird jede Nacht zurückgesetzt.': 'Demo access: user name "{login}", password "{password}". Everything is made up and reset every night.',
+  'Die App kommt in der Demo aus dem Google-Play-Test. Verbinden: in der App „QR-Code scannen“, den Code dazu hier unter Konto → Geräte & Sync → „Handy-App koppeln“ erzeugen.': 'In the demo, the app comes from the Google Play test. To connect: tap “Scan QR code” in the app and create the code here under Account → Devices & sync → “Pair phone app”.',
+  'Android-App': 'Android app',
 }

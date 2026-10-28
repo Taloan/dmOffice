@@ -7,7 +7,7 @@ import {
 import { AppsList20Regular, ArrowDownload20Regular, ArrowUpload20Regular, Grid20Regular, Home20Regular, LockClosed20Regular } from '@fluentui/react-icons'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fmtSize, q } from '../api'
-import { locale, t, tError } from '../i18n'
+import { lang, locale, t, tError } from '../i18n'
 import { useIsMobile } from '../shell/mobile'
 import { Item, KindIcon, Thumb, extOf, fmtWhen, hasThumb, publicSource, viewKind } from './common'
 import { Viewer } from './Viewer'
@@ -97,7 +97,7 @@ export default function PublicShare({ token }: { token: string }) {
   const files = info?.items?.filter(i => !i.isDir && viewKind(i)) ?? []
   const inOffice = (i: Item) => !i.isDir && !viewKind(i) && !!info?.office?.includes(extOf(i.name).slice(1))
   const openOffice = async (i: Item): Promise<OfficeSession> => {
-    const r = await fetch(`${base}/office?` + q({ path: i.path }), { method: 'POST', credentials: 'same-origin' })
+    const r = await fetch(`${base}/office?` + q({ path: i.path, lang }), { method: 'POST', credentials: 'same-origin' })
     const d = await r.json().catch(() => ({}))
     if (!r.ok) throw new Error(d.error || `${r.status}`)
     return d

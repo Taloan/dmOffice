@@ -236,8 +236,10 @@ public sealed class MailSync : BackgroundService
             all.AddRange(await c.GetFoldersAsync(ns, false, ct));
         if (!all.Any(f => f.FullName.Equals("INBOX", StringComparison.OrdinalIgnoreCase))) all.Insert(0, c.Inbox);
 
-        var rows = all.Where(f => f.Exists)
-            .Select(f => (f.FullName, f.Name, f.DirectorySeparator.ToString(), SpecialOf(f),
+        var existing = all.Where(f => f.Exists).ToList();
+        var specials = AssignSpecials(existing.Select(f => (f.FullName, f.Name, f.ParentFolder?.FullName, f.Attributes)).ToList());
+        var rows = existing
+            .Select((f, i) => (f.FullName, f.Name, f.DirectorySeparator.ToString(), specials[i],
                 !f.Attributes.HasFlag(FolderAttributes.NoSelect) && !f.Attributes.HasFlag(FolderAttributes.NonExistent)))
             .ToList();
         MailStore.ReplaceFolders(space.Db, account.Id, rows);
@@ -254,6 +256,40 @@ public sealed class MailSync : BackgroundService
         // Kein IMAP-Attribut dafuer - nur am Namen erkannt (Outlook legt ihn genauso an)
         ("snoozed", FolderAttributes.None, new[] { "wiedervorlage", "erneut erinnern", "snoozed", "erneut erinnern aktiviert" }),
     };
+
+    /// <summary>
+    /// Sonderordner fuer alle Ordner eines Kontos: Kennzeichnet der Server einen (SPECIAL-USE, z. B. Gmail "[Gmail]/Gesendet"),
+    /// gilt nur dieser - gleichnamige Ordner ("Gesendete Elemente", von einem anderen Programm angelegt) bleiben normale
+    /// Ordner mit ihrem Namen. Ohne Kennzeichnung entscheidet der Name, je Art nur einer (der erste Name der Liste gewinnt).
+    /// </summary>
+    internal static List<string?> AssignSpecials(IReadOnlyList<(string FullName, string Name, string? Parent, FolderAttributes Attributes)> folders)
+    {
+        string? ByAttribute(FolderAttributes a) => Specials.FirstOrDefault(s => s.Attr != FolderAttributes.None && a.HasFlag(s.Attr)).Kind;
+        (string Kind, int Rank)? ByName(string name, string? parent)
+        {
+            if (!string.IsNullOrEmpty(parent) && !parent.Equals("INBOX", StringComparison.OrdinalIgnoreCase)) return null;
+            var n = name.ToLowerInvariant();
+            foreach (var (kind, _, names) in Specials)
+                if (Array.IndexOf(names, n) is var r and >= 0) return (kind, r);
+            return null;
+        }
+        var marked = folders.Select(f => ByAttribute(f.Attributes)).Where(k => k != null).ToHashSet();
+        var result = new List<string?>();
+        var taken = new HashSet<string>();
+        // Bester Namenstreffer je Art (ohne Kennzeichnung): kleinster Rang, bei Gleichstand der erste
+        var best = folders.Select((f, i) => (i, hit: ByName(f.Name, f.Parent)))
+            .Where(x => x.hit != null && !marked.Contains(x.hit.Value.Kind))
+            .GroupBy(x => x.hit!.Value.Kind)
+            .ToDictionary(g => g.Key, g => g.OrderBy(x => x.hit!.Value.Rank).ThenBy(x => x.i).First().i);
+        for (int i = 0; i < folders.Count; i++)
+        {
+            var f = folders[i];
+            if (f.FullName.Equals("INBOX", StringComparison.OrdinalIgnoreCase)) { result.Add("inbox"); continue; }
+            if (ByAttribute(f.Attributes) is { } k) { result.Add(k); continue; }
+            result.Add(ByName(f.Name, f.Parent) is { } h && best.TryGetValue(h.Kind, out var bi) && bi == i ? h.Kind : null);
+        }
+        return result;
+    }
 
     public static string? SpecialOf(IMailFolder f)
     {

@@ -1,10 +1,10 @@
 import {
-  Button, Checkbox, Dropdown, Field, MessageBar, MessageBarBody, Option, Radio, RadioGroup, Switch, Text, Tooltip, makeStyles, mergeClasses, tokens,
+  Button, Checkbox, Dropdown, Field, Input, MessageBar, MessageBarBody, Option, Radio, RadioGroup, Switch, Text, Tooltip, makeStyles, mergeClasses, tokens,
 } from '@fluentui/react-components'
 import { useEffect, useState } from 'react'
 import QRCode from 'qrcode'
 import { ArrowDownload20Regular } from '@fluentui/react-icons'
-import { api } from '../api'
+import { api, demoMode } from '../api'
 import { useApp } from '../App'
 import { UiPrefs, usePrefs } from '../prefs'
 import { lang, locale, t } from '../i18n'
@@ -26,14 +26,42 @@ const useStyles = makeStyles({
   colorOn: { outline: `2px solid ${tokens.colorNeutralForeground1}`, outlineOffset: '2px' },
 })
 
-const zones = ['Europe/Berlin', 'Europe/Vienna', 'Europe/Zurich', 'Europe/London', 'Europe/Paris', 'Europe/Madrid', 'Europe/Rome', 'Europe/Amsterdam',
-  'Europe/Warsaw', 'Europe/Istanbul', 'America/New_York', 'America/Chicago', 'America/Los_Angeles', 'Asia/Tokyo', 'UTC']
+// Alle Zeitzonen, die der Browser kennt (IANA, z. B. Australia/Sydney) - ältere Browser: eine kurze Liste
+const fallbackZones = ['Europe/Berlin', 'Europe/Vienna', 'Europe/Zurich', 'Europe/London', 'Europe/Paris', 'Europe/Madrid', 'Europe/Rome', 'Europe/Amsterdam',
+  'Europe/Warsaw', 'Europe/Istanbul', 'America/New_York', 'America/Chicago', 'America/Los_Angeles', 'Asia/Tokyo', 'Australia/Sydney', 'UTC']
+const zones: string[] = (() => {
+  try {
+    const all = (Intl as unknown as { supportedValuesOf?: (k: string) => string[] }).supportedValuesOf?.('timeZone')
+    return all?.length ? [...all.filter(z => z !== 'UTC'), 'UTC'] : fallbackZones
+  } catch { return fallbackZones }
+})()
 
 const zoneLabel = (z: string) => {
   try {
     const off = new Intl.DateTimeFormat(locale, { timeZone: z, timeZoneName: 'shortOffset' }).formatToParts(new Date()).find(p => p.type === 'timeZoneName')?.value
     return `(${off?.replace('GMT', 'UTC') || 'UTC'}) ${z.replace('_', ' ')}`
   } catch { return z }
+}
+
+/** Zeitzone wählen: Suchfeld (Stadt oder Region, z. B. „Sydney“) filtert die Liste aller Zonen. */
+function ZonePicker({ value, onPick }: { value: string; onPick: (z: string) => void }) {
+  const [query, setQuery] = useState('')
+  const list = zones.includes(value) ? zones : [value, ...zones]
+  const q = query.trim().toLowerCase().replace(/ /g, '_')
+  const hits = q ? list.filter(z => z.toLowerCase().includes(q)) : list
+  // Die gewählte Zone bleibt in der Liste, auch wenn sie nicht zur Suche passt
+  const shown = hits.includes(value) ? hits : [value, ...hits]
+  return (
+    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+      <Input value={query} onChange={(_, d) => setQuery(d.value)} placeholder={t('Stadt oder Region suchen')} style={{ width: 200 }}
+        aria-label={t('Stadt oder Region suchen')} />
+      <Dropdown value={zoneLabel(value)} selectedOptions={[value]} style={{ minWidth: 280 }}
+        onOptionSelect={(_, d) => { if (d.optionValue) { onPick(d.optionValue); setQuery('') } }}>
+        {shown.map(z => <Option key={z} value={z} text={zoneLabel(z)}>{zoneLabel(z)}</Option>)}
+      </Dropdown>
+      {q && <Text size={200}>{t('{n} Treffer', { n: hits.length })}</Text>}
+    </div>
+  )
 }
 
 /** Server-Einstellungen (Zeitzone, Hell/Dunkel) lesen und speichern. */
@@ -89,9 +117,7 @@ export function LanguageSettings() {
       <Section title={t('Zeitzone')} hint={t('Gilt für neue und geänderte Termine. Programme am Handy rechnen in ihre eigene Zeitzone um.')} last>
         {settings && (
           <Field className={s.field}>
-            <Dropdown value={zoneLabel(settings.timeZone)} selectedOptions={[settings.timeZone]} onOptionSelect={(_, d) => save({ timeZone: d.optionValue })}>
-              {(zones.includes(settings.timeZone) ? zones : [settings.timeZone, ...zones]).map(z => <Option key={z} value={z} text={zoneLabel(z)}>{zoneLabel(z)}</Option>)}
-            </Dropdown>
+            <ZonePicker value={settings.timeZone} onPick={z => save({ timeZone: z })} />
           </Field>
         )}
       </Section>
@@ -253,6 +279,8 @@ export function InstallSettings() {
           </>
         )}
       </Section>
+      {/* Demo-Server: die App gibt es dort nur über den Play-Test */}
+      {!demoMode.on && <>
       <Section title={t('Android-App (APK)')} hint={t('Die eigene dmOffice-App für Android 8 und neuer: Kalender und Aufgaben mit Widgets auf dem Startbildschirm. Sie liegt nicht im Play Store, sondern als APK-Datei auf GitHub.')} last>
         <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', alignItems: 'flex-start' }}>
           {apkQr && <img src={apkQr} width={200} height={200} alt={t('QR-Code zum APK-Download')} style={{ background: '#fff', borderRadius: 8 }} />}
@@ -268,6 +296,9 @@ export function InstallSettings() {
           </div>
         </div>
       </Section>
+      </>}
+      {/* Demo: kein Download, aber der Weg zum Koppeln der App aus dem Google-Play-Test */}
+      {demoMode.on && <Section title={t('Android-App')} hint={t('Die App kommt in der Demo aus dem Google-Play-Test. Verbinden: in der App „QR-Code scannen“, den Code dazu hier unter Konto → Geräte & Sync → „Handy-App koppeln“ erzeugen.')}>{null}</Section>}
     </>
   )
 }

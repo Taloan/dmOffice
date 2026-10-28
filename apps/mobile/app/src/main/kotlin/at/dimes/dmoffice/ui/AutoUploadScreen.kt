@@ -734,7 +734,8 @@ internal fun AllFilesAccessHint() {
             granted = now
         }
     }
-    if (granted || Build.VERSION.SDK_INT < 30) return
+    // Play-Build: ohne Zugriff auf alle Dateien, Löschen bestätigt man über die Mediathek
+    if (granted || Build.VERSION.SDK_INT < 30 || at.dimes.dmoffice.BuildConfig.PLAY) return
     Column(Modifier.padding(top = 8.dp)) {
         Text(stringResource(R.string.au_all_files_hint), style = MaterialTheme.typography.bodySmall)
         TextButton(onClick = {

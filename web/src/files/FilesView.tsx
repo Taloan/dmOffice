@@ -19,7 +19,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, Fragment } from 'rea
 import { ApiError, api, fmtSize, q } from '../api'
 import { useApp } from '../App'
 import { useDebounced } from '../shell/hooks'
-import { locale, t } from '../i18n'
+import { lang, locale, t } from '../i18n'
 import {
   FILTERS, Item, Kind, KindIcon, Thumb, WITH_ME, extOf, fmtWhen, hasThumb, inWithMe, inside, join, kindLabel, kindOf, nameOf, ownSource, parentOf, viewKind,
 } from './common'
@@ -433,7 +433,9 @@ export default function FilesView() {
     if (diff <= weekday + 7) return [3, t('Letzte Woche')]
     if (d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth()) return [4, t('Diesen Monat')]
     if (d.getFullYear() === now.getFullYear()) return [5, t('Dieses Jahr')]
-    return [6, t('Älter')]
+    // Aelter: je Monat („Dezember 2023“), juengste zuerst - ein einziges „Aelter“ hilft bei einem Ordner voller alter Fotos nicht
+    const back = (now.getFullYear() - d.getFullYear()) * 12 + now.getMonth() - d.getMonth()
+    return [6 + back, d.toLocaleDateString(locale, { month: 'long', year: 'numeric' })]
   }, [groupBy, photosView, photoGroup, photoDesc])
   const shown = useMemo(() => {
     if (!grouping) return items
@@ -1344,7 +1346,7 @@ export default function FilesView() {
       )}
       {editing && (
         <OfficeEditor key={editing.path} name={editing.name} onClose={closeEditor}
-          open={() => api.post<OfficeSession>('/api/office/open', { path: editing.path, view: editing.view || undefined })} />
+          open={() => api.post<OfficeSession>('/api/office/open?lang=' + lang, { path: editing.path, view: editing.view || undefined })} />
       )}
       {share && <ShareDialog item={share} onClose={() => { setShare(null); changed() }} notify={m => notify(m)} fail={fail} />}
       {naming && <NameDialog title={naming.title} initial={naming.initial} label={naming.label} onDone={naming.done} onClose={() => setNaming(null)} />}

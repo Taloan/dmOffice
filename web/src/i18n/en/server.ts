@@ -129,4 +129,7 @@ export const server: Record<string, string> = {
   'Unbekannte Dokumentart.': 'Unknown document type.',
   'Der Document Server verlangt ein JWT-Geheimnis (JWT_SECRET des Containers) – bitte eintragen.': 'The Document Server requires a JWT secret (the container’s JWT_SECRET) – please enter it.',
   'Das JWT-Geheimnis passt nicht zum Document Server.': 'The JWT secret does not match the Document Server.',
+  'Im Demo-Postfach werden Mails nur angezeigt – Verschieben, Wiedervorlage, Löschen und Markieren gehen in der Demo nicht.': 'In the demo mailbox, emails can only be viewed – moving, snoozing, deleting and flagging are not available in the demo.',
+  'Für dieses Konto ist kein IMAP-Server eingetragen.': 'No IMAP server is set for this account.',
+  'In der Demo nicht möglich.': 'Not available in the demo.',
 }

@@ -32,6 +32,14 @@ val gitShort = runCatching { providers.exec { commandLine("git", "rev-parse", "-
 val appVersionName = releaseVersion ?: (appVersion + "-dev" + (if (gitShort.isNotEmpty()) " ($gitShort)" else ""))
 val appVersionCode = appVersion.split('.').map { it.toInt() }.let { (a, b, c) -> a * 10000 + b * 100 + c }.coerceAtLeast(1)
 
+/** Google-Play-Build (-Pplay): ohne Selbst-Update und ohne Zugriff auf alle Dateien (src/play/AndroidManifest.xml). */
+val play = project.hasProperty("play")
+/**
+ * Play hat eigene Versionscodes (Version x10 plus Lauf, -PplayBuild=1..9): 1.5.0 -> 105001, 1.5.1 -> 105011. So steigen sie in
+ * Play immer und kollidieren nie mit den Codes der APK von GitHub (1.5.0 -> 10500).
+ */
+val playBuild = (project.findProperty("playBuild") as String?)?.toIntOrNull()?.coerceIn(1, 9) ?: 1
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -48,12 +56,14 @@ android {
         applicationId = "at.dimes.dmoffice"
         minSdk = 26
         targetSdk = 36
-        versionCode = appVersionCode
+        versionCode = if (play) appVersionCode * 10 + playBuild else appVersionCode
         versionName = appVersionName
         vectorDrawables.useSupportLibrary = true
         // Eigener Android-Kontotyp fuer Kalender und Kontakte (Abgleich in beide Richtungen)
         resValue("string", "account_type", "at.dimes.dmoffice.account")
+        buildConfigField("boolean", "PLAY", play.toString())
     }
+    if (play) sourceSets.getByName("release").manifest.srcFile("src/play/AndroidManifest.xml")
 
     buildTypes {
         debug {

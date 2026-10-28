@@ -27,6 +27,9 @@ Set DMOFFICE_MASTER_KEY to a long random value (e.g. openssl rand -hex 32) and k
   <Changes>[b]Updating[/b]
 Before a data change dmOffice checks the free space, makes its own encrypted backup of the databases (appdata/pre-update, removed after 14 days) and asks before big conversions (Administration, Updates). If there is not enough space nothing is changed and the page says how much is missing. A copy of the appdata folder before the update is still the best insurance. To go back: pin the previous image version (e.g. ghcr.io/taloan/dmoffice:1.1.0) and copy the databases from pre-update back into users. Details: https://github.com/Taloan/dmOffice/blob/master/docs/updating.md
 
+[b]1.5.1[/b]
+Bug fixes, no data changes. Update to 1.5.1 before switching from the master.key file to DMOFFICE_MASTER_KEY.
+
 [b]Data changes since 1.1[/b]
 Schema 11: fixed file numbers for Nextcloud clients (rewrites the file table, needs about the size of the file contents in extra space). 12-15: app password scope, recycle bin and versions, full-text search, link limits. 16: file contents move out of the database into encrypted files (background, pausable; the database only shrinks after Settings, Statistics, Compact database). 17: note tags. 18: SHA-256 checksum per file.</Changes>
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>

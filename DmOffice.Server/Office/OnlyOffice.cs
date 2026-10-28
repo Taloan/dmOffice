@@ -108,7 +108,7 @@ public static class OnlyOffice
             ["editorConfig"] = new JsonObject
             {
                 ["callbackUrl"] = grant.B + "/onlyoffice/callback?t=" + t,
-                ["lang"] = "de",
+                ["lang"] = WopiApi.LangOf(http),
                 ["mode"] = grant.W ? "edit" : "view",
                 ["user"] = new JsonObject { ["id"] = grant.L != null ? "guest-" + grant.L : grant.U, ["name"] = grant.N },
                 ["customization"] = new JsonObject

@@ -299,14 +299,16 @@ fun SettingsScreen(onSignedOut: () -> Unit, onClose: (() -> Unit)? = null, onNav
                 SectionHeader(stringResource(R.string.settings_about))
                 ListItem(headlineContent = { Text(stringResource(R.string.app_name)) },
                     supportingContent = { Text(stringResource(R.string.version, BuildConfig.VERSION_NAME) + " (" + BuildConfig.VERSION_CODE + ")") })
-                if (at.dimes.dmoffice.update.Updater.isDevBuild) {
+                if (at.dimes.dmoffice.update.Updater.isPlay) {
+                    // Updates kommen aus Google Play
+                } else if (at.dimes.dmoffice.update.Updater.isDevBuild) {
                     Text(stringResource(R.string.update_dev_build), modifier = Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 } else {
                     ListItem(headlineContent = { Text(stringResource(R.string.update_auto)) }, supportingContent = { Text(stringResource(R.string.update_auto_desc)) },
                         trailingContent = { Switch(checked = settings.autoUpdate, onCheckedChange = { app.prefs.setAutoUpdate(it); at.dimes.dmoffice.update.UpdateWorker.schedule(ctx) }) })
                 }
                 val checking = update is at.dimes.dmoffice.update.Updater.State.Checking
-                Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (!at.dimes.dmoffice.update.Updater.isPlay) Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Button(onClick = { at.dimes.dmoffice.update.Updater.checkNow(ctx) }, enabled = !checking) { Text(stringResource(if (checking) R.string.update_checking else R.string.update_check)) }
                 }
                 when (val u = update) {

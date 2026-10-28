@@ -4,7 +4,7 @@ import {
 } from '@fluentui/react-components'
 import { createContext, useCallback, useContext, useEffect, useState } from 'react'
 import { chooseLanguage, lang, t, tError } from './i18n'
-import { api, Me } from './api'
+import { api, demoMode, Me } from './api'
 import { storeTheme, themesFor, ThemeChoice, useIsDark } from './theme'
 import { currentPrefs, PrefsContext, usePrefsState, usePrefsVersion } from './prefs'
 import { Shell } from './shell/Shell'
@@ -55,7 +55,7 @@ export function App() {
 }
 
 function Root() {
-  const [state, setState] = useState<{ setupNeeded: boolean; setupCode?: boolean; loggedIn: boolean; user: Me | null } | null>(null)
+  const [state, setState] = useState<{ setupNeeded: boolean; setupCode?: boolean; loggedIn: boolean; user: Me | null; demo?: { login: string; password: string } | null } | null>(null)
   const [upd, setUpd] = useState<UpdateState | null>(null)
   // Remount der Programme, sobald die Datenaenderung des Benutzers durch ist
   const [round, setRound] = useState(0)
@@ -63,7 +63,8 @@ function Root() {
   const { dispatchToast } = useToastController(toasterId)
 
   const load = useCallback(() => {
-    api.get('/api/auth/state').then(setState).catch(() => setState({ setupNeeded: false, loggedIn: false, user: null }))
+    api.get<{ setupNeeded: boolean; loggedIn: boolean; user: Me | null; demo?: { login: string; password: string } | null }>('/api/auth/state')
+      .then(s => { demoMode.on = !!s.demo; setState(s) }).catch(() => setState({ setupNeeded: false, loggedIn: false, user: null }))
   }, [])
   useEffect(load, [load])
   useEffect(() => {
@@ -103,8 +104,14 @@ function Root() {
     <>
       <Toaster toasterId={toasterId} position="bottom-end" />
       <UpdateBar />
+      {/* Schild mittig in der Titelleiste - ein eigener Streifen machte die Seite höher als das Fenster */}
+      {state.demo && state.loggedIn && <div style={{ position: 'fixed', top: 6, left: '50%', transform: 'translateX(-50%)', zIndex: 1000, pointerEvents: 'none', maxWidth: '60vw',
+        whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontSize: tokens.fontSizeBase100, padding: '1px 10px', borderRadius: 999,
+        background: tokens.colorPaletteMarigoldBackground2, color: tokens.colorNeutralForeground1 }}>
+        {t('Demo – alle Inhalte sind erfunden und werden jede Nacht zurückgesetzt.')}
+      </div>}
       {state.setupNeeded ? <Setup onDone={load} needCode={state.setupCode} />
-        : !state.loggedIn || !state.user ? <Login onDone={load} />
+        : !state.loggedIn || !state.user ? <Login onDone={load} demo={state.demo} />
         : (
           <Ctx.Provider value={{ me: state.user, notify, fail, refreshMe: load }}>
             {!upd ? <Center><Spinner /></Center> : waiting ? <UpdateGate state={upd} /> : <WithPrefs key={round}>{isMailWindow() ? <MailWindow /> : <Shell />}</WithPrefs>}
@@ -154,10 +161,11 @@ function CardFooter() {
   )
 }
 
-function Login({ onDone }: { onDone: () => void }) {
+function Login({ onDone, demo }: { onDone: () => void; demo?: { login: string; password: string } | null }) {
   const s = useStyles()
-  const [login, setLogin] = useState('')
-  const [password, setPassword] = useState('')
+  // Demo-Server: Zugangsdaten schon eingetragen
+  const [login, setLogin] = useState(demo?.login ?? '')
+  const [password, setPassword] = useState(demo?.password ?? '')
   const [code, setCode] = useState('')
   const [needCode, setNeedCode] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -183,6 +191,7 @@ function Login({ onDone }: { onDone: () => void }) {
     <Center>
       <form className={s.card} onSubmit={submit}>
         <Logo />
+        {demo && <MessageBar intent="info"><MessageBarBody>{t('Demo-Zugang: Anmeldename „{login}“, Passwort „{password}“. Alles ist erfunden und wird jede Nacht zurückgesetzt.', { login: demo.login, password: demo.password })}</MessageBarBody></MessageBar>}
         {!needCode ? (
           <>
             <Field label={t('Anmeldename')}><Input value={login} onChange={(_, d) => setLogin(d.value)} autoFocus autoComplete="username" /></Field>

@@ -78,7 +78,7 @@ public sealed class UserStore
             u.TotpPending = RewrapOne(u.TotpPending);
         }
         Save();
-        File.Delete(_vault.KeyFile);
+        // Die Schluesseldatei loescht der Tresor selbst, wenn alles umgepackt ist (Vault.Migrate)
     }
 
     private string? RewrapOne(string? wrapped)

@@ -42,6 +42,11 @@ public sealed class ImapPool : IDisposable
 
     public async Task<T> UseAsync<T>(MailAccount account, string lane, Func<ImapClient, Task<T>> work, CancellationToken ct = default)
     {
+        // Demo-Postfach (DMOFFICE_DEMO): ohne Server - statt „hostname cannot be empty“ eine verständliche Meldung
+        if (string.IsNullOrEmpty(account.ImapHost))
+            throw new UnauthorizedAccessException(DmOffice.Core.Demo.Enabled
+                ? "Im Demo-Postfach werden Mails nur angezeigt – Verschieben, Wiedervorlage, Löschen und Markieren gehen in der Demo nicht."
+                : "Für dieses Konto ist kein IMAP-Server eingetragen.");
         var slot = _slots.GetOrAdd(account.Id + "|" + lane, _ => new Slot());
         await slot.Gate.WaitAsync(ct);
         try

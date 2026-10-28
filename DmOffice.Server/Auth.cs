@@ -234,6 +234,8 @@ public static class Auth
             {
                 setupNeeded = users.Empty,
                 setupCode = users.Empty && SetupCode != null,
+                // Demo-Server: Zugangsdaten für die Anmeldeseite und den Hinweis oben
+                demo = Demo.Enabled ? new { login = Demo.Login, password = Demo.Password } : null,
                 loggedIn = me != null,
                 user = me == null ? null : new { me.Id, me.Login, me.DisplayName, me.IsAdmin, me.TwoFactor, files = !me.FilesOff }
             };

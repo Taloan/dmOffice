@@ -6,6 +6,7 @@ import { useEffect, useState } from 'react'
 import { PageTitle } from './parts'
 import { BackBar, useBackClose, useIsMobile } from '../shell/mobile'
 import { t } from '../i18n'
+import { demoMode } from '../api'
 import { AccountsSettings } from './AccountsSettings'
 import { RulesSettings, SpamSettings } from './RulesSettings'
 import { DevicesSettings, NotesSettings } from './DevicesSettings'
@@ -49,8 +50,9 @@ interface Category { key: string; label: string; icon: JSX.Element; pages: Page[
 const categories: Category[] = [
   {
     key: 'account', label: t('Konto'), icon: <Person20Regular />, pages: [
-      { key: 'accounts', label: t('E-Mail-Konten'), words: kw('konto imap smtp server passwort signatur sync zeitraum'), render: () => <AccountsSettings /> },
-      { key: 'security', label: t('Sicherheit'), words: kw('passwort ändern zwei-faktor 2fa authenticator wiederherstellungscodes'), render: () => <SecuritySettings /> },
+      // Demo-Server: Mailkonten und Sicherheit (Passwort, Zwei-Faktor) gibt es dort nicht
+      ...(demoMode.on ? [] : [{ key: 'accounts', label: t('E-Mail-Konten'), words: kw('konto imap smtp server passwort signatur sync zeitraum'), render: () => <AccountsSettings /> },
+      { key: 'security', label: t('Sicherheit'), words: kw('passwort ändern zwei-faktor 2fa authenticator wiederherstellungscodes'), render: () => <SecuritySettings /> }]),
       { key: 'devices', label: t('Geräte & Sync'), words: kw('app-passwort caldav carddav webdav handy davx iphone thunderbird notizi'), render: () => <DevicesSettings /> },
     ],
   },

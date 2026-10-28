@@ -126,10 +126,16 @@ builder.Services.ConfigureHttpJsonOptions(o =>
 var app = builder.Build();
 Auth.Log = app.Logger;
 
+// Demo-Server (play.dmoffice.de): leerer Server bekommt Verwaltung und Demo-Konto mit Beispieldaten
+if (Demo.Enabled) Demo.Seed(app.Services, app.Logger);
 // Noch kein Benutzer: Einmal-Code fuer die Ersteinrichtung ausgeben (verhindert, dass der erste Fremde Admin wird)
 if (app.Services.GetRequiredService<UserStore>().Empty) Auth.EnsureSetupCode(app.Logger);
 // Hauptschluessel liegt als Datei neben den Daten: dann schuetzt die Verschluesselung nur einzelne Datenbanken,
 // nicht das ganze Volume. Deutlich ins Log schreiben.
+if (vault.Migrated > 0)
+    app.Logger.LogInformation("Hauptschlüssel jetzt aus DMOFFICE_MASTER_KEY: {Count} Werte neu eingepackt, die Schlüsseldatei ist gelöscht.", vault.Migrated);
+if (vault.MigrationError != null)
+    app.Logger.LogError("Umstieg auf DMOFFICE_MASTER_KEY unvollständig ({Error}) - die Schlüsseldatei bleibt liegen, beide Schlüssel gelten weiter.", vault.MigrationError);
 if (vault.KeyInDataDir)
     app.Logger.LogWarning("DMOFFICE_MASTER_KEY ist nicht gesetzt - der Hauptschlüssel liegt als Datei neben den Daten ({File}). " +
         "Wer das Datenverzeichnis oder eine Sicherung kopiert, kann damit alles entschlüsseln. Besser den Schlüssel als Umgebungsvariable setzen.", vault.KeyFile);
@@ -216,6 +222,8 @@ app.Use(async (ctx, next) =>
 if (AnonThrottle.FromEnvironment() is { } anonThrottle) AnonThrottle.Use(app, anonThrottle);
 else app.Logger.LogWarning("DMOFFICE_ANON_LIMIT=off: Anfragen ohne Anmeldung werden nicht gebremst.");
 app.UseAuthorization();
+// Demo: Mailkonten, Versand, Freigabelinks, Einladungen, Passwort und Zwei-Faktor gesperrt
+if (Demo.Enabled) app.Use(Demo.Guard);
 // Geraete (App-Passwort) und Umschlag: tatsaechlichen Pfad noch einmal pruefen, /api/auth/* gesperrt
 app.Use(async (ctx, next) =>
 {

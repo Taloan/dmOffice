@@ -110,6 +110,18 @@ public static class WopiApi
 
     private static string OriginOf(HttpContext http) => $"{http.Request.Scheme}://{http.Request.Host}";
 
+    /// <summary>
+    /// Sprache des Office-Editors: die der Oberfläche (?lang= vom Web), sonst die des Browsers (Accept-Language). Englisch für
+    /// alle außer Deutsch - so wie die Oberfläche selbst.
+    /// </summary>
+    internal static string LangOf(HttpContext http)
+    {
+        var asked = http.Request.Query["lang"].ToString();
+        if (asked is "de" or "en") return asked;
+        var accept = http.Request.Headers.AcceptLanguage.ToString();
+        return accept.TrimStart().StartsWith("de", StringComparison.OrdinalIgnoreCase) ? "de" : "en";
+    }
+
     /// <summary>Gaeste ueber einen oeffentlichen Link: kuerzer gueltige Tokens (sonst die vollen zehn Stunden).</summary>
     internal static TimeSpan? GuestLifetime(WopiGrant grant) => grant.L != null ? TimeSpan.FromHours(2) : null;
 
@@ -132,7 +144,7 @@ public static class WopiApi
         var src = grant.B + "/wopi/files/" + WopiTokens.FileId(grant.U, grant.F);
         return new
         {
-            url = Discovery.ActionUrl(urlsrc, src, "de"),
+            url = Discovery.ActionUrl(urlsrc, src, LangOf(http)),
             token,
             ttl = expires.ToUnixTimeMilliseconds(),
             name = f.Name,

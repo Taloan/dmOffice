@@ -22,6 +22,9 @@ async function handle<T>(r: Response): Promise<T> {
   return data as T
 }
 
+/** Demo-Server (play.dmoffice.de): kommt mit /api/auth/state; blendet den APK-Download aus. */
+export const demoMode = { on: false }
+
 export const api = {
   get: <T = any>(url: string) => fetch(url, { credentials: 'same-origin' }).then(r => handle<T>(r)),
   post: <T = any>(url: string, body?: unknown) =>

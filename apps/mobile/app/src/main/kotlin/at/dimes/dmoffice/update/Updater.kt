@@ -64,7 +64,10 @@ object Updater {
 
     private fun sp(context: Context) = context.getSharedPreferences("update", Context.MODE_PRIVATE)
 
-    fun autoEnabled(context: Context): Boolean = !isDevBuild && App.get(context).prefs.settings.value.autoUpdate
+    /** Aus Google Play installiert: Updates kommen aus dem Store. */
+    val isPlay: Boolean = BuildConfig.PLAY
+
+    fun autoEnabled(context: Context): Boolean = !isDevBuild && !isPlay && App.get(context).prefs.settings.value.autoUpdate
 
     /** Zuletzt gefundene Version (ueberlebt Neustarts, damit der Hinweis nicht jedes Mal neu laden muss). */
     private fun cached(context: Context): Release? = sp(context).getString("release", null)?.let { UpdateLogic.parseRelease(it) }
@@ -83,7 +86,7 @@ object Updater {
     /** "Nach Updates suchen" in den Einstellungen; zeigt den Hinweis, wenn es etwas Neues gibt. */
     fun checkNow(context: Context) {
         val app = context.applicationContext
-        if (_state.value is State.Checking || _state.value is State.Downloading) return
+        if (isPlay || _state.value is State.Checking || _state.value is State.Downloading) return
         scope.launch {
             try {
                 val r = check(app)
