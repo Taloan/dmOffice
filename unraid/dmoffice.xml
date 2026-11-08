@@ -27,6 +27,9 @@ Set DMOFFICE_MASTER_KEY to a long random value (e.g. openssl rand -hex 32) and k
   <Changes>[b]Updating[/b]
 Before a data change dmOffice checks the free space, makes its own encrypted backup of the databases (appdata/pre-update, removed after 14 days) and asks before big conversions (Administration, Updates). If there is not enough space nothing is changed and the page says how much is missing. A copy of the appdata folder before the update is still the best insurance. To go back: pin the previous image version (e.g. ghcr.io/taloan/dmoffice:1.1.0) and copy the databases from pre-update back into users. Details: https://github.com/Taloan/dmOffice/blob/master/docs/updating.md
 
+[b]2.0.0[/b]
+New: chat with the assistant Pukki, gallery with photo editing, music, vault, documents (DMS), overview, external folders, core backup, data export, spam filter, Microsoft accounts. Update the server first, then the Android app - the 2.0 app needs a 2.0 server. Data changes: schema 19-21 (backup before, as above); going back to 1.5 is not supported, so copy the appdata folder first. dmOffice no longer runs as root: on the first start it hands /data to user 1654, or to DMOFFICE_UID/DMOFFICE_GID (99/100 is usual on Unraid) - set these if dmOffice should write to mounted shares. Release notes: https://github.com/Taloan/dmOffice/releases/tag/v2.0.0
+
 [b]1.5.1[/b]
 Bug fixes, no data changes. Update to 1.5.1 before switching from the master.key file to DMOFFICE_MASTER_KEY.
 
