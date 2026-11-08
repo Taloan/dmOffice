@@ -1,13 +1,15 @@
 import {
   Button, Card, CardHeader, Dropdown, Field, Input, Option, SpinButton, Switch, Text, makeStyles, tokens, Spinner, MessageBar, MessageBarBody,
-  Avatar,
+  Avatar, Table, TableBody, TableCell, TableHeader, TableHeaderCell, TableRow
 } from '@fluentui/react-components'
 import { Add20Regular, Copy20Regular, Delete20Regular, Edit20Regular, PlugConnected20Regular } from '@fluentui/react-icons'
 import { useEffect, useRef, useState } from 'react'
-import { api } from '../api'
+import { api, type Folder } from '../api'
 import { useApp } from '../App'
-import { t, tError } from '../i18n'
+import { askConfirm } from '../shell/context'
+import { locale, t, tError } from '../i18n'
 import { RichEditor, RichEditorHandle } from '../shell/RichEditor'
+import { copyText } from '../shell/browser'
 
 const useStyles = makeStyles({
   grid: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '12px 16px', '@media (max-width: 767px)': { gridTemplateColumns: 'minmax(0, 1fr)' } },
@@ -26,6 +28,54 @@ interface AccountForm {
   signature: string; language: 'de' | 'en'; acceptAnyCertificate: boolean; saveSentCopy: boolean; syncMonths: number; maxCachedMb: number
   trashDays: number; junkDays: number; focusedInbox: boolean
   storage: 'full' | 'slim'; slimDays: number; slimMb: number
+  /** Selbst festgelegte Sonderordner: Art → Ordnerpfad, '' = keiner; fehlt eine Art, erkennt dmOffice den Ordner selbst */
+  folderMap?: Record<string, string> | null
+}
+
+/** Welcher Ordner beim Anbieter Gesendet, Entwürfe, Junk, Papierkorb und Archiv ist - erkannt oder selbst festgelegt. */
+function FolderMapEditor({ account, map, onChange }: { account: string; map: Record<string, string>; onChange: (m: Record<string, string>) => void }) {
+  const { fail } = useApp()
+  const [folders, setFolders] = useState<Folder[] | null>(null)
+  const [creating, setCreating] = useState(false)
+  useEffect(() => { api.get<Folder[]>(`/api/mail/${account}/folders`).then(setFolders).catch(() => setFolders([])) }, [account])
+  if (!folders) return <Spinner size="tiny" />
+  const kinds: [string, string][] = [['sent', t('Gesendet')], ['drafts', t('Entwürfe')], ['junk', t('Junk-E-Mail')], ['trash', t('Gelöschte Elemente')], ['archive', t('Archiv')]]
+  const choices = folders.filter(f => f.selectable && f.special !== 'inbox')
+  const label = (path: string) => folders.find(f => f.path === path)?.path.split(folders.find(f => f.path === path)?.delimiter || '/').join(' › ') ?? path
+  const createArchive = async () => {
+    setCreating(true)
+    try {
+      const r = await api.post<{ path: string }>(`/api/mail/${account}/folders`, { path: '', newName: t('Archiv') })
+      setFolders([...folders, { path: r.path, name: t('Archiv'), delimiter: '/', special: null, selectable: true, unread: 0, total: 0, synced: null }])
+      onChange({ ...map, archive: r.path })
+    } catch (e) { fail(e) } finally { setCreating(false) }
+  }
+  return <>
+    {kinds.map(([kind, name]) => {
+      const set = map[kind]
+      // Ohne eigene Festlegung: was dmOffice erkannt hat
+      const found = folders.find(f => f.special === kind)
+      const auto = found ? t('Automatisch: {folder}', { folder: label(found.path) }) : t('Automatisch (keiner gefunden)')
+      const value = set === undefined ? 'auto' : set === '' ? 'none' : 'f:' + set
+      return <Field key={kind} label={name}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-start' }}>
+          <Dropdown style={{ width: '100%', minWidth: 0 }} value={value === 'auto' ? auto : value === 'none' ? t('Keiner') : label(set!)} selectedOptions={[value]}
+            onOptionSelect={(_, d) => {
+              const v = d.optionValue as string
+              const next = { ...map }
+              if (v === 'auto') delete next[kind]; else next[kind] = v === 'none' ? '' : v.slice(2)
+              onChange(next)
+            }}>
+            <Option value="auto" text={auto}>{auto}</Option>
+            {choices.map(f => <Option key={f.path} value={'f:' + f.path} text={label(f.path)}>{label(f.path)}</Option>)}
+            <Option value="none" text={t('Keiner')}>{t('Keiner')}</Option>
+          </Dropdown>
+          {kind === 'archive' && !found && set === undefined &&
+            <Button size="small" disabled={creating} onClick={createArchive}>{t('Ordner „Archiv“ anlegen')}</Button>}
+        </div>
+      </Field>
+    })}
+  </>
 }
 
 export const cleanupDays = [0, 7, 14, 30, 60, 90, 180, 365]
@@ -89,7 +139,7 @@ export function AccountsSettings() {
   useEffect(() => { load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const remove = async (a: AccountForm) => {
-    if (!confirm(t('Konto „{name}“ entfernen? Alle hier gespeicherten Mails und Daten dieses Kontos werden gelöscht. Beim Anbieter bleibt alles unverändert.', { name: a.name }))) return
+    if (!await askConfirm(t('Konto entfernen'), t('Konto „{name}“ entfernen? Alle hier gespeicherten Mails und Daten dieses Kontos werden gelöscht. Beim Anbieter bleibt alles unverändert.', { name: a.name }), t('Entfernen'))) return
     try { await api.del(`/api/settings/accounts/${a.id}`); load() } catch (e) { fail(e) }
   }
 
@@ -102,7 +152,7 @@ export function AccountsSettings() {
         {accounts?.map(a => (
           <Card key={a.id} size="small">
             <CardHeader image={<Avatar name={a.name} color="colorful" />} header={<Text weight="semibold">{a.name}</Text>}
-              description={`${a.email} · ${a.syncMonths ? t('{period} synchronisiert', { period: period(a.syncMonths) }) : t('alles synchronisiert')}${a.storage === 'slim' ? ' · ' + t('Schlank') : ''}`}
+              description={`${a.email} · ${a.syncMonths ? t('{period} synchronisiert', { period: period(a.syncMonths) }) : t('alles synchronisiert')}${a.storage === 'slim' ? ' · ' + t('Slim Mode') : ''}`}
               action={<div>
                 <Button appearance="subtle" icon={<Edit20Regular />} onClick={() => setEdit(a)} aria-label={t('Konto bearbeiten')} title={t('Konto bearbeiten')} />
                 <Button appearance="subtle" icon={<Delete20Regular />} onClick={() => remove(a)} aria-label={t('Konto entfernen')} title={t('Konto entfernen')} />
@@ -126,9 +176,9 @@ const secLabel = (v: string) => security.find(x => x[0] === v)?.[1] ?? v
  * Anmeldung bei Microsoft per Geraetecode: Code anzeigen, der Benutzer bestaetigt auf microsoft.com/devicelogin,
  * hier wird gewartet. onDone bekommt die Kennung der Anmeldung - das Token dazu bleibt auf dem Server.
  */
-function MicrosoftSignIn({ onDone, onCancel }: { onDone: (flow: string) => void; onCancel: () => void }) {
+export function MicrosoftSignIn({ onDone, onCancel, startUrl = '/api/settings/accounts/microsoft/start' }: { onDone: (flow: string) => void; onCancel: () => void; startUrl?: string }) {
   const s = useStyles()
-  const { fail } = useApp()
+  const { fail, notify } = useApp()
   const [start, setStart] = useState<{ flow: string; userCode: string; verificationUri: string; interval: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [round, setRound] = useState(0)
@@ -139,7 +189,7 @@ function MicrosoftSignIn({ onDone, onCancel }: { onDone: (flow: string) => void;
     let stop = false
     let timer: number | undefined
     setStart(null); setError(null)
-    api.post('/api/settings/accounts/microsoft/start').then(r => {
+    api.post(startUrl).then(r => {
       if (stop) return
       setStart(r)
       const poll = async () => {
@@ -160,7 +210,8 @@ function MicrosoftSignIn({ onDone, onCancel }: { onDone: (flow: string) => void;
     return () => { stop = true; window.clearTimeout(timer) }
   }, [round]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const copy = () => { if (start) navigator.clipboard?.writeText(start.userCode).catch(() => { }) }
+  // copyText: geht auch ohne HTTPS (Server im eigenen Netz unter http://…)
+  const copy = async () => { if (start && await copyText(start.userCode)) notify(t('Code kopiert')) }
   return (
     <MessageBar className={s.full} intent={error ? 'warning' : 'info'} layout="multiline">
       <MessageBarBody>
@@ -176,7 +227,7 @@ function MicrosoftSignIn({ onDone, onCancel }: { onDone: (flow: string) => void;
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}><Spinner size="tiny" /><Text>{t('Verbinde mit Microsoft …')}</Text></div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-start' }}>
-            <Text>{t('Öffne {url} und gib diesen Code ein. Danach mit deinem Microsoft-Konto anmelden und den Zugriff erlauben.', { url: start.verificationUri })}</Text>
+            <Text>{t('Unter {url} diesen Code eingeben, dann mit dem Microsoft-Konto anmelden und den Zugriff erlauben.', { url: start.verificationUri })}</Text>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <span className={s.code}>{start.userCode}</span>
               <Button appearance="subtle" icon={<Copy20Regular />} title={t('Code kopieren')} aria-label={t('Code kopieren')} onClick={copy} />
@@ -192,6 +243,116 @@ function MicrosoftSignIn({ onDone, onCancel }: { onDone: (flow: string) => void;
         )}
       </MessageBarBody>
     </MessageBar>
+  )
+}
+
+interface GraphLinkState {
+  collection: number; name: string; kind: 'calendar' | 'contacts' | 'tasks'; lastSync: string | null; lastError: string | null
+  pending: number; failing: number; conflicts: string[]
+}
+interface GraphState {
+  connected: boolean; calendars: boolean; contacts: boolean; tasks: boolean; links: GraphLinkState[]
+  mail: { lastSync: string | null; lastError: string | null }
+}
+
+/**
+ * Kalender, Kontakte und Aufgaben eines Microsoft-Kontos abgleichen (Microsoft Graph, in beide Richtungen).
+ * Eigene Anmeldung mit eigenem Token - die Mail-Anmeldung bleibt davon unberuehrt.
+ */
+function GraphConnect({ accountId }: { accountId: string }) {
+  const { fail, notify } = useApp()
+  const [state, setState] = useState<GraphState | null>(null)
+  const [signIn, setSignIn] = useState(false)
+  const url = `/api/settings/accounts/${accountId}/graph`
+  const load = () => api.get(url).then(setState).catch(fail)
+  useEffect(() => { load() }, [accountId]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Stand nachladen: alle 3 s, solange ein Abgleich angestossen ist, ein Bereich noch eingerichtet wird oder etwas wartet;
+  // sonst alle 15 s
+  const busyUntil = useRef(0)
+  const busy = !!state && (Date.now() < busyUntil.current || state.links.some(l => l.pending > 0)
+    || (state.calendars && !state.links.some(l => l.kind === 'calendar')) || (state.contacts && !state.links.some(l => l.kind === 'contacts'))
+    || (state.tasks && !state.links.some(l => l.kind === 'tasks')))
+  useEffect(() => {
+    if (!state?.connected) return
+    const timer = window.setTimeout(load, busy ? 3000 : 15000)
+    return () => window.clearTimeout(timer)
+  }, [state, busy]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const connect = async (flow: string) => {
+    setSignIn(false)
+    try { await api.post(`${url}/connect`, { flow }); await load() } catch (e) { fail(e) }
+  }
+  const toggle = async (area: 'calendars' | 'contacts' | 'tasks', on: boolean) => {
+    if (!on && !await askConfirm('', t('Abschalten? Die Kopie in dmOffice wird entfernt, bei Microsoft bleibt alles.'))) return
+    try { await api.put(url, { [area]: on }); busyUntil.current = Date.now() + 120000; await load(); if (on) notify(t('Eingeschaltet'), t('Der erste Abgleich läuft gleich.')) } catch (e) { fail(e) }
+  }
+  const disconnect = async () => {
+    if (!await askConfirm('', t('Verbindung trennen? Die Kopien in dmOffice werden entfernt, bei Microsoft bleibt alles.'))) return
+    try { await api.del(url); await load() } catch (e) { fail(e) }
+  }
+  const sync = async () => {
+    try { await api.post(`${url}/sync`); busyUntil.current = Date.now() + 120000; notify(t('Abgleich angestoßen')); await load() } catch (e) { fail(e) }
+  }
+
+  if (!state) return null
+  const kindLabel = (k: GraphLinkState['kind']) => k === 'calendar' ? t('Kalender') : k === 'contacts' ? t('Kontakte') : t('Aufgaben')
+  return (
+    <div style={{ gridColumn: '1 / -1', display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <Text weight="semibold" style={{ marginTop: 8 }}>{t('Kalender, Kontakte und Aufgaben')}</Text>
+      {!state.connected ? <>
+        <Text>{t('Termine, Kontakte und To-Do-Listen dieses Microsoft-Kontos in dmOffice abgleichen – Änderungen gehen in beide Richtungen. Mail-Kategorien gehen danach ebenfalls über diese Verbindung.')}</Text>
+        <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>{t('Microsoft fragt bei der Anmeldung nach Lese- und Schreibzugriff auf Kalender, Kontakte, Aufgaben und Mails – auf die Mails nur, um Kategorien zu setzen und zu lesen.')}</Text>
+        {signIn
+          ? <MicrosoftSignIn startUrl={`${url}/start`} onDone={connect} onCancel={() => setSignIn(false)} />
+          : <div><Button size="small" icon={<PlugConnected20Regular />} onClick={() => setSignIn(true)}>{t('Verbinden')}</Button></div>}
+      </> : <>
+        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+          <Switch label={t('Kalender')} checked={state.calendars} onChange={(_, d) => toggle('calendars', d.checked)} />
+          <Switch label={t('Kontakte')} checked={state.contacts} onChange={(_, d) => toggle('contacts', d.checked)} />
+          <Switch label={t('Aufgaben')} checked={state.tasks} onChange={(_, d) => toggle('tasks', d.checked)} />
+        </div>
+        {/* Stand als Tabelle: je Sammlung eine Zeile, Fehler rot, Konflikte darunter */}
+        <Table size="small" style={{ maxWidth: 720 }}>
+          <TableHeader><TableRow>
+            <TableHeaderCell style={{ width: 120 }}>{t('Bereich')}</TableHeaderCell>
+            <TableHeaderCell>{t('Name')}</TableHeaderCell>
+            <TableHeaderCell>{t('Stand')}</TableHeaderCell>
+          </TableRow></TableHeader>
+          <TableBody>
+            <TableRow>
+              <TableCell>{t('Mail')}</TableCell>
+              <TableCell>{t('Mail-Kategorien')}</TableCell>
+              <TableCell>{state.mail.lastError
+                ? <span style={{ color: tokens.colorPaletteRedForeground1 }}>{tError(state.mail.lastError)}</span>
+                : state.mail.lastSync ? t('zuletzt abgeglichen: {when}', { when: new Date(state.mail.lastSync).toLocaleString(locale) }) : t('noch nicht abgeglichen')}</TableCell>
+            </TableRow>
+            {/* Eingeschaltet, aber noch keine Sammlung: der erste Abgleich laeuft noch (oder Microsoft liefert dafuer nichts) */}
+            {(['calendar', 'contacts', 'tasks'] as const).filter(k => state[k === 'calendar' ? 'calendars' : k] && !state.links.some(l => l.kind === k)).map(k =>
+              <TableRow key={k}><TableCell>{kindLabel(k)}</TableCell><TableCell>–</TableCell><TableCell>{t('wird eingerichtet …')}</TableCell></TableRow>)}
+            {state.links.map(l => (
+              <TableRow key={l.collection}>
+                <TableCell>{kindLabel(l.kind)}</TableCell>
+                <TableCell>{l.name}</TableCell>
+                <TableCell>
+                  {l.lastError
+                    ? <span style={{ color: tokens.colorPaletteRedForeground1 }}>{tError(l.lastError)}</span>
+                    : l.lastSync ? t('zuletzt abgeglichen: {when}', { when: new Date(l.lastSync).toLocaleString(locale) }) : t('noch nicht abgeglichen')}
+                  {l.pending > 0 && <> · {t('{n} Änderungen warten', { n: l.pending })}</>}
+                  {l.conflicts.slice(0, 3).map((c, i) => <div key={i} style={{ color: tokens.colorNeutralForeground3 }}>{tError(c)}</div>)}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <Button size="small" onClick={sync}>{t('Jetzt abgleichen')}</Button>
+          {signIn
+            ? <MicrosoftSignIn startUrl={`${url}/start`} onDone={connect} onCancel={() => setSignIn(false)} />
+            : <Button size="small" onClick={() => setSignIn(true)}>{t('Neu verbinden')}</Button>}
+          <Button size="small" onClick={disconnect}>{t('Trennen')}</Button>
+        </div>
+      </>}
+    </div>
   )
 }
 
@@ -412,6 +573,7 @@ function AccountEditor({ initial, microsoft, onDone }: { initial: AccountForm; m
             <Input type="password" value={a.imapPassword} onChange={(_, d) => set({ imapPassword: d.value })} autoComplete="new-password" />
           </Field>
         )}
+        {isMs && microsoft && a.id && initial.hasOAuth && <GraphConnect accountId={a.id} />}
 
         <Text className={s.section}>{t('Postausgang (SMTP)')}</Text>
         <Field label={t('Server')}><Input value={a.smtpHost} onChange={(_, d) => set({ smtpHost: d.value })} /></Field>
@@ -436,10 +598,10 @@ function AccountEditor({ initial, microsoft, onDone }: { initial: AccountForm; m
         <Field label={t('Speichermodus')} hint={a.storage === 'slim'
           ? t('Kopfdaten, Vorschau und die jüngsten Mails liegen hier, ältere holt dmOffice beim Öffnen vom Anbieter. Ältere Mails öffnen sich dadurch etwas langsamer, dafür wird viel Platz gespart. Suche, Regeln, Spamfilter und Prio-Posteingang arbeiten weiter.')
           : t('Alle Mails im Zeitraum liegen samt Anhängen hier und öffnen sich sofort – braucht am meisten Platz.')}>
-          <Dropdown value={a.storage === 'slim' ? t('Schlank') : t('Vollständig')} selectedOptions={[a.storage ?? 'full']}
+          <Dropdown value={a.storage === 'slim' ? t('Slim Mode') : t('Vollständig')} selectedOptions={[a.storage ?? 'full']}
             onOptionSelect={(_, d) => set({ storage: d.optionValue as 'full' | 'slim' })}>
             <Option value="full">{t('Vollständig')}</Option>
-            <Option value="slim">{t('Schlank')}</Option>
+            <Option value="slim">{t('Slim Mode')}</Option>
           </Dropdown>
         </Field>
         {a.storage === 'slim' ? (
@@ -470,9 +632,15 @@ function AccountEditor({ initial, microsoft, onDone }: { initial: AccountForm; m
           </Dropdown>
         </Field>
         <div />
-        <Switch className={s.full} label={t('Prio-Posteingang: Posteingang in „Relevant“ und „Sonstige“ aufteilen')} checked={a.focusedInbox ?? true} onChange={(_, d) => set({ focusedInbox: d.checked })} />
         <Switch className={s.full} label={t('Gesendetes im Ordner „Gesendet“ ablegen (bei Gmail aus)')} checked={a.saveSentCopy} onChange={(_, d) => set({ saveSentCopy: d.checked })} />
         <Switch className={s.full} label={t('Selbstsignierte Zertifikate annehmen (eigener Server im Netz)')} checked={a.acceptAnyCertificate} onChange={(_, d) => set({ acceptAnyCertificate: d.checked })} />
+
+        {initial.id && <>
+          <Text className={s.section}>{t('Ordner')}</Text>
+          <Text size={200} className={s.full} style={{ color: tokens.colorNeutralForeground3 }}>
+            {t('Welcher Ordner beim Anbieter wofür da ist. dmOffice erkennt das meist selbst – hier legst du es fest, wenn es nicht passt oder ein Ordner fehlt.')}</Text>
+          <FolderMapEditor account={initial.id} map={a.folderMap ?? {}} onChange={m => set({ folderMap: m })} />
+        </>}
 
         <Text className={s.section}>{t('Signatur')}</Text>
         <div className={`${s.full} ${s.sig}`}><RichEditor ref={sig} initial={a.signature} minimal /></div>

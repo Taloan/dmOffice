@@ -8,7 +8,9 @@ public static class SettingsApi
 {
     public record DiscoverBody(string Email);
     public record General(string? Theme, string? TimeZone, int? MarkReadDelay, string? OpenOnFolder, long? InviteCalendar = null, bool? SmartCalendar = null);
-    public record NewAppPassword(string Name);
+    public record NewAppPassword(string Name, string? Password = null, string? Code = null);
+    public record RenameAppPassword(string? Name);
+    public record NotiziConnect(string? Password = null, string? Code = null);
     public record TrustedEntry(string Entry);
     public record OAuthPoll(string Flow);
 
@@ -62,9 +64,10 @@ public static class SettingsApi
         a.Id, a.Name, a.Email, a.DisplayName, a.ImapHost, a.ImapPort, a.ImapSecurity, a.ImapUser,
         hasImapPassword = !string.IsNullOrEmpty(a.ImapPassword),
         a.Auth, hasOAuth = !string.IsNullOrEmpty(a.OAuthRefreshToken),
+        hasGraph = !string.IsNullOrEmpty(a.GraphRefreshToken), a.GraphCalendars, a.GraphContacts, a.GraphTasks,
         a.SmtpHost, a.SmtpPort, a.SmtpSecurity, a.SmtpUser,
         hasSmtpPassword = !string.IsNullOrEmpty(a.SmtpPassword),
-        a.Signature, a.AcceptAnyCertificate, a.SaveSentCopy, a.SyncMonths, a.MaxCachedMb, a.Storage, a.SlimDays, a.SlimMb, a.Language, a.TrashDays, a.JunkDays, a.FocusedInbox
+        a.Signature, a.AcceptAnyCertificate, a.SaveSentCopy, a.SyncMonths, a.MaxCachedMb, a.Storage, a.SlimDays, a.SlimMb, a.Language, a.TrashDays, a.JunkDays, a.FocusedInbox, a.FolderMap
     };
 
     /// <summary>Zeigt der Host auf den eigenen Container (Loopback, Link-Local, unbestimmt)? Dann kein Verbindungsversuch -
@@ -75,12 +78,9 @@ public static class SettingsApi
         if (string.IsNullOrWhiteSpace(host)) return false;
         var h = host.Trim().Trim('[', ']');
         if (h.Equals("localhost", StringComparison.OrdinalIgnoreCase)) return true;
-        static bool Bad(System.Net.IPAddress ip)
-        {
-            if (ip.IsIPv4MappedToIPv6) ip = ip.MapToIPv4();
-            return System.Net.IPAddress.IsLoopback(ip) || ip.IsIPv6LinkLocal || ip.Equals(System.Net.IPAddress.Any) || ip.Equals(System.Net.IPAddress.IPv6Any)
-                   || ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork && ip.GetAddressBytes() is [169, 254, ..];
-        }
+        // Dieselbe Sperre wie für eigene WebDAV-Ordner mit Heimnetz: der Server selbst, link-lokal (Metadaten-Dienste),
+        // Multicast, auch in IPv6 verpackt (NAT64, 6to4)
+        static bool Bad(System.Net.IPAddress ip) => DmOffice.Storage.ExternalFolders.NeverAllowed(ip);
         if (System.Net.IPAddress.TryParse(h, out var lit)) return Bad(lit);
         try
         {
@@ -120,7 +120,7 @@ public static class SettingsApi
         target.ImapHost = body.ImapHost.Trim(); target.ImapPort = body.ImapPort; target.ImapSecurity = body.ImapSecurity;
         target.ImapUser = body.ImapUser.Trim(); target.ImapPassword = imap;
         target.Auth = body.Auth;
-        if (target.Auth != MailAuth.Microsoft) target.OAuthRefreshToken = null;
+        if (target.Auth != MailAuth.Microsoft) { target.OAuthRefreshToken = null; target.GraphRefreshToken = null; }
         target.SmtpHost = body.SmtpHost.Trim(); target.SmtpPort = body.SmtpPort; target.SmtpSecurity = body.SmtpSecurity;
         target.SmtpUser = body.SmtpUser.Trim(); target.SmtpPassword = smtp;
         target.Signature = body.Signature; target.AcceptAnyCertificate = body.AcceptAnyCertificate;
@@ -134,6 +134,12 @@ public static class SettingsApi
         target.TrashDays = Math.Clamp(body.TrashDays, 0, 3650);
         target.JunkDays = Math.Clamp(body.JunkDays, 0, 3650);
         target.FocusedInbox = body.FocusedInbox;
+        // Ordnerzuordnung: fehlt sie in der Anfrage (ältere Oberfläche), bleibt die gespeicherte
+        if (body.FolderMap != null)
+        {
+            var map = body.FolderMap.Where(kv => MailAccount.MappableFolders.Contains(kv.Key)).ToDictionary(kv => kv.Key, kv => kv.Value.Trim());
+            target.FolderMap = map.Count > 0 ? map : null;
+        }
         if (string.IsNullOrWhiteSpace(target.Name)) target.Name = target.Email;
     }
 
@@ -268,6 +274,7 @@ public static class SettingsApi
             var space = http.Space();
             space.UpdateSettings(s => s.MailAccounts.RemoveAll(a => a.Id == id));
             MailStore.ForgetAccount(space.Db, id);
+            DmOffice.Pim.Graph.UnlinkAccount(space.Db, id);
             return Results.Ok();
         });
 
@@ -322,6 +329,9 @@ public static class SettingsApi
         // ---------------- Oberflaeche (Favoriten, Ordnerfarben, Reihenfolge ...) ----------------
         // Ein JSON-Dokument, das nur die Oberflaeche versteht - auf jedem Geraet gleich.
 
+        // Sicherheitsprotokoll des Kontos (Tresor Stufe 1): Änderungen durch die Verwaltung und eigene
+        api.MapGet("/security-log", (HttpContext http) => SecurityNotice.Of(http.Space().Db));
+
         api.MapGet("/ui", (HttpContext http) =>
             Results.Content(http.Space().Db.Get("ui.prefs") ?? "{}", "application/json"));
 
@@ -351,7 +361,7 @@ public static class SettingsApi
         });
 
         // ---------------- Kategorien ----------------
-        api.MapGet("/categories", (HttpContext http) => Settings.Categories.Of(http.Space().Settings));
+        api.MapGet("/categories", (HttpContext http) => { DmOffice.Mail.SmartInbox.Migrate(http.Space()); return Settings.Categories.Of(http.Space().Settings); });
         api.MapPut("/categories", (List<MailCategory> list, HttpContext http) =>
         {
             var clean = new List<MailCategory>();
@@ -361,9 +371,14 @@ public static class SettingsApi
                 if (name.Length == 0) continue;
                 var key = Settings.Categories.ValidKey(c.Key) ? c.Key : Settings.Categories.KeyFor(name, clean.Select(x => x.Key));
                 if (clean.Any(x => x.Key == key)) key = Settings.Categories.KeyFor(name, clean.Select(x => x.Key));
-                clean.Add(new MailCategory { Key = key, Name = name, Color = System.Text.RegularExpressions.Regex.IsMatch(c.Color, "^#[0-9a-fA-F]{6}$") ? c.Color : "#0F6CBD" });
+                var preset = DmOffice.Mail.SmartInbox.BuiltIn.Any(b => b.Preset == c.Preset) ? c.Preset : null;
+                clean.Add(new MailCategory { Key = key, Name = name, Color = System.Text.RegularExpressions.Regex.IsMatch(c.Color, "^#[0-9a-fA-F]{6}$") ? c.Color : "#0F6CBD", Smart = c.Smart, Preset = preset, Quiet = c.Quiet });
             }
-            http.Space().UpdateSettings(s => s.Categories = clean);
+            var space = http.Space();
+            // Gelöschte Kategorien: Gelerntes dazu vergessen (die Schlagwörter an den Mails bleiben)
+            foreach (var gone in Settings.Categories.Of(space.Settings).Select(c => c.Key).Where(k => !clean.Any(c => c.Key == k)))
+                DmOffice.Mail.SmartInbox.Drop(space.Db, gone);
+            space.UpdateSettings(s => s.Categories = clean);
             return Results.Ok(clean);
         });
 
@@ -386,7 +401,7 @@ public static class SettingsApi
         // ---------------- Speicher und Statistik ----------------
 
         // Kurz fuer die Fusszeile im Ordnerbereich: belegter Platz, Datei-Grenze, Version
-        api.MapGet("/storage", (HttpContext http, DataPaths paths, UpdateCenter update) =>
+        api.MapGet("/storage", (HttpContext http, DataPaths paths, UpdateCenter update, ServerConfig config) =>
         {
             var space = http.Space();
             var dbPath = paths.UserDb(space.User.Id);
@@ -397,8 +412,9 @@ public static class SettingsApi
                 files = Dav.FileStore.UsageTotal(space.Db),
                 used = UserStorage.Used(space.Db),
                 fileQuota = Dav.FileStore.Quota(space.Db),
-                // freier Platz auf dem Datentraeger des Servers (fehlt, wenn er sich nicht ermitteln laesst)
-                diskFree = update.FreeBytes(paths.Root),
+                // freier Platz auf dem Datentraeger des Servers (fehlt, wenn er sich nicht ermitteln laesst). Mit Storage Extender
+                // (Storage Extender als eigentliche Ablage) ist die Platte nur Zwischenspeicher - dann gilt allein das Kontingent
+                diskFree = S3Mirror.CacheMode(config.Current) ? null : update.FreeBytes(paths.Root),
                 version = Version()
             };
         });
@@ -469,14 +485,48 @@ public static class SettingsApi
         // ---------------- Regeln ----------------
 
         api.MapGet("/rules", (HttpContext http) => http.Space().Settings.Rules);
-        api.MapPut("/rules", (List<MailRule> rules, HttpContext http) =>
+        // Regeln speichern: als Liste oder { rules, password, code } - neue Weiterleitungsziele nur mit dem Anmelde-Passwort, und gemeldet
+        api.MapPut("/rules", async (HttpContext http, UserStore users) =>
         {
+            var el = await http.Request.ReadFromJsonAsync<System.Text.Json.JsonElement>(http.RequestAborted);
+            var web = new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web);
+            List<MailRule> rules;
+            string? password = null, code = null;
+            if (el.ValueKind == System.Text.Json.JsonValueKind.Array) rules = System.Text.Json.JsonSerializer.Deserialize<List<MailRule>>(el, web) ?? [];
+            else
+            {
+                rules = el.TryGetProperty("rules", out var rs) ? System.Text.Json.JsonSerializer.Deserialize<List<MailRule>>(rs, web) ?? [] : [];
+                if (el.TryGetProperty("password", out var pw) && pw.ValueKind == System.Text.Json.JsonValueKind.String) password = pw.GetString();
+                if (el.TryGetProperty("code", out var cd) && cd.ValueKind == System.Text.Json.JsonValueKind.String) code = cd.GetString();
+            }
+            static HashSet<string> Targets(IEnumerable<MailRule> list) => list.SelectMany(r => r.Actions).Where(a => a.Type == "forward")
+                .SelectMany(a => a.Value.Split(',', ';').Select(x => x.Trim().ToLowerInvariant()).Where(x => x.Contains('@'))).ToHashSet();
+            var added = Targets(rules).Except(Targets(http.Space().Settings.Rules)).ToList();
+            if (added.Count > 0)
+            {
+                if (users.ById(http.Space().User.Id) is not { } u) return Results.NotFound();
+                // Mit Zwei-Faktor auch der Code: wer nur das Passwort kennt, soll sich keine Mails umleiten können
+                if (Auth.Confirm(users, u, password, code, needCode: true) is { } refused)
+                    return Results.Json(new { error = u.TwoFactor ? "Neue Weiterleitungen nur mit Passwort und Code." : "Neue Weiterleitungen nur mit dem Passwort.", confirm = true }, statusCode: 403);
+            }
             foreach (var r in rules)
                 foreach (var c in r.Conditions.Where(c => c.Op == "regex"))
                     try { _ = new System.Text.RegularExpressions.Regex(c.Value); }
                     catch (ArgumentException) { return Results.BadRequest(new { error = $"Ungültiger regulärer Ausdruck in Regel: „{r.Name}“" }); }
             http.Space().UpdateSettings(s => s.Rules = rules);
+            if (added.Count > 0) SecurityNotice.Important(http.RequestServices, http.Space().User.Id, "Mail-Weiterleitung an " + string.Join(", ", added));
             return Results.Ok();
+        });
+
+        // Jetzt ausfuehren: gespeicherte Regel auf die Mails im Posteingang anwenden (ohne Weiterleiten)
+        api.MapPost("/rules/{id}/run", async (string id, HttpContext http, MailSync sync, ImapPool pool, CancellationToken ct) =>
+        {
+            var space = http.Space();
+            var rule = space.Settings.Rules.FirstOrDefault(r => r.Id == id) ?? throw new KeyNotFoundException("Regel nicht gefunden - erst speichern.");
+            if (rule.Conditions.Count == 0) return Results.BadRequest(new { error = "Die Regel hat keine Bedingung." });
+            var r = await sync.RunRule(space, rule, pool, ct);
+            sync.Touch(space.User.Id);
+            return Results.Ok(new { @checked = r.Checked, matched = r.Matched });
         });
 
         // ---------------- Spamfilter ----------------
@@ -485,14 +535,30 @@ public static class SettingsApi
         {
             var space = http.Space();
             var (spam, ham) = SpamFilter.Counts(space.Db);
-            return new { settings = space.Settings.Spam, trainedSpam = spam, trainedHam = ham };
+            return new
+            {
+                settings = space.Settings.Spam, trainedSpam = spam, trainedHam = ham,
+                lists = Blocklists.All.Select(l => new { id = l.Id, name = l.Name, kind = l.Kind == Blocklists.Kind.Ip ? "ip" : "domain", spamhaus = l.Dqs != null }),
+                spamhausKey = !string.IsNullOrEmpty(http.RequestServices.GetRequiredService<ServerConfig>().SpamhausKey()),
+                // Gemeinsames Junk-Wissen: nur wählbar, wenn der Admin es eingeschaltet hat
+                sharedJunk = http.RequestServices.GetRequiredService<ServerConfig>().Current.SharedJunk,
+                safe = SafeList.Of(space.Db),
+            };
         });
         api.MapPut("/spam", (SpamSettings body, HttpContext http) =>
         {
             body.SpamCutoff = Math.Clamp(body.SpamCutoff, 0.5, 0.999);
             body.HamCutoff = Math.Clamp(body.HamCutoff, 0.01, body.SpamCutoff);
+            body.Lists = (body.Lists ?? []).Where(id => Blocklists.All.Any(l => l.Id == id)).Distinct().ToList();
+            body.ListsJunk = (body.ListsJunk ?? []).Where(body.Lists.Contains).Distinct().ToList();
             http.Space().UpdateSettings(s => s.Spam = body);
             return Results.Ok();
+        });
+        // Selbst eingetragene sichere Absender (eintragen nach „Kein Junk“ in der Mailansicht, /api/mail/{acc}/trust)
+        api.MapDelete("/spam/safe", (string entry, HttpContext http) =>
+        {
+            SafeList.Remove(http.Space().Db, entry);
+            return Results.Ok(SafeList.Of(http.Space().Db));
         });
         api.MapPost("/spam/train-folders", (HttpContext http) =>
         {
@@ -508,11 +574,26 @@ public static class SettingsApi
         // ---------------- App-Passwoerter und DAV ----------------
 
         api.MapGet("/app-passwords", (HttpContext http) => AppPasswords.List(http.Space().Db));
-        api.MapPost("/app-passwords", (NewAppPassword body, HttpContext http) =>
-            Results.Ok(new { password = AppPasswords.Create(http.Space().Db, body.Name) }));
+        // Neues App-Passwort: ein dauerhafter Zugang ohne Zwei-Faktor - nur mit Passwort (und Code) bestätigt, und gemeldet
+        api.MapPost("/app-passwords", (NewAppPassword body, HttpContext http, UserStore users) =>
+        {
+            var space = http.Space();
+            if (users.ById(space.User.Id) is not { } u) return Results.NotFound();
+            if (Auth.Confirm(users, u, body.Password, body.Code, needCode: true) is { } refused) return refused;
+            var password = AppPasswords.Create(space.Db, body.Name);
+            SecurityNotice.Important(http.RequestServices, u.Id, $"neues App-Passwort „{body.Name}“");
+            return Results.Ok(new { password });
+        });
+        api.MapPut("/app-passwords/{id}", (string id, RenameAppPassword body, HttpContext http) =>
+        {
+            AppPasswords.Rename(http.Space().Db, id, body.Name);
+            return Results.Ok();
+        });
         api.MapDelete("/app-passwords/{id}", (string id, HttpContext http) =>
         {
             AppPasswords.Delete(http.Space().Db, id);
+            // Links, die das Gerät angelegt hat, enden mit
+            foreach (var link in DmOffice.Dav.Links.DeleteForDevice(http.Space().Db, id)) http.RequestServices.GetRequiredService<DmOffice.Dav.LinkIndex>().Remove(http.Space().User.Id, link);
             return Results.Ok();
         });
 
@@ -549,13 +630,17 @@ public static class SettingsApi
         });
         // notizi verbinden: eigenes App-Passwort, das nur den Abgleichordner sieht, dazu ein Link fuer den QR-Code.
         // Ab dann sehen alle anderen Zugaenge (Explorer, Nextcloud, DAVx5 ...) den Ordner nicht mehr.
-        api.MapPost("/notizi/connect", (HttpContext http) =>
+        // Wie jedes App-Passwort ein dauerhafter Zugang ohne Zwei-Faktor: nur mit Passwort (und Code) bestätigt.
+        api.MapPost("/notizi/connect", (NotiziConnect body, HttpContext http, UserStore users) =>
         {
             var space = http.Space();
+            if (users.ById(space.User.Id) is not { } u) return Results.NotFound();
+            if (Auth.Confirm(users, u, body.Password, body.Code, needCode: true) is { } refused) return refused;
             var origin = $"{http.Request.Scheme}://{http.Request.Host}";
             var url = $"{origin}/dav/files/{Uri.EscapeDataString(space.User.Login)}/{space.Settings.Notizi.Root.Trim('/')}/";
             // Jeder Aufruf: ein weiterer Zugang (ein Geraet je QR-Code); bestehende bleiben gueltig, entfernen unter "Geraete & Sync"
             var password = AppPasswords.Create(space.Db, "notizi " + DateTime.Now.ToString("dd.MM. HH:mm"), AppPasswords.ScopeNotizi);
+            SecurityNotice.Important(http.RequestServices, space.User.Id, "neuer Zugang für notizi");
             var link = "notizi://webdav?url=" + Uri.EscapeDataString(url) + "&user=" + Uri.EscapeDataString(space.User.Login)
                 + "&password=" + Uri.EscapeDataString(password);
             return Results.Ok(new { url, login = space.User.Login, password, link });
@@ -564,9 +649,14 @@ public static class SettingsApi
         api.MapPut("/notizi", (NotiziSettings body, HttpContext http, NotesSync notes) =>
         {
             var space = http.Space();
+            string root;
+            try { root = string.IsNullOrWhiteSpace(body.Root) ? "notizisync" : DmOffice.Dav.FileStore.Normalize(body.Root.Trim()); }
+            catch (ArgumentException) { return Results.BadRequest(new { error = "Dieser Name geht für den Abgleichordner nicht." }); }
+            if (root.Length == 0 || DmOffice.Dav.FileStore.InRoot(root, DmOffice.Dav.FileStore.SystemVault) || DmOffice.Dav.FileStore.InRoot(root, DmOffice.Dav.FileStore.OldSystemVault)
+                || DmOffice.Dav.FileStore.InRoot(root, DmOffice.Journal.JournalMediaStore.Root) || DmOffice.Dav.FileStore.Get(space.Db, root) is { IsDir: false })
+                return Results.BadRequest(new { error = "Dieser Name geht für den Abgleichordner nicht." });
             space.UpdateSettings(s =>
             {
-                var root = string.IsNullOrWhiteSpace(body.Root) ? "notizisync" : body.Root.Trim().Trim('/');
                 var changedPlace = root != s.Notizi.Root || body.DbFolder != s.Notizi.DbFolder;
                 s.Notizi.Enabled = body.Enabled;
                 s.Notizi.Root = root;

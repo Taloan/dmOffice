@@ -23,7 +23,7 @@ const val DEFAULT_ACCENT = VIOLETT
 /** Akzentfarben zur Wahl, gleiche Namen wie im Web; die Vorgabe steht vorne. */
 val ACCENTS: List<Pair<String, Long>> = listOf(
     "Violett" to VIOLETT, "Lava" to LAVA, "Petrol" to 0xFF0B8A96L, "Safran" to 0xFFE08A00L, "Jade" to 0xFF0F9D6EL,
-    "Himbeere" to 0xFFD1245EL, "Mint" to 0xFF13B8A2L, "Blau" to 0xFF0F6CBDL, "Grau" to 0xFF5B5B5BL,
+    "Himbeere" to 0xFFD1245EL, "Mint" to 0xFF13B8A2L, "Blau" to 0xFF0F6CBDL, "Grau" to 0xFF5B5B5BL, "Fuchsia" to 0xFFD6007EL,
 )
 
 /**
@@ -88,11 +88,13 @@ fun darkScheme(accent: Color): ColorScheme {
     )
 }
 
-/** Hell/Dunkel nach System, Akzentfarbe aus den Optionen (Vorgabe Violett). */
+/** Hell/Dunkel nach System oder fest gewaehlt (Einstellungen → Darstellung), Akzentfarbe aus den Optionen (Vorgabe Violett). */
 @Composable
 fun AppTheme(content: @Composable () -> Unit) {
-    val dark = isSystemInDarkTheme()
-    val settings by App.get(LocalContext.current).prefs.settings.collectAsState()
+    val prefs = App.get(LocalContext.current).prefs
+    val mode by prefs.themeMode.collectAsState()
+    val dark = when (mode) { "light" -> false; "dark" -> true; else -> isSystemInDarkTheme() }
+    val settings by prefs.settings.collectAsState()
     val accent = Color(settings.accent.toInt())
     MaterialTheme(colorScheme = if (dark) darkScheme(accent) else lightScheme(accent), content = content)
 }

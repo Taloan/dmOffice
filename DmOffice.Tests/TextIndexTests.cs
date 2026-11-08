@@ -246,6 +246,21 @@ public class TextIndexTests
     private static List<string> Found(UserSpace space, string q) => TextIndex.SearchFiles(space, q).Select(h => h.Path).ToList();
 
     [Fact]
+    public void Frueher_wegen_externem_Speicher_uebersprungene_Dateien_werden_einmal_neu_gelesen()
+    {
+        var space = NewSpace();
+        FileStore.Put(space.Db, "akte.txt", Encoding.UTF8.GetBytes("Schreiben vom Anwalt"), null);
+        Run(space);
+        // So stand es frueher im Index: Inhalt lag nur im Storage Extender
+        space.Db.Exec("UPDATE text_docs SET status = 'skipped', method = 'none', note = 'Inhalt liegt gerade nur im Storage Extender' WHERE path = 'akte.txt'");
+        Assert.Equal(1, TextIndex.EnqueueAwayOnce(space.Db));
+        Assert.Equal(0, TextIndex.EnqueueAwayOnce(space.Db));
+        Run(space);
+        Assert.Equal("ok", space.Db.Scalar("SELECT status FROM text_docs WHERE path = 'akte.txt'"));
+        Assert.Equal(["akte.txt"], Found(space, "anwalt"));
+    }
+
+    [Fact]
     public void Neue_Datei_wird_eingereiht_und_gefunden()
     {
         var space = NewSpace();
@@ -600,6 +615,16 @@ public class TextIndexApiTests : IClassFixture<NextcloudServerFixture>
         Assert.Equal("kaufvertrag.pdf", item.GetProperty("path").GetString());
         Assert.Contains("Gebrauchtwagen", item.GetProperty("snippet").GetString());
         Assert.Equal(HttpStatusCode.NotFound, (await web.GetAsync("/api/files/search/content?q=geheim&path=notizisync")).StatusCode);
+
+        // Das normale Suchfeld: mit content=true auch die Treffer im Inhalt, mit Ausschnitt; ohne nur Namen
+        var both = await web.GetFromJsonAsync<JsonElement>("/api/files/search?q=fahrgestellnummer&content=true");
+        var hit = Assert.Single(both.GetProperty("items").EnumerateArray());
+        Assert.Equal("kaufvertrag.pdf", hit.GetProperty("path").GetString());
+        Assert.Contains("WVW123", hit.GetProperty("snippet").GetString());
+        Assert.Empty((await web.GetFromJsonAsync<JsonElement>("/api/files/search?q=fahrgestellnummer")).GetProperty("items").EnumerateArray());
+        // Name und Inhalt treffen: nur einmal, ohne Ausschnitt
+        var named = await web.GetFromJsonAsync<JsonElement>("/api/files/search?q=kaufvertrag&content=true");
+        Assert.Equal(JsonValueKind.Null, Assert.Single(named.GetProperty("items").EnumerateArray()).GetProperty("snippet").ValueKind);
 
         // Auch fuer die Handy-App (App-Passwort)
         var app = _fx.Client(_fx.AppPassword);

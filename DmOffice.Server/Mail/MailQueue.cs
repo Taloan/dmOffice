@@ -157,12 +157,12 @@ public sealed class MailQueueSender(Spaces spaces, ImapPool pool, MailSync sync,
             item.Message.Date = DateTimeOffset.Now;
             var warnings = await MailApi.Deliver(space, account, source, item.Draft, item.Message, pool, sync, log, stop);
             MailQueue.Done(space.Db, item.Id);
-            foreach (var w in warnings) log.LogWarning("Postausgang {Account}: {Warning}", account.Email, w);
+            foreach (var w in warnings) log.LogWarning("Postausgang {Account}: {Warning}", LogNames.Of(space, account), w);
         }
         catch (Exception e)
         {
             // Nur wenn SMTP selbst scheitert - die Mail ist dann nicht raus
-            log.LogWarning("Postausgang {Account}: Senden fehlgeschlagen: {Error}", account.Email, e.Message);
+            log.LogWarning("Postausgang {Account}: Senden fehlgeschlagen: {Error}", LogNames.Of(space, account), e.Message);
             MailQueue.Failed(space.Db, item.Id, e.Message, item.Attempts + 1);
             activity.Fail(e.Message);
         }

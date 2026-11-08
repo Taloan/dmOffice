@@ -50,7 +50,7 @@ class DavClient(private val account: Account, private val counters: at.dimes.dmo
 
     private fun check(r: Response) {
         if (r.code == 412) throw PreconditionFailed()
-        if (r.code == 401) throw DavException(401, "401")
+        if (r.code == 401) { at.dimes.dmoffice.api.AuthLost.report(account); throw DavException(401, "401") }
         if (r.code !in 200..299) throw DavException(r.code, "HTTP ${r.code}")
     }
 

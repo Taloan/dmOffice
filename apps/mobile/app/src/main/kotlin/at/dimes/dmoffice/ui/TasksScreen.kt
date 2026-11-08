@@ -26,7 +26,16 @@ import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.foundation.layout.Box
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.ui.graphics.asImageBitmap
+import kotlinx.coroutines.withContext
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -73,7 +82,7 @@ import java.time.ZoneId
 
 /** Aufgaben in Gruppen: ueberfaellig, heute, spaeter, ohne Datum, erledigt (optional). Schnell-Eingabe oben. */
 @Composable
-fun TasksScreen(onOpen: (String) -> Unit, openList: Pair<String, Long>? = null, onOpenMail: (String, String, Long) -> Unit = { _, _, _ -> }) {
+fun TasksScreen(onOpen: (String) -> Unit, openList: Pair<String, Long>? = null, onOpenMail: (String, String, Long) -> Unit = { _, _, _ -> }, onNew: () -> Unit = {}) {
     val ctx = LocalContext.current
     val app = App.get(ctx)
     val scope = rememberCoroutineScope()
@@ -81,6 +90,11 @@ fun TasksScreen(onOpen: (String) -> Unit, openList: Pair<String, Long>? = null, 
     val cals by app.repo.calendars.collectAsState(initial = emptyList())
     val settings by app.prefs.settings.collectAsState()
     var quick by remember { mutableStateOf("") }
+    // Version 2: Kopfzeile mit Lupe; die Schnelleingabe erscheint nur bei Einkaufs-/Checklisten nach „+“
+    val search = rememberTabSearch()
+    var adding by remember { mutableStateOf(false) }
+    val quickFocus = remember { FocusRequester() }
+    LaunchedEffect(adding) { if (adding) try { quickFocus.requestFocus() } catch (_: Exception) { } }
     val zone = ZoneId.systemDefault()
     val todayStart = LocalDate.now(zone).epochMillis(zone)
     val tomorrowStart = todayStart + 86400_000
@@ -90,15 +104,27 @@ fun TasksScreen(onOpen: (String) -> Unit, openList: Pair<String, Long>? = null, 
     // Liste waehlen: "Alle" oder eine einzelne Liste; Einkaufs- und Checklisten nach Abteilung/Kategorie
     val types by ListTypes.byUri.collectAsState()
     LaunchedEffect(Unit) { ListTypes.refresh(ctx) }
+    // Eigene Listen zuerst, dann je Microsoft-Konto (wie im Web ein eigener Abschnitt)
     val taskLists = cals.filter { it.supportsTasks && it.visible }
-    var listHref by rememberSaveable { mutableStateOf(lastTaskList) }
+        .sortedBy { ListTypes.sectionOrder(ListTypes.sectionOf(types[ListTypes.uriOf(it.href)])) }
+    // Version 2: die Auswahl bleibt gemerkt (auch nach einem Neustart), mehrere Listen zugleich; leer = alle
+    var selectedLists by remember { mutableStateOf(TaskListPrefs.get(ctx)) }
+    fun select(s: Set<String>) { selectedLists = s; TaskListPrefs.set(ctx, s) }
     // Aus dem Widget: gleich diese Liste
-    LaunchedEffect(openList) { openList?.let { listHref = it.first } }
-    if (listHref != null && taskLists.isNotEmpty() && taskLists.none { it.href == listHref }) listHref = null
-    lastTaskList = listHref
+    // Liste aus dem Widget nur einmal wählen, nicht bei jeder Rückkehr zum Reiter
+    var handledList by rememberSaveable { mutableStateOf<Long?>(null) }
+    LaunchedEffect(openList) { openList?.takeIf { it.second != handledList }?.let { handledList = it.second; select(setOf(it.first)) } }
+    if (taskLists.isNotEmpty() && selectedLists.any { h -> h != MAIL && taskLists.none { it.href == h } }) select(selectedLists.filter { h -> h == MAIL || taskLists.any { it.href == h } }.toSet())
+    // E-Mail-Nachverfolgung laesst sich wie eine Liste dazuwaehlen; nur sie gewaehlt: nur die Mails
+    val mailOn = MAIL in selectedLists
+    val chosen = selectedLists - MAIL
+    val mailOnly = mailOn && chosen.isEmpty()
+    // Werkzeuge einer Liste (Abteilungen, Typ, Hinzufügen dorthin) gelten, wenn genau eine gewählt ist
+    val listHref = chosen.singleOrNull()
     val info = listHref?.let { types[ListTypes.uriOf(it)] }
 
-    val shown = tasks.filter { it.calendarHref in visible && (listHref == null || it.calendarHref == listHref) }
+    val shown = if (mailOnly) emptyList() else tasks.filter { it.calendarHref in visible && (chosen.isEmpty() || it.calendarHref in chosen) }
+        .filter { !search.active || it.summary.contains(search.query.trim(), ignoreCase = true) }
     val open = shown.filter { !it.completed }
     val groups = listOf(
         R.string.overdue to open.filter { it.due != null && it.due < todayStart },
@@ -112,6 +138,7 @@ fun TasksScreen(onOpen: (String) -> Unit, openList: Pair<String, Long>? = null, 
     // Keine Datumserkennung ("Ingwer Orange Tee" ist kein Termin).
     val isList = info != null && info.type != ListTypes.TASKS
     var addSection by remember(listHref) { mutableStateOf("") }   // leer: automatisch
+    LaunchedEffect(listHref) { adding = false }
     val onListNames = remember(shown) { shown.filter { !it.completed }.map { ListTypes.itemOf(it.ics, it.summary).item.lowercase() }.toSet() }
     val typedItem = remember(quick) { ListTypes.parseItem(quick).item }
     val suggestions = remember(typedItem, info) { if (isList) ListTypes.suggest(info!!.history, typedItem) else emptyList() }
@@ -144,32 +171,42 @@ fun TasksScreen(onOpen: (String) -> Unit, openList: Pair<String, Long>? = null, 
         scope.launch { app.repo.quickTask(r.title, due, listHref) }
     }
     val curCal = cals.firstOrNull { it.href == listHref }
-    // E-Mail-Nachverfolgung wie im Web: gekennzeichnete Mails mit Faelligkeit
-    var mailView by rememberSaveable { mutableStateOf(false) }
+    // E-Mail-Nachverfolgung wie im Web: gekennzeichnete Mails mit Faelligkeit - allein oder zusammen mit Listen
+    val followUps = rememberFollowUps(mailOn)
     var newList by remember { mutableStateOf(false) }
     var editSections by remember { mutableStateOf(false) }
     var importOpen by remember { mutableStateOf(false) }
     fun failed() = android.widget.Toast.makeText(ctx, ctx.getString(R.string.save_failed), android.widget.Toast.LENGTH_LONG).show()
 
+    Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize()) {
+        TabTopBar(stringResource(R.string.tasks), search, insets = androidx.compose.foundation.layout.WindowInsets(0))
         Row(
             Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            if (taskLists.size > 1) FilterChip(selected = !mailView && listHref == null, onClick = { mailView = false; listHref = null }, label = { Text(stringResource(R.string.all_lists)) })
-            FilterChip(selected = mailView, onClick = { mailView = true }, label = { Text(stringResource(R.string.mail_followup)) },
-                leadingIcon = { Icon(Icons.Default.Flag, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFFD13438)) })
-            for (c in taskLists) FilterChip(
-                selected = !mailView && listHref == c.href, onClick = { mailView = false; listHref = c.href }, label = { Text(c.name) },
+            if (taskLists.size > 1) FilterChip(selected = selectedLists.isEmpty(), onClick = { select(emptySet()) }, label = { Text(stringResource(R.string.all_lists)) })
+            var lastSection = ""
+            for (c in taskLists) {
+            val section = ListTypes.sectionOf(types[ListTypes.uriOf(c.href)])
+            if (section != lastSection && section.startsWith("g:")) Text(stringResource(R.string.outlook_section, section.removePrefix("g:")),
+                Modifier.align(Alignment.CenterVertically), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            lastSection = section
+            FilterChip(
+                selected = c.href in selectedLists, onClick = { select(if (c.href in selectedLists) selectedLists - c.href else selectedLists + c.href) }, label = { Text(c.name) },
                 // In der Farbe der Liste wie im Web
                 colors = FilterChipDefaults.filterChipColors(selectedContainerColor = colorOf(c.color).copy(alpha = 0.22f)),
                 leadingIcon = { androidx.compose.foundation.layout.Box(Modifier.padding(start = 2.dp).size(10.dp).clip(androidx.compose.foundation.shape.CircleShape).background(colorOf(c.color))) }
             )
+            }
+            // E-Mail-Nachverfolgung hinter den Listen - sonst schiebt der breite Chip die Listen aus dem Bild
+            FilterChip(selected = mailOn, onClick = { select(if (mailOn) selectedLists - MAIL else selectedLists + MAIL) }, label = { Text(stringResource(R.string.mail_followup)) },
+                leadingIcon = { Icon(Icons.Default.Flag, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFFD13438)) })
             // Neue Liste wie im Web (Menueband "Neue Liste")
             androidx.compose.material3.AssistChip(onClick = { newList = true }, label = { Text(stringResource(R.string.new_list)) },
                 leadingIcon = { Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp)) })
         }
-        if (mailView) { MailFollowUps(onOpenMail); return@Column }
+        if (mailOnly) { MailFollowUps(followUps, onOpenMail); return@Column }
         // Werkzeuge der gewaehlten Liste: Abteilungen, Menue mit Abgehakten, Import, Listentyp
         if (info != null) Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             if (isList) androidx.compose.material3.TextButton(onClick = { editSections = true }) {
@@ -182,12 +219,12 @@ fun TasksScreen(onOpen: (String) -> Unit, openList: Pair<String, Long>? = null, 
                 onMeta = { type, done -> scope.launch { if (!ListTypes.setMeta(ctx, info.id, type, done)) failed() } },
                 onImport = { importOpen = true })
         }
-        // Eine Zeile: Eingabe, Abteilung (klein, im Feld) und Hinzufuegen
-        OutlinedTextField(
+        // Schnelleingabe (nur Einkaufs-/Checkliste, nach „+“): Eingabe, Abteilung (klein, im Feld) und Hinzufuegen
+        if (isList && adding) OutlinedTextField(
             value = quick, onValueChange = { quick = it }, singleLine = true,
             placeholder = { Text(stringResource(when (info?.type) { ListTypes.SHOP -> R.string.add_item_shop; ListTypes.CHECK -> R.string.add_item_check; else -> R.string.quick_add_task }),
                 maxLines = 1, overflow = TextOverflow.Ellipsis) },
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).focusRequester(quickFocus),
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done), keyboardActions = KeyboardActions(onDone = { add() }),
             trailingIcon = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -210,6 +247,7 @@ fun TasksScreen(onOpen: (String) -> Unit, openList: Pair<String, Long>? = null, 
                         }
                     }
                     IconButton(onClick = { add() }, enabled = quick.isNotBlank()) { Icon(Icons.Default.Add, contentDescription = stringResource(R.string.add)) }
+                    IconButton(onClick = { adding = false; quick = "" }) { Icon(Icons.Default.Close, contentDescription = stringResource(R.string.close)) }
                 }
             }
         )
@@ -217,7 +255,8 @@ fun TasksScreen(onOpen: (String) -> Unit, openList: Pair<String, Long>? = null, 
             for (k in suggestions) {
                 Row(Modifier.fillMaxWidth().clickable { addItem(k.name) }.padding(start = 12.dp, top = 2.dp, bottom = 2.dp),
                     verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.History, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                    if (k.photo != null) ItemPhoto(info!!.id, k.photo, 24.dp)
+                    else Icon(Icons.Default.History, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                     Text(k.name, modifier = Modifier.weight(1f).padding(start = 10.dp), style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     if (k.name.lowercase() in onListNames) Text(stringResource(R.string.already_on_list), style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(end = 8.dp))
@@ -243,11 +282,11 @@ fun TasksScreen(onOpen: (String) -> Unit, openList: Pair<String, Long>? = null, 
             stringResource(R.string.detected_due, Fmt.detected(ctx, parsed)) + "  " + stringResource(R.string.detected_as, parsed.title),
             modifier = Modifier.padding(horizontal = 20.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary
         )
-        if (info != null && info.type != ListTypes.TASKS) {
+        if (info != null && info.type != ListTypes.TASKS && !mailOn) {
             CheckList(shown, info, colorOf(curCal?.color), settings.showCompleted, onToggle = { t -> scope.launch { app.repo.setCompleted(t.href, !t.completed) } }, onEdit = { t -> onOpen(t.href) })
             return@Column
         }
-        if (open.isEmpty() && groups.last().second.isEmpty()) {
+        if (open.isEmpty() && groups.last().second.isEmpty() && !mailOn) {
             Text(stringResource(R.string.no_tasks), modifier = Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 88.dp)) {
@@ -259,7 +298,17 @@ fun TasksScreen(onOpen: (String) -> Unit, openList: Pair<String, Long>? = null, 
                     TaskRow(t, colors[t.calendarHref], onClick = { onOpen(t.href) }, onToggle = { done -> scope.launch { app.repo.setCompleted(t.href, done) } })
                 }
             }
+            // Zusammen mit Listen: die gekennzeichneten Mails als eigener Abschnitt darunter
+            if (mailOn) {
+                item(key = "hmail") { SectionHeader(stringResource(R.string.mail_followup), highlight = false) }
+                followUpItems(followUps, onOpenMail)
+            }
         }
+    }
+    // „+“: bei Einkaufs-/Checklisten die Schnelleingabe, sonst eine neue Aufgabe im Editor
+    if (!mailOnly && !(isList && adding)) AddButton(stringResource(R.string.new_task), Modifier.align(Alignment.BottomEnd).padding(16.dp)) {
+        if (isList) adding = true else onNew()
+    }
     }
 }
 
@@ -312,54 +361,82 @@ private fun SectionsDialog(sections: List<String>, check: Boolean, onClose: (Lis
 }
 
 /** Gekennzeichnete Mails nach Faelligkeit: Tippen oeffnet die Mail, Haken = erledigt, Faelligkeit aendern ueber das Menue. */
+private class FollowUpState(val ctx: android.content.Context, val app: App, val scope: kotlinx.coroutines.CoroutineScope) {
+    var list by mutableStateOf<List<at.dimes.dmoffice.api.FollowUp>?>(null)
+    var error by mutableStateOf<String?>(null)
+    /** Bei mehreren Konten: aus welchem Postfach die Mail stammt */
+    var mailboxes by mutableStateOf<Map<String, String>>(emptyMap())
+    val sorted: List<at.dimes.dmoffice.api.FollowUp> get() =
+        (list ?: emptyList()).sortedWith(compareBy<at.dimes.dmoffice.api.FollowUp>({ it.due ?: "9999" }).thenByDescending { it.mail.date })
+    suspend fun load() { try { list = app.mail.followUps(); error = null } catch (e: Exception) { error = e.message } }
+}
+
+/** Gekennzeichnete Mails laden, sobald die E-Mail-Nachverfolgung gewaehlt ist. */
 @Composable
-private fun MailFollowUps(onOpenMail: (String, String, Long) -> Unit) {
+private fun rememberFollowUps(active: Boolean): FollowUpState {
     val ctx = LocalContext.current
     val app = App.get(ctx)
     val scope = rememberCoroutineScope()
-    var list by remember { mutableStateOf<List<at.dimes.dmoffice.api.FollowUp>?>(null) }
-    var error by remember { mutableStateOf<String?>(null) }
-    suspend fun load() { try { list = app.mail.followUps(); error = null } catch (e: Exception) { error = e.message } }
-    LaunchedEffect(Unit) { load() }
-    // Bei mehreren Konten: aus welchem Postfach die Mail stammt
-    var mailboxes by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
-    LaunchedEffect(Unit) { try { mailboxes = app.mail.accounts().let { a -> if (a.size > 1) a.associate { it.id to it.email } else emptyMap() } } catch (_: Exception) { } }
+    val st = remember { FollowUpState(ctx, app, scope) }
+    LaunchedEffect(active) {
+        if (!active) return@LaunchedEffect
+        st.load()
+        try { st.mailboxes = app.mail.accounts().let { a -> if (a.size > 1) a.associate { it.id to it.email } else emptyMap() } } catch (_: Exception) { }
+    }
+    return st
+}
+
+/** Nur die E-Mail-Nachverfolgung (keine Liste dazugewaehlt). */
+@Composable
+private fun MailFollowUps(st: FollowUpState, onOpenMail: (String, String, Long) -> Unit) {
+    st.error?.let { Text(stringResource(R.string.error_generic, it), color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(16.dp)) }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 88.dp)) { followUpItems(st, onOpenMail) }
+}
+
+/** Zeilen der gekennzeichneten Mails - allein oder als Abschnitt unter den Aufgaben. */
+private fun androidx.compose.foundation.lazy.LazyListScope.followUpItems(st: FollowUpState, onOpenMail: (String, String, Long) -> Unit) {
     val today = LocalDate.now().toString()
-    val sorted = (list ?: emptyList()).sortedWith(compareBy<at.dimes.dmoffice.api.FollowUp>({ it.due ?: "9999" }).thenByDescending { it.mail.date })
-    error?.let { Text(stringResource(R.string.error_generic, it), color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(16.dp)) }
-    if (list != null && sorted.isEmpty()) Text(stringResource(R.string.no_followups), modifier = Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 88.dp)) {
-        items(sorted.size, key = { i -> sorted[i].mail.account + "/" + sorted[i].mail.folder + "/" + sorted[i].mail.uid }) { i ->
-            val f = sorted[i]
-            val m = f.mail
-            var menu by remember { mutableStateOf(false) }
-            Row(Modifier.fillMaxWidth().clickable { onOpenMail(m.account, m.folder, m.uid) }.padding(start = 4.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
-                verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(checked = false, onCheckedChange = {
-                    scope.launch { try { app.mail.followUp(m.account, m.folder, listOf(m.uid), null, done = true); load() } catch (e: Exception) { error = e.message } }
-                })
-                Column(Modifier.weight(1f)) {
-                    Text(m.subject.ifBlank { "(…)" }, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(listOfNotNull(m.from?.text, mailboxes[m.account], f.due?.let { d -> java.time.LocalDate.parse(d).let { Fmt.shortDate(it) } }).joinToString(" · "),
-                        style = MaterialTheme.typography.bodySmall, maxLines = 1,
-                        color = if (f.due != null && f.due < today) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                androidx.compose.foundation.layout.Box {
-                    IconButton(onClick = { menu = true }) { Icon(Icons.Default.Flag, contentDescription = stringResource(R.string.flag_menu), tint = Color(0xFFD13438)) }
-                    androidx.compose.material3.DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                        for ((label, due, hint) in followUpOptions(ctx)) androidx.compose.material3.DropdownMenuItem(
-                            text = { Text(label) }, trailingIcon = { if (hint.isNotEmpty()) Text(hint, style = MaterialTheme.typography.bodySmall) },
-                            onClick = { menu = false; scope.launch { try { app.mail.followUp(m.account, m.folder, listOf(m.uid), due); load() } catch (e: Exception) { error = e.message } } })
-                    }
+    val sorted = st.sorted
+    if (st.list != null && sorted.isEmpty()) item(key = "mail-empty") {
+        Text(stringResource(R.string.no_followups), modifier = Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+    items(sorted.size, key = { i -> "mail/" + sorted[i].mail.account + "/" + sorted[i].mail.folder + "/" + sorted[i].mail.uid }) { i ->
+        val f = st.sorted[i]
+        val m = f.mail
+        var menu by remember { mutableStateOf(false) }
+        Row(Modifier.fillMaxWidth().clickable { onOpenMail(m.account, m.folder, m.uid) }.padding(start = 4.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(checked = false, onCheckedChange = {
+                st.scope.launch { try { st.app.mail.followUp(m.account, m.folder, listOf(m.uid), null, done = true); st.load() } catch (e: Exception) { st.error = e.message } }
+            })
+            Column(Modifier.weight(1f)) {
+                Text(m.subject.ifBlank { "(…)" }, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(listOfNotNull(m.from?.text, st.mailboxes[m.account], f.due?.let { d -> java.time.LocalDate.parse(d).let { Fmt.shortDate(it) } }).joinToString(" · "),
+                    style = MaterialTheme.typography.bodySmall, maxLines = 1,
+                    color = if (f.due != null && f.due < today) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            androidx.compose.foundation.layout.Box {
+                IconButton(onClick = { menu = true }) { Icon(Icons.Default.Flag, contentDescription = stringResource(R.string.flag_menu), tint = Color(0xFFD13438)) }
+                androidx.compose.material3.DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    for ((label, due, hint) in followUpOptions(st.ctx)) androidx.compose.material3.DropdownMenuItem(
+                        text = { Text(label) }, trailingIcon = { if (hint.isNotEmpty()) Text(hint, style = MaterialTheme.typography.bodySmall) },
+                        onClick = { menu = false; st.scope.launch { try { st.app.mail.followUp(m.account, m.folder, listOf(m.uid), due); st.load() } catch (e: Exception) { st.error = e.message } } })
                 }
             }
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
         }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
     }
 }
 
-/** Zuletzt gewaehlte Liste - bleibt beim Wechsel zwischen den Reitern erhalten. */
-private var lastTaskList: String? = null
+/** Marker in der Auswahl der Aufgabenlisten: die E-Mail-Nachverfolgung mit anzeigen. */
+private const val MAIL = "#mail"
+
+/** Gewählte Aufgabenlisten (Version 2): auf dem Gerät gemerkt, leer = alle. */
+object TaskListPrefs {
+    private fun sp(ctx: android.content.Context) = ctx.getSharedPreferences("ui", android.content.Context.MODE_PRIVATE)
+    fun get(ctx: android.content.Context): Set<String> = sp(ctx).getStringSet("taskLists", emptySet())?.toSet() ?: emptySet()
+    fun set(ctx: android.content.Context, lists: Set<String>) { sp(ctx).edit().putStringSet("taskLists", lists).apply() }
+}
 
 /**
  * Einkaufs- oder Checkliste wie im Web: nach Abteilung/Kategorie in der Reihenfolge der Liste, Menge und Einheit rechts,
@@ -381,6 +458,12 @@ private fun CheckList(items: List<ItemEntity>, info: ListTypes.Info, color: Colo
         .map { sec -> (sec ?: noSection) to inGroups.filter { secOf(it) == sec }.sortedBy { nameOf(it) } }
         .filter { it.second.isNotEmpty() }
     val tail = if (mode == "bottom" || (mode == "hide" && showHidden)) done else emptyList()
+    // Fotos haengen am Artikel (Vorschlag), nicht am einzelnen Eintrag - so sind sie beim naechsten Mal wieder da
+    val photoOf = remember(info.history) { info.history.filter { it.photo != null }.associate { it.name.lowercase() to it.photo!! } }
+    val pick = rememberItemPhotoPicker(info.id)
+    var big by remember { mutableStateOf<String?>(null) }   // Artikel, dessen Foto gross gezeigt wird
+    var menuFor by remember { mutableStateOf<String?>(null) }
+    big?.let { item -> photoOf[item.lowercase()]?.let { photo -> BigPhoto(info.id, item, photo, pick) { big = null } } }
 
     @Composable
     fun Header(label: String) {
@@ -400,6 +483,8 @@ private fun CheckList(items: List<ItemEntity>, info: ListTypes.Info, color: Colo
                 .padding(start = 16.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            val photo = photoOf[p.item.lowercase()]
+            if (photo != null) ItemPhoto(info.id, photo, 40.dp, Modifier.padding(end = 10.dp).clickable { big = p.item })
             Column(Modifier.weight(1f)) {
                 Text(p.item.ifBlank { t.summary.ifBlank { "–" } }, style = MaterialTheme.typography.bodyLarge, maxLines = 2, overflow = TextOverflow.Ellipsis,
                     textDecoration = strike, color = faded)
@@ -410,6 +495,17 @@ private fun CheckList(items: List<ItemEntity>, info: ListTypes.Info, color: Colo
             val amount = listOf(p.qty, p.unit).filter { it.isNotBlank() }.joinToString(" ")
             if (amount.isNotEmpty()) Text(amount, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textDecoration = strike, modifier = Modifier.padding(start = 8.dp))
+            if (photo == null && p.item.isNotBlank()) Box {
+                IconButton(onClick = { menuFor = p.item }) {
+                    Icon(Icons.Default.PhotoCamera, contentDescription = stringResource(R.string.list_photo_add), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                DropdownMenu(expanded = menuFor == p.item, onDismissRequest = { menuFor = null }) {
+                    DropdownMenuItem(text = { Text(stringResource(R.string.list_photo_take)) }, leadingIcon = { Icon(Icons.Default.PhotoCamera, null) },
+                        onClick = { menuFor = null; pick.camera(p.item) })
+                    DropdownMenuItem(text = { Text(stringResource(R.string.list_photo_pick)) }, leadingIcon = { Icon(Icons.Default.PhotoLibrary, null) },
+                        onClick = { menuFor = null; pick.gallery(p.item) })
+                }
+            }
             IconButton(onClick = { onEdit(t) }) {
                 Icon(Icons.Default.Edit, contentDescription = stringResource(R.string.edit), tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -438,6 +534,81 @@ private fun CheckList(items: List<ItemEntity>, info: ListTypes.Info, color: Colo
 
 @Composable
 private fun ctx() = LocalContext.current
+
+/** Vorschaubild eines Artikelfotos - laedt im Hintergrund und bleibt fuer den Laden ohne Netz auf dem Geraet. */
+@Composable
+private fun ItemPhoto(listId: Long, photo: String, size: androidx.compose.ui.unit.Dp, modifier: Modifier = Modifier) {
+    val c = LocalContext.current
+    val bmp by androidx.compose.runtime.produceState<android.graphics.Bitmap?>(null, photo) { value = ListTypes.photo(c, listId, photo) }
+    Box(modifier.size(size).clip(androidx.compose.foundation.shape.RoundedCornerShape(6.dp)).background(MaterialTheme.colorScheme.surfaceVariant)) {
+        bmp?.let { androidx.compose.foundation.Image(it.asImageBitmap(), contentDescription = null, contentScale = androidx.compose.ui.layout.ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
+    }
+}
+
+/** Foto zu einem Artikel holen: Kamera (mit Rueckfrage nach dem Recht) oder Galerie; aufrecht und verkleinert hochladen. */
+private class ItemPhotoPicker(val camera: (String) -> Unit, val gallery: (String) -> Unit)
+
+@Composable
+private fun rememberItemPhotoPicker(listId: Long): ItemPhotoPicker {
+    val c = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var forItem by rememberSaveable { mutableStateOf<String?>(null) }
+    var captureFile by rememberSaveable { mutableStateOf<String?>(null) }
+    fun upload(item: String, read: () -> ByteArray, after: () -> Unit = {}) = scope.launch {
+        val ok = try { ListTypes.setPhoto(c, listId, item, withContext(kotlinx.coroutines.Dispatchers.IO) { read() }) } catch (_: Exception) { false }
+        after()
+        if (!ok) android.widget.Toast.makeText(c, c.getString(R.string.save_failed), android.widget.Toast.LENGTH_LONG).show()
+    }
+    val take = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.TakePicture()) { ok ->
+        val f = captureFile?.let { java.io.File(it) }
+        captureFile = null
+        val item = forItem
+        if (f != null) { if (ok && f.length() > 0 && item != null) upload(item, { uprightJpeg(c, android.net.Uri.fromFile(f), 1600) }) { f.delete() } else f.delete() }
+    }
+    fun capture() {
+        val f = java.io.File(java.io.File(c.cacheDir, "camera").apply { mkdirs() }, "artikel-${System.currentTimeMillis()}.jpg")
+        captureFile = f.absolutePath
+        try { take.launch(androidx.core.content.FileProvider.getUriForFile(c, c.packageName + ".files", f)) } catch (_: Exception) { captureFile = null }
+    }
+    val permission = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.RequestPermission()) { granted -> if (granted) capture() }
+    val gallery = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia()) { uri ->
+        val item = forItem
+        if (uri != null && item != null) upload(item, { uprightJpeg(c, uri, 1600) })
+    }
+    return remember(listId) {
+        ItemPhotoPicker(
+            camera = { item ->
+                forItem = item
+                if (androidx.core.content.ContextCompat.checkSelfPermission(c, android.Manifest.permission.CAMERA) == android.content.pm.PackageManager.PERMISSION_GRANTED) capture()
+                else permission.launch(android.Manifest.permission.CAMERA)
+            },
+            gallery = { item -> forItem = item; gallery.launch(androidx.activity.result.PickVisualMediaRequest(androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+        )
+    }
+}
+
+/** Artikelfoto gross - mit neuem Foto (Kamera, Galerie) oder Entfernen. */
+@Composable
+private fun BigPhoto(listId: Long, item: String, photo: String, pick: ItemPhotoPicker, onClose: () -> Unit) {
+    val c = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val bmp by androidx.compose.runtime.produceState<android.graphics.Bitmap?>(null, photo) { value = ListTypes.photo(c, listId, photo) }
+    androidx.compose.material3.AlertDialog(onDismissRequest = onClose, title = { Text(item) },
+        text = {
+            Column {
+                bmp?.let { androidx.compose.foundation.Image(it.asImageBitmap(), contentDescription = null, modifier = Modifier.fillMaxWidth().clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))) }
+                Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                    IconButton(onClick = { onClose(); pick.camera(item) }) { Icon(Icons.Default.PhotoCamera, stringResource(R.string.list_photo_take)) }
+                    IconButton(onClick = { onClose(); pick.gallery(item) }) { Icon(Icons.Default.PhotoLibrary, stringResource(R.string.list_photo_pick)) }
+                    IconButton(onClick = {
+                        onClose()
+                        scope.launch { if (!ListTypes.removePhoto(c, listId, item)) android.widget.Toast.makeText(c, c.getString(R.string.save_failed), android.widget.Toast.LENGTH_LONG).show() }
+                    }) { Icon(Icons.Default.Delete, stringResource(R.string.list_photo_remove)) }
+                }
+            }
+        },
+        confirmButton = { androidx.compose.material3.TextButton(onClick = onClose) { Text(stringResource(R.string.close)) } })
+}
 
 /** Menue der gewaehlten Liste wie das Menueband im Web: Abgehakte loeschen/zuruecksetzen, Abgehakte-Modus, Import, Listentyp. */
 @Composable

@@ -6,11 +6,15 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AlternateEmail
+import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Forward
 import androidx.compose.material.icons.automirrored.filled.ReplyAll
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.Label
 import androidx.compose.material.icons.filled.MarkEmailUnread
@@ -96,6 +100,13 @@ class MailMenuActions(
     val category: (key: String, on: Boolean) -> Unit, val snooze: (LocalDateTime) -> Unit, val unsnooze: () -> Unit,
     /** Prio-Posteingang: nach Relevant (true) / Sonstige verschieben, always = Absender immer. */
     val moveFocus: (focused: Boolean, always: Boolean) -> Unit = { _, _ -> },
+    /** Mail an eine unbekannte Adresse der Catchall-Domain: als Alias anlegen; null = kein Menüpunkt. */
+    val adoptAlias: (() -> Unit)? = null,
+    /** Entfernen nach Zeit: kind "trash" oder "destroy" (Hinweis vor dem Vernichten zeigt der Aufrufer). */
+    val expire: (kind: String, at: LocalDateTime) -> Unit = { _, _ -> },
+    val cancelExpiry: () -> Unit = {},
+    /** „Ins DMS ablegen“; null = kein Menüpunkt (DMS nicht freigeschaltet). */
+    val toDms: (() -> Unit)? = null,
 )
 
 /**
@@ -108,10 +119,14 @@ fun MailMenu(
     categories: List<MailCategory>, keywords: Set<String>, a: MailMenuActions,
     /** Nur im Posteingang mit Prio-Posteingang: aktuelle Einordnung (true Relevant); null = kein Menuepunkt. */
     focus: Boolean? = null,
+    /** Fuer die Mail ist Entfernen nach Zeit eingeplant (Menuepunkt „zurücknehmen“). */
+    expiring: Boolean = false,
 ) {
     val ctx = LocalContext.current
     var page by remember { mutableStateOf("main") }
+    var pickDate by remember { mutableStateOf<String?>(null) }
     fun close() { page = "main"; onDismiss() }
+    pickDate?.let { kind -> ExpiryDateDialog(kind, onDismiss = { pickDate = null }, onPick = { at -> pickDate = null; a.expire(kind, at) }) }
     DropdownMenu(expanded = expanded, onDismissRequest = { close() }) {
         when (page) {
             "followup" -> {
@@ -152,15 +167,31 @@ fun MailMenu(
                     text = { Text(label) }, trailingIcon = { Text(snoozeHint(at), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) },
                     onClick = { close(); a.snooze(at) })
             }
+            "trash", "destroy" -> {
+                DropdownMenuItem(text = { Text(stringResource(if (page == "destroy") R.string.expire_destroy_after else R.string.expire_trash_after)) },
+                    leadingIcon = { Icon(Icons.AutoMirrored.Filled.ArrowBack, null) }, onClick = { page = "main" })
+                HorizontalDivider()
+                val kind = page
+                for ((label, days) in listOf(R.string.expire_1d to 1L, R.string.expire_7d to 7L, R.string.expire_30d to 30L))
+                    DropdownMenuItem(text = { Text(stringResource(label)) }, onClick = { close(); a.expire(kind, LocalDateTime.now().plusDays(days).withSecond(0).withNano(0)) })
+                DropdownMenuItem(text = { Text(stringResource(R.string.expire_on)) }, onClick = { close(); pickDate = kind })
+            }
             else -> {
                 DropdownMenuItem(text = { Text(stringResource(R.string.reply_all)) }, leadingIcon = { Icon(Icons.AutoMirrored.Filled.ReplyAll, null, tint = ActionColors.Reply) }, onClick = { close(); a.replyAll() })
                 DropdownMenuItem(text = { Text(stringResource(R.string.forward)) }, leadingIcon = { Icon(Icons.AutoMirrored.Filled.Forward, null, tint = ActionColors.Forward) }, onClick = { close(); a.forward() })
+                a.adoptAlias?.let { adopt -> DropdownMenuItem(text = { Text(stringResource(R.string.alias_adopt_menu)) },
+                    leadingIcon = { Icon(Icons.Default.AlternateEmail, null) }, onClick = { close(); adopt() }) }
+                a.toDms?.let { file -> DropdownMenuItem(text = { Text(stringResource(R.string.dms_file_mail)) },
+                    leadingIcon = { Icon(Icons.Default.Inventory2, null) }, onClick = { close(); file() }) }
                 HorizontalDivider()
                 DropdownMenuItem(text = { Text(stringResource(R.string.flag_menu)) }, leadingIcon = { Icon(if (flagged) Icons.Default.Flag else Icons.Outlined.Flag, null, tint = Color(0xFFD13438)) }, onClick = { page = "followup" })
                 DropdownMenuItem(text = { Text(stringResource(R.string.categorize)) }, leadingIcon = { Icon(Icons.Default.Label, null, tint = categories.firstOrNull { it.key in keywords }?.let { parseColor(it.color) } ?: MaterialTheme.colorScheme.onSurfaceVariant) }, onClick = { page = "category" })
                 if (inSnoozed) DropdownMenuItem(text = { Text(stringResource(R.string.unsnooze)) }, leadingIcon = { Icon(Icons.Default.Undo, null) }, onClick = { close(); a.unsnooze() })
                 else DropdownMenuItem(text = { Text(stringResource(R.string.snooze)) }, leadingIcon = { Icon(Icons.Default.Schedule, null) }, onClick = { page = "snooze" })
                 DropdownMenuItem(text = { Text(stringResource(R.string.archive)) }, leadingIcon = { Icon(Icons.Default.Archive, null) }, onClick = { close(); a.archive() })
+                DropdownMenuItem(text = { Text(stringResource(R.string.expire_trash_after)) }, leadingIcon = { Icon(Icons.Default.Delete, null) }, onClick = { page = "trash" })
+                DropdownMenuItem(text = { Text(stringResource(R.string.expire_destroy_after)) }, leadingIcon = { Icon(Icons.Default.DeleteForever, null, tint = Color(0xFFD13438)) }, onClick = { page = "destroy" })
+                if (expiring) DropdownMenuItem(text = { Text(stringResource(R.string.expire_cancel)) }, leadingIcon = { Icon(Icons.Default.Undo, null) }, onClick = { close(); a.cancelExpiry() })
                 if (focus != null) DropdownMenuItem(text = { Text(stringResource(if (focus == false) R.string.move_focused else R.string.move_other)) },
                     leadingIcon = { Icon(Icons.Default.SwapHoriz, null) }, onClick = { page = "focus" })
                 if (inJunk) DropdownMenuItem(text = { Text(stringResource(R.string.not_junk)) }, leadingIcon = { Icon(Icons.Default.VerifiedUser, null, tint = Color(0xFF107C10)) }, onClick = { close(); a.notJunk() })

@@ -7,6 +7,7 @@ import { api, Collection } from '../api'
 import { useApp } from '../App'
 import { t } from '../i18n'
 import { CALENDAR_KINDS } from './kinds'
+import { askConfirm } from '../shell/context'
 
 const palette = ['#0F6CBD', '#13A10E', '#CA5010', '#C239B3', '#E3008C', '#986F0B', '#038387', '#8764B8', '#D13438', '#69797E']
 
@@ -38,17 +39,16 @@ export async function removeCollection(collection: Collection, kind: 'calendars'
       n === 1 ? t('Die 1 Aufgabe darin wird nicht mehr angezeigt.') : n ? t('Die {n} Aufgaben darin werden nicht mehr angezeigt.', { n }) : '',
       ev === 1 ? t('Der 1 Termin bleibt.') : t('Die {n} Termine bleiben.', { n: ev }),
     ].filter(Boolean).join(' ')
-    if (!confirm(msg)) return false
+    if (!await askConfirm('', msg)) return false
     await api.put(`/api/pim/collections/${collection.id}`, { components: 'VEVENT' })
     return true
   }
   const count = (n: number, one: string, many: string) => n === 1 ? t(one) : t(many, { n })
   const what = kind === 'addressbooks' ? count(collection.count, '1 Kontakt', '{n} Kontakte')
-    : t('{events} und {tasks}', {
-      events: count(collection.events ?? 0, '1 Termin', '{n} Termine'),
-      tasks: count(collection.tasks ?? 0, '1 Aufgabe', '{n} Aufgaben'),
-    })
-  const answer = prompt(t('„{name}“ endgültig löschen – mit {what}, auch auf allen verbundenen Geräten.', { name: collection.name, what })
+    : [collection.events ? count(collection.events, '1 Termin', '{n} Termine') : '', collection.tasks ? count(collection.tasks, '1 Aufgabe', '{n} Aufgaben') : ''].filter(Boolean).join(t(' und '))
+  const others = (collection.sharedWith ?? []).map(x => x.name).join(', ')
+  const answer = prompt((what ? t('„{name}“ endgültig löschen – mit {what}, auch auf allen verbundenen Geräten.', { name: collection.name, what }) : t('„{name}“ endgültig löschen, auch auf allen verbundenen Geräten.', { name: collection.name }))
+    + (others ? ' ' + t('{who} verliert den Zugriff.', { who: others }) : '')
     + '\n\n' + t('Zum Bestätigen den Namen eingeben:'))
   if (answer?.trim() !== collection.name) return false
   await api.del(`/api/pim/collections/${collection.id}`)

@@ -4,15 +4,15 @@
 
 **Website: [dmoffice.de](https://dmoffice.de)** (in German) – features, guides and news · **Source code and issues:** here on GitHub
 
-> ## 🎉 New in 1.5
-> - **Files:** your own file storage with sharing (people and links), previous versions, recycle bin, full-text search with text recognition, a **Photos** timeline – and **Office editing in the browser** (Collabora / ONLYOFFICE)
-> - **Invitations** to people inside and outside dmOffice, **shared calendars, task and shopping lists, note folders**
-> - **Meal plan:** breakfast, lunch and dinner per week, recipes from your notes, ingredients straight onto the shopping list
-> - **Mail:** attach from your files or as a share link, phishing warning, sortable mail list
-> - **Android app:** file storage and automatic photo upload, meal plan, drag to move events, **checklists you can tick off offline**
-> - **Storage quota per user**, update safety (backup before data changes), security audit
+> ## 🎉 New in 2.0
+> - **Chat** with conversations, groups, voice messages and push – and **Pukki**, the assistant: events, tasks, shopping list, meal plan, reminders and timers from plain sentences
+> - **Gallery:** timeline, filters, RAW, server folders, map, albums and share links, ratings and colour labels, **photo editing**
+> - **Music:** your own music folders with covers, search and playlists
+> - **Vault:** a separately encrypted area per person (own password or passkey) for files and notes
+> - **Documents (DMS)**, **Overview** start page, **external folders**, **core backup** to S3/WebDAV, **data export**, smarter **spam filter**, **Microsoft accounts**
+> - Security audit performed
 >
-> [Release notes](https://github.com/Taloan/dmOffice/releases/tag/v1.5.0) · [Download the Android app](https://github.com/Taloan/dmOffice/releases/latest/download/dmOffice.apk)
+> **Update the server first, then the app.** [Release notes](https://github.com/Taloan/dmOffice/releases/tag/v2.0.0) · [Download the Android app](https://github.com/Taloan/dmOffice/releases/latest/download/dmOffice.apk)
 
 A self-hosted office suite in the browser: mail, calendar, contacts, tasks, notes and files – plus a server of its own. Everything lives in one container, with one encrypted database per user.
 
@@ -24,6 +24,11 @@ A self-hosted office suite in the browser: mail, calendar, contacts, tasks, note
 | **Tasks** | My Day, Important, Planned and lists – stored as VTODO, so they also show up in any tasks app on your phone. Lists can be shared with other users |
 | **Notes** | The notes from **notizi**, through its end-to-end encrypted sync folder; dmOffice is one more device, like your phone. Note folders can be shared with other users |
 | **Files** | Your own file storage in the browser and over WebDAV: previews, full-text search (with text recognition for scans and photos), recycle bin, previous versions, folders shared with other users, and share links (view, upload-only drop box, password, expiry). Word, Excel and PowerPoint files can be edited in the browser with an office server you run yourself (Collabora Online or ONLYOFFICE) |
+| **Chat** | Conversations and groups, voice messages, location, links to files, notes and events, push notifications. **Pukki**, the assistant, turns plain sentences into events, tasks, shopping items and meal plans, sends a morning overview, reminders and timers; an AI service is optional |
+| **Gallery** | Timeline of your photos and of server folders, filters, RAW files, map, albums and share links, ratings, flags and colour labels; non-destructive photo editing |
+| **Music** | Your own music folders: play, covers, search, playlists – in the browser and in the app |
+| **Vault** | A separately encrypted area per person, opened with its own password or a passkey, for files and notes databases |
+| **Documents (DMS)** | Scan inboxes, text recognition, document types, correspondents, roles and versions |
 | **Android app** | Calendar (with meal plan and drag to move), tasks and shopping lists, mail, contacts, notes and files on your phone, with home screen widgets, offline files, checklists you can tick off without a connection, automatic photo upload and “free up space” |
 | **Server** | Its own **CalDAV**, **CardDAV** and **WebDAV** service with **app passwords** – no extra cloud server needed. Compatible with DAVx⁵, Thunderbird, Apple Calendar/Contacts, the Windows Explorer and Nextcloud desktop/mobile clients |
 | **Security** | Multiple users, one **encrypted database** per user (SQLCipher), every stored file encrypted on its own, two-factor sign-in (TOTP) with recovery codes |
@@ -87,7 +92,7 @@ The container listens on port **8080** (`ASPNETCORE_URLS`) and keeps its data in
 /data/*.json            server settings, shares, share links
 ```
 
-Each user database has its own random key. These keys are wrapped with the **master key**, which comes from the environment variable `DMOFFICE_MASTER_KEY`; in Unraid it is stored masked in the template on the USB flash drive, not in `appdata`. Anyone who copies `appdata` cannot read anything with it. If the variable is missing, dmOffice creates `master.key` in the data directory and warns in the admin area. If you set the variable later, the next start re-wraps all keys and deletes the file.
+Each user database has its own random key. These keys are wrapped with the **master key**, which comes from the environment variable `DMOFFICE_MASTER_KEY`; in Unraid it is stored masked in the template on the USB flash drive, not in `appdata`. Anyone who copies `appdata` cannot read anything with it. If the variable is missing, dmOffice creates `master.key` in the data directory and warns in the admin area. If you set the variable later, the next start re-wraps all keys. The old file stays in place: it is only needed to restore a backup from before the switch. The admin area offers it for download and then removes it.
 
 Older installations kept file contents inside the database. After an update dmOffice moves them to `blobs/` in the background (interruptible; a restart continues). The space in the database is only released by *Settings* → *Storage & statistics* → *Compact database* – nothing starts that by itself. Before every data change dmOffice checks the free space and backs up the databases itself (`pre-update/`); if there is not enough space it changes nothing and says in the administration how much is missing. Details and the way back: [Updating](docs/updating.md). An image of the whole data directory is still the best insurance.
 
@@ -162,10 +167,16 @@ The Nextcloud desktop and mobile clients work against `/remote.php/dav/` and `/r
 | Sharing calendars and task lists | [docs/geteilte-kalender.md](docs/geteilte-kalender.md) | [docs/geteilte-kalender.de.md](docs/geteilte-kalender.de.md) |
 | Sharing note folders | [docs/geteilte-notizen.md](docs/geteilte-notizen.md) | [docs/geteilte-notizen.de.md](docs/geteilte-notizen.de.md) |
 | Sharing file folders | [docs/geteilte-ordner.md](docs/geteilte-ordner.md) | [docs/geteilte-ordner.de.md](docs/geteilte-ordner.de.md) |
+| External folders | [docs/externe-ordner.md](docs/externe-ordner.md) | [docs/externe-ordner.de.md](docs/externe-ordner.de.md) |
+| Storage Extender and core backup | [docs/speicher-und-sicherung.md](docs/speicher-und-sicherung.md) | [docs/speicher-und-sicherung.de.md](docs/speicher-und-sicherung.de.md) |
+| Restoring and restore-tool | [docs/wiederherstellen.md](docs/wiederherstellen.md) | [docs/wiederherstellen.de.md](docs/wiederherstellen.de.md) |
 | Checksums and duplicates | [docs/duplikate.md](docs/duplikate.md) | [docs/duplikate.de.md](docs/duplikate.de.md) |
+| Catch-all aliases | [docs/catchall-aliase.md](docs/catchall-aliase.md) | [docs/catchall-aliase.de.md](docs/catchall-aliase.de.md) |
 | Nextcloud clients | [docs/nextcloud-clients.md](docs/nextcloud-clients.md) | [docs/nextcloud-clients.de.md](docs/nextcloud-clients.de.md) |
 | Connecting notizi | [docs/notizi-verbinden.md](docs/notizi-verbinden.md) | [docs/notizi-verbinden.de.md](docs/notizi-verbinden.de.md) |
 | Web push | [docs/web-push.md](docs/web-push.md) | [docs/web-push.de.md](docs/web-push.de.md) |
+| Photos: info, location, people, editing | [docs/galerie-fotos.md](docs/galerie-fotos.md) | [docs/galerie-fotos.de.md](docs/galerie-fotos.de.md) |
+| Music library | [docs/audiothek.md](docs/audiothek.md) | [docs/audiothek.de.md](docs/audiothek.de.md) |
 | Android app | [apps/mobile/README.md](apps/mobile/README.md) | [apps/mobile/README.de.md](apps/mobile/README.de.md) |
 
 ## Development

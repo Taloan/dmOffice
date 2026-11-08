@@ -16,7 +16,9 @@ namespace DmOffice.Core;
 ///
 /// Wird die Variable spaeter gesetzt, packt der naechste Start alles neu ein,
 /// was mit dem alten Schluessel eingepackt ist (Benutzerschluessel, keys/,
-/// server.json, Schluesselring der Anmeldung), und loescht erst dann die Datei.
+/// server.json, Schluesselring der Anmeldung). Die Datei loescht dmOffice nicht
+/// selbst: vollstaendige Sicherungen von vorher brauchen sie noch. Die Verwaltung
+/// zeigt einen Hinweis mit Knopf, bis sie weg ist.
 /// </summary>
 public sealed class Vault
 {
@@ -63,13 +65,23 @@ public sealed class Vault
         }
     }
 
+    /// <summary>Die Variable gilt, aber die alte Schluesseldatei liegt noch im Datenverzeichnis.</summary>
+    public bool OldKeyFileLeft => !KeyInDataDir && File.Exists(KeyFile);
+
+    /// <summary>Alte Schluesseldatei loeschen (Knopf in der Verwaltung); nur, wenn die Variable gilt.</summary>
+    public void DeleteOldKeyFile()
+    {
+        if (!KeyInDataDir) File.Delete(KeyFile);
+    }
+
     public string Wrap(byte[] secret) => Wrap(Key, secret);
 
     /// <summary>
     /// Umstieg von der Schluesseldatei auf DMOFFICE_MASTER_KEY: in allen kleinen Dateien des Datenverzeichnisses und
     /// in keys/ jeden Wert, der sich mit dem alten Schluessel auspacken laesst, mit dem neuen einpacken - in .json und
-    /// .xml jeden Textwert, sonst den ganzen Inhalt. Erst wenn alles geschrieben ist, wird die Datei geloescht; bis
-    /// dahin bleibt sie liegen (ein Abbruch kostet nichts). Gibt die Zahl der neu eingepackten Werte zurueck.
+    /// .xml jeden Textwert, sonst den ganzen Inhalt. Die Datei bleibt liegen; solange sie da ist, laeuft das bei jedem
+    /// Start (findet dann nichts mehr, packt aber auch zurueckgespielte alte Werte um). Gibt die Zahl der neu
+    /// eingepackten Werte zurueck.
     /// </summary>
     private int Migrate(DataPaths paths, byte[] old)
     {
@@ -108,7 +120,6 @@ public sealed class Vault
             File.WriteAllText(f + ".rewrap", t);
             File.Move(f + ".rewrap", f, overwrite: true);
         }
-        File.Delete(KeyFile);
         return n;
     }
 

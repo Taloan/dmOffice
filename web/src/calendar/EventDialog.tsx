@@ -2,6 +2,7 @@ import {
   Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Dropdown, Field, Input, Option, Switch,
   Textarea, makeStyles, mergeClasses, tokens,
 } from '@fluentui/react-components'
+import { Mail20Regular } from '@fluentui/react-icons'
 import { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { FluentProvider } from '@fluentui/react-components'
@@ -12,6 +13,8 @@ import { darkTheme, lightTheme, storedTheme } from '../theme'
 import { locale, t } from '../i18n'
 import { NaturalDate, parseNaturalDate } from '../shell/naturalDate'
 import { DateHint } from '../shell/DateHint'
+import { artName, artOf, arts, suggestArt, withArt } from './arts'
+import { askConfirm } from '../shell/context'
 
 export interface EventDraft {
   calendar?: number
@@ -32,6 +35,8 @@ export interface EventDraft {
   /** Teilnehmer und Organisator (Mailadresse) - bei fremden Einladungen nur zum Ansehen */
   attendees?: Attendee[]
   organizer?: string | null
+  /** Kategorien (Version 2: darin die Art des Termins) */
+  categories?: string[]
 }
 
 /** "Name" <adresse> bzw. adresse aus dem Empfaengerfeld */
@@ -96,15 +101,20 @@ const reminders = [
   { value: '120', label: t('2 Stunden vorher') }, { value: '1440', label: t('1 Tag vorher') }, { value: '10080', label: t('1 Woche vorher') },
 ]
 
+/** Verweis eines Termins aus einer Mail auf die Mail (SmartMail): eigene Zeile „Mail: #/mail/open/<konto>/<message-id>“,
+ *  von Hand eingetragen auch mit voller Adresse davor. Gruppe 1: wie geschrieben, Gruppe 2: der Sprung in dmOffice. */
+const MAIL_LINE = /^[ \t]*Mail:[ \t]*(\S*?(#\/mail\/open\/\S+))[ \t]*$/m
+
 export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; calendars: Collection[]; onClose: (changed: boolean) => void }) {
   const s = useStyles()
-  const { fail, notify } = useApp()
+  const { fail, notify, me, undoable } = useApp()
   const [d, setD] = useState<EventDraft>(draft)
   // Teilnehmer: eigene Termine (oder neue) einladen; Einladungen anderer nur ansehen
   const [accounts, setAccounts] = useState<Account[]>([])
   useEffect(() => { api.get<Account[]>('/api/mail/accounts').then(setAccounts).catch(() => {}) }, [])
-  const mine = accounts.map(a => a.email.toLowerCase())
-  const foreign = !!draft.organizer && accounts.length > 0 && !mine.includes(draft.organizer.toLowerCase())
+  // Dazu die interne Adresse (Version 2): unter ihr lädt man Benutzer dieses dmOffice ein
+  const mine = [...accounts.map(a => a.email.toLowerCase()), `${me.login.toLowerCase()}@dmoffice.intern`]
+  const foreign = !!draft.organizer && !mine.includes(draft.organizer.toLowerCase())
   const [people, setPeople] = useState<string[]>((draft.attendees ?? []).filter(a => !mine.includes(a.email.toLowerCase())).map(formatAddress))
   const [account, setAccount] = useState<string | undefined>(undefined)
   const [notifyPeople, setNotifyPeople] = useState(true)
@@ -116,10 +126,23 @@ export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; 
   const sharedRO = home?.canWrite === false && !!draft.uri
   const readOnly = (!!home?.subscription && !!draft.uri) || sharedRO
   const set = (p: Partial<EventDraft>) => setD(x => ({ ...x, ...p }))
+  // Termine aus Mails (E-Mail-Ankündigungen) tragen „Mail: #/mail/open/…“ in der Beschreibung: als Knopf oben zeigen, im Text ausblenden
+  const mailLine = MAIL_LINE.exec(d.description ?? '')
+  const mailLink = mailLine?.[2] ?? d.description?.match(/#\/mail\/open\/\S+/)?.[0] ?? null
+  const shownDescription = mailLine ? (d.description ?? '').replace(MAIL_LINE, '').replace(/\s+$/, '') : d.description ?? ''
+  const setDescription = (text: string) => set({ description: mailLine ? `${text.replace(/\s+$/, '')}\nMail: ${mailLine[1]}` : text })
+  // Art (Version 2): aus den Kategorien; neue Termine bekommen einen Vorschlag zum Titel, bis man selbst wählt
+  const [art, setArt] = useState<string | null>(artOf(draft.categories)?.key ?? null)
+  const [artTouched, setArtTouched] = useState(false)
   // Neuer Termin: Datum aus dem Titel ("Zahnarzt morgen 15 Uhr") - laufend uebernehmen, mit x verwerfen
   const [nl, setNl] = useState<NaturalDate | null>(null)
   const [nlOff, setNlOff] = useState(false)
   const [orig] = useState({ start: draft.start, end: draft.end, allDay: draft.allDay })
+  useEffect(() => {
+    if (artTouched || draft.uri || d.title.trim().length < 3) return
+    const h = setTimeout(() => suggestArt(d.title).then(k => setArt(k)), 400)
+    return () => clearTimeout(h)
+  }, [d.title, artTouched]) // eslint-disable-line react-hooks/exhaustive-deps
   const typeTitle = (title: string) => {
     if (d.uri || nlOff) { set({ title }); return }
     const nd = parseNaturalDate(title)
@@ -156,6 +179,8 @@ export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; 
         calendar: draft.calendar ?? d.calendar, uri: d.uri, etag: d.etag, title: nl && !nlOff && !d.uri ? nl.title : d.title, location: d.location, description: d.description,
         start: iso(d.start), end: d.allDay ? iso(endDay, true) : iso(d.end), allDay: d.allDay,
         rRule: scope === 'instance' ? null : custom ? null : d.rRule, reminder: d.reminder, busy: d.busy,
+        // Kategorien nur, wenn sich die Art geändert hat (null: unverändert)
+        categories: art !== (artOf(draft.categories)?.key ?? null) ? withArt(draft.categories, art) : null,
         scope, instance: d.instance, moveTo: moveTo !== draft.calendar ? moveTo : undefined,
         // Teilnehmer nur bei eigenen Terminen; null laesst sie unveraendert
         attendees: foreign || readOnly ? null : people.map(parseAddress).filter(a => a.email.includes('@')),
@@ -174,10 +199,12 @@ export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; 
       const r = await askScope(t('Termin löschen'))
       if (!r) return
       if (r === 'instance') instance = d.instance
-    } else if (!confirm(hadPeople && !foreign ? t('Termin löschen? Die Teilnehmer bekommen eine Absage.') : t('Termin löschen?'))) return
+    } else if (!await askConfirm('', hadPeople && !foreign ? t('Termin löschen? Die Teilnehmer bekommen eine Absage.') : t('Termin löschen? Es gibt dafür keinen Papierkorb, nur direkt danach „Rückgängig“.'))) return
     try {
-      const r = await api.del(`/api/pim/events/${draft.calendar}/${encodeURIComponent(d.uri)}` + (instance ? `?instance=${encodeURIComponent(instance)}` : '')) as { cancelled?: number } | undefined
+      const uri = d.uri, calendar = draft.calendar
+      const r = await api.del(`/api/pim/events/${calendar}/${encodeURIComponent(uri)}` + (instance ? `?instance=${encodeURIComponent(instance)}` : '')) as { cancelled?: number; undo?: string } | undefined
       if (r?.cancelled) notify(t('Absage an {n} Teilnehmer im Postausgang', { n: r.cancelled }))
+      else if (r?.undo) undoable(t('Termin gelöscht'), () => restoreEvent(calendar, uri, r.undo!))
       onClose(true)
     } catch (e) { fail(e) }
   }
@@ -200,11 +227,20 @@ export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; 
   }
   const endShown = d.allDay ? lastDay(d.start, d.end) : d.end
 
+  // Etwas eingegeben: Klick daneben, Esc oder Zurück fragen nach, statt alles zu verwerfen
+  const [initial] = useState(() => JSON.stringify({ d: draft, people, art, moveTo: draft.calendar }))
+  const dirty = !readOnly && JSON.stringify({ d, people, art, moveTo }) !== initial
+  const askClose = async () => {
+    if (!dirty || await askConfirm('', t('Eingaben verwerfen?'), t('Verwerfen'))) onClose(false)
+  }
+
   return (
-    <Dialog open onOpenChange={(_, x) => !x.open && onClose(false)}>
+    <Dialog open onOpenChange={(_, x) => { if (!x.open) askClose() }}>
       <DialogSurface style={{ maxWidth: 640 }}>
         <DialogBody>
-          <DialogTitle>{d.uri ? t('Termin') : t('Neuer Termin')}</DialogTitle>
+          <DialogTitle action={mailLink ? <Button appearance="primary" icon={<Mail20Regular />} onClick={() => { onClose(false); location.hash = mailLink }}>{t('Mail öffnen')}</Button> : undefined}>
+            {d.uri ? t('Termin') : t('Neuer Termin')}
+          </DialogTitle>
           <DialogContent>
             <form className={s.grid} onSubmit={e => { e.preventDefault(); save() }}>
               <Field label={t('Titel')} className={s.full}>
@@ -212,6 +248,13 @@ export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; 
                 {nl && !nlOff && !d.uri && <DateHint nd={nl} onIgnore={() => { setNlOff(true); set({ ...orig }) }} />}
               </Field>
               <Field label={t('Ort')} className={s.full}><Input value={d.location ?? ''} onChange={(_, v) => set({ location: v.value })} /></Field>
+              <Field label={t('Art')}>
+                <Dropdown disabled={readOnly} value={(() => { const a = arts.find(x => x.key === art); return a ? a.icon + ' ' + artName(a) : t('Ohne Art') })()} selectedOptions={[art ?? '']}
+                  onOptionSelect={(_, v) => { setArtTouched(true); setArt(v.optionValue || null) }}>
+                  <Option value="" text={t('Ohne Art')}>{t('Ohne Art')}</Option>
+                  {arts.map(a => <Option key={a.key} value={a.key} text={a.icon + ' ' + artName(a)}>{a.icon + ' ' + artName(a)}</Option>)}
+                </Dropdown>
+              </Field>
               {foreign || readOnly ? (hadPeople && (
                 <Field label={t('Teilnehmer')} className={s.full}>
                   <div className={s.people}>
@@ -222,8 +265,8 @@ export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; 
                   </div>
                 </Field>
               )) : <>
-                <Field label={t('Teilnehmer einladen')} className={s.full} hint={people.length ? undefined : t('Adressen oder Namen aus den Kontakten – die Einladung geht per Mail, auch an Adressen außerhalb von dmOffice.')}>
-                  <div className={s.addresses}><AddressInput value={people} onChange={setPeople} /></div>
+                <Field label={t('Teilnehmer einladen')} className={s.full} hint={people.length ? undefined : t('Namen oder Adressen – Benutzer dieses dmOffice lädt Pukki im Chat ein, alle anderen bekommen die Einladung per Mail.')}>
+                  <div className={s.addresses}><AddressInput value={people} onChange={setPeople} people fieldName={t('Teilnehmer einladen')} /></div>
                 </Field>
                 {(draft.attendees ?? []).some(a => !mine.includes(a.email.toLowerCase())) && (
                   <div className={mergeClasses(s.full, s.people)}>
@@ -233,7 +276,7 @@ export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; 
                   </div>
                 )}
                 {(people.length > 0 || hadPeople) && accounts.length === 0 && (
-                  <span className={mergeClasses(s.full, s.people)}>{t('Zum Einladen braucht es ein Mailkonto – die Teilnehmer werden gespeichert, aber nicht benachrichtigt.')}</span>
+                  <span className={mergeClasses(s.full, s.people)}>{t('Ohne Mailkonto erfahren nur Benutzer dieses dmOffice von der Einladung – Adressen außerhalb werden gespeichert, aber nicht benachrichtigt.')}</span>
                 )}
                 {(people.length > 0 || hadPeople) && accounts.length > 0 && <>
                   {accounts.length > 1 && !draft.organizer && (
@@ -255,7 +298,7 @@ export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; 
                 <Input type={d.allDay ? 'date' : 'datetime-local'} value={d.allDay ? localDate(endShown) : localDateTime(d.end)} onChange={(_, v) => setEnd(v.value)} />
               </Field>
               <Switch label={t('Ganztägig')} checked={d.allDay} onChange={(_, v) => set({ allDay: v.checked, ...(v.checked ? {} : { end: new Date(d.start.getTime() + 3600000) }) })} />
-              <Switch label={t('Als beschäftigt zeigen')} checked={d.busy} onChange={(_, v) => set({ busy: v.checked })} />
+              <Switch label={t('Für andere als beschäftigt anzeigen')} checked={d.busy} onChange={(_, v) => set({ busy: v.checked })} />
               <Field label={t('Wiederholen')}>
                 <Dropdown value={custom ? t('Eigene Regel (bleibt)') : options.find(o => o.value === d.rRule)?.label ?? ''} selectedOptions={[d.rRule]}
                   onOptionSelect={(_, v) => set({ rRule: v.optionValue ?? '' })}>
@@ -277,7 +320,7 @@ export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; 
                 </Dropdown>
               </Field>
               <Field label={t('Beschreibung')} className={s.full}>
-                <Textarea value={d.description ?? ''} onChange={(_, v) => set({ description: v.value })} rows={5} resize="vertical" />
+                <Textarea value={shownDescription} onChange={(_, v) => setDescription(v.value)} rows={5} resize="vertical" />
               </Field>
               <button type="submit" hidden />
             </form>
@@ -286,12 +329,20 @@ export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; 
             {readOnly && <span style={{ marginRight: 'auto', color: 'var(--colorNeutralForeground3)' }}>{sharedRO ? t('Der Besitzer hat diesen Kalender nur zum Lesen mit dir geteilt.') : t('Aus einem abonnierten Kalender – nur lesbar.')}</span>}
             {d.uri && !readOnly && <Button onClick={remove} style={{ marginRight: 'auto' }}>{t('Löschen')}</Button>}
             <Button onClick={() => onClose(false)}>{readOnly ? t('Schließen') : t('Abbrechen')}</Button>
-            {!readOnly && <Button appearance="primary" onClick={save} disabled={busy}>{t('Speichern')}</Button>}
+            {/* disabledFocusable: der Fokus bleibt im Dialog, Esc wirkt auch nach einem gescheiterten Speichern */}
+            {!readOnly && <Button appearance="primary" onClick={() => { if (!busy) save() }} disabledFocusable={busy}>{t('Speichern')}</Button>}
           </DialogActions>
         </DialogBody>
       </DialogSurface>
     </Dialog>
   )
+}
+
+/** „Rückgängig“ nach dem Löschen: legt den Stand von vorher wieder an; offene Kalender laden neu. */
+export const EVENT_RESTORED = 'dmoffice:event-restored'
+export async function restoreEvent(calendar: number, uri: string, data: string) {
+  await api.post(`/api/pim/events/${calendar}/${encodeURIComponent(uri)}/restore`, { data })
+  window.dispatchEvent(new Event(EVENT_RESTORED))
 }
 
 /** Bei Serien: nur dieses Vorkommen oder alle? Null: abgebrochen. */

@@ -120,4 +120,44 @@ class UploadLogicTest {
         val sorted = UploadLogic.sortFolders(listOf("Android/media/app/x/" to 500, "Pictures/A/" to 3, "Download/" to 40, "DCIM/Camera/" to 10), { it.first }, { it.second })
         assertEquals(listOf("DCIM/Camera/", "Download/", "Pictures/A/", "Android/media/app/x/"), sorted.map { it.first })
     }
+
+    @Test
+    fun `neue Datei wartet, bis sie 30 Sekunden gleich bleibt, auch wenn nur die Groesse sich aendert`() {
+        val seen = HashMap<String, UploadLogic.Seen>()
+        val t0 = 1_000_000_000L
+        // Erstes schnelles Bild, Aenderungszeit bleibt die der Aufnahme
+        assertFalse(UploadLogic.settled(seen, "a.jpg", 2_000, t0, t0, t0))
+        assertFalse(UploadLogic.settled(seen, "a.jpg", 2_000, t0, t0, t0 + 29_000))
+        // Das fertige Foto ersetzt es: Frist beginnt neu
+        assertFalse(UploadLogic.settled(seen, "a.jpg", 9_000, t0, t0, t0 + 29_500))
+        assertFalse(UploadLogic.settled(seen, "a.jpg", 9_000, t0, t0, t0 + 59_000))
+        assertTrue(UploadLogic.settled(seen, "a.jpg", 9_000, t0, t0, t0 + 59_500))
+        assertTrue(seen.isEmpty())
+    }
+
+    @Test
+    fun `aeltere Dateien warten nicht`() {
+        val seen = HashMap<String, UploadLogic.Seen>()
+        val now = 1_000_000_000L
+        assertTrue(UploadLogic.settled(seen, "alt.jpg", 2_000, now - UploadLogic.RECENT_MS, now - UploadLogic.RECENT_MS, now))
+        assertFalse(UploadLogic.settled(seen, "frisch.jpg", 2_000, now - UploadLogic.RECENT_MS, now - 1_000, now))
+    }
+
+    @Test
+    fun `fertiges Foto mit gleicher Aenderungszeit ersetzt das Vorabbild, auch Minuten spaeter`() {
+        assertTrue(UploadLogic.cameraReplaced(1_800_000, 5_000, false, "Bilder/2026/a.jpg", 7_500_000, 5_000))
+    }
+
+    @Test
+    fun `bearbeitetes Foto folgt der Einstellung der Regel`() {
+        assertFalse(UploadLogic.cameraReplaced(1_800_000, 5_000, false, "Bilder/2026/a.jpg", 7_500_000, 6_000))
+    }
+
+    @Test
+    fun `nur was dieses Hochladen selbst gebracht hat wird ersetzt`() {
+        assertFalse(UploadLogic.cameraReplaced(1_800_000, 5_000, true, "Bilder/2026/a.jpg", 7_500_000, 5_000))
+        assertFalse(UploadLogic.cameraReplaced(1_800_000, 5_000, false, null, 7_500_000, 5_000))
+        assertFalse(UploadLogic.cameraReplaced(1_800_000, 0, false, "Bilder/2026/a.jpg", 7_500_000, 0))
+        assertFalse(UploadLogic.cameraReplaced(1_800_000, 5_000, false, "Bilder/2026/a.jpg", 1_800_000, 5_000))
+    }
 }

@@ -4,11 +4,12 @@ import { useApp } from '../App'
 import { usePrefs } from '../prefs'
 import { fmtTime } from './hooks'
 import { t } from '../i18n'
+import { loadCategories, silenced } from '../mail/Categories'
 
 /** Desktop-Benachrichtigungen gibt der Browser nur unter HTTPS oder localhost frei. */
 export const desktopPossible = () => typeof Notification !== 'undefined' && window.isSecureContext
 
-function beep() {
+export function beep() {
   try {
     const ctx = new AudioContext()
     const o = ctx.createOscillator(), g = ctx.createGain()
@@ -55,8 +56,10 @@ export function Notifier({ status }: { status: any }) {
       api.get(`/api/mail/${account}/folders`).then(async (folders: any[]) => {
         const inbox = folders.find(f => f.special === 'inbox')
         if (!inbox) return
-        const r = await api.get(`/api/mail/${account}/messages?` + q({ folder: inbox.path, size: 1, filter: 'unread' }))
-        const m: MailItem | undefined = r.items[0]
+        // Die neuen ungelesenen; die erste, deren Kategorien eine Benachrichtigung wollen
+        const r = await api.get(`/api/mail/${account}/messages?` + q({ folder: inbox.path, size: Math.min(20, count - (before[account] ?? count)), filter: 'unread' }))
+        const cats = await loadCategories()
+        const m: MailItem | undefined = (r.items as MailItem[]).find(x => !silenced(cats, x.keywords))
         if (m) show(m.from?.name || m.from?.address || t('Neue E-Mail'), m.subject || t('(ohne Betreff)'), () => { location.hash = '#/mail' })
       }).catch(() => {})
     }

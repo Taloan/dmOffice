@@ -12,11 +12,12 @@ namespace DmOffice.Dav;
 public static class PublicApi
 {
     public record AuthBody(string Password);
+    public record UploadBody(string? Name, long Size);
 
     private sealed record Access(UserSpace Space, FileLink Link, FileEntry Root, string Protected)
     {
         public UserDb Db => Space.Db;
-        public bool Hidden(string path) => FileStore.InRoot(path, Protected);
+        public bool Hidden(string path) => FileStore.IsSystem(path, Protected);
     }
 
     private static string Ip(HttpContext http) => "link-ip:" + Auth.IpKey(http.Connection.RemoteIpAddress);
@@ -47,7 +48,7 @@ public static class PublicApi
         if (link.UsedUp) return (null, Gone("Dieser Link ist abgelaufen – er wurde so oft abgerufen wie erlaubt.", 410));
         var root = FileStore.ProtectedRoot(space.Db);
         var entry = FileStore.ById(space.Db, link.FileId);
-        if (entry == null || FileStore.InRoot(entry.Path, root)) return (null, Gone("Diesen Link gibt es nicht (mehr)."));
+        if (entry == null || FileStore.InRoot(entry.Path, root) || FileStore.IsSystem(space.Db, entry.Path)) return (null, Gone("Diesen Link gibt es nicht (mehr)."));
         if (needPassword && link.HasPassword && !Unlocked(http, space.Db, link))
             return (null, Results.Json(new { error = "Passwort nötig.", needsPassword = true, name = entry.Name }, statusCode: 401));
         return (new Access(space, link, entry, root), null);
@@ -189,31 +190,86 @@ public static class PublicApi
         // Hochladen in einen Ordner-Link ("upload", "drop"): nie ueberschreiben - belegte Namen bekommen eine Nummer
         api.MapPost("/upload", async (string token, string? path, HttpRequest request, HttpContext http, CancellationToken ct) =>
         {
-            var (a, error) = Resolve(http, token);
+            var (a, dir, error) = UploadTarget(http, token, path);
             if (a == null) return error!;
-            if (a.Link.Mode == "read" || !a.Root.IsDir) return Gone("Hochladen ist hier nicht erlaubt.", 403);
-            var dir = a.Link.Mode == "drop" ? a.Root : Under(a, path);
-            if (!dir.IsDir) throw new ArgumentException("Kein Ordner.");
             var names = new List<string>();
             await foreach (var file in MultipartUpload.Files(request, ct))
             {
-                var rel = FileStore.Normalize(file.FileName);
-                if (rel.Length == 0) continue;
-                // Grenzen gegen einen anonymen Link-Gast: nicht beliebig viele Dateien und keine tiefen Pfade
-                // (sonst Millionen Ordner/Zeilen aus einer Anfrage). Leere Namen und zu lange Namen raus.
+                if (FileStore.Normalize(file.FileName).Length == 0) continue;
+                // Grenzen gegen einen anonymen Link-Gast: nicht beliebig viele Dateien in einer Anfrage
                 if (names.Count >= 1000) return Gone("Zu viele Dateien in einer Anfrage.", 400);
-                if (rel.Count(c => c == '/') > 16 || rel.Length > 255) throw new ArgumentException("Dateiname oder Pfad zu lang.");
-                var full = dir.Path.Length == 0 ? rel : dir.Path + "/" + rel;
-                if (a.Hidden(full)) throw new KeyNotFoundException("Nicht gefunden.");
-                if (FileStore.Parent(full) is { Length: > 0 } parent) FileStore.EnsureDir(a.Db, parent);
-                // Art nur nach Endung - nie, was der Hochladende behauptet
-                try { full = await FileStore.PutNewAsync(a.Db, full, file.Body, DavServer.Mime(full), ct); }
+                try { names.Add(await StoreNew(a, dir!, file.FileName, file.Body, ct)); }
                 catch (QuotaExceededException) { return Gone("Der Speicher des Empfängers ist voll.", 507); }
-                names.Add(full[(full.LastIndexOf('/') + 1)..]);
             }
             // Im Einwurf-Modus ("drop") bleibt der Ordnerinhalt verborgen - auch die (umbenannten) Namen nicht zurueckgeben,
             // sonst liesse sich ueber "X (2).pdf" erkennen, was schon im Ordner liegt.
             return Results.Ok(a.Link.Mode == "drop" ? new { files = (List<string>?)null, count = names.Count } : new { files = (List<string>?)names, count = names.Count });
         }).DisableAntiforgery();
+
+        // In Stuecken (Version 2): wie /api/files/uploads, ohne Groessengrenze je Datei. Die Teile liegen beim Besitzer
+        // des Links, die Sitzung gehoert zu diesem Link; abschliessen legt die Datei wie oben an (nie ueberschreiben).
+        api.MapPost("/uploads", (string token, UploadBody body, HttpContext http) =>
+        {
+            var (a, _, error) = UploadTarget(http, token, null);
+            return a == null ? error! : FilesApi.StartSession(a.Db, body.Name, body.Size, null, a.Link.Id);
+        });
+        api.MapGet("/uploads/{id}", (string token, string id, HttpContext http) =>
+        {
+            var (a, _, error) = UploadTarget(http, token, null);
+            return a == null ? error! : FilesApi.SessionStatus(a.Db, id, a.Link.Id);
+        });
+        api.MapPut("/uploads/{id}", async (string token, string id, long offset, HttpRequest request, HttpContext http, CancellationToken ct) =>
+        {
+            var (a, _, error) = UploadTarget(http, token, null);
+            return a == null ? error! : await FilesApi.PutChunk(a.Db, id, a.Link.Id, offset, request.Body, ct);
+        });
+        api.MapPost("/uploads/{id}/finish", async (string token, string id, string? path, HttpContext http, CancellationToken ct) =>
+        {
+            var (a, dir, error) = UploadTarget(http, token, path);
+            if (a == null) return error!;
+            var session = FilesApi.RequireComplete(a.Db, id, a.Link.Id);
+            string name;
+            try { await using (var body = FilesApi.OpenSession(a.Db, session)) name = await StoreNew(a, dir!, session.Name, body, ct); }
+            catch (QuotaExceededException) { return Gone("Der Speicher des Empfängers ist voll.", 507); }
+            FilesApi.DropSession(a.Db, session);
+            // Im Einwurf-Modus bleibt der Ordnerinhalt verborgen - auch der (umbenannte) Name
+            return Results.Ok(a.Link.Mode == "drop" ? new { files = (string[]?)null, count = 1 } : new { files = (string[]?)[name], count = 1 });
+        });
+        api.MapDelete("/uploads/{id}", (string token, string id, HttpContext http) =>
+        {
+            var (a, _, error) = UploadTarget(http, token, null);
+            return a == null ? error! : FilesApi.CancelSession(a.Db, id, a.Link.Id);
+        });
+    }
+
+    /// <summary>Darf ueber diesen Link hochgeladen werden, und in welchen Ordner?</summary>
+    private static (Access? Access, FileEntry? Dir, IResult? Error) UploadTarget(HttpContext http, string token, string? path)
+    {
+        var (a, error) = Resolve(http, token);
+        if (a == null) return (null, null, error);
+        if (a.Link.Mode == "read" || !a.Root.IsDir) return (null, null, Gone("Hochladen ist hier nicht erlaubt.", 403));
+        var dir = a.Link.Mode == "drop" ? a.Root : Under(a, path);
+        if (!dir.IsDir) throw new ArgumentException("Kein Ordner.");
+        // Gueltiger Upload-Link: grosse Dateien kommen in vielen Teilen - nicht als Anfragen ohne Anmeldung bremsen
+        http.Items[AnonThrottle.TrustedItem] = true;
+        return (a, dir, null);
+    }
+
+    /// <summary>Eine Datei neu anlegen (Name darf Unterordner enthalten); liefert den Namen, den sie bekommen hat.</summary>
+    private static async Task<string> StoreNew(Access a, FileEntry dir, string fileName, Stream body, CancellationToken ct)
+    {
+        var rel = FileStore.Normalize(fileName);
+        // Einwerfen („drop“): nur der Dateiname, keine Unterordner - sonst verriete die Antwort (Fehler oder nicht), was im
+        // verborgenen Ordner schon liegt (etwa „Vertrag.pdf/x“ scheitert, wenn es Vertrag.pdf gibt)
+        if (a.Link.Mode == "drop") rel = rel[(rel.LastIndexOf('/') + 1)..];
+        if (rel.Length == 0) throw new ArgumentException("Dateiname fehlt.");
+        // Keine tiefen Pfade und keine endlosen Namen aus einer anonymen Anfrage
+        if (rel.Count(c => c == '/') > 16 || rel.Length > 255) throw new ArgumentException("Dateiname oder Pfad zu lang.");
+        var full = dir.Path.Length == 0 ? rel : dir.Path + "/" + rel;
+        if (a.Hidden(full)) throw new KeyNotFoundException("Nicht gefunden.");
+        if (FileStore.Parent(full) is { Length: > 0 } parent) FileStore.EnsureDir(a.Db, parent);
+        // Art nur nach Endung - nie, was der Hochladende behauptet
+        full = await FileStore.PutNewAsync(a.Db, full, body, DavServer.Mime(full), ct);
+        return full[(full.LastIndexOf('/') + 1)..];
     }
 }

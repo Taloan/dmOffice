@@ -1,0 +1,471 @@
+{
+ "overrides": {
+  "org.cryptomator:cryptolib": {
+   "license": "AGPL-3.0-only AND MIT"
+  },
+  "XmpCore": {
+   "license": "BSD-3-Clause"
+  },
+  "Ude.NetStandard": {
+   "license": "MPL-1.1 OR GPL-2.0-or-later OR LGPL-2.1-or-later",
+   "text": false
+  },
+  "net.zetetic:sqlcipher-android": {
+   "license": "BSD-3-Clause"
+  }
+ },
+ "server": [
+  {
+   "name": "SQLCipher Community Edition",
+   "copyright": "Copyright (c) ZETETIC LLC",
+   "license": "BSD-3-Clause",
+   "url": "https://github.com/sqlcipher/sqlcipher",
+   "note": {
+    "de": "verschlüsselte Datenbanken, nativ in SQLitePCLRaw; © Zetetic LLC",
+    "en": "encrypted databases, native in SQLitePCLRaw; © Zetetic LLC"
+   }
+  },
+  {
+   "name": "SQLite",
+   "license": "blessing",
+   "url": "https://sqlite.org/copyright.html",
+   "note": {
+    "de": "gemeinfrei, in SQLCipher",
+    "en": "public domain, in SQLCipher"
+   }
+  },
+  {
+   "name": "Skia",
+   "copyright": "Copyright (c) Google Inc.",
+   "license": "BSD-3-Clause",
+   "url": "https://skia.org",
+   "note": {
+    "de": "nativ in SkiaSharp",
+    "en": "native in SkiaSharp"
+   }
+  },
+  {
+   "name": "PDFium",
+   "copyright": "Copyright The PDFium Authors",
+   "license": "BSD-3-Clause",
+   "url": "https://pdfium.googlesource.com/pdfium",
+   "note": {
+    "de": "nativ in bblanchon.PDFium",
+    "en": "native in bblanchon.PDFium"
+   }
+  }
+ ],
+ "image": [
+  {
+   "name": ".NET Runtime, ASP.NET Core",
+   "version": "10",
+   "license": "MIT",
+   "url": "https://github.com/dotnet/aspnetcore",
+   "note": {
+    "de": "Laufzeit, Basis-Image mcr.microsoft.com/dotnet/aspnet",
+    "en": "runtime, base image mcr.microsoft.com/dotnet/aspnet"
+   }
+  },
+  {
+   "name": "Tesseract OCR",
+   "copyright": "Copyright (c) Google Inc. and the Tesseract contributors",
+   "license": "Apache-2.0",
+   "url": "https://github.com/tesseract-ocr/tesseract",
+   "note": {
+    "de": "Texterkennung, mit Sprachdaten Deutsch und Englisch (tessdata_fast)",
+    "en": "text recognition, with German and English language data (tessdata_fast)"
+   }
+  },
+  {
+   "name": "Leptonica",
+   "copyright": "Copyright (c) Dan Bloomberg, Leptonica",
+   "license": "BSD-2-Clause",
+   "url": "http://leptonica.org",
+   "note": {
+    "de": "über Tesseract",
+    "en": "via Tesseract"
+   }
+  },
+  {
+   "name": "Poppler (pdftoppm)",
+   "license": "GPL-2.0-only OR GPL-3.0-only",
+   "url": "https://poppler.freedesktop.org",
+   "note": {
+    "de": "rendert gescannte PDF-Seiten für die Texterkennung",
+    "en": "renders scanned PDF pages for text recognition"
+   }
+  },
+  {
+   "name": "libheif (heif-dec)",
+   "license": "LGPL-3.0-or-later AND MIT",
+   "url": "https://github.com/strukturag/libheif",
+   "note": {
+    "de": "liest HEIC-Fotos; Bibliothek LGPL, Beispielprogramme MIT",
+    "en": "reads HEIC photos; library LGPL, example programs MIT"
+   }
+  },
+  {
+   "name": "libde265",
+   "license": "LGPL-3.0-or-later",
+   "url": "https://github.com/strukturag/libde265",
+   "note": {
+    "de": "HEVC-Decoder für libheif",
+    "en": "HEVC decoder for libheif"
+   }
+  },
+  {
+   "name": "Ghostscript",
+   "license": "AGPL-3.0-or-later",
+   "url": "https://www.ghostscript.com",
+   "note": {
+    "de": "PDF/A für das DMS",
+    "en": "PDF/A for DMS"
+   }
+  },
+  {
+   "name": "jbig2dec",
+   "license": "AGPL-3.0-or-later",
+   "url": "https://github.com/ArtifexSoftware/jbig2dec",
+   "note": {
+    "de": "über Ghostscript",
+    "en": "via Ghostscript"
+   }
+  },
+  {
+   "name": "DejaVu Fonts",
+   "license": "Bitstream-Vera",
+   "url": "https://dejavu-fonts.github.io",
+   "note": {
+    "de": "Schrift für Mails als PDF",
+    "en": "font for emails as PDF"
+   }
+  },
+  {
+   "name": "Python",
+   "version": "3.12",
+   "license": "PSF-2.0",
+   "url": "https://www.python.org",
+   "note": {
+    "de": "Laufzeit der Photo-Engine",
+    "en": "runtime of the Photo Engine"
+   }
+  },
+  {
+   "name": "OpenCV (opencv-contrib-python-headless)",
+   "version": "5.0.0.93",
+   "license": "Apache-2.0",
+   "url": "https://github.com/opencv/opencv-python",
+   "note": {
+    "de": "Bildverarbeitung in der Photo-Engine",
+    "en": "image processing in the Photo Engine"
+   }
+  },
+  {
+   "name": "FFmpeg (in opencv-python)",
+   "version": "8.1.1",
+   "license": "LGPL-2.1-or-later",
+   "url": "https://ffmpeg.org",
+   "note": {
+    "de": "eigene Bibliotheken in der OpenCV-Installation der Photo-Engine, gebaut ohne --enable-gpl und --enable-nonfree",
+    "en": "separate libraries in the OpenCV installation of the Photo Engine, built without --enable-gpl and --enable-nonfree"
+   }
+  },
+  {
+   "name": "libvpx (in opencv-python)",
+   "version": "1.15.2",
+   "license": "BSD-3-Clause",
+   "url": "https://chromium.googlesource.com/webm/libvpx",
+   "note": {
+    "de": "eigene Bibliothek in der OpenCV-Installation der Photo-Engine",
+    "en": "separate library in the OpenCV installation of the Photo Engine"
+   }
+  },
+  {
+   "name": "OpenSSL (in opencv-python)",
+   "version": "1.1.1w",
+   "license": "OpenSSL",
+   "url": "https://github.com/openssl/openssl",
+   "note": {
+    "de": "von FFmpeg genutzt, eigene Bibliothek in der OpenCV-Installation der Photo-Engine",
+    "en": "used by FFmpeg, separate library in the OpenCV installation of the Photo Engine"
+   }
+  },
+  {
+   "name": "libavif, libaom, libpng, libdrm (in opencv-python)",
+   "license": "BSD-2-Clause AND libpng-2.0 AND MIT",
+   "url": "https://github.com/AOMediaCodec/libavif",
+   "note": {
+    "de": "eigene Bibliotheken in der OpenCV-Installation der Photo-Engine",
+    "en": "separate libraries in the OpenCV installation of the Photo Engine"
+   }
+  },
+  {
+   "name": "OpenBLAS, LAPACK (in opencv-python, NumPy)",
+   "license": "BSD-3-Clause",
+   "url": "https://github.com/OpenMathLib/OpenBLAS",
+   "note": {
+    "de": "Rechnen in der Photo-Engine",
+    "en": "calculations in the Photo Engine"
+   }
+  },
+  {
+   "name": "libgfortran, libgomp (in opencv-python, NumPy, rawpy)",
+   "license": "GPL-3.0-or-later WITH GCC-exception-3.1",
+   "url": "https://gcc.gnu.org",
+   "note": {
+    "de": "GCC-Laufzeitbibliotheken, mit GCC Runtime Library Exception",
+    "en": "GCC runtime libraries, with the GCC Runtime Library Exception"
+   }
+  },
+  {
+   "name": "libquadmath (in opencv-python, NumPy)",
+   "license": "LGPL-2.1-or-later",
+   "url": "https://gcc.gnu.org",
+   "note": {
+    "de": "GCC-Laufzeitbibliothek",
+    "en": "GCC runtime library"
+   }
+  },
+  {
+   "name": "rawpy",
+   "version": "0.27.1",
+   "license": "MIT",
+   "url": "https://github.com/letmaik/rawpy",
+   "note": {
+    "de": "RAW-Fotos in der Photo-Engine",
+    "en": "RAW photos in the Photo Engine"
+   }
+  },
+  {
+   "name": "LibRaw (in rawpy)",
+   "version": "0.22.1",
+   "copyright": "Copyright (C) 2008-2025 LibRaw LLC; dcraw.c: Copyright 1997-2018 Dave Coffin",
+   "license": "LGPL-2.1-only OR CDDL-1.0",
+   "url": "https://www.libraw.org",
+   "note": {
+    "de": "RAW-Fotos in der Photo-Engine, eigene Bibliothek, ohne die GPL-Zusatzpakete; hier unter der LGPL-2.1 verwendet",
+    "en": "RAW photos in the Photo Engine, separate library, without the GPL add-on packs; used here under the LGPL-2.1"
+   }
+  },
+  {
+   "name": "X3F tools (in LibRaw)",
+   "copyright": "Copyright (c) 2010, Roland Karlsson",
+   "license": "BSD-3-Clause",
+   "url": "https://github.com/LibRaw/LibRaw/tree/master/src/x3f",
+   "note": {
+    "de": "liest Foveon-Dateien (.x3f); in rawpy eingeschaltet",
+    "en": "reads Foveon files (.x3f); enabled in rawpy"
+   }
+  },
+  {
+   "name": "DCB, FBDD (in LibRaw)",
+   "copyright": "Copyright (C) 2010, Jacek Gozdz",
+   "license": "BSD-3-Clause",
+   "url": "https://github.com/LibRaw/LibRaw",
+   "note": {
+    "de": "Demosaicing und Entrauschen",
+    "en": "demosaicing and noise reduction"
+   }
+  },
+  {
+   "name": "Adobe DNG SDK, Teile (in LibRaw)",
+   "copyright": "Copyright (c) 2005 Adobe Systems Incorporated",
+   "license": "MIT",
+   "url": "https://github.com/LibRaw/LibRaw",
+   "note": {
+    "de": "DNG-Dateien",
+    "en": "DNG files"
+   }
+  },
+  {
+   "name": "Little CMS (in rawpy)",
+   "version": "2.11",
+   "license": "MIT",
+   "url": "https://github.com/mm2/Little-CMS",
+   "note": {
+    "de": "Farbverwaltung für LibRaw",
+    "en": "color management for LibRaw"
+   }
+  },
+  {
+   "name": "libjpeg-turbo (in rawpy)",
+   "version": "3.1.3",
+   "license": "IJG AND BSD-3-Clause AND Zlib",
+   "url": "https://github.com/libjpeg-turbo/libjpeg-turbo",
+   "note": {
+    "de": "JPEG für LibRaw",
+    "en": "JPEG for LibRaw"
+   }
+  },
+  {
+   "name": "JasPer (in rawpy)",
+   "version": "4.2.5",
+   "license": "JasPer-2.0",
+   "url": "https://github.com/jasper-software/jasper",
+   "note": {
+    "de": "JPEG 2000 für LibRaw",
+    "en": "JPEG 2000 for LibRaw"
+   }
+  },
+  {
+   "name": "NumPy",
+   "version": "2.5.4",
+   "license": "BSD-3-Clause",
+   "url": "https://numpy.org",
+   "note": {
+    "de": "Rechnen in der Photo-Engine",
+    "en": "calculations in the Photo Engine"
+   }
+  },
+  {
+   "name": "Pillow",
+   "version": "13.0.0",
+   "license": "MIT-CMU",
+   "url": "https://python-pillow.org",
+   "note": {
+    "de": "Bilddateien in der Photo-Engine",
+    "en": "image files in the Photo Engine"
+   }
+  },
+  {
+   "name": "libjpeg-turbo, libtiff, libwebp, OpenJPEG, FreeType, HarfBuzz, Little CMS, libavif, libpng, Brotli, liblzma, Zstandard, libxcb (in Pillow)",
+   "license": "BSD-2-Clause AND BSD-3-Clause AND FTL AND IJG AND libpng-2.0 AND libtiff AND MIT AND 0BSD AND Zlib",
+   "url": "https://github.com/python-pillow/Pillow/tree/main/wheels/dependency_licenses",
+   "note": {
+    "de": "eigene Bibliotheken der Pillow-Installation, Wortlaut in deren Lizenzdatei",
+    "en": "separate libraries of the Pillow installation, full wording in its license file"
+   }
+  },
+  {
+   "name": "Haar-Kaskaden (OpenCV)",
+   "copyright": "Copyright (C) 2000, Intel Corporation",
+   "license": "Intel-OpenCV",
+   "url": "https://github.com/opencv/opencv/tree/4.x/data/haarcascades",
+   "note": {
+    "de": "Gesichter finden in der Photo-Engine, wenn YuNet ausfällt",
+    "en": "finding faces in the Photo Engine if YuNet fails"
+   }
+  }
+ ],
+ "services": [
+  {
+   "name": "ClamAV",
+   "license": "GPL-2.0-only",
+   "url": "https://www.clamav.net",
+   "note": {
+    "de": "Virenprüfung über clamd",
+    "en": "virus scanning via clamd"
+   }
+  },
+  {
+   "name": "Collabora Online (CODE)",
+   "license": "MPL-2.0",
+   "url": "https://www.collaboraonline.com",
+   "note": {
+    "de": "Office-Server über WOPI",
+    "en": "office server via WOPI"
+   }
+  },
+  {
+   "name": "ONLYOFFICE Docs",
+   "license": "AGPL-3.0-only",
+   "url": "https://github.com/ONLYOFFICE/DocumentServer",
+   "note": {
+    "de": "Office-Server",
+    "en": "office server"
+   }
+  },
+  {
+   "name": "OpenStreetMap",
+   "license": "ODbL-1.0",
+   "url": "https://www.openstreetmap.org/copyright",
+   "note": {
+    "de": "Kartendaten und Kacheln, © OpenStreetMap-Mitwirkende",
+    "en": "map data and tiles, © OpenStreetMap contributors"
+   }
+  }
+ ],
+ "specs": [
+  {
+   "name": "Cryptomator Vault Format 8",
+   "license": "–",
+   "url": "https://docs.cryptomator.org/security/architecture/",
+   "note": {
+    "de": "Tresor-Format, in dmOffice eigenständig umgesetzt; Dank an Skymatic und das Cryptomator-Projekt",
+    "en": "vault format, implemented independently in dmOffice; thanks to Skymatic and the Cryptomator project"
+   }
+  }
+ ],
+ "own": [
+  {
+   "name": "Notizi.Core",
+   "copyright": "Copyright (c) Taloan",
+   "license": "AGPL-3.0-or-later",
+   "url": "https://github.com/Taloan/dmOffice/tree/master/vendor/Notizi.Core",
+   "note": {
+    "de": "aus dem Projekt notizi desselben Urhebers",
+    "en": "from the notizi project by the same author"
+   }
+  }
+ ],
+ "markdown": {
+  "en": {
+   "title": "Third-party components",
+   "intro": "dmOffice is built on open-source software. Many thanks to everyone who develops and maintains these projects.\n\nThis file is generated by `tools/lizenzen/erzeugen.mjs` (`npm run lizenzen` in `web/`). The full license texts are in `web/public/third-party.json` and in dmOffice under Help → About dmOffice → Open-source libraries.",
+   "sections": {
+    "web": "Web interface (npm)",
+    "server": "Server (NuGet)",
+    "app": "Android app (Gradle)",
+    "image": "Programs in the Docker image",
+    "services": "Connected services (separate containers, not part of the image)",
+    "specs": "Formats and specifications",
+    "own": "Own components"
+   },
+   "notes": {
+    "web": "The icons are the Fluent UI System Icons published by Microsoft under the MIT license. Microsoft product names and logos are trademarks of Microsoft and are not used by dmOffice.",
+    "app": "Besides open-source libraries, the app contains Google Play services, Firebase Cloud Messaging and ML Kit (document scanner); these are under Google’s terms of use.",
+    "image": "The programs are installed from the package sources of the base image (Ubuntu 24.04) and called as separate processes; dmOffice does not link against them. The license texts of the packages, including their dependencies, are in the image under `/usr/share/doc/<package>/copyright`. The Photo Engine is a separate Python process: its Python packages come from PyPI in fixed versions, with their license files in the image under `/opt/photo-engine/venv/lib/python3.12/site-packages/*.dist-info/`; the models and their licenses are under `/opt/photo-engine/models/`.",
+    "services": "Optional. dmOffice talks to these over the network; they are not shipped with dmOffice.",
+    "specs": "No code taken over; the format was implemented from the published documentation."
+   },
+   "cols": [
+    "Component",
+    "Version",
+    "License",
+    "Source"
+   ],
+   "packages": "packages",
+   "compatTitle": "Compatibility with the AGPL-3.0",
+   "compat": "dmOffice itself is licensed under the GNU AGPL-3.0 (see `LICENSE`). The libraries of the web interface and the server are under MIT, Apache-2.0, ISC, 0BSD or BSD-style licenses, the SIL Open Font License or in the public domain; these allow redistribution as part of an AGPL-3.0 work, and Apache-2.0 is compatible with version 3 of the GPL/AGPL. The programs in the Docker image (Poppler under GPL, libheif under LGPL-3.0, Ghostscript under AGPL-3.0) are only called as separate processes and are shipped unchanged with their package license texts. The Photo Engine (AGPL-3.0, like dmOffice) loads its libraries into its own process; the wheels ship LibRaw, FFmpeg and libquadmath as separate shared libraries under the LGPL and do not contain the GPL add-on packs of LibRaw."
+  },
+  "de": {
+   "title": "Fremde Bestandteile",
+   "intro": "dmOffice baut auf Open-Source-Software auf. Vielen Dank allen, die diese Projekte entwickeln und pflegen.\n\nDiese Datei wird von `tools/lizenzen/erzeugen.mjs` erzeugt (`npm run lizenzen` in `web/`). Die vollständigen Lizenztexte stehen in `web/public/third-party.json` und in dmOffice unter Hilfe → Über dmOffice → Open-Source-Bibliotheken.",
+   "sections": {
+    "web": "Weboberfläche (npm)",
+    "server": "Server (NuGet)",
+    "app": "Android-App (Gradle)",
+    "image": "Programme im Docker-Image",
+    "services": "Angebundene Dienste (eigene Container, nicht im Image)",
+    "specs": "Formate und Spezifikationen",
+    "own": "Eigene Bestandteile"
+   },
+   "notes": {
+    "web": "Die Symbole sind die Fluent UI System Icons, von Microsoft unter der MIT-Lizenz veröffentlicht. Produktnamen und Logos von Microsoft sind Marken von Microsoft und werden von dmOffice nicht verwendet.",
+    "app": "Neben Open-Source-Bibliotheken enthält die App die Google-Play-Dienste, Firebase Cloud Messaging und ML Kit (Dokumentenscanner); diese stehen unter den Nutzungsbedingungen von Google.",
+    "image": "Die Programme kommen aus den Paketquellen des Basis-Images (Ubuntu 24.04) und werden als eigene Prozesse aufgerufen; dmOffice bindet sie nicht ein. Die Lizenztexte der Pakete samt ihren Abhängigkeiten liegen im Image unter `/usr/share/doc/<Paket>/copyright`. Die Photo-Engine ist ein eigener Python-Prozess: Ihre Python-Pakete kommen in fester Version von PyPI, ihre Lizenzdateien liegen im Image unter `/opt/photo-engine/venv/lib/python3.12/site-packages/*.dist-info/`; die Modelle und deren Lizenzen liegen unter `/opt/photo-engine/models/`.",
+    "services": "Optional. dmOffice spricht über das Netzwerk mit ihnen; sie werden nicht mit dmOffice ausgeliefert.",
+    "specs": "Kein Code übernommen; das Format ist nach der veröffentlichten Dokumentation umgesetzt."
+   },
+   "cols": [
+    "Bestandteil",
+    "Version",
+    "Lizenz",
+    "Quelle"
+   ],
+   "packages": "Pakete",
+   "compatTitle": "Verträglichkeit mit der AGPL-3.0",
+   "compat": "dmOffice selbst steht unter der GNU AGPL-3.0 (siehe `LICENSE`). Die Bibliotheken der Weboberfläche und des Servers stehen unter MIT-, Apache-2.0-, ISC-, 0BSD- oder BSD-artigen Lizenzen, der SIL Open Font License oder sind gemeinfrei; diese erlauben die Weitergabe als Teil eines Werks unter der AGPL-3.0, Apache-2.0 ist mit Version 3 der GPL/AGPL verträglich. Die Programme im Docker-Image (Poppler unter GPL, libheif unter LGPL-3.0, Ghostscript unter AGPL-3.0) werden nur als eigene Prozesse aufgerufen und unverändert mit den Lizenztexten ihrer Pakete ausgeliefert. Die Photo-Engine (AGPL-3.0 wie dmOffice) lädt ihre Bibliotheken in den eigenen Prozess; die Pakete bringen LibRaw, FFmpeg und libquadmath als eigene Bibliotheken unter der LGPL mit und enthalten die GPL-Zusatzpakete von LibRaw nicht."
+  }
+ }
+}

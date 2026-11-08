@@ -1,0 +1,145 @@
+# Pukkis Sprachkorpus 6: weitere Formulierungen, Tippfehler, Umgangssprache, Österreichisch, Englisch
+# Fragen nach Terminen anders gestellt
+	frage	was hab ich heute so vor	+Steuer machen
+	frage	was steht heut an	!Soll ich
+	frage	was ist heute los?	+Steuer machen
+	frage	hab ich heut was	!Soll ich
+	frage	was gibts morgen	!Eingetragen
+	frage	was mach ma morgen	!Eingetragen
+	frage	wie schaut morgen aus	+Zahnarzt Kontrolle
+	frage	was steht moregn an	!Eingetragen
+	frage	was steht uebermorgen an	~nichts eingetragen|Übermorgen
+	frage	termine fuer morgen	+Zahnarzt Kontrolle
+	frage	morgen termine?	+Zahnarzt Kontrolle
+	frage	zeig mir meine termine für morgen	+Zahnarzt Kontrolle
+	frage	zeig mir den kalender	!Eingetragen
+	frage	kalender	!Eingetragen
+	frage	was steht in meinem kalender	+Steuer machen
+	frage	plan für morgen	+Zahnarzt Kontrolle
+	frage	agenda heute	+Steuer machen
+	frage	tagesübersicht	+Steuer machen
+	frage	was steht am donnerstag an	!Soll ich
+	frage	was ist am Montag?	!Soll ich
+	frage	hab ich am sonntag was	!Soll ich
+	frage	und am dienstag?	!Soll ich
+	frage	what do i have tomorrow	+Zahnarzt Kontrolle
+	frage	whats up today	!Eingetragen
+	frage	wann ist friseur	+Friseur
+	frage	wann ist der friseurtermin	+Friseur
+	frage	wann war ich zuletzt beim friseur	!Eingetragen
+	frage	wann geht's zum friseur	+Friseur
+	frage	wann ist das beethoven-konzert	+Beethoven-Konzert
+	frage	wann ist mein nächster termin?	+Dein nächster Termin
+	frage	wann hab ich den nächsten termin	!Eingetragen
+	frage	wann muss ich zum zahnarzt?	+Zahnreinigung
+	frage	wo findet das konzert statt?	+Stadthalle
+	frage	wo ist der friseur?	+kein Ort
+	frage	wer ist beim konzert dabei?	+Anna
+	frage	wann ist elternabend in der schule	+Elternabend
+	frage	wann ist der elternabend?	+Elternabend
+	frage	wann ist omas geburtstagsfeier	!Eingetragen
+# Einkaufsliste anders gefragt
+	frage	steht milch drauf?	!Eingetragen
+	frage	hab ich milch auf der liste?	+Milch
+	frage	ist schon milch auf der einkaufsliste	+Ja
+	frage	ist käse schon notiert?	+Nein ;; +Käse
+	frage	sind die eier auf der liste	+Ja
+	frage	steht brot schon auf dem einkaufszettel	+Ja ;; +Brot
+	frage	is butter auf da listn	!Einkaufsliste „Einkaufen“:
+	frage	ist milch und brot auf der liste?	+Milch ;; +Brot
+	frage	brauchen wir noch eier?	+Eier
+	frage	brauch ma no a milch?	!Einkaufsliste „Einkaufen“:
+	frage	was is auf da listn	!Einkaufsliste „Einkaufen“:
+	frage	was steht auf dem einkaufszettel	+Milch
+	frage	was müssen wir noch einkaufen?	+Milch
+	frage	was muss ich besorgen	+Milch
+	frage	was muss ich noch holen?	+Milch
+	frage	lies mir die einkaufsliste vor	+Milch
+	frage	was haben wir auf der einkaufsliste	+Milch
+	frage	haben wir noch eier?	+weiß ich leider nicht
+	frage	haben wir noch milch im kühlschrank?	+weiß ich leider nicht
+	frage	ist noch brot da?	+weiß ich leider nicht
+	frage	do we have milk	+weiß ich leider nicht
+# Aufgaben anders gefragt
+	frage	was muss ich heut noch machen	!Soll ich
+	frage	was muss ich noch erledigen?	+Steuer machen
+	frage	was steht auf der aufgabenliste	+Fahrrad reparieren
+	frage	offene aufgaben	+Fahrrad reparieren
+	frage	alle aufgaben	+Fahrrad reparieren
+	frage	wie viele aufgaben habe ich	+Fahrrad reparieren
+	frage	was ist liegen geblieben	+Rechnung bezahlen
+	frage	überfällige aufgaben	+Rechnung bezahlen
+	frage	was sollte ich morgen erledigen	+keine Aufgabe fällig
+# Anlegen anders gesagt
+	termin	Morgen Zahnarzt um 10	+Eingetragen ;; +10:00
+	termin	zahnarzt morgen 10 uhr	+Eingetragen ;; +10:00
+	termin	10 Uhr morgen Zahnarzt	+Eingetragen ;; +10:00
+	termin	morgen um 10:15 zahnarzt	+Eingetragen ;; +10:15
+	termin	am freitag um 7 uhr früh flug nach mallorca	+Eingetragen ;; +07:00 ;; +Flug nach Mallorca
+	termin	übermorgen 16:00 Uhr Kinderarzt mit Lena	+Eingetragen ;; +16:00 ;; +Kinderarzt mit Lena
+	termin	Sa 14 Uhr Kindergeburtstag	+Eingetragen ;; +14:00 ;; +Kindergeburtstag
+	termin	am samstag um 14 uhr kindergeburtstag bei max	+Eingetragen ;; +14:00
+	termin	nächsten montag um 9 vorstellungsgespräch	+Eingetragen ;; +09:00 ;; +Vorstellungsgespräch
+	termin	kommenden Freitag Abschlussfeier	+Eingetragen ;; +ganztägig ;; +Abschlussfeier
+	termin	am 15.11.2030 um 11 Uhr Notartermin	+Eingetragen ;; +11:00 ;; +Notartermin
+	termin	am 15.11.30 Taufe	+Eingetragen ;; +Taufe
+	termin	morgen 18 uhr fußball training	+Eingetragen ;; +18:00
+	termin	morgn 9 uhr friseur	!Morgn
+	termin	heite 17 uhr yoga	+Eingetragen ;; +17:00
+	termin	um 15 uhr kaffee bei oma	+Eingetragen ;; +15:00
+	termin	termin: morgen, 8:30, physiotherapie	+Eingetragen ;; +08:30 ;; +Physiotherapie
+	termin	Termin am Montag 12:30 Mittagessen mit dem Team	+Eingetragen ;; +12:30 ;; -Essensplan
+	termin	Freitag 20 Uhr Date mit Sarah	+Eingetragen ;; +20:00 ;; +Date mit Sarah
+	aufgabe	Ich muss noch Geschenke einpacken	+Notiert ;; +Geschenke einpacken
+	aufgabe	muss noch die blumen giessen	+Notiert
+	aufgabe	morgen keller aufräumen	+Notiert ;; +Keller aufräumen ;; +fällig morgen
+	aufgabe	am wochenende rasen mähen	+Notiert ;; +Rasen mähen
+	aufgabe	diese woche noch arzttermin ausmachen	!Eingetragen
+	aufgabe	spätestens freitag steuer abgeben	+Notiert ;; +fällig
+	aufgabe	Zeugnis kopieren	+Notiert: Zeugnis kopieren
+	aufgabe	Rücksendung zur Post bringen	+Notiert
+	aufgabe	Elterngeld beantragen	+Notiert: Elterngeld beantragen
+	aufgabe	Reifen beim Händler bestellen	+Notiert ;; +Reifen beim Händler bestellen
+	einkauf	brauchen noch klopapier	+Klopapier
+	einkauf	klopapier ist fast alle	+Klopapier
+	einkauf	die butter geht zur neige	+Butter
+	einkauf	wir haben kein klopapier mehr	+Klopapier
+	einkauf	es fehlen Taschentücher	+Taschentücher
+	einkauf	noch 2 packungen nudeln	+2 packungen Nudeln
+	einkauf	6 Eier	+Eier stehen schon ;; @nichts
+	einkauf	ein Kilo Äpfel	+1 Kilo Äpfel
+	einkauf	zwei Flaschen Rotwein	+2 Flaschen Rotwein
+	einkauf	Rotwein, Weißwein und Sekt	+Rotwein ;; +Weißwein ;; +Sekt
+	einkauf	Bananen + Äpfel	+Bananen ;; +Äpfel
+	einkauf	Shampoo & Duschgel	+Shampoo ;; +Duschgel
+	einkauf	- Butter\n- Käse\n- Wurst	+Butter ;; +Käse ;; +Wurst
+	einkauf	Butter, Käse, Wurst, Tomaten, Gurke, Paprika	+Paprika
+	einkauf	kauf ma a semmel	+Semmel
+	einkauf	hol no a paar Paradeiser	+Paradeiser
+	einkauf	mir fehlt Faschiertes	+Faschiertes
+	einkauf	Klopapier!!	+Klopapier
+	einkauf	klopapier bitte	+Klopapier
+	einkauf	MILCH UND KÄSE	+KÄSE ;; +steht schon
+	einkauf	milk	+Milk
+	einkauf	toilet paper	+Toilet paper
+	essen	am Freitag gibt es Fisch	+Fisch ;; +Essensplan
+	essen	heute mittag essen wir Nudeln	+Mittagessen – Nudeln
+	essen	zum abendessen gibt es heute Suppe	+Abendessen – Suppe
+	essen	morgen frühstück pfannkuchen	+Frühstück – Pfannkuchen
+	essen	Sonntag Mittag: Schweinebraten	+Mittagessen – Schweinebraten
+# Höflich und umständlich
+	termin	Könntest du bitte für morgen um 10 einen Termin beim Zahnarzt eintragen?	+Eingetragen ;; +10:00 ;; +Zahnarzt
+	termin	wärst du so lieb und trägst morgen 9 uhr friseur ein	!Soll ich
+	einkauf	Würdest du Milch und Kekse auf die Liste schreiben?	+Kekse
+	einkauf	Kannst du bitte noch Brot und Butter auf die Einkaufsliste setzen	+Butter ;; +Brot steht schon
+	aufgabe	Kannst du dir notieren, dass ich die Steuer machen muss?	+Notiert: Steuer machen
+	notiz	bitte merk dir: Garage Code 4711	+Notiz angelegt ;; +4711
+	frage	Sag mir bitte, was morgen ansteht.	+Zahnarzt Kontrolle
+	frage	Weißt du, was es heute zu essen gibt?	+Linsensuppe
+	frage	Kannst du mir sagen, ob Milch auf der Liste steht?	+Ja
+	frage	weißt du ob wir noch milch haben	+weiß ich leider nicht
+# Mehrere Sätze
+	talk	Hallo! Wie geht's?	+Mir geht's gut
+	termin	Hallo Pukki. Trag bitte morgen 15 Uhr Zahnarzt ein.	+Eingetragen ;; +15:00
+	einkauf	Danke! Und schreib noch Kekse auf.	+Kekse
+	frage	Moin. Was steht heute an?	+Steuer machen

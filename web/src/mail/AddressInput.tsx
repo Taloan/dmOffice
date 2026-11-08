@@ -25,8 +25,8 @@ const useStyles = makeStyles({
 
 interface Suggestion { name?: string | null; address: string; source: string }
 
-/** Empfaenger als Kaertchen, mit Vorschlaegen aus Kontakten und zuletzt Benutzten. */
-export function AddressInput({ value, onChange, autoFocus }: { value: string[]; onChange: (v: string[]) => void; autoFocus?: boolean }) {
+/** Empfaenger als Kaertchen, mit Vorschlaegen aus Kontakten und zuletzt Benutzten; mit people auch Benutzer dieses dmOffice. */
+export function AddressInput({ value, onChange, autoFocus, people, fieldName }: { value: string[]; onChange: (v: string[]) => void; autoFocus?: boolean; people?: boolean; fieldName?: string }) {
   const s = useStyles()
   const [text, setText] = useState('')
   const [items, setItems] = useState<Suggestion[]>([])
@@ -36,8 +36,8 @@ export function AddressInput({ value, onChange, autoFocus }: { value: string[]; 
 
   useEffect(() => {
     if (term.trim().length < 2) { setItems([]); return }
-    api.get<Suggestion[]>('/api/pim/suggest?' + q({ q: term })).then(r => { setItems(r); setActive(0) }).catch(() => setItems([]))
-  }, [term])
+    api.get<Suggestion[]>('/api/pim/suggest?' + q({ q: term, people: people ? '1' : undefined })).then(r => { setItems(r); setActive(0) }).catch(() => setItems([]))
+  }, [term, people])
 
   const add = (entry: string) => {
     const e = entry.trim().replace(/[,;]$/, '')
@@ -71,7 +71,7 @@ export function AddressInput({ value, onChange, autoFocus }: { value: string[]; 
           ))}
         </TagGroup>
       )}
-      <input ref={input} className={s.input} value={text} autoFocus={autoFocus}
+      <input ref={input} className={s.input} value={text} autoFocus={autoFocus} aria-label={fieldName}
         onChange={e => setText(e.target.value)} onKeyDown={onKey}
         onBlur={() => setTimeout(() => { if (text.includes('@')) add(text); setItems([]) }, 150)} />
       {items.length > 0 && (
@@ -81,7 +81,7 @@ export function AddressInput({ value, onChange, autoFocus }: { value: string[]; 
               <Avatar name={x.name || x.address} size={28} color="colorful" />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div>{x.name || x.address}</div>
-                {x.name && <div className={s.sub}>{x.address}</div>}
+                {x.name && <div className={s.sub}>{x.source === 'people' ? t('Benutzer dieses dmOffice') : x.address}</div>}
               </div>
               {x.source === 'recent' && (
                 // Wie in Outlook: einen Vorschlag aus der Liste der zuletzt benutzten nehmen

@@ -9,7 +9,7 @@ public sealed class Subscription
 {
     public long Collection { get; set; }
     public string Url { get; set; } = "";
-    /// <summary>Abstand in Minuten (60 = stuendlich, 1440 = taeglich).</summary>
+    /// <summary>Abstand in Minuten (60 = stuendlich, 1440 = taeglich); 0: einmal holen, danach nur von Hand.</summary>
     public int Interval { get; set; } = 360;
     public DateTime? LastFetch { get; set; }
     public string? LastError { get; set; }
@@ -23,6 +23,13 @@ public sealed class Subscription
 /// </summary>
 public static class Subscriptions
 {
+    /// <summary>Eingabe des Abstands: 0 heißt nur von Hand, sonst 15 Minuten bis eine Woche.</summary>
+    public static int IntervalOf(int? minutes) => minutes == 0 ? 0 : Math.Clamp(minutes ?? 360, 15, 10080);
+
+    /// <summary>Ist das Abo jetzt dran? Nur von Hand: nur solange es noch nie geholt wurde (etwa nach einer neuen Adresse).</summary>
+    public static bool Due(Subscription sub, DateTime now) =>
+        sub.LastFetch is not DateTime last || (sub.Interval != 0 && now - last >= TimeSpan.FromMinutes(Math.Max(15, sub.Interval)));
+
     private const string Key = "pim.subscriptions";
     private const long MaxBytes = 20 * 1024 * 1024;
 
@@ -162,7 +169,7 @@ public sealed class SubscriptionSync : BackgroundService
                 try { subs = Subscriptions.All(space.Db); } catch { continue; }
                 foreach (var sub in subs)
                 {
-                    if (sub.LastFetch is DateTime last && DateTime.UtcNow - last < TimeSpan.FromMinutes(Math.Max(15, sub.Interval))) continue;
+                    if (!Subscriptions.Due(sub, DateTime.UtcNow)) continue;
                     using var activity = Activity.Start(space.User.Id, Activity.Subscriptions, sub.Url);
                     try { await Subscriptions.FetchAsync(space, sub, stop); }
                     catch (OperationCanceledException) when (stop.IsCancellationRequested) { return; }

@@ -178,7 +178,8 @@ END;
         var root = FileStore.Normalize(space.Settings.Notizi.Root ?? "");
         var n = UserDb.Exec(conn, $@"INSERT OR IGNORE INTO text_queue(kind, ref, added)
             SELECT 'file', f.path, 0 FROM files f WHERE f.is_dir = 0 AND NOT ($root <> '' AND (f.path = $root OR substr(f.path, 1, length($root) + 1) = $root || '/'))
-              AND NOT EXISTS (SELECT 1 FROM text_docs d WHERE d.kind = 'file' AND d.path = f.path AND d.etag = f.etag)", ("$root", root));
+              AND substr(f.path, 1, length($vault) + 1) <> $vault || '/'
+              AND NOT EXISTS (SELECT 1 FROM text_docs d WHERE d.kind = 'file' AND d.path = f.path AND d.etag = f.etag)", ("$root", root), ("$vault", FileStore.SystemVault));
         // Mails: Neueste zuerst (added = Datum der Mail, die Warteschlange arbeitet absteigend)
         n += UserDb.Exec(conn, @"INSERT OR IGNORE INTO text_queue(kind, ref, added)
             SELECT 'mail', CAST(m.id AS TEXT), m.date / 1000 - 4000000000 FROM mail m
@@ -189,6 +190,25 @@ END;
             SELECT 'note', n.sync_id, 1 FROM notes n WHERE (n.images <> '[]' OR n.attachments <> '[]')
               AND NOT EXISTS (SELECT 1 FROM text_docs d WHERE d.kind = 'note' AND d.note_id = n.sync_id)");
         tx.Commit();
+        return n;
+    }
+
+    private const string AwayNote = "Inhalt liegt gerade nur im Storage Extender";
+    private const string AwayKey = "textindex.away1";
+
+    /// <summary>Einmal je Benutzer: Dateien, die frueher uebersprungen wurden, weil ihr Inhalt nur im Storage Extender lag,
+    /// neu lesen - inzwischen holt der Index sie dafuer kurz von dort.</summary>
+    public static int EnqueueAwayOnce(UserDb db)
+    {
+        if (db.Get(AwayKey) != null) return 0;
+        using var conn = db.Open();
+        using var tx = conn.BeginTransaction();
+        var n = UserDb.Exec(conn, $@"INSERT OR IGNORE INTO text_queue(kind, ref, added)
+            SELECT 'file', path, 0 FROM text_docs WHERE kind = 'file' AND status = 'skipped' AND note = $n", ("$n", AwayNote));
+        // Gelesener Stand vergessen, sonst gilt die Datei beim Abarbeiten als schon erledigt
+        UserDb.Exec(conn, "UPDATE text_docs SET etag = NULL WHERE kind = 'file' AND status = 'skipped' AND note = $n", ("$n", AwayNote));
+        tx.Commit();
+        db.Set(AwayKey, "1");
         return n;
     }
 
@@ -269,8 +289,14 @@ END;
     {
         var db = space.Db;
         var settings = space.Settings;
-        // Der Abgleichordner von notizi ist geschuetzt - nie lesen, nie im Index
-        if (FileStore.InRoot(path, settings.Notizi.Root ?? ""))
+        // Der Abgleichordner von notizi ist geschuetzt - nie lesen, nie im Index; ebenso der System-Tresor (nur Verschlüsseltes)
+        if (FileStore.InRoot(path, settings.Notizi.Root ?? "") || FileStore.InRoot(path, FileStore.SystemVault))
+        {
+            db.Exec("DELETE FROM text_docs WHERE kind = 'file' AND path = $p", ("$p", path));
+            return;
+        }
+        // Dokumente vom DMS führen ihren Text selbst - nicht doppelt lesen
+        if (SkipFile?.Invoke(space, path) == true)
         {
             db.Exec("DELETE FROM text_docs WHERE kind = 'file' AND path = $p", ("$p", path));
             return;
@@ -289,7 +315,10 @@ END;
         // Zu gross: gar nicht erst aus dem BlobStore in den Speicher holen
         var max = (limits ?? ExtractLimits.Default).MaxBytes;
         if (entry.Size > max) { Write(db, doc, Extracted.Skip($"größer als {max / 1024 / 1024} MB")); return; }
-        var data = FileStore.Data(db, path) ?? Array.Empty<byte>();
+        byte[] data;
+        try { data = FileStore.Data(db, path) ?? Array.Empty<byte>(); }
+        // Liegt im Zwischenspeicher-Betrieb gerade nur in S3: spaeter, wenn er wieder hier ist (neuer Etag) oder neu eingereiht
+        catch (FileNotFoundException) { Write(db, doc, Extracted.Skip(AwayNote)); return; }
         var result = TextExtract.Extract(data, entry.Name, entry.Mime, ocr, limits, ct);
         // Waehrend des Lesens geaendert oder geloescht: der Trigger hat neu eingereiht bzw. alles entfernt
         if (FileStore.Get(db, path)?.Etag != entry.Etag) return;
@@ -484,6 +513,11 @@ END;
 
     private static readonly string Snippet = $"snippet(text_fts, 1, '{MarkStart}', '{MarkEnd}', '…', 14)";
 
+    /// <summary>Dateien, deren Text ein anderes Modul selbst führt (DMS) - die Inhaltssuche überspringt sie.</summary>
+    public static Func<UserSpace, string, bool>? SkipFile;
+    /// <summary>Treffer anderer Module in Dateien der Ablage (DMS): Suchwörter, Ordner, Höchstzahl.</summary>
+    public static Func<UserSpace, string, string, int, List<FileHit>>? ExtraFileHits;
+
     /// <summary>Dateien der Ablage nach Inhalt (und Name), auf Wunsch unterhalb eines Ordners. Ohne notizi-Ordner.</summary>
     public static List<FileHit> SearchFiles(UserSpace space, string query, string? under = null, int limit = 100)
     {
@@ -498,7 +532,10 @@ END;
             r => new FileHit(r.GetString(0), r.GetString(1), r.GetInt64(2), r.IsDBNull(3) ? null : r.GetString(3),
                 DateTime.Parse(r.GetString(4), null, System.Globalization.DateTimeStyles.RoundtripKind), r.GetString(5), r.GetString(6)),
             ("$q", match), ("$u", under), ("$l", limit * 2));
-        return hits.Where(h => !FileStore.InRoot(h.Path, root)).Take(limit).ToList();
+        var result = hits.Where(h => !FileStore.InRoot(h.Path, root)).Take(limit).ToList();
+        if (ExtraFileHits?.Invoke(space, query, under, limit) is { Count: > 0 } extra)
+            result = result.Concat(extra.Where(e => result.All(h => h.Path != e.Path))).Take(limit).ToList();
+        return result;
     }
 
     /// <summary>Notizen (nicht im Papierkorb), in deren Bildern oder Anhaengen alle Woerter vorkommen - je Notiz der beste Treffer,

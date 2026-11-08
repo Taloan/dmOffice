@@ -1,4 +1,4 @@
-import { Button, Input, MenuDivider, MenuItem, MenuItemCheckbox, MenuList, Text, Tooltip, makeStyles, tokens } from '@fluentui/react-components'
+import { Button, Input, MenuDivider, MenuItem, MenuItemCheckbox, MenuList, Switch, Text, Tooltip, makeStyles, tokens } from '@fluentui/react-components'
 import { Add16Regular, Delete16Regular, Settings20Regular, TagDismiss20Regular, ArrowUp16Regular, ArrowDown16Regular } from '@fluentui/react-icons'
 import { useEffect, useState } from 'react'
 import { api } from '../api'
@@ -6,7 +6,9 @@ import { useApp } from '../App'
 import { t } from '../i18n'
 
 /** Kategorie: auf dem Mailserver ein IMAP-Schlagwort (key), hier Name und Farbe. */
-export interface MailCategory { key: string; name: string; color: string }
+/** smart: lernt (neue Mails bekommen sie automatisch); preset: mitgelieferte Kategorie mit Voreinstellung */
+/** quiet: neue Mails dieser Kategorie melden nicht (wenn alle ihre Kategorien so stehen) */
+export interface MailCategory { key: string; name: string; color: string; smart?: boolean; preset?: string | null; quiet?: boolean }
 
 // Einmal laden, fuer alle Stellen (Liste, Menue, Lesebereich, Einstellungen)
 let cache: MailCategory[] | null = null
@@ -17,6 +19,16 @@ function load() {
   loading ??= api.get<MailCategory[]>('/api/settings/categories').then(c => { cache = c; listeners.forEach(l => l(c)); return c })
     .catch(() => { loading = null; return [] })
   return loading
+}
+
+/** Kategorien, einmal geladen (für Stellen außerhalb von React, etwa den Hinweis bei neuer Mail). */
+export const loadCategories = () => cache ? Promise.resolve(cache) : load()
+
+/** Keine Benachrichtigung: Die Mail trägt Kategorien, und alle stehen auf „ohne Benachrichtigung“ (wie Categories.Silenced auf dem Server). */
+export const silenced = (cats: MailCategory[], keywords: string[] | undefined) => {
+  const kw = new Set((keywords ?? []).map(k => k.toLowerCase()))
+  const mine = cats.filter(c => kw.has(c.key.toLowerCase()))
+  return mine.length > 0 && mine.every(c => c.quiet)
 }
 
 export async function saveCategories(list: MailCategory[]) {
@@ -60,7 +72,8 @@ export function CategoryDot({ color }: { color: string }) {
 }
 
 /** Farbige Kaertchen einer Mail. Unbekannte Schlagworte (z. B. von anderem Rechner) erscheinen grau mit ihrem Namen. */
-export function CategoryChips({ keywords, compact }: { keywords?: string[]; compact?: boolean }) {
+/** onRemove: Klick auf einen Badge nimmt die Kategorie von der Mail (Liste, Lesebereich). */
+export function CategoryChips({ keywords, compact, onRemove }: { keywords?: string[]; compact?: boolean; onRemove?: (key: string) => void }) {
   const s = useStyles()
   const cats = useCategories()
   if (!keywords?.length) return null
@@ -72,7 +85,9 @@ export function CategoryChips({ keywords, compact }: { keywords?: string[]; comp
       const name = c?.name ?? k.slice(3)
       return compact
         ? <Tooltip key={k} content={name} relationship="label"><span className={s.dot} style={{ backgroundColor: color, width: 10, height: 10 }} /></Tooltip>
-        : <span key={k} className={s.chip} style={{ backgroundColor: color, color: textOn(color) }} title={name}>{name}</span>
+        : <span key={k} className={s.chip} style={{ backgroundColor: color, color: textOn(color), cursor: onRemove ? 'pointer' : undefined }}
+            title={onRemove ? t('{name} – klicken entfernt die Kategorie (bei Auswahl von allen ausgewählten)', { name }) : name}
+            onClick={onRemove ? e => { e.stopPropagation(); onRemove(k) } : undefined}>{name}</span>
     })}
   </>
 }
@@ -125,6 +140,12 @@ export function CategorySettings() {
           </label>
           <Input value={c.name} onChange={(_, d) => update(i, { name: d.value })} style={{ width: 220 }} />
           <span className={s.key} title={t('IMAP-Schlagwort auf dem Mailserver')}>{c.key || t('(neu)')}</span>
+          <Tooltip content={t('Neue Mails bekommen diese Kategorie automatisch. Setzen und Entfernen von Hand trainiert sie.')} relationship="description">
+            <Switch checked={!!c.smart} label={t('Lernt')} onChange={(_, d) => update(i, { smart: d.checked })} />
+          </Tooltip>
+          <Tooltip content={t('Neue Mails mit dieser Kategorie lösen eine Benachrichtigung aus. Hat eine Mail mehrere Kategorien, reicht eine mit Benachrichtigung.')} relationship="description">
+            <Switch checked={!c.quiet} label={t('Benachrichtigen')} onChange={(_, d) => update(i, { quiet: !d.checked })} />
+          </Tooltip>
           <Button size="small" appearance="subtle" icon={<ArrowUp16Regular />} disabled={i === 0} onClick={() => swap(i, i - 1)} aria-label={t('Nach oben')} />
           <Button size="small" appearance="subtle" icon={<ArrowDown16Regular />} disabled={i === list.length - 1} onClick={() => swap(i, i + 1)} aria-label={t('Nach unten')} />
           <Button size="small" appearance="subtle" icon={<Delete16Regular />} onClick={() => change(list.filter((_, j) => j !== i))} aria-label={t('Entfernen')} />

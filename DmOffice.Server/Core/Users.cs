@@ -34,6 +34,9 @@ public sealed class UserRecord
     /// </summary>
     public bool FilesOff { get; set; }
 
+    /// <summary>Pukki darf fuer diesen Benutzer die KI fragen (Version 2, vom Admin freigegeben).</summary>
+    public bool AiAllowed { get; set; }
+
     /// <summary>Wechselt bei Passwort, Rolle und 2FA - aeltere Anmelde-Cookies gelten dann nicht mehr.</summary>
     public string Stamp { get; set; } = "";
 
@@ -119,7 +122,7 @@ public sealed class UserStore
                 DisplayName = string.IsNullOrWhiteSpace(displayName) ? login : displayName.Trim(),
                 PasswordHash = Passwords.Hash(password),
                 IsAdmin = isAdmin,
-                WrappedKey = _vault.Wrap(RandomNumberGenerator.GetBytes(32))
+                WrappedKey = _vault.Wrap(RandomNumberGenerator.GetBytes(32)),
             };
             _users.Add(user);
             Save();

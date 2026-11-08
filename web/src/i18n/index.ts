@@ -26,8 +26,14 @@ export function chooseLanguage(l: Lang) {
   location.reload()
 }
 
+/**
+ * Text in der eingestellten Sprache. Mehrdeutiges bekommt einen Kontext vor „|“ (etwa „coach|Größe“ = Körpergröße, nicht
+ * Dateigröße): Deutsch zeigt nur den Text dahinter, Englisch nimmt die Übersetzung mit Kontext, sonst die ohne.
+ */
 export function t(de: string, vars?: Record<string, string | number>): string {
-  let s = lang === 'en' ? en[de] ?? de : de
+  const bar = /^[a-z]+\|/.exec(de)
+  const plain = bar ? de.slice(bar[0].length) : de
+  let s = lang === 'en' ? en[de] ?? en[plain] ?? plain : plain
   if (vars) for (const [k, v] of Object.entries(vars)) s = s.split(`{${k}}`).join(String(v))
   return s
 }
@@ -39,5 +45,8 @@ export function tError(message: string): string {
   // Meldungen mit wechselndem Teil am Ende: "Adresse in An ungültig: xyz"
   const i = message.indexOf(': ')
   if (i > 0 && en[message.slice(0, i)]) return en[message.slice(0, i)] + message.slice(i)
+  // Wechselnder Teil vorn: "Einkauf: Fassung aus dmOffice verworfen, …" (Titel, Name)
+  const j = message.lastIndexOf(': ')
+  if (j > 0 && en[message.slice(j + 2)]) return tError(message.slice(0, j)) + ': ' + en[message.slice(j + 2)]
   return message
 }

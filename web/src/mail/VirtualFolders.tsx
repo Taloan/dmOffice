@@ -1,8 +1,8 @@
 import {
   Button, Checkbox, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Dropdown, Field, Input,
-  Menu, MenuItem, MenuList, MenuPopover, Option, Popover, PopoverSurface, PopoverTrigger, Tag, Text, Tooltip, makeStyles, mergeClasses, tokens,
+  Menu, MenuItem, MenuItemRadio, MenuList, MenuPopover, MenuTrigger, Option, Popover, PopoverSurface, PopoverTrigger, Tag, Text, Tooltip, makeStyles, mergeClasses, tokens,
 } from '@fluentui/react-components'
-import { Add16Regular, ChevronDown16Regular, ChevronRight16Regular, FolderSearch20Regular, Search16Regular } from '@fluentui/react-icons'
+import { Add16Regular, ChevronDown16Regular, ChevronRight16Regular, Edit20Regular, FolderSearch20Regular, NumberSymbol20Regular, Search16Regular } from '@fluentui/react-icons'
 import { useCallback, useEffect, useState } from 'react'
 import { Account, api, Folder } from '../api'
 import { useApp } from '../App'
@@ -11,6 +11,7 @@ import { locale, t } from '../i18n'
 import { CategoryDot, useCategories } from './Categories'
 import { folderLabel } from './FolderPane'
 import type { Selection } from './MailView'
+import { askConfirm } from '../shell/context'
 
 export interface MailCriteria {
   text?: string | null; accounts?: string[] | null; folders?: string[] | null; categories?: string[] | null
@@ -32,6 +33,7 @@ const useStyles = makeStyles({
   active: { backgroundColor: tokens.colorNeutralBackground1Selected, fontWeight: 600 },
   name: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   unread: { color: tokens.colorBrandForeground1, fontWeight: 600, fontSize: '12px' },
+  total: { color: tokens.colorNeutralForeground3, fontSize: '12px' },
   form: { display: 'flex', flexDirection: 'column', gap: '12px' },
   row: { display: 'flex', gap: '12px', flexWrap: 'wrap' },
   colors: { display: 'flex', gap: '6px', flexWrap: 'wrap' },
@@ -40,11 +42,14 @@ const useStyles = makeStyles({
   preview: { color: tokens.colorNeutralForeground3 },
 })
 
+
 const palette = ['#0F6CBD', '#D13438', '#CA5010', '#C19C00', '#13A10E', '#00B7C3', '#8764B8', '#E3008C', '#69797E']
 
 /** Suchordner und Kategorien als virtuelle Ordner (wie bei Proton) - unter den Konten im Ordnerbereich. */
-export function VirtualFolders({ accounts, folders, selection, onSelect, refresh }: {
+export function VirtualFolders({ accounts, folders, selection, onSelect, refresh, onCategoryDrop }: {
   accounts: Account[]; folders: Record<string, Folder[]>; selection: Selection | null; onSelect: (s: Selection) => void; refresh: unknown
+  /** Mails auf eine Kategorie gezogen: zuordnen */
+  onCategoryDrop?: (key: string, ids: number[]) => void
 }) {
   const s = useStyles()
   const { fail } = useApp()
@@ -54,6 +59,13 @@ export function VirtualFolders({ accounts, folders, selection, onSelect, refresh
   const [counts, setCounts] = useState<Counts>({})
   const [edit, setEdit] = useState<SearchFolder | 'new' | null>(null)
   const [menu, setMenu] = useState<{ f: SearchFolder; x: number; y: number } | null>(null)
+  // Kontextmenü einer Kategorie: Anzahl wie bei Ordnern, Bearbeiten in den Einstellungen
+  const [catMenu, setCatMenu] = useState<{ key: string; x: number; y: number } | null>(null)
+  const countMode = (key: string) => prefs.folderCount?.[key] ?? 'unread'
+  const counter = (key: string, unread: number, total: number) =>
+    countMode(key) === 'total' ? (total > 0 ? <span className={s.total}>{total.toLocaleString(locale)}</span> : null)
+      : unread > 0 ? <span className={s.unread}>{unread.toLocaleString(locale)}</span> : null
+  const [dropOn, setDropOn] = useState<string | null>(null)
   const closed = prefs.virtualClosed ?? {}
 
   const load = useCallback(() => {
@@ -79,13 +91,23 @@ export function VirtualFolders({ accounts, folders, selection, onSelect, refresh
     const c = counts[folder]
     return (
       <div key={folder} className={mergeClasses(s.item, selection?.folder === folder && s.active)} onClick={() => open(folder)}
-        onContextMenu={onMenu ? e => { e.preventDefault(); onMenu(e) } : undefined}>
+        style={dropOn === folder ? { outline: `2px solid ${tokens.colorBrandStroke1}`, outlineOffset: -2 } : undefined}
+        onContextMenu={onMenu ? e => { e.preventDefault(); onMenu(e) } : undefined}
+        // Kategorie: Mails hierher ziehen ordnet sie zu (lernende Kategorien lernen daraus)
+        onDragOver={folder.startsWith('cat:') && onCategoryDrop ? e => { if (e.dataTransfer.types.includes('application/x-dmoffice-mail')) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDropOn(folder) } } : undefined}
+        onDragLeave={() => setDropOn(d => d === folder ? null : d)}
+        onDrop={folder.startsWith('cat:') && onCategoryDrop ? e => {
+          e.preventDefault(); setDropOn(null)
+          const data = JSON.parse(e.dataTransfer.getData('application/x-dmoffice-mail') || '{}')
+          if (data.ids?.length) onCategoryDrop(folder.slice(4), data.ids)
+        } : undefined}>
         {icon}
         <span className={s.name}>{name}</span>
-        {c && c.unread > 0 && <span className={s.unread}>{c.unread.toLocaleString(locale)}</span>}
+        {c && (folder.startsWith('cat:') ? counter(folder, c.unread, c.total) : c.unread > 0 && <span className={s.unread}>{c.unread.toLocaleString(locale)}</span>)}
       </div>
     )
   }
+
 
   if (!anchor) return null
   return (
@@ -110,7 +132,8 @@ export function VirtualFolders({ accounts, folders, selection, onSelect, refresh
             {closed.categories ? <ChevronRight16Regular /> : <ChevronDown16Regular />}
             <Text weight="semibold" style={{ flex: 1 }}>{t('Kategorien')}</Text>
           </div>
-          {!closed.categories && categories.map(c => item('cat:' + c.key, <span style={{ width: 20, display: 'inline-flex', justifyContent: 'center' }}><CategoryDot color={c.color} /></span>, c.name))}
+          {!closed.categories && categories.map(c => item('cat:' + c.key, <span style={{ width: 20, display: 'inline-flex', justifyContent: 'center' }}><CategoryDot color={c.color} /></span>, c.name,
+            e => setCatMenu({ key: 'cat:' + c.key, x: e.clientX, y: e.clientY })))}
         </div>
       )}
       {menu && (
@@ -119,11 +142,32 @@ export function VirtualFolders({ accounts, folders, selection, onSelect, refresh
           <MenuPopover>
             <MenuList>
               <MenuItem onClick={() => { setEdit(menu.f); setMenu(null) }}>{t('Bearbeiten …')}</MenuItem>
-              <MenuItem onClick={() => {
+              <MenuItem onClick={async () => {
                 const f = menu.f
                 setMenu(null)
-                if (confirm(t('Suchordner „{name}“ löschen? Die Mails bleiben, wo sie sind.', { name: f.name }))) save(list.filter(x => x.id !== f.id))
+                if (await askConfirm('', t('Suchordner „{name}“ löschen? Die Mails bleiben, wo sie sind.', { name: f.name }))) save(list.filter(x => x.id !== f.id))
               }}>{t('Löschen')}</MenuItem>
+            </MenuList>
+          </MenuPopover>
+        </Menu>
+      )}
+      {catMenu && (
+        <Menu open onOpenChange={(_, d) => !d.open && setCatMenu(null)}
+          positioning={{ target: { getBoundingClientRect: () => ({ x: catMenu.x, y: catMenu.y, top: catMenu.y, left: catMenu.x, bottom: catMenu.y, right: catMenu.x, width: 0, height: 0 }) } as any }}>
+          <MenuPopover>
+            <MenuList>
+              <Menu>
+                <MenuTrigger disableButtonEnhancement><MenuItem icon={<NumberSymbol20Regular />}>{t('Ordneranzahl ändern')}</MenuItem></MenuTrigger>
+                <MenuPopover>
+                  <MenuList checkedValues={{ count: [countMode(catMenu.key)] }} onCheckedValueChange={(_, d) => {
+                    update({ folderCount: { ...(prefs.folderCount ?? {}), [catMenu.key]: d.checkedItems[0] as 'unread' | 'total' } }); setCatMenu(null)
+                  }}>
+                    <MenuItemRadio name="count" value="unread">{t('Anzahl ungelesener Elemente anzeigen')}</MenuItemRadio>
+                    <MenuItemRadio name="count" value="total">{t('Gesamtzahl der Elemente anzeigen')}</MenuItemRadio>
+                  </MenuList>
+                </MenuPopover>
+              </Menu>
+              <MenuItem icon={<Edit20Regular />} onClick={() => { location.hash = '#/settings/categories'; setCatMenu(null) }}>{t('Bearbeiten …')}</MenuItem>
             </MenuList>
           </MenuPopover>
         </Menu>

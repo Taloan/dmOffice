@@ -169,6 +169,16 @@ public class WopiTests : IClassFixture<WopiFixture>
     }
 
     [Fact]
+    public async Task Pdf_oeffnet_zum_Ansehen()
+    {
+        // Die Oberfläche schickt PDF an den Office-Server, wenn /config es unter view nennt - dann muss es sich auch öffnen lassen
+        FileStore.Put(_fx.Berta.Db, "brief.pdf", "%PDF-1.4"u8.ToArray(), null);
+        var s = await Json(await _fx.Client().PostAsJsonAsync("/api/office/open", new { path = "brief.pdf" }));
+        Assert.False(s.GetProperty("write").GetBoolean());
+        Assert.Contains("WOPISrc=", s.GetProperty("url").GetString());
+    }
+
+    [Fact]
     public async Task CheckFileInfo_GetFile_PutFile_mit_Sperre()
     {
         var (token, src) = await Open("wopi/Bericht.docx");
@@ -407,5 +417,80 @@ public class WopiTests : IClassFixture<WopiFixture>
         Assert.True(d.View.ContainsKey("pdf"));
         Assert.StartsWith("https://collabora.example.org/browser/22ce52fb51/cool.html?WOPISrc=",
             Discovery.ActionUrl(d.Edit["docx"], "https://dm.example.org/wopi/files/u_1", "de"));
+    }
+    /// <summary>
+    /// Office im Tresor (docs/tresor-konzept.md, „Office im Browser“): öffnen und laden nur bei offenem Tresor; Speichern geht auch
+    /// geschlossen - abgelegt und beim Öffnen übernommen; passt der Stand nicht mehr, kommt das Gespeicherte als „(Konflikt)“ daneben.
+    /// </summary>
+    [Fact]
+    public async Task Office_im_Tresor_speichert_auch_bei_geschlossenem_Tresor()
+    {
+        Tresor.ArgonMemory = 1024; Tresor.ScryptCost = 1024;
+        Tresor.ArgonIterations = 1;
+        var c = _fx.Client();
+        var user = _fx.Berta.User.Id;
+        Tresor.Delete(user);
+        await Json(await c.PostAsJsonAsync("/api/tresor/setup", new { password = "tresor-pass-1", name = "Test" }));
+        var up = await Json(await c.PostAsync("/api/tresor/files/upload?parent=0&name=Geheim.docx", new ByteArrayContent(OfficeTemplates.Create("docx"))));
+        var id = up.GetProperty("id").GetInt64();
+
+        var s = await Json(await c.PostAsJsonAsync("/api/office/open", new { path = "", tresor = id }));
+        Assert.Equal("Geheim.docx", s.GetProperty("name").GetString());
+        Assert.True(s.GetProperty("write").GetBoolean());
+        var token = s.GetProperty("token").GetString()!;
+        var src = Uri.UnescapeDataString(s.GetProperty("url").GetString()!.Split("WOPISrc=")[1].Split('&')[0]);
+        Assert.EndsWith("/wopi/files/" + user + "_t" + id, src);
+
+        var info = await Json(await Send(HttpMethod.Get, src, "", token));
+        Assert.Equal("Geheim.docx", info.GetProperty("BaseFileName").GetString());
+        Assert.True(info.GetProperty("UserCanNotWriteRelative").GetBoolean());
+        var seen = info.GetProperty("LastModifiedTime").GetString()!;
+        Assert.Equal(OfficeTemplates.Create("docx"), await (await Send(HttpMethod.Get, src, "/contents", token)).Content.ReadAsByteArrayAsync());
+        Assert.Equal(HttpStatusCode.OK, (await Op(src, token, "LOCK", "T1")).StatusCode);
+
+        // Offen: gleich in den Tresor
+        var first = Samples.Docx("Erster Stand");
+        var put1 = await Json(await Put(src, token, first, "T1", seen));
+        var stamp1 = put1.GetProperty("LastModifiedTime").GetString()!;
+        Assert.Equal(first, await (await c.GetAsync($"/api/tresor/files/{id}/content")).Content.ReadAsByteArrayAsync());
+
+        // Geschlossen: lesen geht nicht, Sperren und Speichern schon
+        (await c.PostAsync("/api/tresor/close", null)).EnsureSuccessStatusCode();
+        Assert.False(Tresor.OpenAnywhere(user));
+        Assert.Equal((HttpStatusCode)423, (await Send(HttpMethod.Get, src, "/contents", token)).StatusCode);
+        Assert.Equal((HttpStatusCode)423, (await Send(HttpMethod.Get, src, "", token)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await Op(src, token, "REFRESH_LOCK", "T1")).StatusCode);
+        var second = Samples.Docx("Zweiter Stand, Tresor zu");
+        var put2 = await Json(await Put(src, token, second, "T1", stamp1));
+        var stamp2 = put2.GetProperty("LastModifiedTime").GetString()!;
+        Assert.NotEqual(stamp1, stamp2);
+        var third = Samples.Docx("Dritter Stand, Tresor zu");
+        var stamp3 = (await Json(await Put(src, token, third, "T1", stamp2))).GetProperty("LastModifiedTime").GetString()!;
+        // Ein Editor mit altem Stand (z. B. zweites Fenster): darf nichts überschreiben
+        var stale = Samples.Docx("Alter Stand");
+        await Json(await Put(src, token, stale, "T1", seen));
+        Assert.Equal(3, Tresor.Pending(user));
+
+        // Öffnen übernimmt in Reihenfolge: zweiter und dritter Stand nacheinander, der alte als Konflikt daneben
+        await Json(await c.PostAsJsonAsync("/api/tresor/open", new { password = "tresor-pass-1" }));
+        Assert.Equal(0, Tresor.Pending(user));
+        Assert.Equal(third, await (await c.GetAsync($"/api/tresor/files/{id}/content")).Content.ReadAsByteArrayAsync());
+        var items = (await Json(await c.GetAsync("/api/tresor/files?dir=0"))).GetProperty("items").EnumerateArray().ToList();
+        var conflict = items.Single(x => x.GetProperty("name").GetString() == "Geheim (Konflikt).docx");
+        Assert.Equal(stale, await (await c.GetAsync($"/api/tresor/files/{conflict.GetProperty("id").GetInt64()}/content")).Content.ReadAsByteArrayAsync());
+        // Der Editor arbeitet mit seinem letzten Stand weiter
+        Assert.Equal(stamp3, (await Json(await Send(HttpMethod.Get, src, "", token))).GetProperty("LastModifiedTime").GetString());
+        Assert.Equal(HttpStatusCode.OK, (await Put(src, token, Samples.Docx("Vierter Stand"), "T1", stamp3)).StatusCode);
+        // Kein „Speichern unter“ im Tresor
+        Assert.Equal(HttpStatusCode.NotImplemented, (await Send(HttpMethod.Post, src, "", token, r =>
+        {
+            r.Headers.Add("X-WOPI-Override", "PUT_RELATIVE");
+            r.Headers.Add("X-WOPI-SuggestedTarget", ".pdf");
+        }, new ByteArrayContent([1, 2, 3]))).StatusCode);
+
+        // Öffnen im Editor nur mit offenem Tresor auf diesem Gerät
+        (await c.PostAsync("/api/tresor/close", null)).EnsureSuccessStatusCode();
+        Assert.Equal((HttpStatusCode)423, (await c.PostAsJsonAsync("/api/office/open", new { path = "", tresor = id })).StatusCode);
+        Tresor.Delete(user);
     }
 }

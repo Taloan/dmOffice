@@ -11,6 +11,7 @@ import { lang, locale, t, tError } from '../i18n'
 import { useIsMobile } from '../shell/mobile'
 import { Item, KindIcon, Thumb, extOf, fmtWhen, hasThumb, publicSource, viewKind } from './common'
 import { Viewer } from './Viewer'
+import { finishToLink, uploadChunked, UploadError } from './chunked'
 import { OfficeEditor, OfficeSession } from './Office'
 
 const useStyles = makeStyles({
@@ -115,20 +116,15 @@ export default function PublicShare({ token }: { token: string }) {
     setProgress({ done: 0, total: list.length, pct: 0 })
     const names: string[] = []
     for (const f of list) {
-      const form = new FormData()
-      form.append('files', f, (f as any).webkitRelativePath || f.name)
-      const ok = await new Promise<boolean>(res => {
-        const x = new XMLHttpRequest()
-        x.open('POST', `${base}/upload?` + q({ path: info?.mode === 'drop' ? '' : path }))
-        x.withCredentials = true
-        x.upload.onprogress = e => setProgress(p => p && { ...p, pct: e.total ? e.loaded / e.total : 0 })
-        x.onload = () => {
-          if (x.status >= 200 && x.status < 300) { try { names.push(...JSON.parse(x.responseText).files) } catch { /* egal */ } res(true) }
-          else { try { setError(JSON.parse(x.responseText).error) } catch { setError(`${x.status}`) } res(false) }
-        }
-        x.onerror = () => { setError(t('Verbindung unterbrochen')); res(false) }
-        x.send(form)
-      })
+      // In Stücken (ohne Größengrenze je Datei); nach einem Abbruch geht es beim Stand des Servers weiter
+      const ok = await (async () => {
+        const uploads = `${base}/uploads`
+        try {
+          const id = await uploadChunked(f, (f as any).webkitRelativePath || f.name, loaded => setProgress(p => p && { ...p, pct: f.size ? loaded / f.size : 0 }), undefined, uploads)
+          names.push(...((await finishToLink(uploads, id, info?.mode === 'drop' ? '' : path)).files ?? []))
+          return true
+        } catch (e) { setError(e instanceof UploadError ? e.message : String(e)); return false }
+      })()
       if (!ok) break
       done++
       setProgress({ done, total: list.length, pct: 0 })

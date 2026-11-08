@@ -303,6 +303,8 @@ public static class Ics
     public static DateTime ToUtc(DateTime local, TimeZoneInfo tz)
     {
         local = DateTime.SpecifyKind(local, DateTimeKind.Unspecified);
+        // Zweimal vorhandene Stunde beim Wechsel auf Winterzeit: RFC 5545 meint das erste Auftreten
+        if (tz.IsAmbiguousTime(local)) return DateTime.SpecifyKind(local - tz.GetAmbiguousTimeOffsets(local).Max(), DateTimeKind.Utc);
         if (!tz.IsInvalidTime(local)) return TimeZoneInfo.ConvertTimeToUtc(local, tz);
         // Rueckwaerts bis vor die Luecke, dort gilt der alte Versatz
         var before = local;

@@ -39,6 +39,10 @@ fun phishText(ctx: Context, f: PhishFinding): String = when (f.kind) {
         else -> ctx.getString(R.string.phish_lookalike_link, f.domain ?: "", f.like ?: "")
     }
     "newsender" -> ctx.getString(R.string.phish_newsender, f.domain ?: "", f.target ?: "")
+    "freemail-org" -> ctx.getString(if (f.detail == "not-to-me") R.string.phish_freemail_org_not_to_me else R.string.phish_freemail_org, f.like ?: "", f.domain ?: "")
+    "hosted" -> f.shown?.let { ctx.getString(R.string.phish_hosted, it, f.target ?: "") } ?: ctx.getString(R.string.phish_hosted_link, f.target ?: "")
+    "myaddress" -> ctx.getString(R.string.phish_myaddress, f.target ?: "", f.domain ?: "")
+    "pressure" -> ctx.getString(R.string.phish_pressure)
     else -> ""
 }
 

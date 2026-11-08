@@ -4,6 +4,9 @@ import android.appwidget.AppWidgetManager
 import android.content.Context
 import android.content.Intent
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -77,6 +80,7 @@ object Widgets {
             AgendaWidget().updateAll(context)
             TasksWidget().updateAll(context)
             MonthWidget().updateAll(context)
+            CoachWidget().updateAll(context)
         } catch (_: Exception) { }
     }
 
@@ -604,28 +608,11 @@ class TasksWidget : GlanceAppWidget() {
         val appWidgetId = try { GlanceAppWidgetManager(context).getAppWidgetId(id) } catch (_: Exception) { 0 }
         val cfg = WidgetPrefs(context).load(appWidgetId, WidgetConfig(content = Content.Tasks, days = 30))
         val signedIn = app.prefs.account.value != null
-        val cals = if (signedIn) app.db.calendars().list() else emptyList()
-        val visible = cals.filter { it.visible }.map { it.href }.toSet()
-        val colors = cals.associate { it.href to it.color }
-        val names = cals.associate { it.href to it.name }
         val zone = ZoneId.systemDefault()
-        val horizon = LocalDate.now(zone).plusDays(cfg.days.toLong()).atStartOfDay(zone).toInstant().toEpochMilli()
-        val all = if (!signedIn) emptyList() else if (cfg.showCompleted) app.db.items().allTasksNow() else app.db.items().openTasksNow()
-        // Gewaehlte Listen gelten auch, wenn sie in der App ausgeblendet sind
-        // Einkaufs-/Checkliste: nur eine Liste (aeltere Einstellungen konnten mehrere haben)
-        val shown = if (cfg.tapToComplete) cfg.lists?.let { sel -> cals.firstOrNull { it.href in sel }?.href }?.let { setOf(it) } ?: visible
-            else cfg.lists ?: visible
-        // Einkaufsliste: gerade abgehakte bleiben kurz durchgestrichen an ihrem Platz stehen
-        val log = if (cfg.tapToComplete && signedIn) WidgetPrefs(context).doneLog(appWidgetId) else emptyList()
-        val nowMs = System.currentTimeMillis()
-        val striking = log.filter { nowMs - it.second < STRIKE_MS }.mapNotNull { app.db.items().byHref(it.first) }.filter { it.completed && !it.deleted }
-        val undo = log.any { nowMs - it.second < 10 * 60_000 }
-        val order = compareBy<ItemEntity>({ it.due == null }, { it.due ?: 0L }, { if (it.priority == 0) 10 else it.priority }, { it.summary })
-        val tasks = (if (striking.isEmpty()) all else (all.filter { a -> striking.none { it.href == a.href } } + striking).sortedWith(order))
-            .filter { it.calendarHref in shown }
-            .filter { !cfg.dueOnly || it.due != null }
-            .filter { it.due == null || it.due < horizon }
-        // E-Mail-Nachverfolgung, wenn ausgewaehlt (nicht im Einkaufslisten-Modus): oben, nach Faelligkeit
+        // Erster Stand sofort; danach beobachtet das Widget die Datenbank - ein Abgleich, der eine Liste gerade neu
+        // schreibt, hinterlaesst so keine leere Liste mehr (vorher blieb der Zwischenstand bis zum naechsten Neuaufbau stehen)
+        val cals0 = if (signedIn) app.db.calendars().list() else emptyList()
+        val all0 = if (signedIn) app.db.items().allTasksNow() else emptyList()
         val today = LocalDate.now(zone)
         val last = today.plusDays(cfg.days.toLong())
         val follow = if (!signedIn || cfg.tapToComplete || cfg.lists?.contains(WidgetFollowUps.HREF) != true) emptyList()
@@ -634,17 +621,48 @@ class TasksWidget : GlanceAppWidget() {
                 .filter { f -> f.due == null || try { LocalDate.parse(f.due) <= last } catch (_: Exception) { true } }
                 .sortedWith(compareBy({ it.due ?: "9999" }, { it.mail.subject }))
                 .take(cfg.maxItems)
-        val shownTasks = tasks.take((cfg.maxItems - follow.size).coerceAtLeast(0))
         val mailboxes = if (follow.isEmpty()) emptyMap() else WidgetFollowUps.mailboxes(context)
-        val now = System.currentTimeMillis()
-        // Neue Aufgabe aus dem Widget: in die erste gewaehlte Liste (Reihenfolge wie in der App)
-        val addTo = cfg.lists?.let { sel -> cals.firstOrNull { it.href in sel }?.href }
-        // Einkaufsliste: Titelleiste mit Name und Farbe der Liste (bei mehreren: "Aufgaben", Farbe der ersten)
-        val bar = if (!cfg.tapToComplete) null else {
-            val sel = cals.filter { it.href in shown && it.supportsTasks }
-            (sel.singleOrNull()?.name ?: context.getString(R.string.tasks)) to (cals.firstOrNull { it.href == addTo }?.color ?: sel.firstOrNull()?.color)
-        }
+        // Einkaufs-/Checkliste: Abgehakte wie im Widget eingestellt, sonst wie in der Liste
+        val listHref = if (cfg.tapToComplete) cfg.lists?.let { sel -> cals0.firstOrNull { it.href in sel }?.href } else null
+        val doneMode = cfg.doneMode.ifEmpty { listHref?.let { at.dimes.dmoffice.data.ListTypes.infoOf(context, it) }?.let { at.dimes.dmoffice.data.ListTypes.doneMode(it) } ?: "bottom" }
         provideContent {
+            val cals by remember { app.db.calendars().all() }.collectAsState(cals0)
+            val all by remember { app.db.items().tasks() }.collectAsState(all0)
+            val visible = cals.filter { it.visible }.map { it.href }.toSet()
+            val colors = cals.associate { it.href to it.color }
+            val names = cals.associate { it.href to it.name }
+            val horizon = LocalDate.now(zone).plusDays(cfg.days.toLong()).atStartOfDay(zone).toInstant().toEpochMilli()
+            // Gewaehlte Listen gelten auch, wenn sie in der App ausgeblendet sind
+            // Einkaufs-/Checkliste: nur eine Liste (aeltere Einstellungen konnten mehrere haben)
+            val shown = if (cfg.tapToComplete) cfg.lists?.let { sel -> cals.firstOrNull { it.href in sel }?.href }?.let { setOf(it) } ?: visible
+                else cfg.lists ?: visible
+            // Gerade abgehakte bleiben kurz durchgestrichen an ihrem Platz stehen
+            val log = if (cfg.tapToComplete && signedIn) WidgetPrefs(context).doneLog(appWidgetId) else emptyList()
+            val nowMs = System.currentTimeMillis()
+            val strikingHrefs = log.filter { nowMs - it.second < STRIKE_MS }.map { it.first }.toSet()
+            val undo = log.any { nowMs - it.second < 10 * 60_000 }
+            val order = compareBy<ItemEntity>({ it.due == null }, { it.due ?: 0L }, { if (it.priority == 0) 10 else it.priority }, { it.summary })
+            val mine = (if (signedIn) all else emptyList())
+                .filter { it.calendarHref in shown }
+                .filter { !cfg.dueOnly || it.due != null }
+                .filter { it.due == null || it.due < horizon }
+            val open = mine.filter { !it.completed || it.href in strikingHrefs }.sortedWith(order)
+            val done = mine.filter { it.completed && it.href !in strikingHrefs }.sortedWith(order)
+            val tasks = when {
+                !cfg.tapToComplete -> if (cfg.showCompleted) mine.sortedWith(compareBy<ItemEntity> { it.completed }.then(order)) else open
+                doneMode == "place" -> mine.sortedWith(order)
+                doneMode == "bottom" -> open + done
+                else -> open
+            }
+            val shownTasks = tasks.take((cfg.maxItems - follow.size).coerceAtLeast(0))
+            val now = System.currentTimeMillis()
+            // Neue Aufgabe aus dem Widget: in die erste gewaehlte Liste (Reihenfolge wie in der App)
+            val addTo = cfg.lists?.let { sel -> cals.firstOrNull { it.href in sel }?.href }
+            // Einkaufsliste: Titelleiste mit Name und Farbe der Liste (bei mehreren: "Aufgaben", Farbe der ersten)
+            val bar = if (!cfg.tapToComplete) null else {
+                val sel = cals.filter { it.href in shown && it.supportsTasks }
+                (sel.singleOrNull()?.name ?: context.getString(R.string.tasks)) to (cals.firstOrNull { it.href == addTo }?.color ?: sel.firstOrNull()?.color)
+            }
             GlanceTheme(colors = widgetColors(context)) {
                 WidgetFrame(context.getString(R.string.tasks), cfg, MainActivity.openIntent(context, null, "tasks", list = addTo), Widgets.configIntent(context, appWidgetId, WidgetConfigActivity.KIND_TASKS), tasksOnly = true, taskList = addTo, listBar = bar, undo = undo) {
                     when {

@@ -8,7 +8,16 @@ namespace DmOffice.Core;
 /// gehoert: Einstellungen, Mails samt Anhaengen, Kalender, Kontakte,
 /// Dateien, Notizen. Wer die Datei ohne Schluessel kopiert, hat nichts.
 /// </summary>
-public sealed class UserDb
+/// <summary>Was eine SQLite-Datenbank zum Lesen und Schreiben bietet - Benutzerdatenbank und Datenbanken im Tresor.</summary>
+public interface ISqlStore
+{
+    Microsoft.Data.Sqlite.SqliteConnection Open();
+    int Exec(string sql, params (string Name, object? Value)[] args);
+    object? Scalar(string sql, params (string Name, object? Value)[] args);
+    List<T> Query<T>(string sql, Func<Microsoft.Data.Sqlite.SqliteDataReader, T> read, params (string Name, object? Value)[] args);
+}
+
+public sealed class UserDb : ISqlStore
 {
     private readonly string _connectionString;
     public string UserId { get; }
@@ -22,7 +31,7 @@ public sealed class UserDb
     public UserDb(string path, byte[] key, string userId, string? blobDir = null)
     {
         UserId = userId;
-        Blobs = new BlobStore(blobDir ?? path + ".blobs", key);
+        Blobs = new BlobStore(blobDir ?? path + ".blobs", key) { Mirrored = true };
         // "x'…'": roher Schluessel, keine Ableitung - er ist schon zufaellig.
         _connectionString = ConnectionStringOf(path, key);
 
@@ -228,7 +237,7 @@ CREATE TABLE focus_senders (address TEXT PRIMARY KEY, focused INTEGER NOT NULL);
 CREATE TABLE focus_tokens (token TEXT PRIMARY KEY, other INTEGER NOT NULL DEFAULT 0, focused INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE focus_trained (key TEXT PRIMARY KEY, focused INTEGER NOT NULL)")),
         // Speichermodus "Schlank" (MailStore.Discard): wann eine Mail zuletzt geoeffnet wurde
-        new(10, "Speichermodus Schlank", c => Run(c, "ALTER TABLE mail ADD COLUMN opened INTEGER NULL")),
+        new(10, "Slim Mode", c => Run(c, "ALTER TABLE mail ADD COLUMN opened INTEGER NULL")),
         // Nextcloud-Clients: feste Nummer je Datei (oc:fileid), bleibt beim Verschieben und Ueberschreiben,
         // wird nie wiederverwendet (sonst hielte der Client eine neue Datei fuer eine verschobene alte).
         // Das UPDATE schreibt jede Zeile der Dateiablage neu - samt Inhalt, solange der noch in der Datenbank liegt.
@@ -332,6 +341,52 @@ CREATE TRIGGER {table}_blob_upd AFTER UPDATE OF blob ON {table} WHEN OLD.blob IS
                 sql.Append($"ALTER TABLE {table} ADD COLUMN sha256 TEXT NULL;\n");
             Run(c, sql + "CREATE INDEX files_sha256 ON files(sha256) WHERE sha256 IS NOT NULL");
         }),
+        // Abgleich mit Microsoft Graph (Pim/Graph*.cs): welches lokale Objekt zu welchem bei Microsoft gehoert, mit dem
+        // zuletzt abgeglichenen Stand beider Seiten (change_key von Microsoft, etag lokal), und die Warteschlange der
+        // lokalen Aenderungen, die noch zu Microsoft muessen (op: put oder delete, die letzte gilt).
+        new(19, "Abgleich mit Microsoft", c => Run(c, @"CREATE TABLE graph_map (
+    collection INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+    uri        TEXT    NOT NULL,
+    remote_id  TEXT    NOT NULL,
+    change_key TEXT    NULL,
+    etag       TEXT    NULL,
+    PRIMARY KEY (collection, uri)
+);
+CREATE INDEX graph_map_remote ON graph_map(collection, remote_id);
+CREATE TABLE graph_outbox (
+    collection INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+    uri        TEXT    NOT NULL,
+    op         TEXT    NOT NULL,
+    at         TEXT    NOT NULL,
+    tries      INTEGER NOT NULL DEFAULT 0,
+    error      TEXT    NULL,
+    PRIMARY KEY (collection, uri)
+)")),
+        // Volltextsuche: „INSERT OR IGNORE“ im Trigger gilt nicht, wenn die auslösende Anweisung selbst ein ON CONFLICT hat (Upsert
+        // in FileStore.Put) - dann scheiterte ein zweites Speichern derselben Datei an text_queue(kind, ref). Nur eintragen, was fehlt.
+        new(20, "Volltextsuche: Warteschlange ohne Doppel", c => Run(c, @"DROP TRIGGER IF EXISTS text_files_ai;
+DROP TRIGGER IF EXISTS text_files_au;
+CREATE TRIGGER text_files_ai AFTER INSERT ON files
+WHEN new.is_dir = 0 AND EXISTS (SELECT 1 FROM kv WHERE key = '" + Search.TextIndex.OnKey + @"')
+    AND NOT EXISTS (SELECT 1 FROM text_queue WHERE kind = 'file' AND ref = new.path) BEGIN
+    INSERT INTO text_queue(kind, ref, added) VALUES ('file', new.path, CAST(strftime('%s','now') AS INTEGER));
+END;
+CREATE TRIGGER text_files_au AFTER UPDATE OF etag ON files
+WHEN new.is_dir = 0 AND new.etag IS NOT old.etag AND EXISTS (SELECT 1 FROM kv WHERE key = '" + Search.TextIndex.OnKey + @"')
+    AND NOT EXISTS (SELECT 1 FROM text_queue WHERE kind = 'file' AND ref = new.path) BEGIN
+    INSERT INTO text_queue(kind, ref, added) VALUES ('file', new.path, CAST(strftime('%s','now') AS INTEGER));
+END;")),
+        // Der System-Tresor heißt dmVAULT statt dmOfficeSystemVault (Wunsch 02.11.2026). Ein eigener Ordner „dmVAULT“ weicht vorher nach
+        // „dmVAULT (eigener Ordner)“ aus. Neue ETags für Wurzel und Ordner, damit Nextcloud-Clients den Wechsel sehen.
+        new(21, "System-Tresor heißt dmVAULT", c => Run(c, @"
+UPDATE files SET path = 'dmVAULT (eigener Ordner)' || substr(path, 8),
+    parent = CASE WHEN path = 'dmVAULT' THEN parent ELSE 'dmVAULT (eigener Ordner)' || substr(parent, 8) END
+WHERE (path = 'dmVAULT' OR path GLOB 'dmVAULT/*') AND EXISTS (SELECT 1 FROM files WHERE path = 'dmOfficeSystemVault');
+UPDATE files SET path = 'dmVAULT' || substr(path, 20),
+    parent = CASE WHEN path = 'dmOfficeSystemVault' THEN parent ELSE 'dmVAULT' || substr(parent, 20) END
+WHERE path = 'dmOfficeSystemVault' OR path GLOB 'dmOfficeSystemVault/*';
+UPDATE files SET etag = '""' || lower(hex(randomblob(8))) || '""'
+WHERE is_dir = 1 AND path IN ('', 'dmVAULT', 'dmVAULT (eigener Ordner)');")),
     ];
 
     /// <summary>Die Schemaversion, auf die dieser Stand die Datenbank bringt.</summary>

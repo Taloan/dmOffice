@@ -28,6 +28,21 @@ public class MailHtmlTests
         Assert.Contains("<style>", clean);
     }
 
+    [Theory]
+    [InlineData("<img srcset=\"https://fern.example/p.gif 1x\">")]
+    [InlineData("<img src=\"data:image/png;base64,AAAA\" srcset=\"https://fern.example/p.gif 2x\">")]
+    [InlineData("<picture><source srcset=\"https://fern.example/p.gif\"><img src=\"data:image/png;base64,AAAA\"></picture>")]
+    [InlineData("<video poster=\"https://fern.example/p.gif\"></video>")]
+    [InlineData("<img src=\"  https://fern.example/p.gif\">")]
+    public void Fernbilder_bleiben_ohne_Freigabe_gesperrt(string html)
+    {
+        var locked = MailHtml.Sanitize(html, false, _ => null);
+        Assert.DoesNotContain(" srcset=", locked.Html);
+        Assert.DoesNotContain(" poster=", locked.Html);
+        Assert.DoesNotContain(" src=\"http", locked.Html);
+        Assert.DoesNotContain(" src=\"  http", locked.Html);
+    }
+
     [Fact]
     public void Junk_sperrt_alle_Bilder_und_Links_auch_wenn_Bilder_erlaubt_waeren()
     {

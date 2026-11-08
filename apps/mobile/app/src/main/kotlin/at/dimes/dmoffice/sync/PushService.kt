@@ -61,9 +61,15 @@ object Push {
 
 /** Empfaengt die Signale von dmOffice und das neue Token, wenn Firebase es wechselt. */
 class PushService : FirebaseMessagingService() {
+    private val chatScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     override fun onNewToken(token: String) { Push.register(applicationContext, force = true) }
 
     override fun onMessageReceived(message: RemoteMessage) {
-        if (message.data["t"] == "sync") SyncWorker.now(applicationContext)
+        when (message.data["t"]) {
+            "sync" -> SyncWorker.now(applicationContext)
+            // Neue Chat-Nachricht (Version 2): gleich holen und melden, nicht erst mit dem ganzen Abgleich
+            "chat" -> chatScope.launch { try { at.dimes.dmoffice.notify.ChatNotify.check(applicationContext) } catch (_: Exception) { } }
+        }
     }
 }

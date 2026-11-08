@@ -95,13 +95,14 @@ public static class OnlyOffice
             ["document"] = new JsonObject
             {
                 ["fileType"] = ext,
-                ["key"] = Key(grant.U, f.FileId, f.Etag),
+                ["key"] = Key(grant.Owner, f.FileId, f.Etag),
                 ["title"] = f.Name,
                 ["url"] = grant.B + "/onlyoffice/file?t=" + t,
                 ["permissions"] = new JsonObject
                 {
                     ["edit"] = grant.W, ["comment"] = grant.W, ["review"] = grant.W, ["fillForms"] = grant.W,
-                    ["download"] = grant.L == null, ["print"] = grant.L == null,   // Gaeste ueber einen Link: kein Download am Abrufzaehler vorbei
+                    // Nur gezeigt (Version 2): weder herunterladen noch drucken noch kopieren; Gaeste ueber einen Link: kein Download am Abrufzaehler vorbei
+                    ["download"] = !grant.X && grant.L == null, ["print"] = !grant.X && grant.L == null, ["copy"] = !grant.X,
                 },
             },
             ["documentType"] = DocumentType(ext),
@@ -122,7 +123,8 @@ public static class OnlyOffice
         return cfg;
     }
 
-    private static (WopiGrant Grant, UserSpace Space, FileEntry File)? Resolve(HttpContext http, string? token)
+    /// <summary>File: bei Tresor-Dateien (Grant.T) der Stand beim Auflösen, null bei geschlossenem Tresor.</summary>
+    private static (WopiGrant Grant, UserSpace Space, FileEntry? File)? Resolve(HttpContext http, string? token)
     {
         var services = http.RequestServices;
         var grant = WopiTokens.Read(services, token, WopiTokens.OnlyOfficePurpose);
@@ -133,6 +135,11 @@ public static class OnlyOffice
         try { space = services.GetRequiredService<Spaces>().Get(grant.U); }
         catch (KeyNotFoundException) { return null; }
         if (FileStore.FilesOff(space.Db)) return null;
+        if (grant.T)
+        {
+            http.Items[AnonThrottle.TrustedItem] = true;
+            return (grant, space, TresorOffice.Entry(grant.U, grant.F));
+        }
         var file = FileStore.ById(space.Db, grant.F);
         if (file == null || file.IsDir || FileStore.InRoot(file.Path, FileStore.ProtectedRoot(space.Db))) return null;
         if (grant.L != null && !WopiApi.LinkAllows(space.Db, grant.L, file)) return null;
@@ -153,11 +160,20 @@ public static class OnlyOffice
         var g = app.MapGroup("/onlyoffice").AllowAnonymous();
 
         // Der Document Server holt die Datei
-        g.MapGet("/file", (string? t, HttpContext http) =>
+        g.MapGet("/file", (string? t, HttpContext http, ServerConfig config) =>
         {
             if (Resolve(http, t) is not { } r) return Results.StatusCode(401);
+            // Nur gezeigt (Version 2): die Adresse steht in der Konfiguration im Browser - mit Geheimnis gibt es die Datei
+            // nur fuer den Document Server, der seine Abrufe signiert (Kopf mit JWT)
+            if (r.Grant.X && config.OfficeJwtSecret() is { Length: > 0 } secret)
+            {
+                var header = http.Request.Headers[config.Current.OfficeJwtHeader is { Length: > 0 } h ? h : "Authorization"].ToString();
+                if (header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) header = header[7..];
+                if (Jwt.Read(header, secret) == null) return Results.StatusCode(403);
+            }
+            if (r.File is not { } f) return Results.Json(new { error = "Der Tresor ist geschlossen.", locked = Tresor.Locked }, statusCode: 423);
             http.Response.Headers.CacheControl = "no-store";
-            return Results.Stream(FileStore.OpenRead(r.Space.Db, r.File.Path), "application/octet-stream");
+            return Results.Stream(r.Grant.T ? TresorOffice.OpenRead(r.Grant.U, r.Grant.F) : FileStore.OpenRead(r.Space.Db, f.Path), "application/octet-stream");
         });
 
         // Der Document Server meldet den Zustand; bei 2 (fertig) und 6 (Zwischenspeichern) liegt das Ergebnis unter url
@@ -188,7 +204,7 @@ public static class OnlyOffice
             var key = (string?)body["key"] ?? "";
             if (status is not (2 or 6)) return Answer(0);
             if (!r.Grant.W) return Answer(1);
-            if (key != Key(r.Grant.U, r.File.FileId, r.Grant.E ?? "")) { log.LogWarning("ONLYOFFICE-Callback mit fremdem Schlüssel"); return Answer(1); }
+            if (key != Key(r.Grant.Owner, r.Grant.F, r.Grant.E ?? "")) { log.LogWarning("ONLYOFFICE-Callback mit fremdem Schlüssel"); return Answer(1); }
             var url = (string?)body["url"];
             if (string.IsNullOrEmpty(url) || !Uri.TryCreate(url, UriKind.Absolute, out var source)) return Answer(1);
             if (string.IsNullOrWhiteSpace(config.Current.OfficeUrl) || !Uri.TryCreate(config.Current.OfficeUrl.Trim(), UriKind.Absolute, out var office)) return Answer(1);
@@ -210,8 +226,25 @@ public static class OnlyOffice
                 log.LogWarning("ONLYOFFICE-Callback ohne JWT: Ergebnis liegt nicht unter /cache/files/, abgelehnt");
                 return Answer(1);
             }
-            // Erst herunterladen (verschluesselt in einen Blob), dann entscheiden, wohin - ohne die Datei im Speicher zu halten
             using var client = clients.CreateClient("office-download");
+            // Tresor: offen gleich hinein, sonst abgelegt und beim Öffnen übernommen; Stand ist der zuletzt von uns gespeicherte
+            if (r.Grant.T)
+            {
+                byte[] content;
+                try
+                {
+                    using var res = await client.GetAsync(fetch, HttpCompletionOption.ResponseHeadersRead, http.RequestAborted);
+                    if (!res.IsSuccessStatusCode) { log.LogWarning("ONLYOFFICE-Ergebnis {Url}: {Status}", fetch, (int)res.StatusCode); return Answer(1); }
+                    await using var result = await res.Content.ReadAsStreamAsync(http.RequestAborted);
+                    content = await TresorOffice.ReadBody(result, http.RequestAborted);
+                }
+                catch (Exception ex) when (ex is HttpRequestException or IOException or InvalidOperationException) { log.LogWarning("ONLYOFFICE-Ergebnis {Url}: {Error}", fetch, ex.Message); return Answer(1); }
+                var basis = Written.TryGetValue(key, out var last) ? last : r.Grant.E;
+                var stamp = TresorOffice.Save(r.Grant.U, r.Grant.F, content, long.TryParse(basis, out var b) ? b : null);
+                Written[key] = stamp.ToString();
+                return Answer(0);
+            }
+            // Erst herunterladen (verschluesselt in einen Blob), dann entscheiden, wohin - ohne die Datei im Speicher zu halten
             BlobInfo blob;
             try
             {
@@ -224,19 +257,20 @@ public static class OnlyOffice
             catch (Exception ex) when (ex is HttpRequestException or IOException) { log.LogWarning("ONLYOFFICE-Ergebnis {Url}: {Error}", fetch, ex.Message); return Answer(1); }
             // Inzwischen anderswo geaendert (WebDAV, Handy, Nextcloud-Client)? Dann nicht ueberschreiben, sondern daneben legen.
             var db = r.Space.Db;
-            var current = FileStore.Get(db, r.File.Path)!;
-            var path = r.File.Path;
+            var opened = r.File!;
+            var current = FileStore.Get(db, opened.Path)!;
+            var path = opened.Path;
             if (current.Etag != r.Grant.E && (!Written.TryGetValue(key, out var mine) || mine != current.Etag))
             {
                 var ext = Path.GetExtension(path);
                 var stem = path[..^ext.Length];
                 path = FileStore.FreeName(db, stem + " (Konflikt)" + ext);
-                log.LogInformation("ONLYOFFICE: {Path} wurde inzwischen geändert - gespeichert als {Copy}", r.File.Path, path);
+                log.LogInformation("ONLYOFFICE: {Path} wurde inzwischen geändert - gespeichert als {Copy}", opened.Path, path);
             }
             try { FileStore.PutBlob(db, path, blob, current.Mime ?? DavServer.Mime(path)); }
             catch (QuotaExceededException) { return Answer(1); }
-            if (path == r.File.Path) Written[key] = FileStore.Get(db, path)!.Etag;
-            FileStore.Used(db, r.File.FileId);
+            if (path == opened.Path) Written[key] = FileStore.Get(db, path)!.Etag;
+            FileStore.Used(db, opened.FileId);
             return Answer(0);
         });
     }

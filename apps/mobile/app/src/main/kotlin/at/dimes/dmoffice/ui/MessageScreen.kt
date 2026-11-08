@@ -70,7 +70,9 @@ fun MessageScreen(account: String, folder: String, uid: Long, onClose: () -> Uni
     var msg by remember { mutableStateOf<Message?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var menu by remember { mutableStateOf(false) }
+    var adoptAlias by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
+    var toDms by remember { mutableStateOf(false) }
     var flagged by remember { mutableStateOf(false) }
     val dark = androidx.compose.foundation.isSystemInDarkTheme()
     val item by remember(uid) { app.mail.observeItem(account, folder, uid) }.collectAsState(initial = null)
@@ -79,6 +81,11 @@ fun MessageScreen(account: String, folder: String, uid: Long, onClose: () -> Uni
     val folders by remember(account) { app.mail.folders(account) }.collectAsState(initial = emptyList())
     val special = folders.firstOrNull { it.path == folder }?.special
     LaunchedEffect(Unit) { if (categories.isEmpty()) app.mail.loadCategories() }
+    // Entfernen nach Zeit: geplanter Zeitpunkt dieser Mail; Vernichten erst nach dem Hinweis
+    val expiries by app.mail.expiries.collectAsState()
+    LaunchedEffect(uid) { app.mail.loadExpiries() }
+    val expiry = app.mail.expiryOf(expiries, account, folder, uid, item?.messageId ?: msg?.messageId)
+    var confirmDestroy by remember { mutableStateOf<java.time.LocalDateTime?>(null) }
     fun toast(res: Int) = android.widget.Toast.makeText(ctx, ctx.getString(res), android.widget.Toast.LENGTH_SHORT).show()
     fun act(block: suspend () -> Unit) { scope.launch { try { block() } catch (e: Exception) { error = e.message } } }
 
@@ -108,6 +115,7 @@ fun MessageScreen(account: String, folder: String, uid: Long, onClose: () -> Uni
                         categories = categories, keywords = keywords, a = MailMenuActions(
                             replyAll = { onCompose(ComposeInit.reply(ctx, account, m, all = true)) },
                             forward = { onCompose(ComposeInit.forward(ctx, account, m)) },
+                            adoptAlias = if (m.alias != null && m.aliasState == "unknown") ({ adoptAlias = true }) else null,
                             archive = { act { if (app.mail.archive(account, folder, listOf(uid))) onClose() else error = ctx.getString(R.string.no_archive) } },
                             junk = { act { app.mail.junk(account, folder, listOf(uid), true); toast(R.string.learned_junk); onClose() } },
                             notJunk = { act { app.mail.junk(account, folder, listOf(uid), false); toast(R.string.learned_not_junk); if (special == "junk") onClose() } },
@@ -119,7 +127,16 @@ fun MessageScreen(account: String, folder: String, uid: Long, onClose: () -> Uni
                             unsnooze = { act { app.mail.unsnooze(account, folder, listOf(uid)); onClose() } },
                             moveFocus = { focused, always -> act { app.mail.moveFocus(account, folder, listOf(uid), focused, always)
                                 toast(if (focused) R.string.moved_focused else R.string.moved_other) } },
-                        ), focus = if (special == "inbox") (item?.focus ?: true) else null)
+                            expire = { kind, at -> if (kind == "destroy") confirmDestroy = at
+                                else act { app.mail.expire(account, folder, listOf(uid), at.toIso(), kind); toast(R.string.expire_set) } },
+                            cancelExpiry = { act { app.mail.cancelExpiry(account, folder, listOf(uid)); toast(R.string.expire_cancelled) } },
+                            toDms = if (at.dimes.dmoffice.ui.dms.dmsOn() && !m.junk) ({ toDms = true }) else null,
+                        ), focus = if (special == "inbox") (item?.focus ?: true) else null, expiring = expiry != null)
+                    if (toDms) at.dimes.dmoffice.ui.dms.DmsMailDialog(account, folder, uid, m.attachments.any { !it.inline }) { toDms = false }
+                    confirmDestroy?.let { at -> DestroyConfirmDialog(at, onDismiss = { confirmDestroy = null }, onConfirm = {
+                        confirmDestroy = null
+                        act { app.mail.expire(account, folder, listOf(uid), at.toIso(), "destroy"); toast(R.string.expire_set) }
+                    }) }
                 }
             }
         )
@@ -133,8 +150,12 @@ fun MessageScreen(account: String, folder: String, uid: Long, onClose: () -> Uni
                 Text((m.from?.full ?: ""), style = MaterialTheme.typography.bodyMedium)
                 Text(stringResource(R.string.to) + ": " + m.to.joinToString(", ") { it.text } + (if (m.cc.isNotEmpty()) "  ·  Cc: " + m.cc.joinToString(", ") { it.text } else ""),
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                AliasLine(m.alias, m.aliasState, m.from?.name)
+                if (adoptAlias && m.alias != null) AdoptAliasDialog(m.alias, m.from?.name, onDismiss = { adoptAlias = false })
                 Text(formatDate(ctx, m.date), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 CategoryChips(categories.filter { it.key in keywords })
+                if (m.pgp != null) PgpCard(m)
+                expiry?.let { e -> ExpiryBanner(e) { act { app.mail.cancelExpiry(account, folder, listOf(uid)); toast(R.string.expire_cancelled) } } }
                 // Phishing-Verdacht (wie im Web): Absenderpruefung, Linktext gegen Linkziel, aehnliche Domains, erstmaliger Absender
                 m.phish?.let { found -> PhishCard(found, onJunk = if (m.junk || special == "junk") null else {
                     { act { app.mail.junk(account, folder, listOf(uid), true); toast(R.string.learned_junk); onClose() } }

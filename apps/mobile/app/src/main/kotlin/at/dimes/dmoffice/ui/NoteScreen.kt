@@ -30,12 +30,16 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.FormatListBulleted
 import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.Undo
+import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.People
+import androidx.compose.material.icons.filled.PersonRemove
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.CheckBox
 import androidx.compose.material.icons.filled.Code
@@ -48,6 +52,7 @@ import androidx.compose.material.icons.filled.FormatItalic
 import androidx.compose.material.icons.filled.FormatStrikethrough
 import androidx.compose.material.icons.filled.FormatUnderlined
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Restore
@@ -154,7 +159,7 @@ private fun isEmptyNote(d: NoteDetail) = d.blocks.all { b ->
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun NoteScreen(id: Long, onClose: () -> Unit) {
+fun NoteScreen(id: Long, vault: String? = null, onClose: () -> Unit, onNext: ((Long) -> Unit)? = null) {
     val ctx = LocalContext.current
     val app = App.get(ctx)
     val scope = rememberCoroutineScope()
@@ -169,16 +174,22 @@ fun NoteScreen(id: Long, onClose: () -> Unit) {
     var drawing by remember { mutableStateOf(false) }
     var closing by remember { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
+    var pictureMenu by remember { mutableStateOf(false) }
+    var galleryPick by remember { mutableStateOf(false) }
+    val galleryOn = at.dimes.dmoffice.data.Features.on(at.dimes.dmoffice.data.Features.GALLERY)
     var dialog by remember { mutableStateOf<String?>(null) }  // color, move, rename, delete
     var failed by remember { mutableStateOf<String?>(null) }  // Speichern beim Schliessen misslungen
     var info by remember { mutableStateOf<String?>(null) }    // Hinweis (Konfliktkopie)
     var closeAfterInfo by remember { mutableStateOf(false) }
     val mutex = remember { Mutex() }
     val dark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
-    val folders by remember { app.notes.folders() }.collectAsState(initial = emptyList())
+    // Liste und Editor zeigen dieselbe Datenbank - im Tresor die gerade gewählte
+    val notes = remember { app.notesFor(vault) }
+    val folders by remember { notes.folders() }.collectAsState(initial = emptyList())
 
     val d0 = note
     val readOnly = d0 == null || d0.readOnly || d0.archived != null || d0.deleted != null
+    // Nur gezeigt (Version 2): Keine Bildschirmfoto-Sperre mehr (Entscheidung): abfotografieren laesst sich nie verhindern (Web, zweites Handy) - Zeigen heisst nur, nicht speichern, herunterladen oder weiterleiten
 
     suspend fun js(script: String): String? {
         val w = web ?: return null
@@ -188,12 +199,12 @@ fun NoteScreen(id: Long, onClose: () -> Unit) {
 
     LaunchedEffect(id) {
         // Offline Gespeichertes zuerst abgleichen; klappt das nicht, bleibt die eigene Fassung im Editor
-        if (app.notes.hasPending(id)) {
-            app.notes.flushPending().firstOrNull()?.let { info = ctx.getString(R.string.note_conflict_copy, it) }
-            if (app.notes.hasPending(id)) { note = try { app.notes.load(id, false) } catch (e: Exception) { error = e.message; null }; offline = true; return@LaunchedEffect }
+        if (notes.hasPending(id)) {
+            notes.flushPending().firstOrNull()?.let { info = ctx.getString(R.string.note_conflict_copy, it) }
+            if (notes.hasPending(id)) { note = try { notes.load(id, false) } catch (e: Exception) { error = e.message; null }; offline = true; return@LaunchedEffect }
         }
-        note = try { app.notes.load(id, true).also { offline = false } } catch (e: Exception) {
-            try { app.notes.load(id, false).also { offline = true } } catch (_: Exception) { error = e.message; null }
+        note = try { notes.load(id, true).also { offline = false } } catch (e: Exception) {
+            try { notes.load(id, false).also { offline = true } } catch (_: Exception) { error = e.message; null }
         }
     }
 
@@ -252,7 +263,7 @@ fun NoteScreen(id: Long, onClose: () -> Unit) {
         if (unchanged) return@withLock null
         /** Ohne Netz: lokal ablegen, der Abgleich bringt es spaeter zum Server. false: geht offline nicht. */
         suspend fun keepOffline(): Boolean {
-            val local = app.notes.saveOffline(d, blocks, plain) ?: return false
+            val local = notes.saveOffline(d, blocks, plain) ?: return false
             note = local
             offline = true
             error = null
@@ -267,7 +278,7 @@ fun NoteScreen(id: Long, onClose: () -> Unit) {
             return true
         }
         // Liegt schon eine offline gespeicherte Fassung vor, beziehen sich die Blocknummern auf sie - also dazu legen
-        if (app.notes.hasPending(id)) return@withLock if (keepOffline()) null else ctx.getString(R.string.note_offline_images)
+        if (notes.hasPending(id)) return@withLock if (keepOffline()) null else ctx.getString(R.string.note_offline_images)
         saving = true
         try {
             var base = d
@@ -275,8 +286,8 @@ fun NoteScreen(id: Long, onClose: () -> Unit) {
             var merged = false
             repeat(3) {
                 try {
-                    val r = app.notes.save(id, base.version, send, plain)
-                    val fresh = app.notes.load(id, true)
+                    val r = notes.save(id, base.version, send, plain)
+                    val fresh = notes.load(id, true)
                     note = fresh
                     offline = false
                     error = null
@@ -294,16 +305,16 @@ fun NoteScreen(id: Long, onClose: () -> Unit) {
                 } catch (e: ApiException) {
                     if (e.code != 409) throw e
                     // Inzwischen anderswo geaendert: dreiseitig zusammenfuehren
-                    val theirs = app.notes.load(id, true)
+                    val theirs = notes.load(id, true)
                     val mine = send.map { b -> b.jsonObject.index()?.let { base.blocks[it] } ?: (b.jsonObject["html"]?.jsonPrimitive?.contentOrNull ?: "") }
                     val result = NoteMerge.diff3(base.blocks, mine, theirs.blocks)
                     if (result == null) {
                         // Dieselbe Stelle verschieden geaendert: eigene Version als neue Notiz sichern
                         val title = ctx.getString(R.string.note_conflict_title, base.title.ifBlank { ctx.getString(R.string.note_untitled) })
-                        val copy = app.notes.create(base.folder)
-                        val cd = app.notes.load(copy, true)
-                        app.notes.save(copy, cd.version, buildJsonArray { mine.forEach { add(buildJsonObject { put("html", it) }) } }, plain)
-                        app.notes.setMeta(copy, NoteMeta(customTitle = title))
+                        val copy = notes.create(base.folder)
+                        val cd = notes.load(copy, true)
+                        notes.save(copy, cd.version, buildJsonArray { mine.forEach { add(buildJsonObject { put("html", it) }) } }, plain)
+                        notes.setMeta(copy, NoteMeta(customTitle = title))
                         note = theirs
                         if (keepEditing) show(theirs, null)
                         info = ctx.getString(R.string.note_conflict_copy, title)
@@ -324,7 +335,7 @@ fun NoteScreen(id: Long, onClose: () -> Unit) {
             }
             ctx.getString(R.string.note_conflict)
         } catch (e: Exception) {
-            if (app.notes.isOffline(e) && keepOffline()) return@withLock null
+            if (notes.isOffline(e) && keepOffline()) return@withLock null
             e.message ?: e.javaClass.simpleName
         } finally { saving = false }
     }
@@ -362,8 +373,8 @@ fun NoteScreen(id: Long, onClose: () -> Unit) {
     /** Titel, Farbe, Wichtig, Ordner aendern; der Text im Editor bleibt, wie er ist. */
     fun meta(m: NoteMeta) = scope.launch {
         try {
-            app.notes.setMeta(id, m)
-            val fresh = app.notes.load(id, true)
+            notes.setMeta(id, m)
+            val fresh = notes.load(id, true)
             // Gleicher Text (Version), nur andere Angaben - den Editor nicht anfassen
             note = if (fresh.version == note?.version) fresh else note?.copy(title = fresh.title, customTitle = fresh.customTitle, color = fresh.color, important = fresh.important, folder = fresh.folder)
         } catch (e: Exception) { error = e.message }
@@ -371,9 +382,10 @@ fun NoteScreen(id: Long, onClose: () -> Unit) {
     fun act(action: String, close: Boolean) = scope.launch {
         try {
             if (action != "restore") save(false)?.let { failed = it; return@launch }
-            if (action == "delete") app.notes.deleteForever(id) else app.notes.act(id, action)
-            if (close) onClose() else {
-                val fresh = app.notes.load(id, true)
+            if (action == "delete") notes.deleteForever(id) else notes.act(id, action)
+            // Archiviert oder gelöscht: gleich die nächste Notiz der Liste öffnen (keine mehr: zurück zur Liste)
+            if (close) { val next = notes.nextAfter(id); if (next != null && onNext != null) onNext(next) else onClose() } else {
+                val fresh = notes.load(id, true)
                 note = fresh
                 show(fresh, null)
             }
@@ -381,10 +393,12 @@ fun NoteScreen(id: Long, onClose: () -> Unit) {
     }
 
     fun openAttachment(name: String) = scope.launch {
+        // Nur gezeigt (Version 2): Anhaenge nicht an andere Apps geben
+        if (note?.showOnly == true) { error = ctx.getString(R.string.files_shown_only); return@launch }
         val a = note?.attachments?.firstOrNull { it.name == name } ?: note?.attachments?.firstOrNull { it.name.equals(name, true) }
         if (a == null) { error = name; return@launch }
         try {
-            val bytes = app.notes.blobAsync(a.blob)
+            val bytes = notes.blobAsync(a.blob)
             val f = withContext(Dispatchers.IO) {
                 val dir = File(ctx.cacheDir, "attachments").apply { mkdirs() }
                 File(dir, a.name.ifBlank { "anhang" }.replace(Regex("[^A-Za-z0-9._ -]"), "_")).apply { writeBytes(bytes) }
@@ -403,7 +417,7 @@ fun NoteScreen(id: Long, onClose: () -> Unit) {
             if (raw.isNullOrEmpty() || raw == "null") return@launch
             val d = json.parseToJsonElement(unb64(raw)).jsonObject
             val bytes = android.util.Base64.decode(d["png"]!!.jsonPrimitive.content, android.util.Base64.DEFAULT)
-            val name = app.notes.uploadImage(bytes, sniff(bytes).takeIf { it.startsWith("image/") } ?: "image/png")
+            val name = notes.uploadImage(bytes, sniff(bytes).takeIf { it.startsWith("image/") } ?: "image/png")
             js("finishDrawing('$name')")
         } catch (e: Exception) { error = ctx.getString(R.string.note_picture_failed, e.message ?: "") }
     }
@@ -417,6 +431,23 @@ fun NoteScreen(id: Long, onClose: () -> Unit) {
             } catch (e: Exception) { error = ctx.getString(R.string.note_picture_failed, e.message ?: "") }
         }
     }
+
+    // Bilder aus der Galerie von dmOffice: großes Vorschaubild vom Server, eins nach dem anderen einsetzen
+    fun insertFromGallery(items: List<at.dimes.dmoffice.files.FileItem>) = scope.launch {
+        for (item in items) {
+            try {
+                val jpeg = withContext(Dispatchers.IO) { galleryJpeg(ctx, item) }
+                js("insertPicture('${android.util.Base64.encodeToString(jpeg, android.util.Base64.NO_WRAP)}','image/jpeg')")
+            } catch (e: Exception) { error = ctx.getString(R.string.note_picture_failed, e.message ?: "") }
+        }
+    }
+    if (galleryPick) GalleryPhotoPicker(onDismiss = { galleryPick = false }, onPick = { galleryPick = false; insertFromGallery(it) })
+    // Bilder aus der eigenen Ablage: wie aus der Galerie (großes Vorschaubild vom Server); andere Dateien bleiben außen vor
+    var filesPick by remember { mutableStateOf(false) }
+    if (filesPick) StoredFilePicker(onDismiss = { filesPick = false }, onPick = { picked ->
+        filesPick = false
+        insertFromGallery(picked.filter { Regex("\\.(jpe?g|png|webp|heic|heif|gif|bmp)$", RegexOption.IGNORE_CASE).containsMatchIn(it.name) })
+    })
 
     Scaffold(topBar = {
         TopAppBar(
@@ -447,16 +478,25 @@ fun NoteScreen(id: Long, onClose: () -> Unit) {
                             @Composable fun item(text: Int, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) =
                                 DropdownMenuItem(text = { Text(stringResource(text)) }, leadingIcon = { Icon(icon, contentDescription = null) }, onClick = { menu = false; onClick() })
                             if (!readOnly) {
-                                item(R.string.note_insert_picture, Icons.Default.Image) { pickPicture.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
+                                item(R.string.note_picture_phone, Icons.Default.Image) { pickPicture.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
+                                if (galleryOn) item(R.string.note_picture_gallery, Icons.Default.PhotoLibrary) { galleryPick = true }
                                 item(R.string.note_color, Icons.Default.Palette) { dialog = "color" }
-                                item(R.string.note_move, Icons.Default.Folder) { dialog = "move" }
+                                // Einzeln geteilt (Version 2): verschieben, archivieren, loeschen nur beim Besitzer
+                                if (!d.single) item(R.string.note_move, Icons.Default.Folder) { dialog = "move" }
                                 item(R.string.note_rename, Icons.Default.Edit) { dialog = "rename" }
-                                HorizontalDivider()
-                                item(R.string.archive, Icons.Default.Archive) { act("archive", true) }
-                                item(R.string.note_trash, Icons.Default.Delete) { act("trash", true) }
+                                if (id > 0 && notes.vault == null) item(R.string.note_share, Icons.Default.People) { dialog = "share" }
+                                if (id > 0 && notes.vault == null) item(R.string.chat_in_chat, Icons.AutoMirrored.Filled.Chat) { dialog = "chat" }
+                                if (!d.single) {
+                                    HorizontalDivider()
+                                    item(R.string.archive, Icons.Default.Archive) { act("archive", true) }
+                                    item(R.string.note_trash, Icons.Default.Delete) { act("trash", true) }
+                                }
                             } else if (d.archived != null || d.deleted != null) {
                                 item(R.string.note_restore, Icons.Default.Restore) { act("restore", false) }
                                 if (d.deleted != null) item(R.string.note_delete_forever, Icons.Default.DeleteForever) { dialog = "delete" }
+                            }
+                            if (d.single) item(R.string.note_leave, Icons.Default.PersonRemove) {
+                                scope.launch { try { NoteShares.leave(ctx, NoteShares.shareOf(id)); onClose() } catch (e: Exception) { error = e.message } }
                             }
                         }
                     }
@@ -473,7 +513,18 @@ fun NoteScreen(id: Long, onClose: () -> Unit) {
                 IconButton(onClick = { exec("cmd('underline')") }) { Icon(Icons.Default.FormatUnderlined, contentDescription = stringResource(R.string.note_underline)) }
                 IconButton(onClick = { exec("cmd('strikeThrough')") }) { Icon(Icons.Default.FormatStrikethrough, contentDescription = stringResource(R.string.note_strike)) }
                 IconButton(onClick = { exec("toggleCode()") }) { Icon(Icons.Default.Code, contentDescription = stringResource(R.string.note_code)) }
-                IconButton(onClick = { pickPicture.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }) { Icon(Icons.Default.Image, contentDescription = stringResource(R.string.note_insert_picture)) }
+                Box {
+                    IconButton(onClick = { pictureMenu = true }) { Icon(Icons.Default.Image, contentDescription = stringResource(R.string.note_insert_picture)) }
+                    // Woher das Bild kommt: vom Handy, aus der Galerie oder aus den Dateien von dmOffice
+                    DropdownMenu(expanded = pictureMenu, onDismissRequest = { pictureMenu = false }) {
+                        DropdownMenuItem(text = { Text(stringResource(R.string.note_picture_phone)) }, leadingIcon = { Icon(Icons.Default.Image, contentDescription = null) },
+                            onClick = { pictureMenu = false; pickPicture.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) })
+                        if (galleryOn) DropdownMenuItem(text = { Text(stringResource(R.string.note_picture_gallery)) }, leadingIcon = { Icon(Icons.Default.PhotoLibrary, contentDescription = null) },
+                            onClick = { pictureMenu = false; galleryPick = true })
+                        DropdownMenuItem(text = { Text(stringResource(R.string.attach_from_files)) }, leadingIcon = { Icon(Icons.Default.Cloud, contentDescription = null) },
+                            onClick = { pictureMenu = false; filesPick = true })
+                    }
+                }
             }
         }
     }) { pad ->
@@ -501,7 +552,7 @@ fun NoteScreen(id: Long, onClose: () -> Unit) {
                         .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(c))
                         .addPathHandler("/blob/") { path ->
                             try {
-                                val bytes = app.notes.blob(android.net.Uri.decode(path))
+                                val bytes = notes.blob(android.net.Uri.decode(path))
                                 WebResourceResponse(sniff(bytes), null, ByteArrayInputStream(bytes))
                             } catch (e: Exception) {
                                 WebResourceResponse("text/plain", "utf-8", 404, "Not Found", emptyMap(), ByteArrayInputStream(ByteArray(0)))
@@ -550,6 +601,10 @@ fun NoteScreen(id: Long, onClose: () -> Unit) {
     // ---------------- Dialoge ----------------
     val d = note
     when (dialog) {
+        "chat" -> SendToChatDialog(listOf(at.dimes.dmoffice.chat.ChatOutRef("note", noteId = id)), onDismiss = { dialog = null }) { err ->
+            dialog = null; if (err != null) error = err else info = ctx.getString(R.string.chat_sent_done) }
+        "share" -> NoteShareDialog(id, note?.title ?: "", onDismiss = { dialog = null },
+            onSaved = { dialog = null; info = ctx.getString(R.string.note_share_saved) }, onError = { error = it })
         "color" -> if (d != null) AlertDialog(onDismissRequest = { dialog = null }, title = { Text(stringResource(R.string.note_color)) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -606,14 +661,14 @@ fun NoteScreen(id: Long, onClose: () -> Unit) {
 
 /**
  * Foto aus der Auswahl: aufrecht gedreht (der PC liest die Drehung aus den Bilddaten nicht) und
- * auf hoechstens 2000 Pixel verkleinert, als JPEG.
+ * auf hoechstens [max] Pixel verkleinert, als JPEG. Auch fuer Fotos an Listenartikeln.
  */
-private fun uprightJpeg(ctx: android.content.Context, uri: android.net.Uri): ByteArray {
+internal fun uprightJpeg(ctx: android.content.Context, uri: android.net.Uri, max: Int = 2000): ByteArray {
     val cr = ctx.contentResolver
     val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
     cr.openInputStream(uri)!!.use { android.graphics.BitmapFactory.decodeStream(it, null, bounds) }
     var sample = 1
-    while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= 2000) sample *= 2
+    while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= max) sample *= 2
     val bmp = cr.openInputStream(uri)!!.use { android.graphics.BitmapFactory.decodeStream(it, null, android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }) }
         ?: throw IllegalArgumentException("Bild")
     val rotation = try {
@@ -626,7 +681,7 @@ private fun uprightJpeg(ctx: android.content.Context, uri: android.net.Uri): Byt
             }
         }
     } catch (_: Exception) { 0f }
-    val scale = minOf(1f, 2000f / maxOf(bmp.width, bmp.height))
+    val scale = minOf(1f, max.toFloat() / maxOf(bmp.width, bmp.height))
     val m = android.graphics.Matrix().apply { postScale(scale, scale); postRotate(rotation) }
     val out = android.graphics.Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
     return java.io.ByteArrayOutputStream().use { s -> out.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, s); s.toByteArray() }

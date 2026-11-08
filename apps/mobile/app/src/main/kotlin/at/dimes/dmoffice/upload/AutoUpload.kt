@@ -92,10 +92,15 @@ object AutoUpload {
     private const val WORK_PERIODIC = "autoupload-periodic"
     private const val WORK_TRIGGER = "autoupload-trigger"
     private const val WORK_RETRY = "autoupload-retry"
+    private const val WORK_SETTLE = "dmoffice-autoupload-settle"
     private const val WORK_WAIT = "autoupload-wait-"
 
     /** Gerade laufende Datei samt Fortschritt; [index] von [count] in diesem Durchlauf. */
     data class Progress(val entryId: Long, val name: String, val done: Long, val total: Long, val index: Int, val count: Int)
+
+    /** Gesamtfortschritt des laufenden Durchgangs (Bytes): fertige Dateien und alle zusammen - die Benachrichtigung zeigt ihn bei mehreren Dateien. */
+    @Volatile private var runDone = 0L
+    @Volatile private var runTotal = 0L
 
     private val _progress = MutableStateFlow<Progress?>(null)
     val progress: StateFlow<Progress?> = _progress
@@ -349,17 +354,24 @@ object AutoUpload {
         return false
     }
 
+    /** Neue Dateien, die gerade beobachtet werden (UploadLogic.settled). */
+    private val settling = java.util.concurrent.ConcurrentHashMap<String, UploadLogic.Seen>()
+
     suspend fun scanRule(context: Context, rule: UploadRule) {
         val d = dao(context)
         val files = Scanner.scan(context, rule)
         updateLocalState(d, rule, files)
         val known = d.known(rule.id).groupBy { it.sourcePath }.mapValues { (_, v) -> v.last() }
         val fresh = ArrayList<UploadEntry>()
+        val now = System.currentTimeMillis()
+        var unsettled = false
         for (f in files) {
             if (UploadLogic.ignoredName(f.name) || !UploadLogic.typeMatches(rule.types, f.mime, f.name)) continue
             if (!passesSince(context, rule, f)) continue
             val k = known[f.sourcePath]
             if (k != null && k.size == f.size && k.modified == f.modified) continue
+            // Gerade erst geschrieben: Die Kamera ersetzt die Datei vielleicht noch. Beim Nachschauen weiter unten kommt sie dran
+            if (!UploadLogic.settled(settling, f.sourcePath, f.size, f.modified, f.added, now)) { unsettled = true; continue }
             val taken = if (f.taken > 0) f.taken else if (rule.subfolders != UploadLogic.SUB_NONE) Scanner.takenDate(context, f) else f.modified
             val dir = UploadLogic.targetDir(rule.target, f.relDir, rule.keepStructure, rule.subfolders, taken)
             if (k != null && (k.status == UploadEntry.QUEUED || k.status == UploadEntry.FAILED)) {
@@ -374,6 +386,8 @@ object AutoUpload {
         fresh.sortBy { it.taken }
         for (chunk in fresh.chunked(500)) d.insert(chunk)
         d.setScanned(rule.id, System.currentTimeMillis())
+        if (unsettled) WorkManager.getInstance(context).enqueueUniqueWork(WORK_SETTLE, ExistingWorkPolicy.REPLACE, OneTimeWorkRequestBuilder<AutoUploadKick>()
+            .setConstraints(net()).setInitialDelay(UploadLogic.SETTLE_MS + 1_000, TimeUnit.MILLISECONDS).build())
     }
 
     /** Nebenbei bei jedem Durchsuchen: sind die hochgeladenen Dateien noch da und unveraendert? */
@@ -409,7 +423,9 @@ object AutoUpload {
         val d = dao(context)
         val listings = HashMap<String, MutableList<FileItem>>()
         var uploaded = 0; var failed = 0; var index = 0
-        var count = d.queued().size
+        val queued = d.queued()
+        var count = queued.size
+        runDone = 0; runTotal = queued.sumOf { it.size.coerceAtLeast(0) }
         var fg = false
         while (!_paused.value) {
             val rules = d.ruleList().associateBy { it.id }
@@ -418,14 +434,15 @@ object AutoUpload {
             val e = d.next(System.currentTimeMillis(), allowed) ?: break
             val rule = rules[e.ruleId] ?: break
             index++
-            if (index > count) count = index
+            // Während des Durchgangs Neues dazugekommen: Gesamtmenge nachführen
+            if (index > count) { count = index; runTotal = runDone + d.queued().sumOf { it.size.coerceAtLeast(0) } }
             if (!fg) {
                 fg = true
                 try { foreground(foregroundInfo(context, Progress(e.id, e.name, 0, e.size, index, count))) }
                 catch (ex: Exception) { Log.w(TAG, "Vordergrund nicht moeglich: " + ex.message) }
             }
             try {
-                when (uploadOne(context, api, rule, e, listings, index, count)) {
+                when (uploadOne(context, api, rule, e, listings, index, count).also { runDone += e.size.coerceAtLeast(0) }) {
                     UploadEntry.DONE -> uploaded++
                     UploadEntry.FAILED -> failed++
                 }
@@ -452,7 +469,12 @@ object AutoUpload {
             val size = withContext(Dispatchers.IO) { localSize(context, uri) }
             if (size == null) { d.update(done(UploadEntry.FAILED, context.getString(R.string.au_err_gone))); return UploadEntry.FAILED }
             if (size != e.size) e = e.copy(size = size)
-            val dir = targetFor(rule, e)
+            // Fertiges Foto zum schon hochgeladenen Vorabbild: dieselbe Datei auf dem Server ersetzen (bleibt dort als fruehere Version), unabhaengig von der Einstellung der Regel
+            val preview = d.lastDone(e.ruleId, e.sourcePath, e.id)?.takeIf { UploadLogic.cameraReplaced(it.size, it.modified, it.already, it.remotePath, e.size, e.modified) }
+            val replacing = preview?.remotePath
+            val dir = replacing?.substringBeforeLast('/', "") ?: targetFor(rule, e)
+            val remoteName = replacing?.let { FilesRepo.nameOf(it) } ?: e.name
+            val conflict = if (replacing != null) UploadLogic.CONFLICT_REPLACE else rule.conflict
             if (UploadLogic.forbiddenTarget(dir)) { d.update(done(UploadEntry.FAILED, context.getString(R.string.au_err_forbidden))); return UploadEntry.FAILED }
             e = e.copy(targetDir = dir)
 
@@ -479,21 +501,36 @@ object AutoUpload {
                 afterUpload(context, rule, e)
                 return UploadEntry.DONE
             }
-            if (rule.conflict == UploadLogic.CONFLICT_SKIP && existing.any { it.name.equals(e.name, ignoreCase = true) }) {
+            if (replacing == null && rule.conflict == UploadLogic.CONFLICT_SKIP && existing.any { it.name.equals(e.name, ignoreCase = true) }) {
                 d.update(done(UploadEntry.SKIPPED, context.getString(R.string.au_skipped_exists), remote = FilesRepo.join(dir, e.name)))
                 return UploadEntry.SKIPPED
             }
 
             _progress.value = Progress(e.id, e.name, 0, e.size, index, count)
             var lastNotify = 0L
-            val body = UriBody(context, readUri(context, uri), e.mime, e.size) { n ->
+            val progress: (Long) -> Unit = { n ->
                 _progress.value = Progress(e.id, e.name, n, e.size, index, count)
                 val t = System.currentTimeMillis()
                 if (t - lastNotify > 1000) { lastNotify = t; notifyProgress(context, _progress.value) }
             }
+            val body = UriBody(context, readUri(context, uri), e.mime, e.size, progress)
             notifyProgress(context, _progress.value)
+            val mtime = e.modified.takeIf { it > 0 }
+            var sent: String? = null
             val resp = withContext(Dispatchers.IO) {
-                api.uploadStream(dir, e.name, body, big = e.size > FilesRepo.ENVELOPE_MAX, conflict = rule.conflict, mtime = e.modified.takeIf { it > 0 }) { currentCall = it }
+                if (e.size <= FilesRepo.ENVELOPE_MAX)
+                    api.uploadStream(dir, remoteName, body, big = false, conflict = conflict, mtime = mtime) { currentCall = it }
+                else ChunkedUpload.orSingle(api, e.size, context.getString(R.string.files_err_chunks_old), chunked = {
+                    // Gross: in Stuecken (je Teil ein Ticket); nach einem Abbruch geht es beim naechsten Lauf an derselben Stelle weiter
+                    val key = chunkKey(e)
+                    val up = ChunkedUpload.upload(api, { context.contentResolver.openInputStream(readUri(context, uri)) ?: throw java.io.FileNotFoundException(e.uri) },
+                        remoteName, e.size, e.mime, key, chunkPrefs(context), progress) { currentCall = it }
+                    sent = up.sha256
+                    ChunkedUpload.finishToFiles(api, up.id, dir, conflict, mtime).also { ChunkedUpload.forget(key, chunkPrefs(context)) }
+                }, single = {
+                    // Server vor 2.0: in einem Stueck wie die App 1.5
+                    api.uploadStream(dir, remoteName, body, big = true, conflict = conflict, mtime = mtime) { currentCall = it }
+                })
             }
             val file = try { api.json.parseToJsonElement(resp).jsonObject["files"]?.jsonArray?.firstOrNull()?.jsonObject } catch (_: Exception) { null }
             val path = file?.get("path")?.jsonPrimitive?.content ?: FilesRepo.join(dir, e.name)
@@ -502,7 +539,7 @@ object AutoUpload {
                 return UploadEntry.SKIPPED
             }
             // Pruefsummen vergleichen: vorher gerechnet, beim Senden mitgerechnet, vom Server gespeichert
-            when (FreeUpLogic.verdict(hash, body.sha256, file?.get("sha256")?.jsonPrimitive?.contentOrNull)) {
+            when (FreeUpLogic.verdict(hash, sent ?: body.sha256, file?.get("sha256")?.jsonPrimitive?.contentOrNull)) {
                 FreeUpLogic.Verdict.CHANGED -> { d.dropHash(e.uri); throw IOException("Datei hat sich beim Hochladen geaendert") }
                 FreeUpLogic.Verdict.SERVER_MISMATCH -> { d.update(done(UploadEntry.FAILED, context.getString(R.string.au_err_hash), remote = path)); return UploadEntry.FAILED }
                 FreeUpLogic.Verdict.OK -> e = e.copy(backedUp = true)
@@ -512,6 +549,8 @@ object AutoUpload {
             existing += FileItem(path, FilesRepo.nameOf(path), false, e.size)
             e = done(UploadEntry.DONE, remote = path).copy(localState = FreeUpLogic.LOCAL_PRESENT)
             d.update(e)
+            // Das Vorabbild gibt es auf dem Geraet nicht mehr: Es wartet auf nichts mehr
+            preview?.takeIf { it.deletePending }?.let { d.update(it.copy(deletePending = false)) }
             App.get(context).files.invalidate(dir)
             afterUpload(context, rule, e)
             return UploadEntry.DONE
@@ -537,7 +576,13 @@ object AutoUpload {
             return UploadEntry.FAILED
         } catch (ex: IOException) {
             val cur = d.entry(e.id)
-            if (cur == null || cur.status == UploadEntry.CANCELLED) return UploadEntry.CANCELLED
+            if (ex is ChunkedUpload.ChangedException) d.dropHash(e.uri)
+            if (cur == null || cur.status == UploadEntry.CANCELLED) {
+                // Abgebrochen: angefangene Teile auf dem Server wegraeumen
+                chunkPrefs(context).getString(chunkKey(e), null)?.let { id -> withContext(Dispatchers.IO) { ChunkedUpload.drop(api, id) } }
+                ChunkedUpload.forget(chunkKey(e), chunkPrefs(context))
+                return UploadEntry.CANCELLED
+            }
             if (_paused.value) { d.update(e.copy(status = UploadEntry.QUEUED)); return UploadEntry.QUEUED }
             Log.w(TAG, "Hochladen ${e.name}: ${ex.message}")
             return retryLater(context, e, ex.message ?: ex.toString())
@@ -566,6 +611,10 @@ object AutoUpload {
     } catch (e: ApiException) {
         if (e.code == 404) mutableListOf() else throw e
     }
+
+    /** Gemerkte Sitzungen fuers Hochladen in Stuecken: je Eintrag und Stand der Datei eine. */
+    private fun chunkPrefs(context: Context) = context.getSharedPreferences("autoupload_chunks", Context.MODE_PRIVATE)
+    private fun chunkKey(e: UploadEntry) = "e${e.id}.${e.size}.${e.modified}"
 
     /** Fotos mit Ortsangaben: ohne ACCESS_MEDIA_LOCATION schneidet Android die GPS-Daten heraus. */
     private fun readUri(context: Context, uri: Uri): Uri =
@@ -831,11 +880,20 @@ object AutoUpload {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val b = NotificationCompat.Builder(context, CHANNEL).setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(if (p == null) context.getString(R.string.au_notif_title) else context.getString(R.string.au_notif_progress, p.index, p.count))
-            .setContentText(p?.name ?: "")
+            .setContentText(when {
+                // Mehrere Dateien: Gesamtmenge statt nur der einen Datei
+                p != null && p.count > 1 && runTotal > 0 -> p.name + " · " + context.getString(R.string.au_notif_bytes,
+                    android.text.format.Formatter.formatShortFileSize(context, (runDone + p.done).coerceAtMost(runTotal)), android.text.format.Formatter.formatShortFileSize(context, runTotal))
+                else -> p?.name ?: ""
+            })
             .setOngoing(true).setOnlyAlertOnce(true).setSilent(true)
             .setContentIntent(openQueue(context, 1))
             .addAction(0, context.getString(R.string.au_pause), pause)
-        if (p != null && p.total > 0) b.setProgress(1000, (p.done * 1000 / p.total).toInt(), false) else b.setProgress(0, 0, true)
+        when {
+            p != null && p.count > 1 && runTotal > 0 -> b.setProgress(1000, ((runDone + p.done).coerceAtMost(runTotal) * 1000 / runTotal).toInt(), false)
+            p != null && p.total > 0 -> b.setProgress(1000, (p.done * 1000 / p.total).toInt(), false)
+            else -> b.setProgress(0, 0, true)
+        }
         return b.build()
     }
 

@@ -137,13 +137,15 @@ object E2e {
         val serverKey = a.serverKey ?: throw KeyUnconfirmed(offeredKey(a) ?: return a)
         val kp = generateKeyPair()
         val pub = exportPublic(kp.public)
-        val reg: Registration = plain.postFor(plain.url("/api/e2e/register"), mapOf("pubKey" to pub))
+        // Gerätename: ersetzt in der Liste der App-Passwörter das Datum im vorgegebenen Namen
+        val device = (android.os.Build.MANUFACTURER.replaceFirstChar { it.uppercase() } + " " + android.os.Build.MODEL).trim()
+        val reg: Registration = plain.postFor(plain.url("/api/e2e/register"), mapOf("pubKey" to pub, "name" to device))
         if (reg.serverKey != serverKey) throw ApiException(400, "Serverschlüssel passt nicht zum QR-Code")
         return a.copy(serverKey = serverKey, deviceId = reg.deviceId, userId = reg.userId, devicePublic = pub, devicePrivate = b64u(kp.private.encoded), counter = 0)
     }
 
     @Serializable private data class Inner(val method: String, val path: String, val headers: Map<String, String>, val body: String?)
-    @Serializable private data class Outer(val status: Int, val headers: Map<String, String> = emptyMap(), val body: String? = null)
+    @Serializable private data class Outer(val status: Int, val headers: Map<String, String> = emptyMap(), val body: String? = null, val zip: String? = null)
     @Serializable data class KeyInfo(val key: String, val version: String = "")
     @Serializable data class Registration(val deviceId: String, val userId: String, val serverKey: String, val version: String = "")
 
@@ -195,6 +197,8 @@ object E2e {
                 val c = counters.next(device)
                 val sealed = seal(key, inner, aad(device, c, false))
                 val outerReq = Request.Builder().url(envelopeUrl).header("X-DM-Counter", c.toString()).header("User-Agent", "dmOffice-Android/0.1")
+                    // Große Antworten gepackt (Galerie-Listen: wenige MB statt dutzende)
+                    .header("X-DM-Zip", "gzip")
                     .post(sealed.toRequestBody("application/octet-stream".toMediaType())).build()
                 return c to chain.proceed(outerReq)
             }
@@ -212,7 +216,8 @@ object E2e {
             }
             val plain = try { open(key, res.body!!.bytes(), aad(account.deviceId, c, true)) } finally { res.close() }
             val outer = json.decodeFromString<Outer>(String(plain))
-            val bytes = outer.body?.let { Base64.decode(it, Base64.NO_WRAP) } ?: ByteArray(0)
+            val raw = outer.body?.let { Base64.decode(it, Base64.NO_WRAP) } ?: ByteArray(0)
+            val bytes = if (outer.zip == "gzip") java.util.zip.GZIPInputStream(raw.inputStream()).use { it.readBytes() } else raw
             val ct = outer.headers.entries.firstOrNull { it.key.equals("Content-Type", true) }?.value
             val b = Response.Builder().request(req).protocol(Protocol.HTTP_1_1).code(outer.status).message("e2e")
                 .body(bytes.toResponseBody(ct?.toMediaType()))

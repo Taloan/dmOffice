@@ -82,7 +82,7 @@ public static partial class MailHtml
             }
             else if (el.LocalName == "img")
             {
-                var src = el.GetAttribute("src") ?? "";
+                var src = (el.GetAttribute("src") ?? "").Trim();
                 if (lockAll && src.Length > 0)
                 {
                     // Junk: kein Bild, auch kein eingebettetes - ein Bild des Absenders ist oft der eigentliche Koeder
@@ -92,7 +92,7 @@ public static partial class MailHtml
                     el.SetAttribute("alt", "[Bild gesperrt]");
                 }
                 else if (src.StartsWith("http:", StringComparison.OrdinalIgnoreCase) ||
-                    src.StartsWith("https:", StringComparison.OrdinalIgnoreCase) || src.StartsWith("//"))
+                    src.StartsWith("https:", StringComparison.OrdinalIgnoreCase) || src.StartsWith("//") || src.StartsWith("\\\\") || src.StartsWith("/\\") || src.StartsWith("\\/"))
                 {
                     remote = true;
                     if (!allowRemote)

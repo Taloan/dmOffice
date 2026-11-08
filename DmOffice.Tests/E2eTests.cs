@@ -42,6 +42,33 @@ public class E2eTests
     }
 
     [Fact]
+    public void Antwort_im_Umschlag_gepackt_nur_wenn_der_Client_entpacken_kann()
+    {
+        static System.Text.Json.JsonElement Outer(byte[] b) => System.Text.Json.JsonDocument.Parse(b).RootElement;
+        var json = Encoding.UTF8.GetBytes("{\"items\":[" + string.Join(",", Enumerable.Range(0, 2000).Select(i => $"{{\"path\":\"Fotos/2024/IMG_{i:0000}.jpg\",\"size\":{i * 1000}}}")) + "]}");
+        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["Content-Type"] = "application/json; charset=utf-8" };
+
+        // Kann entpacken: gzip, deutlich kleiner, und ausgepackt wieder genau dasselbe
+        var packed = Outer(E2e.Pack(200, headers, json, clientZips: true));
+        Assert.Equal("gzip", packed.GetProperty("zip").GetString());
+        var gz = Convert.FromBase64String(packed.GetProperty("body").GetString()!);
+        Assert.True(gz.Length < json.Length / 5);
+        using (var unzip = new System.IO.Compression.GZipStream(new MemoryStream(gz), System.IO.Compression.CompressionMode.Decompress))
+        using (var back = new MemoryStream()) { unzip.CopyTo(back); Assert.Equal(json, back.ToArray()); }
+
+        // Älterer Client (App vor dem Update): wie bisher ungepackt
+        var plain = Outer(E2e.Pack(200, headers, json, clientZips: false));
+        Assert.Equal(System.Text.Json.JsonValueKind.Null, plain.GetProperty("zip").ValueKind);
+        Assert.Equal(json, Convert.FromBase64String(plain.GetProperty("body").GetString()!));
+
+        // Bilder (schon gepackt) und kleine Antworten bleiben, wie sie sind
+        var webp = Outer(E2e.Pack(200, new(StringComparer.OrdinalIgnoreCase) { ["Content-Type"] = "image/webp" }, new byte[50_000], clientZips: true));
+        Assert.Equal(System.Text.Json.JsonValueKind.Null, webp.GetProperty("zip").ValueKind);
+        var small = Outer(E2e.Pack(200, headers, Encoding.UTF8.GetBytes("{\"ok\":true}"), clientZips: true));
+        Assert.Equal(System.Text.Json.JsonValueKind.Null, small.GetProperty("zip").ValueKind);
+    }
+
+    [Fact]
     public void Zaehlerfenster_laesst_verspaetete_durch_aber_keine_wiederholung()
     {
         var w = new E2e.CounterWindow(0);

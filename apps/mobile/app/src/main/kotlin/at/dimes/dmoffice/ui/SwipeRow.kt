@@ -60,7 +60,7 @@ enum class SwipeAction(val key: String, val label: Int, val icon: ImageVector?, 
 
 /**
  * Zeile mit Wischgesten in zwei Stufen wie in Outlook/Gmail: ein Stueck wischen und loslassen = erste Aktion,
- * weit wischen (ueber 55 % der Breite) = zweite Aktion. Der Hintergrund zeigt, was beim Loslassen passiert;
+ * weit wischen (ueber 80 % der Breite) = zweite Aktion - die erste hat den Grossteil der Strecke, sonst wischt man zu schnell darueber hinweg. Der Hintergrund zeigt, was beim Loslassen passiert;
  * beim Wechsel der Stufe gibt es einen kurzen Ruck.
  */
 @Composable
@@ -78,7 +78,7 @@ fun SwipeRow(
     BoxWithConstraints(Modifier.fillMaxWidth()) {
         val width = with(density) { maxWidth.toPx() }
         val near = width * 0.18f
-        val far = width * 0.55f
+        val far = width * 0.80f
         // Was beim Loslassen passiert (nach links: Finger nach links, offset negativ)
         fun actionAt(x: Float): SwipeAction? {
             val leftward = x < 0

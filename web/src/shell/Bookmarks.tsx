@@ -22,7 +22,10 @@ const useStyles = makeStyles({
 function cleanUrl(raw: string): string | null {
   const text = raw.trim().split(/\r?\n/).find(l => l && !l.startsWith('#')) ?? ''
   try {
-    const u = new URL(/^[a-z]+:\/\//i.test(text) ? text : 'https://' + text)
+    const scheme = /^[a-z]+:\/\//i.test(text)
+    const u = new URL(scheme ? text : 'https://' + text)
+    // Ohne http(s):// nur, was nach einer Adresse aussieht (ein Punkt im Namen) - kein einzelnes Wort
+    if (!scheme && !u.hostname.includes('.')) return null
     return u.protocol === 'https:' || u.protocol === 'http:' ? u.href : null
   } catch { return null }
 }
@@ -55,7 +58,7 @@ export function Bookmarks() {
 
   return (
     <div className={mergeClasses(s.zone, over && s.over)}
-      onDragOver={e => { if (e.dataTransfer.types.includes('text/uri-list') || e.dataTransfer.types.includes('text/plain')) { e.preventDefault(); setOver(true) } }}
+      onDragOver={e => { if (e.dataTransfer.types.includes('application/x-dmoffice-module')) return; if (e.dataTransfer.types.includes('text/uri-list') || e.dataTransfer.types.includes('text/plain')) { e.preventDefault(); setOver(true) } }}
       onDragLeave={() => setOver(false)}
       onDrop={e => {
         e.preventDefault()

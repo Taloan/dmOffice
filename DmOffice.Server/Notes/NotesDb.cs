@@ -86,9 +86,12 @@ public sealed class NoteFolder
 /// </summary>
 public sealed class NotesDb : ISyncLocal
 {
-    private readonly UserDb _db;
+    private readonly ISqlStore _db;
 
-    public NotesDb(UserDb db) => _db = db;
+    public NotesDb(ISqlStore db) => _db = db;
+
+    /// <summary>Eine notizi-Datenbank im Tresor: keine Volltextsuche in Anhängen, kein Index, keine Freigaben.</summary>
+    public bool InTresor => _db is not UserDb;
 
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<UserDb, NotesDb> Cache = new();
     public static NotesDb Of(UserSpace space) => Cache.GetValue(space.Db, db => new NotesDb(db));
@@ -170,7 +173,9 @@ public sealed class NotesDb : ISyncLocal
         if (match.Length == 0) return new();
         var notes = QueryNotes("WHERE n.id IN (SELECT rowid FROM notes_fts WHERE notes_fts MATCH $q) AND deleted IS NULL ORDER BY modified DESC",
                                ("$q", match));
-        var att = DmOffice.Search.TextIndex.SearchNoteAttachments(_db, text);
+        // Bilder und Anhänge im Tresor kommen nie in den Suchindex
+        if (_db is not UserDb udb) return notes;
+        var att = DmOffice.Search.TextIndex.SearchNoteAttachments(udb, text);
         var known = notes.Select(n => n.SyncId).ToHashSet();
         var extra = att.Keys.Where(k => !known.Contains(k)).ToList();
         if (extra.Count == 0) return notes;
@@ -190,6 +195,9 @@ public sealed class NotesDb : ISyncLocal
     }
 
     public NoteRow? GetNote(long id) => QueryNotes("WHERE id = $id", ("$id", id)).FirstOrDefault();
+
+    /// <summary>Notiz nach ihrer festen Kennung (Verweise im Chat), ohne Papierkorb.</summary>
+    public NoteRow? BySyncId(string syncId) => QueryNotes("WHERE sync_id = $s AND deleted IS NULL", ("$s", syncId)).FirstOrDefault();
 
     /// <summary>Ein Ordner; null, wenn es ihn nicht gibt.</summary>
     public NoteFolder? GetFolder(string id)
@@ -258,6 +266,31 @@ public sealed class NotesDb : ISyncLocal
                              AND (instr(images, '""' || $n || '""') > 0 OR instr(attachments, '""' || $n || '""') > 0
                                   OR instr(html, 'blob:' || $n || '""') > 0) LIMIT 1", args) != null;
     }
+
+    public string CreateFolder(string name, string? parent)
+    {
+        var id = Guid.NewGuid().ToString("N");
+        Exec("INSERT INTO note_folders(sync_id,sync_rev,parent,name,sort_order,created,modified) VALUES($s,1,$p,$n,(SELECT COALESCE(MAX(sort_order),0)+1 FROM note_folders),$m,$m)",
+            ("$s", id), ("$p", parent), ("$n", name.Trim().Length > 0 ? name.Trim() : "Neuer Ordner"), ("$m", Now()));
+        return id;
+    }
+
+    public void RenameFolder(string id, string name) =>
+        Exec("UPDATE note_folders SET name=$n, modified=$m, sync_rev=sync_rev+1 WHERE sync_id=$s", ("$n", name.Trim()), ("$m", Now()), ("$s", id));
+
+    /// <summary>Leeren Ordner löschen (mit Grabstein für den Abgleich); nicht leer: false.</summary>
+    public bool DeleteFolder(string id)
+    {
+        if (Convert.ToInt32(_db.Scalar("SELECT COUNT(*) FROM notes WHERE folder=$f AND deleted IS NULL", ("$f", id))) > 0
+            || Convert.ToInt32(_db.Scalar("SELECT COUNT(*) FROM note_folders WHERE parent=$f", ("$f", id))) > 0) return false;
+        Exec("DELETE FROM note_folders WHERE sync_id=$s", ("$s", id));
+        Exec("INSERT OR REPLACE INTO note_tombstones(sync_id, kind) VALUES($s, 'folder')", ("$s", id));
+        return true;
+    }
+
+    /// <summary>Notiz in einen Ordner legen (null: Eingang).</summary>
+    public void SetFolder(long id, string? folder) =>
+        Exec("UPDATE notes SET folder=$f, modified=$m, sync_rev=sync_rev+1 WHERE id=$id", ("$f", folder), ("$m", Now()), ("$id", id));
 
     public List<NoteFolder> GetFolders(string? parent)
     {
@@ -352,7 +385,7 @@ public sealed class NotesDb : ISyncLocal
     /// Bilder und Anhaenge unter den hier gueltigen Namen (renamed: alter Name -> neuer; die Bytes liegen schon hier).
     /// Alarm und Quellen bleiben beim Absender.
     /// </summary>
-    public long ImportFrom(NotesDb src, long srcId, string folder, Dictionary<string, string> renamed)
+    public long ImportFrom(NotesDb src, long srcId, string? folder, Dictionary<string, string> renamed)
     {
         var n = src.GetNote(srcId) ?? throw new KeyNotFoundException();
         var editor = src._db.Scalar("SELECT editor FROM notes WHERE id=$i", ("$i", srcId)) as string;
@@ -396,6 +429,18 @@ public sealed class NotesDb : ISyncLocal
         Exec("UPDATE notes SET important=$i, modified=$m, sync_rev=sync_rev+1 WHERE id=$id AND important <> $i;",
              ("$i", important ? 1 : 0), ("$m", Now()), ("$id", id));
 
+    /// <summary>Schlagwoerter setzen (Version 2): bereinigt, ohne Doppelte; gehen beim naechsten Abgleich an die Geraete.</summary>
+    public void SetTags(long id, IEnumerable<string> tags)
+    {
+        var clean = CleanTags(tags);
+        Exec("UPDATE notes SET tags=$tg, modified=$m, sync_rev=sync_rev+1 WHERE id=$id AND tags IS NOT $tg;",
+             ("$tg", JsonSerializer.Serialize(clean)), ("$m", Now()), ("$id", id));
+    }
+
+    public static List<string> CleanTags(IEnumerable<string> tags) =>
+        tags.Select(t => string.Join(' ', (t ?? "").Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)).TrimStart('#'))
+            .Where(t => t.Length is > 0 and <= 40).Distinct(StringComparer.OrdinalIgnoreCase).Take(30).ToList();
+
     public void SetColor(long id, string color) =>
         Exec("UPDATE notes SET color=$c, modified=$m, sync_rev=sync_rev+1 WHERE id=$id AND color <> $c;",
              ("$c", color), ("$m", Now()), ("$id", id));
@@ -438,9 +483,13 @@ SELECT (SELECT COUNT(*) FROM notes n LEFT JOIN note_sync_state s ON s.sync_id = 
     /// dort fuehrt gleiche Notizen zusammen.</summary>
     public void ForgetSync() => Exec("DELETE FROM note_sync_state; DELETE FROM note_tombstones;");
 
-    /// <summary>Alles weg.</summary>
-    public void Clear() =>
-        Exec("DELETE FROM notes; DELETE FROM note_folders; DELETE FROM note_blobs; DELETE FROM note_sync_state; DELETE FROM note_tombstones;");
+    /// <summary>Alles weg. secure: überschrieben statt nur frei markiert (die Datenbank zieht in den Tresor).</summary>
+    public void Clear(bool secure = false)
+    {
+        using var conn = Open();
+        if (secure) UserDb.Exec(conn, "PRAGMA secure_delete = ON");
+        UserDb.Exec(conn, "DELETE FROM notes; DELETE FROM note_folders; DELETE FROM note_blobs; DELETE FROM note_sync_state; DELETE FROM note_tombstones;");
+    }
 
     // ==================================================================
     //  ISyncLocal

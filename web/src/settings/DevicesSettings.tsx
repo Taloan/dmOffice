@@ -2,7 +2,7 @@ import {
   Button, Card, Field, Input, Switch, Table, TableBody, TableCell, TableHeader, TableHeaderCell, TableRow, Text,
   makeStyles, tokens, MessageBar, MessageBarBody, Dialog, DialogSurface, DialogBody, DialogTitle, DialogContent, DialogActions, Spinner,
 } from '@fluentui/react-components'
-import { Copy16Regular, Delete20Regular, Key20Regular, QrCode20Regular } from '@fluentui/react-icons'
+import { Copy16Regular, Delete20Regular, Edit20Regular, Key20Regular, Phone20Regular, QrCode20Regular } from '@fluentui/react-icons'
 import QRCode from 'qrcode'
 import { useEffect, useState } from 'react'
 import { api } from '../api'
@@ -10,6 +10,7 @@ import { useApp } from '../App'
 import { copyText } from '../shell/browser'
 import { useSort } from '../shell/sort'
 import { t, locale, tError } from '../i18n'
+import { askConfirm, askPassword, askText } from '../shell/context'
 
 const useStyles = makeStyles({
   urls: { display: 'grid', gridTemplateColumns: '160px 1fr auto', gap: '6px 12px', alignItems: 'center', padding: '14px 16px', '@media (max-width: 767px)': { gridTemplateColumns: 'minmax(0, 1fr) auto', padding: '10px', '& > :nth-child(3n+1)': { gridColumn: '1 / -1' } } },
@@ -45,24 +46,41 @@ export function DevicesSettings() {
   const [pairing, setPairing] = useState(false)
   const load = () => api.get('/api/settings/app-passwords').then(setList).catch(fail)
   useEffect(() => { api.get('/api/settings/dav').then(setDav).catch(fail); load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  // Vom Knopf „QR-Code zum Koppeln zeigen“ (App herunterladen): gleich zum Koppeln
+  useEffect(() => {
+    if (!dav || !location.hash.endsWith('/pair')) return
+    document.getElementById('pair-phone')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    history.replaceState(history.state, '', '#/settings/devices')
+  }, [dav])
 
+  // Neues App-Passwort: ein dauerhafter Zugang - nur mit Passwort (und Code) bestätigt
+  const confirmNew = () => askPassword(t('Neues App-Passwort'), !!me?.twoFactor, t('Anlegen'))
   const create = async () => {
-    try { const r = await api.post('/api/settings/app-passwords', { name: name || t('Gerät') }); setCreated(r.password); setName(''); load() } catch (e) { fail(e) }
+    const c = await confirmNew()
+    if (!c) return
+    try { const r = await api.post('/api/settings/app-passwords', { name: name || t('Gerät'), ...c }); setCreated(r.password); setName(''); load() } catch (e) { fail(e) }
   }
   // Handy-App koppeln: App-Passwort anlegen und einmalig als QR-Code zeigen
   const pairPhone = async () => {
     if (!dav) return
+    const c = await confirmNew()
+    if (!c) return
     setPairing(true)
     try {
       const origin = String(dav.server).replace(/\/dav\/?$/, '')
-      const r = await api.post('/api/settings/app-passwords', { name: t('Handy-App') + ' · ' + new Date().toLocaleDateString(locale) })
+      const r = await api.post('/api/settings/app-passwords', { name: t('Handy-App') + ' · ' + new Date().toLocaleDateString(locale), ...c })
       const uri = pairUri(origin, dav.login, r.password, me?.displayName || dav.login, dav.serverKey)
       setPair({ uri, token: r.password, qr: await QRCode.toDataURL(uri, { width: 480, margin: 1 }) })
       load()
     } catch (e) { fail(e) } finally { setPairing(false) }
   }
+  const rename = async (p: { id: string; name: string }) => {
+    const name = await askText(t('App-Passwort umbenennen'), p.name, t('Name'), t('Umbenennen'))
+    if (name == null || !name.trim() || name.trim() === p.name) return
+    try { await api.put(`/api/settings/app-passwords/${p.id}`, { name: name.trim() }); load() } catch (e) { fail(e) }
+  }
   const revoke = async (p: any) => {
-    if (!confirm(t('„{name}“ widerrufen? Das Gerät kann danach nicht mehr synchronisieren.', { name: p.name }))) return
+    if (!await askConfirm('', t('„{name}“ widerrufen? Das Gerät kann danach nicht mehr synchronisieren.', { name: p.name }))) return
     try { await api.del(`/api/settings/app-passwords/${p.id}`); load() } catch (e) { fail(e) }
   }
   const copy = async (text: string) => {
@@ -87,7 +105,7 @@ export function DevicesSettings() {
       {dav && (
         <Card className={s.urls}>
           {row(t('Anmeldename'), dav.login)}
-          {row(t('Server (alles)'), dav.server)}
+          {row(t('Server (allg.)'), dav.server)}
           {row('CalDAV', dav.caldav)}
           {row('CardDAV', dav.carddav)}
           {me.files !== false && row(t('WebDAV (Dateien)'), dav.webdav)}
@@ -104,7 +122,7 @@ export function DevicesSettings() {
       {dav && me.files !== false && <NetworkDrive url={dav.webdav} login={dav.login} copy={copy} />}
 
       <Text weight="semibold" style={{ marginTop: 8 }}>{t('Handy-App koppeln')}</Text>
-      <Card className={s.pairBox}>
+      <Card className={s.pairBox} id="pair-phone">
         <Text>
           {t('Die dmOffice-App für Android zeigt Kalender und Aufgaben mit Widgets auf dem Startbildschirm. Zum Koppeln legt dmOffice ein eigenes App-Passwort an und zeigt es als QR-Code – in der App „Mit QR-Code einrichten“ wählen und den Code abfotografieren.')}
         </Text>
@@ -134,7 +152,10 @@ export function DevicesSettings() {
                 <TableCell>{p.name}{p.scope === 'notizi' && <Text size={200} className={s.muted}> · {t('nur notizi-Ordner')}</Text>}</TableCell>
                 <TableCell>{new Date(p.created).toLocaleDateString(locale)}</TableCell>
                 <TableCell>{p.lastUsed ? new Date(p.lastUsed).toLocaleString(locale) : t('noch nie')}</TableCell>
-                <TableCell><Button appearance="subtle" icon={<Delete20Regular />} onClick={() => revoke(p)} title={t('Widerrufen')} /></TableCell>
+                <TableCell style={{ whiteSpace: 'nowrap' }}>
+                  <Button appearance="subtle" icon={<Edit20Regular />} onClick={() => rename(p)} title={t('Umbenennen')} aria-label={t('Umbenennen')} />
+                  <Button appearance="subtle" icon={<Delete20Regular />} onClick={() => revoke(p)} title={t('Widerrufen')} aria-label={t('Widerrufen')} />
+                </TableCell>
               </TableRow>
             ))}
           </TableBody>
@@ -148,6 +169,9 @@ export function DevicesSettings() {
               <DialogContent style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 <Text>{t('Diesen Code jetzt mit der dmOffice-App scannen. Er wird nur dieses eine Mal gezeigt – nach dem Schließen ist er weg.')}</Text>
                 <img className={s.qr} src={pair.qr} alt={t('QR-Code zum Koppeln')} />
+                {/* Auf dem Handy selbst laesst sich der eigene Bildschirm nicht scannen: der Link oeffnet die App direkt (sie fragt vorher nach) */}
+                <Text size={200} className={s.muted}>{t('Diese Seite ist schon auf dem Handy offen? Dann die App direkt öffnen:')}</Text>
+                <Button as="a" href={pair.uri} appearance="primary" icon={<Phone20Regular />}>{t('In der dmOffice-App koppeln')}</Button>
                 <Text size={200} className={s.muted}>{t('Ohne Kamera: in der App „Von Hand einrichten“ wählen und eintragen:')}</Text>
                 <div className={s.manual}>
                   <span>{t('Adresse')}</span><span className={s.mono}>{String(dav.server).replace(/\/dav\/?$/, '')}</span>
@@ -186,7 +210,7 @@ export function DevicesSettings() {
 
 export function NotesSettings() {
   const s = useStyles()
-  const { fail, notify } = useApp()
+  const { fail, notify, me } = useApp()
   const [data, setData] = useState<any>(null)
   const [enabled, setEnabled] = useState(false)
   const [root, setRoot] = useState('notizisync')
@@ -203,8 +227,10 @@ export function NotesSettings() {
   // Eigenes App-Passwort fuer notizi - einmal anzeigen, unter "Geraete & Sync" widerrufbar
   // Eigener notizi-Zugang: sieht nur den Abgleichordner; QR-Code bzw. Link liest notizi ein
   const connect = async () => {
+    const c = await askPassword(t('Neuer Zugang für notizi'), !!me?.twoFactor, t('Anlegen'))
+    if (!c) return
     try {
-      const r = await api.post('/api/settings/notizi/connect')
+      const r = await api.post('/api/settings/notizi/connect', c)
       setConn({ ...r, qr: await QRCode.toDataURL(r.link, { width: 360, margin: 1 }) })
     } catch (e) { fail(e) }
   }

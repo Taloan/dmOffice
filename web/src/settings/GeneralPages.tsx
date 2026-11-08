@@ -3,8 +3,8 @@ import {
 } from '@fluentui/react-components'
 import { useEffect, useState } from 'react'
 import QRCode from 'qrcode'
-import { ArrowDownload20Regular } from '@fluentui/react-icons'
-import { api, demoMode } from '../api'
+import { ArrowDownload20Regular, QrCode20Regular } from '@fluentui/react-icons'
+import { api, demoMode, fmtSize } from '../api'
 import { useApp } from '../App'
 import { UiPrefs, usePrefs } from '../prefs'
 import { lang, locale, t } from '../i18n'
@@ -14,6 +14,7 @@ import { desktopPossible } from '../shell/Notifier'
 import { install, isIos, pwaPossible, usePwa } from '../pwa'
 import { Hint, PageTitle, Section } from './parts'
 import { TextIndexSection } from './TextIndexSection'
+import { WebPushSetting } from './WebPushSetting'
 
 const useStyles = makeStyles({
   field: { maxWidth: '400px' },
@@ -193,7 +194,7 @@ export function NotificationSettings() {
         <Switch label={t('Ton abspielen')} checked={prefs.notifySound ?? true} onChange={(_, d) => update({ notifySound: d.checked })} />
         <div><Button size="small" onClick={() => notify(t('So sieht ein Hinweis aus'), t('Max Müller · Angebot 2026-117'), 'info')}>{t('Probe')}</Button></div>
       </Section>
-      <Section title={t('Desktop-Benachrichtigungen')} hint={t('Erscheinen auch, wenn dmOffice im Hintergrund liegt – solange ein Tab offen ist.')} last>
+      <Section title={t('Desktop-Benachrichtigungen')} hint={t('Erscheinen auch, wenn dmOffice im Hintergrund liegt – solange ein Tab offen ist.')}>
         {!desktopPossible() ? (
           <MessageBar intent="warning">
             <MessageBarBody>
@@ -212,6 +213,7 @@ export function NotificationSettings() {
           </>
         )}
       </Section>
+      <WebPushSetting />
     </>
   )
 }
@@ -240,14 +242,20 @@ export function SearchSettings() {
 }
 
 // Signierte APK aus dem neuesten GitHub-Release (android.yml haengt sie zusaetzlich unter festem Namen an)
-const APK_URL = 'https://github.com/Taloan/dmOffice/releases/latest/download/dmOffice.apk'
+const GITHUB_APK_URL = 'https://github.com/Taloan/dmOffice/releases/latest/download/dmOffice.apk'
+
+/** App vom eigenen Server (Version 2): liegt im Image und gehört zu diesem Stand; sonst die von GitHub. */
+interface AppInfo { available: boolean; version?: string; size?: number; matches?: boolean }
 
 /** dmOffice als eigene App mit Fenster und Symbol (PWA) - Windows, macOS, Linux, Android, iOS - und als Android-App (APK). */
 export function InstallSettings() {
   const { canInstall, installed } = usePwa()
   const { notify } = useApp()
   const [apkQr, setApkQr] = useState('')
-  useEffect(() => { QRCode.toDataURL(APK_URL, { width: 200, margin: 1 }).then(setApkQr, () => {}) }, [])
+  const [own, setOwn] = useState<AppInfo | null>(null)
+  useEffect(() => { fetch('/api/app/info').then(r => r.json()).then(setOwn, () => setOwn({ available: false })) }, [])
+  const APK_URL = own?.available ? location.origin + '/app/dmoffice.apk' : GITHUB_APK_URL
+  useEffect(() => { if (own) QRCode.toDataURL(APK_URL, { width: 200, margin: 1 }).then(setApkQr, () => {}) }, [own, APK_URL])
   const go = async () => { if (await install()) notify(t('dmOffice wird installiert'), t('Die App findest du gleich im Startmenü bzw. auf dem Home-Bildschirm.')) }
   return (
     <>
@@ -281,24 +289,35 @@ export function InstallSettings() {
       </Section>
       {/* Demo-Server: die App gibt es dort nur über den Play-Test */}
       {!demoMode.on && <>
-      <Section title={t('Android-App (APK)')} hint={t('Die eigene dmOffice-App für Android 8 und neuer: Kalender und Aufgaben mit Widgets auf dem Startbildschirm. Sie liegt nicht im Play Store, sondern als APK-Datei auf GitHub.')} last>
+      <Section title={t('Android-App (APK)')} hint={own?.available
+        ? t('Die eigene dmOffice-App für Android 8 und neuer. Sie kommt direkt von diesem Server und gehört zu ihm – den Link kannst du an alle weitergeben, die hier ein Konto haben. Updates holt sich die App ebenfalls von hier.')
+        : t('Die eigene dmOffice-App für Android 8 und neuer: Kalender und Aufgaben mit Widgets auf dem Startbildschirm. Sie liegt nicht im Play Store, sondern als APK-Datei auf GitHub.')} last>
+        {own?.available && <Text size={200} style={{ display: 'block', marginBottom: 8 }}>{own.matches
+          ? t('Version {version} · {size} · passt zu diesem Server', { version: own.version ?? '?', size: fmtSize(own.size ?? 0) })
+          : t('Version {version} · {size} · aus einem etwas anderen Stand als der Server', { version: own.version ?? '?', size: fmtSize(own.size ?? 0) })}</Text>}
         <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-          {apkQr && <img src={apkQr} width={200} height={200} alt={t('QR-Code zum APK-Download')} style={{ background: '#fff', borderRadius: 8 }} />}
+          {apkQr && <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+            <img src={apkQr} width={200} height={200} alt={t('QR-Code zum APK-Download')} style={{ background: '#fff', borderRadius: 8 }} />
+            {/* Nicht zum Koppeln - den Koppel-Code gibt es unter Geräte & Sync (Knopf in Schritt 4) */}
+            <Text size={200} weight="semibold">{t('Nur zum Herunterladen')}</Text>
+          </div>}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, flex: '1 1 280px' }}>
             <div><Button appearance="primary" icon={<ArrowDownload20Regular />} as="a" href={APK_URL} target="_blank" rel="noopener">{t('APK herunterladen')}</Button></div>
             <ol style={{ margin: 0, paddingLeft: 20, lineHeight: 1.6 }}>
               <li>{t('Auf dem Handy „APK herunterladen“ antippen – oder den QR-Code mit der Handy-Kamera scannen.')}</li>
-              <li>{t('Die heruntergeladene Datei dmOffice.apk öffnen. Beim ersten Mal fragt Android, ob der Browser Apps installieren darf: „Einstellungen“ → „Aus dieser Quelle zulassen“ einschalten, zurück und „Installieren“ tippen.')}</li>
+              <li>{t('Die heruntergeladene APK-Datei öffnen. Beim ersten Mal fragt Android, ob der Browser Apps installieren darf: „Einstellungen“ → „Aus dieser Quelle zulassen“ einschalten, zurück und „Installieren“ tippen.')}</li>
               <li>{t('Warnt Google Play Protect vor einer unbekannten App, „Weitere Details“ → „Trotzdem installieren“ wählen.')}</li>
-              <li>{t('dmOffice öffnen und „QR-Code scannen“ tippen. Den Code dazu hier unter Konto → Geräte & Sync → „Handy-App koppeln“ erzeugen.')}</li>
+              <li>{t('dmOffice öffnen und „QR-Code scannen“ tippen. Der Code zum Koppeln ist ein anderer als der zum Herunterladen – du bekommst ihn hier:')}
+                <div style={{ margin: '8px 0 4px' }}>
+                  <Button appearance="primary" size="large" icon={<QrCode20Regular />} as="a" href="#/settings/devices/pair">{t('QR-Code zum Koppeln zeigen')}</Button>
+                </div>
+              </li>
             </ol>
             <Hint>{t('Updates: die neue APK genauso herunterladen und über die alte installieren – Kopplung und Einstellungen bleiben erhalten.')}</Hint>
           </div>
         </div>
       </Section>
       </>}
-      {/* Demo: kein Download, aber der Weg zum Koppeln der App aus dem Google-Play-Test */}
-      {demoMode.on && <Section title={t('Android-App')} hint={t('Die App kommt in der Demo aus dem Google-Play-Test. Verbinden: in der App „QR-Code scannen“, den Code dazu hier unter Konto → Geräte & Sync → „Handy-App koppeln“ erzeugen.')}>{null}</Section>}
     </>
   )
 }

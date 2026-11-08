@@ -8,6 +8,7 @@ import { useApp } from '../App'
 import { fmtDate } from '../shell/hooks'
 import { t } from '../i18n'
 import { useSort } from '../shell/sort'
+import { askConfirm } from '../shell/context'
 
 interface Recent { name?: string | null; address: string; count: number; last: string; inContacts: boolean }
 
@@ -38,7 +39,7 @@ export function RecentAddresses() {
   const toggle = (a: string) => setPicked(p => (p.includes(a) ? p.filter(x => x !== a) : [...p, a]))
 
   const remove = async () => {
-    if (!confirm(picked.length === 1 ? t('1 Adresse aus den Vorschlägen entfernen? Kontakte bleiben unberührt.') : t('{n} Adressen aus den Vorschlägen entfernen? Kontakte bleiben unberührt.', { n: picked.length }))) return
+    if (!await askConfirm('', picked.length === 1 ? t('1 Adresse aus den Vorschlägen entfernen? Kontakte bleiben unberührt.') : t('{n} Adressen aus den Vorschlägen entfernen? Kontakte bleiben unberührt.', { n: picked.length }))) return
     try { await api.post('/api/pim/recent/delete', { addresses: picked }); setPicked([]); load() } catch (e) { fail(e) }
   }
   const add = async () => {

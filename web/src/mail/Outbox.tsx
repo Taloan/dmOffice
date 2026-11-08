@@ -10,6 +10,7 @@ import { useApp } from '../App'
 import { fmtLong } from '../shell/hooks'
 import { t } from '../i18n'
 import { snoozeOptions } from './SnoozeMenu'
+import { askConfirm } from '../shell/context'
 
 const useStyles = makeStyles({
   root: { flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflowY: 'auto', padding: '12px 16px', gap: '8px' },
@@ -106,7 +107,7 @@ export function OutboxView({ accounts, version, onChanged }: { accounts: Account
             <Button size="small" icon={<DocumentEdit20Regular />} title={t('Nicht senden, zurück in die Entwürfe')}
               onClick={() => act(() => api.post(`/api/mail/queue/${r.id}/to-drafts`), t('In die Entwürfe gelegt'))}>{t('In Entwürfe')}</Button>
             <Button size="small" appearance="subtle" icon={<Delete20Regular />} aria-label={t('Löschen')}
-              onClick={() => confirm(t('Diese Mail nicht senden und löschen?')) && act(() => api.post(`/api/mail/queue/${r.id}/cancel`), t('Gelöscht'))} />
+              onClick={async () => { if (await askConfirm('', t('Diese Mail nicht senden und löschen?'), t('Löschen'))) act(() => api.post(`/api/mail/queue/${r.id}/cancel`), t('Gelöscht')) }} />
           </>}
         </div>
       ))}

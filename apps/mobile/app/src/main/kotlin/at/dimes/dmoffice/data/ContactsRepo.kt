@@ -41,6 +41,12 @@ class ContactsRepo(private val context: Context, private val db: AppDb) {
         saved
     }
 
+    /** Adressbuch fuer neue Kontakte: das erste eigene (der Server legt eines an, wenn es keines gibt). */
+    suspend fun defaultBook(): Long = withContext(Dispatchers.IO) {
+        val books: List<at.dimes.dmoffice.api.Collection> = api().get(api().url("/api/pim/collections/addressbooks"))
+        books.firstOrNull { it.id > 0 }?.id ?: throw IllegalStateException("Kein Adressbuch")
+    }
+
     suspend fun delete(c: Contact) = withContext(Dispatchers.IO) {
         api().delete(api().url("/api/pim/contacts/${c.book}/${java.net.URLEncoder.encode(c.uri, "UTF-8")}"))
         db.contacts().deleteMissing(db.contacts().allNow().map { it.id }.filter { it != c.id }.ifEmpty { listOf("") })

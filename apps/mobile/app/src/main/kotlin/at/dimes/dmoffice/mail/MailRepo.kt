@@ -46,6 +46,23 @@ class MailRepo(private val context: Context, private val db: AppDb) {
     }
     suspend fun status(): MailStatus = withContext(Dispatchers.IO) { api().get(api().url("/api/mail/status")) }
 
+    // ---------------- Catchall-Aliase (Mail/CatchallAliasesApi.cs) ----------------
+
+    suspend fun aliases(): at.dimes.dmoffice.api.AliasState = withContext(Dispatchers.IO) { api().get(api().url("/api/mail/aliases")) }
+    suspend fun aliasSuggest(): String = withContext(Dispatchers.IO) {
+        json.parseToJsonElement(api().getText(api().url("/api/mail/aliases/suggest"))).let { (it as kotlinx.serialization.json.JsonObject)["name"]?.let { n -> (n as kotlinx.serialization.json.JsonPrimitive).content } ?: "" }
+    }
+    suspend fun aliasCreate(name: String?, domain: String?, note: String): at.dimes.dmoffice.api.AliasItem = withContext(Dispatchers.IO) {
+        api().postFor(api().url("/api/mail/aliases"), at.dimes.dmoffice.api.AliasCreate(name?.ifBlank { null }, domain, note))
+    }
+    suspend fun aliasDetails(address: String): at.dimes.dmoffice.api.AliasDetails = withContext(Dispatchers.IO) {
+        api().get(api().url("/api/mail/aliases/item", "address" to address))
+    }
+    suspend fun aliasUpdate(body: at.dimes.dmoffice.api.AliasUpdate): at.dimes.dmoffice.api.AliasItem = withContext(Dispatchers.IO) {
+        json.decodeFromString(api().putText(api().url("/api/mail/aliases/item"), json.encodeToString(at.dimes.dmoffice.api.AliasUpdate.serializer(), body)))
+    }
+    suspend fun aliasDelete(address: String) = withContext(Dispatchers.IO) { api().delete(api().url("/api/mail/aliases/item", "address" to address)) }
+
     fun folders(account: String): Flow<List<Folder>> = db.mail().folders(account).map { list ->
         list.map { Folder(it.path, it.name, "/", it.special, true, it.unread, it.total) }
     }
@@ -72,7 +89,13 @@ class MailRepo(private val context: Context, private val db: AppDb) {
         val entities = p.items.map { MailItemEntity(account, folder, it.uid, parseDate(it.date), it.seen, it.flagged, json.encodeToString(it)) }
         if (page == 0) db.mail().clearItems(account, folder)
         db.mail().upsertItems(entities)
+        if (page == 0) loadExpiries()
         (page + 1) * size < p.total
+    }
+
+    /** Suche (Version 2): auf dem Server, in allen Ordnern des Kontos. */
+    suspend fun search(q: String, account: String): List<MailItem> = withContext(Dispatchers.IO) {
+        api().get<List<MailItem>>(api().url("/api/mail/search", "q" to q, "acc" to account))
     }
 
     private fun parseDate(s: String): Long = try { Instant.parse(s).toEpochMilli() } catch (_: Exception) {
@@ -115,6 +138,9 @@ class MailRepo(private val context: Context, private val db: AppDb) {
         val r = api().postMultipart(api().url("/api/mail/$account/send"), json.encodeToString(draft), files)
         try { json.parseToJsonElement(r).let { (it as? kotlinx.serialization.json.JsonObject)?.get("warning")?.let { w -> (w as kotlinx.serialization.json.JsonPrimitive).content } } } catch (_: Exception) { null }
     }
+
+    /** Entwurf als JSON wie für /send - für den Postausgang (Version 2). */
+    fun draftJson(d: Draft): String = json.encodeToString(d)
 
     suspend fun attachment(account: String, folder: String, uid: Long, index: Int): Pair<ByteArray, String?> = withContext(Dispatchers.IO) {
         api().getBytes(api().url("/api/mail/$account/part", "folder" to folder, "uid" to uid, "index" to index, "download" to "true"))
@@ -178,6 +204,28 @@ class MailRepo(private val context: Context, private val db: AppDb) {
     suspend fun unsnooze(account: String, folder: String, uids: List<Long>) = withContext(Dispatchers.IO) {
         api().postText(api().url("/api/mail/$account/unsnooze"), body(folder, uids))
         db.mail().deleteItems(account, folder, uids)
+    }
+
+    /** Entfernen nach Zeit (Server: MailExpiry): wann welche Mail in den Papierkorb kommt oder vernichtet wird. */
+    val expiries = kotlinx.coroutines.flow.MutableStateFlow<List<at.dimes.dmoffice.api.MailExpiry>>(emptyList())
+    suspend fun loadExpiries() = withContext(Dispatchers.IO) {
+        try { expiries.value = api().get(api().url("/api/mail/expiries")) } catch (_: Exception) { }
+    }
+
+    /** Naechster Zeitpunkt fuer diese Mail - nach Message-ID (bleibt beim Verschieben), sonst Ordner und UID. */
+    fun expiryOf(list: List<at.dimes.dmoffice.api.MailExpiry>, account: String, folder: String, uid: Long, messageId: String?) =
+        list.filter { (account.isEmpty() || it.account == account) && (if (it.messageId != null && messageId != null) it.messageId == messageId else it.folder == folder && it.uid == uid) }
+            .minByOrNull { it.at }
+
+    /** kind "trash" oder "destroy", atIso mit Zeitzone. */
+    suspend fun expire(account: String, folder: String, uids: List<Long>, atIso: String, kind: String) = withContext(Dispatchers.IO) {
+        api().postText(api().url("/api/mail/$account/expire"), body(folder, uids, "at" to atIso, "kind" to kind))
+        loadExpiries()
+    }
+
+    suspend fun cancelExpiry(account: String, folder: String, uids: List<Long>) = withContext(Dispatchers.IO) {
+        api().postText(api().url("/api/mail/$account/expire/cancel"), body(folder, uids))
+        loadExpiries()
     }
 
     /** Vom Newsletter abmelden: One-Click oder Mail erledigt der Server (true, null); sonst kommt der Link zum Oeffnen zurueck. */

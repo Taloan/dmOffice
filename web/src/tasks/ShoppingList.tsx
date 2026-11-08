@@ -1,6 +1,6 @@
-import { Button, Checkbox, Dropdown, Input, Option, Text, makeStyles, mergeClasses, tokens } from '@fluentui/react-components'
-import { Add20Regular, Dismiss12Regular, Edit16Regular, History16Regular } from '@fluentui/react-icons'
-import { useMemo, useState } from 'react'
+import { Button, Checkbox, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Dropdown, Input, Option, Text, makeStyles, mergeClasses, tokens } from '@fluentui/react-components'
+import { Add20Regular, Camera16Regular, Dismiss12Regular, Edit16Regular, History16Regular } from '@fluentui/react-icons'
+import { useMemo, useRef, useState } from 'react'
 import { Task } from '../api'
 import { t } from '../i18n'
 import { composeItem, guessSection, itemOf, parseItem } from './shopParse'
@@ -9,7 +9,7 @@ export interface ListMeta {
   type: 'tasks' | 'shop' | 'check'
   sections: string[]
   done?: 'place' | 'bottom' | 'hide' | null
-  history: { name: string; unit?: string | null; section?: string | null; count: number }[]
+  history: { name: string; unit?: string | null; section?: string | null; count: number; photo?: string | null }[]
 }
 
 /** Einkaufslisten haben Abteilungen, Checklisten Kategorien - gleiche Sache, anderes Wort. */
@@ -51,14 +51,20 @@ const useStyles = makeStyles({
   done: { textDecoration: 'line-through', color: tokens.colorNeutralForeground3 },
   note: { fontSize: '12px', color: tokens.colorNeutralForeground3 },
   hint: { color: tokens.colorNeutralForeground3 },
+  thumb: { width: '32px', height: '32px', objectFit: 'cover', borderRadius: tokens.borderRadiusMedium, flexShrink: 0, cursor: 'zoom-in' },
+  sugThumb: { width: '24px', height: '24px', objectFit: 'cover', borderRadius: tokens.borderRadiusSmall, flexShrink: 0 },
+  big: { maxWidth: '100%', maxHeight: '60vh', objectFit: 'contain', borderRadius: tokens.borderRadiusMedium, display: 'block', margin: '0 auto' },
 })
 
 /**
  * Einkaufs- oder Checkliste: Eingabe mit Vorschlaegen, nach Abteilungen gruppiert.
  * Ein Klick auf einen Eintrag hakt ab - und stellt einen abgehakten wieder her.
  */
-export function ShoppingList({ meta, tasks, showHidden, selectedId, inputRef, onAdd, onToggle, onEdit, onForget, color, onContext, onDragStart }: {
-  meta: ListMeta; tasks: Task[]; showHidden: boolean; selectedId?: string
+export function ShoppingList({ listId, meta, tasks, showHidden, selectedId, inputRef, onAdd, onToggle, onEdit, onForget, onPhoto, onPhotoRemove, color, onContext, onDragStart }: {
+  listId: number; meta: ListMeta; tasks: Task[]; showHidden: boolean; selectedId?: string
+  /** Foto zu einem Artikel (welche Marke, welche Packung) zuordnen oder ersetzen */
+  onPhoto: (item: string, file: File) => Promise<void>
+  onPhotoRemove: (item: string) => Promise<void>
   /** Rechtsklick auf einen Eintrag (Kontextmenue der Aufgabenansicht) */
   onContext?: (e: React.MouseEvent, task: Task) => void
   /** Ziehen auf eine andere Liste */
@@ -79,6 +85,13 @@ export function ShoppingList({ meta, tasks, showHidden, selectedId, inputRef, on
   const [active, setActive] = useState(-1)
   const mode = doneMode(meta)
   const shop = meta.type === 'shop'
+  // Fotos haengen am Artikel (Vorschlag), nicht am einzelnen Eintrag - so sind sie beim naechsten Mal wieder da
+  const photoOf = useMemo(() => new Map(meta.history.filter(h => h.photo).map(h => [h.name.toLowerCase(), h.photo!])), [meta.history])
+  const photoUrl = (photo: string) => `/api/pim/lists/${listId}/photos/${photo}`
+  const [shown, setShown] = useState<string | null>(null)   // Artikel, dessen Foto gross gezeigt wird
+  const fileRef = useRef<HTMLInputElement>(null)
+  const [pickFor, setPickFor] = useState<string | null>(null)
+  const pick = (item: string) => { setPickFor(item); fileRef.current?.click() }
 
   const parsed = parseItem(text)
   const onList = useMemo(() => new Set(tasks.filter(x => !x.completed).map(x => itemOf(x).item.toLowerCase())), [tasks])
@@ -123,11 +136,19 @@ export function ShoppingList({ meta, tasks, showHidden, selectedId, inputRef, on
         title={x.completed ? t('Klicken stellt den Eintrag wieder her') : undefined}>
         <Checkbox checked={x.completed} shape="circular" onClick={e => e.stopPropagation()} onChange={() => onToggle(x)}
           aria-label={x.completed ? t('Als nicht erledigt markieren') : t('Als erledigt markieren')} />
+        {photoOf.get(it.item.toLowerCase()) && (
+          <img className={s.thumb} src={photoUrl(photoOf.get(it.item.toLowerCase())!)} alt={t('Foto von {item}', { item: it.item })}
+            onClick={e => { e.stopPropagation(); setShown(it.item) }} />
+        )}
         <span className={mergeClasses(s.name, x.completed && s.done)}>
           {it.item}
           {x.description && <span className={s.note}> · {x.description}</span>}
         </span>
         {(it.qty || it.unit) && <span className={mergeClasses(s.qty, x.completed && s.done)}>{[it.qty, it.unit].filter(Boolean).join(' ')}</span>}
+        {!photoOf.get(it.item.toLowerCase()) && (
+          <Button appearance="transparent" size="small" icon={<Camera16Regular />} aria-label={t('Foto zuordnen')} title={t('Foto zuordnen')}
+            onClick={e => { e.stopPropagation(); pick(it.item) }} />
+        )}
         <Button appearance="transparent" size="small" icon={<Edit16Regular />} aria-label={t('Bearbeiten')} title={t('Bearbeiten')}
           onClick={e => { e.stopPropagation(); onEdit(x) }} />
       </div>
@@ -159,7 +180,7 @@ export function ShoppingList({ meta, tasks, showHidden, selectedId, inputRef, on
             {suggestions.map((h, i) => (
               <div key={h.name} role="option" aria-selected={i === active} className={mergeClasses(s.sug, i === active && s.sugOn)}
                 onMouseDown={e => { e.preventDefault(); add(h.name) }}>
-                <History16Regular />
+                {h.photo ? <img className={s.sugThumb} src={photoUrl(h.photo)} alt="" /> : <History16Regular />}
                 <span>{h.name}</span>
                 {onList.has(h.name.toLowerCase()) && <span className={s.sugHint}>{t('schon auf der Liste')}</span>}
                 <span className={s.sugHint}>{h.section ?? ''}</span>
@@ -182,6 +203,25 @@ export function ShoppingList({ meta, tasks, showHidden, selectedId, inputRef, on
           <div className={s.group}>{shop ? t('Im Wagen ({n})', { n: tail.length }) : t('Erledigt ({n})', { n: tail.length })}</div>
           {tail.map(row)}
         </div>
+      )}
+      <input ref={fileRef} type="file" accept="image/*" hidden onChange={async e => {
+        const f = e.target.files?.[0]; e.target.value = ''
+        if (f && pickFor) await onPhoto(pickFor, f)
+      }} />
+      {shown && photoOf.get(shown.toLowerCase()) && (
+        <Dialog open onOpenChange={(_, d) => { if (!d.open) setShown(null) }}>
+          <DialogSurface>
+            <DialogBody>
+              <DialogTitle>{shown}</DialogTitle>
+              <DialogContent><img className={s.big} src={photoUrl(photoOf.get(shown.toLowerCase())!)} alt={t('Foto von {item}', { item: shown })} /></DialogContent>
+              <DialogActions>
+                <Button onClick={() => { pick(shown); setShown(null) }}>{t('Anderes Foto')}</Button>
+                <Button onClick={async () => { await onPhotoRemove(shown); setShown(null) }}>{t('Foto entfernen')}</Button>
+                <Button appearance="primary" onClick={() => setShown(null)}>{t('Schließen')}</Button>
+              </DialogActions>
+            </DialogBody>
+          </DialogSurface>
+        </Dialog>
       )}
       {mode === 'hide' && !showHidden && done.length > 0 && (
         <Text className={s.hint}>{done.length === 1 ? t('1 abgehakter Eintrag ausgeblendet') : t('{n} abgehakte Einträge ausgeblendet', { n: done.length })}</Text>

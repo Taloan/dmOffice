@@ -1,13 +1,17 @@
 import { Button, Field, Select, Text, makeStyles, tokens } from '@fluentui/react-components'
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { api, fmtSize } from '../api'
 import { useApp } from '../App'
-import { t } from '../i18n'
+import { locale, t } from '../i18n'
 import { Hint, PageTitle, Section } from './parts'
+import { askConfirm } from '../shell/context'
 
 const useStyles = makeStyles({
   page: { display: 'flex', flexDirection: 'column', gap: '20px' },
   row: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(270px, 1fr))', gap: '12px', maxWidth: '760px' },
+  stats: { display: 'grid', gridTemplateColumns: 'max-content 1fr', columnGap: '16px', rowGap: '4px', maxWidth: '760px' },
+  actions: { display: 'flex', gap: '8px' },
+  muted: { color: tokens.colorNeutralForeground3 },
   bars: { display: 'grid', gridTemplateColumns: 'max-content 1fr max-content', gap: '6px 12px', alignItems: 'center', maxWidth: '560px' },
   bar: { height: '8px', borderRadius: '4px', backgroundColor: tokens.colorNeutralBackground4, overflow: 'hidden' },
   fill: { height: '100%' },
@@ -30,7 +34,15 @@ export interface FileLimits {
   versionsDays: number; versionsMb: number; trashDays: number; trashMb: number; linkMaxDownloads: number; linkDays: number
 }
 
-interface Data { settings: FileSettings; limits: FileLimits; usage: number; trash: number; versions: number; quota: number; used?: number }
+/** Kopie am zweiten Ort (S3, WebDAV, Ordner) - null, solange die Verwaltung sie nicht eingeschaltet hat. */
+interface CopyInfo {
+  target: 's3' | 'webdav' | 'folder'; lastRun: string | null; ok: boolean
+  cache: { local: number; target: number; max: number } | null
+  backup: { lastRun: string | null; ok: boolean; keepCount: number } | null
+}
+interface ExternalSpace { id: string; name: string; kind: 'folder' | 'webdav' | 'onedrive' | 'pcloud'; readOnly: boolean; used: number | null; free: number | null; error: string | null }
+
+interface Data { settings: FileSettings; limits: FileLimits; usage: number; trash: number; versions: number; quota: number; used?: number; copy?: CopyInfo | null }
 
 /** Vorgaben fuer neue Freigabelinks - der Teilen-Dialog liest sie beim Oeffnen. */
 export const loadFileSettings = () => api.get<Data>('/api/files/settings').then(d => d.settings)
@@ -65,7 +77,7 @@ function useFileSettings() {
   const save = async (p: Partial<FileSettings>) => {
     if (!data) return
     if (p.versionsMode === 'off' && data.versions > 0
-      && !confirm(t('Keine früheren Versionen mehr? Die vorhandenen ({size}) werden gelöscht.', { size: fmtSize(data.versions) }))) return
+      && !await askConfirm('', t('Keine früheren Versionen mehr? Die vorhandenen ({size}) werden gelöscht.', { size: fmtSize(data.versions) }))) return
     const next = { ...data.settings, ...p }
     setData({ ...data, settings: next })
     try {
@@ -79,13 +91,16 @@ function useFileSettings() {
 export function FilesStorageSettings() {
   const s = useStyles()
   const { data, load, fail, notify } = useFileSettings()
+  // Externe Ordner fragen fremde Server - eigener Abruf, damit die Seite nicht auf sie wartet
+  const [ext, setExt] = useState<ExternalSpace[] | null>(null)
+  useEffect(() => { api.get<ExternalSpace[]>('/api/files/external/space').then(setExt).catch(() => setExt([])) }, [])
   if (!data) return null
   const emptyTrash = async () => {
-    if (!data.trash || !confirm(t('Papierkorb leeren? Alles darin wird endgültig gelöscht.'))) return
+    if (!data.trash || !await askConfirm('', t('Papierkorb leeren? Alles darin wird endgültig gelöscht.'))) return
     try { await api.post('/api/files/trash/empty'); notify(t('Papierkorb geleert'), fmtSize(data.trash)); load() } catch (e) { fail(e) }
   }
   const purge = async () => {
-    if (!data.versions || !confirm(t('Alle früheren Versionen löschen? Die aktuellen Dateien bleiben.'))) return
+    if (!data.versions || !await askConfirm('', t('Alle früheren Versionen löschen? Die aktuellen Dateien bleiben.'))) return
     try { await api.post('/api/files/versions/purge'); notify(t('Frühere Versionen gelöscht'), fmtSize(data.versions)); load() } catch (e) { fail(e) }
   }
   // Mit Kontingent zaehlt alles, was der Benutzer belegt (auch Mails, Kalender, Kontakte, Notizen)
@@ -97,21 +112,74 @@ export function FilesStorageSettings() {
   return (
     <div className={s.page}>
       <PageTitle>{t('Speicherplatz')}</PageTitle>
-      <Section title={t('Belegt')} last>
+      <Section title={t('Belegt')} last={!data.copy && !ext?.length}>
         <div className={s.bars}>
           <Text>{t('Dateien')}</Text>{bar(data.usage, tokens.colorBrandBackground)}<Text>{fmtSize(data.usage)}</Text>
           <Text>{t('Frühere Versionen')}</Text>{bar(data.versions, tokens.colorPaletteMarigoldBorderActive)}<Text>{fmtSize(data.versions)}</Text>
           <Text>{t('Papierkorb')}</Text>{bar(data.trash, tokens.colorPaletteRedBorderActive)}<Text>{fmtSize(data.trash)}</Text>
         </div>
         <Hint>{data.quota > 0
-          ? t('{used} von {quota} belegt (Mails, Kalender, Kontakte, Notizen und Dateien zusammen). Wird es eng, weichen zuerst die ältesten Versionen, dann der Papierkorb.', { used: fmtSize(total), quota: fmtSize(data.quota) })
+          ? t('{used} von {quota} belegt (alles zusammen). Wird es eng, weichen zuerst die ältesten Versionen, dann der Papierkorb.', { used: fmtSize(total), quota: fmtSize(data.quota) })
           : t('{used} belegt, keine Grenze gesetzt.', { used: fmtSize(total) })}</Hint>
         <div className={s.buttons}>
           <Button disabled={!data.trash} onClick={emptyTrash}>{t('Papierkorb leeren')}</Button>
           <Button disabled={!data.versions} onClick={purge}>{t('Alle früheren Versionen löschen')}</Button>
         </div>
       </Section>
+      {data.copy && <CopySection copy={data.copy} last={!ext?.length} />}
+      {!!ext?.length && <ExternalSection list={ext} />}
     </div>
+  )
+}
+
+const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : t('noch nicht'))
+
+function CopySection({ copy, last }: { copy: CopyInfo; last: boolean }) {
+  const s = useStyles()
+  const where = copy.target === 'webdav' ? t('einem WebDAV-Server') : copy.target === 'folder' ? t('einer zweiten Platte am Server') : t('einem S3-Speicher')
+  const c = copy.cache
+  const scale = c ? Math.max(c.max, c.local, 1) : 1
+  return (
+    <Section title={t('Kopie und Sicherung')} last={last}>
+      <Text>{t('Deine Dateien liegen zusätzlich verschlüsselt auf {where}. Zuletzt abgeglichen: {when}.', { where, when: when(copy.lastRun) })}</Text>
+      {!copy.ok && <Hint>{t('Beim letzten Abgleich gab es ein Problem – Näheres sieht die Verwaltung.')}</Hint>}
+      {c && (
+        <>
+          <div className={s.bars}>
+            <Text>{t('Hier auf dem Server')}</Text>
+            <div className={s.bar}><div className={s.fill} style={{ width: `${Math.max(c.local > 0 ? 1 : 0, (c.local / scale) * 100)}%`, backgroundColor: tokens.colorBrandBackground }} /></div>
+            <Text>{fmtSize(c.local)}</Text>
+          </div>
+          <Hint>{t('Der lokale Speicherpool hält neue und zuletzt verwendete Dateien bereit. Die übrigen Dateien liegen im Storage Extender und werden beim Öffnen automatisch nachgeladen. Das erste Öffnen dauert dann etwas länger.')}</Hint>
+        </>
+      )}
+      {copy.backup
+        ? <Text>{t('Das Core-Backup bewahrt {n} Stände auf. Letzte Sicherung: {when}.', { n: copy.backup.keepCount, when: when(copy.backup.lastRun) })}</Text>
+        : <Hint>{t('Die Kopie allein ist keine Sicherung: Was du hier löschst, verschwindet nach einigen Tagen auch dort.')}</Hint>}
+      {copy.backup && !copy.backup.ok && <Hint>{t('Die letzte Sicherung hat nicht geklappt – Näheres sieht die Verwaltung.')}</Hint>}
+    </Section>
+  )
+}
+
+function ExternalSection({ list }: { list: ExternalSpace[] }) {
+  const s = useStyles()
+  return (
+    <Section title={t('Externe Ordner')} last>
+      <div className={s.bars}>
+        {list.map(m => {
+          const total = m.free != null && m.used != null ? m.used + m.free : 0
+          const info = m.error ? t('nicht erreichbar') : m.free == null ? t('Platz unbekannt') : t('{free} frei', { free: fmtSize(m.free) })
+          return (
+            <Fragment key={m.id}>
+              <Text title={m.kind === 'webdav' ? t('WebDAV-Ordner') : m.kind === 'onedrive' ? t('OneDrive-Ordner') : m.kind === 'pcloud' ? t('pCloud-Ordner') : t('Ordner auf dem Server')}>{m.name}{m.readOnly ? ` (${t('nur lesen')})` : ''}</Text>
+              <div className={s.bar} title={m.error ?? undefined}>{total > 0 && <div className={s.fill} style={{ width: `${Math.max(1, (m.used! / total) * 100)}%`, backgroundColor: tokens.colorPaletteTealBorderActive }} />}</div>
+              <Text>{info}</Text>
+            </Fragment>
+          )
+        })}
+      </div>
+      <Hint>{t('Externe Ordner zählen nicht zu deinem Speicherplatz hier – die Dateien liegen dort, wo der Ordner hinzeigt.')}</Hint>
+    </Section>
   )
 }
 
@@ -153,15 +221,43 @@ export function FilesVersionSettings() {
   )
 }
 
+interface TrashState { usage: number; items: { isDir: boolean; size: number; deleted: string }[] }
+
 export function FilesTrashSettings() {
   const s = useStyles()
+  const { fail, notify } = useApp()
   const { data, save } = useFileSettings()
+  const [trash, setTrash] = useState<TrashState | null>(null)
+  const loadTrash = () => api.get<TrashState>('/api/files/trash').then(setTrash).catch(fail)
+  useEffect(() => { loadTrash() }, []) // eslint-disable-line react-hooks/exhaustive-deps
   if (!data) return null
   const st = data.settings, l = data.limits
+  const items = trash?.items ?? []
+  const dirs = items.filter(i => i.isDir).length
+  const oldest = items.length ? items.reduce((a, b) => (a.deleted < b.deleted ? a : b)).deleted : null
+  const date = (iso: string) => new Date(iso).toLocaleDateString(locale, { day: 'numeric', month: 'long', year: 'numeric' })
+  const empty = async () => {
+    if (!await askConfirm(t('Papierkorb leeren'), t('Alles im Papierkorb ({size}) endgültig löschen? Das lässt sich nicht rückgängig machen.', { size: fmtSize(trash?.usage ?? 0) }), t('Endgültig löschen'))) return
+    try { await api.post('/api/files/trash/empty'); notify(t('Papierkorb geleert')); loadTrash() } catch (e) { fail(e) }
+  }
   return (
     <div className={s.page}>
       <PageTitle>{t('Papierkorb')}</PageTitle>
       <Text>{t('Gelöschte Dateien und Ordner lassen sich aus dem Papierkorb zurückholen, bis er geleert wird.')}</Text>
+      {trash && (items.length === 0
+        ? <Text className={s.muted}>{t('Der Papierkorb ist leer.')}</Text>
+        : <div className={s.stats}>
+          <span className={s.muted}>{t('Inhalt')}</span>
+          <span>{[items.length - dirs === 1 ? t('1 Datei') : items.length > dirs ? t('{n} Dateien', { n: items.length - dirs }) : '', dirs ? t('{n} Ordner', { n: dirs }) : ''].filter(Boolean).join(', ')}</span>
+          <span className={s.muted}>{t('Belegt')}</span>
+          <span>{fmtSize(trash.usage)}{st.trashMb ? ' ' + t('von {limit}', { limit: mbText(st.trashMb) }) : ''}</span>
+          {oldest && <><span className={s.muted}>{t('Am längsten darin')}</span>
+            <span>{t('gelöscht am {date}', { date: date(oldest) })}{st.trashDays ? ' · ' + t('wird am {date} endgültig entfernt', { date: date(new Date(Date.parse(oldest) + st.trashDays * 86_400_000).toISOString()) }) : ''}</span></>}
+        </div>)}
+      {items.length > 0 && <div className={s.actions}>
+        <Button onClick={() => { location.hash = '#/files/:trash' }}>{t('Papierkorb öffnen')}</Button>
+        <Button appearance="primary" onClick={empty}>{t('Jetzt leeren')}</Button>
+      </div>}
       <div className={s.row}>
         <Choice label={t('Automatisch leeren nach')} value={st.trashDays} steps={[7, 14, 30, 60, 90, 180, 365, 0]} max={l.trashDays}
           text={d => daysText(d, t('nie'))} onChange={v => save({ trashDays: v })} />

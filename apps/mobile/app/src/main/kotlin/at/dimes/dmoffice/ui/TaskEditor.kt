@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
@@ -61,6 +62,9 @@ fun TaskEditor(href: String?, onClose: () -> Unit, list: String? = null) {
 
     var loaded by remember { mutableStateOf(false) }
     var existing by remember { mutableStateOf<ItemEntity?>(null) }
+    // „Im Chat …“ (Version 2)
+    var sendChat by remember { mutableStateOf<List<at.dimes.dmoffice.chat.ChatOutRef>?>(null) }
+    sendChat?.let { refs -> SendToChatDialog(refs, onDismiss = { sendChat = null }) { err -> sendChat = null; android.widget.Toast.makeText(ctx, err ?: ctx.getString(R.string.chat_sent_done), android.widget.Toast.LENGTH_SHORT).show() } }
     var calendars by remember { mutableStateOf<List<CalendarEntity>>(emptyList()) }
     var calendar by remember { mutableStateOf<CalendarEntity?>(null) }
     var title by remember { mutableStateOf("") }
@@ -73,6 +77,10 @@ fun TaskEditor(href: String?, onClose: () -> Unit, list: String? = null) {
     var completed by remember { mutableStateOf(false) }
     var reminder by remember { mutableStateOf<Long?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    // Zugewiesen an (Version 2): die Leute der Liste; nur bei geteilten Listen gibt es mehr als einen
+    var assignee by remember { mutableStateOf<String?>(null) }
+    var people by remember { mutableStateOf<List<at.dimes.dmoffice.chat.ListPerson>>(emptyList()) }
+    LaunchedEffect(calendar?.href) { people = calendar?.href?.let { h -> try { app.chat.listPeople(h) } catch (_: Exception) { emptyList() } } ?: emptyList() }
     // Einkaufs-/Checkliste: Artikel, Menge, Einheit, Abteilung bzw. Kategorie statt Titel, Faelligkeit und Prioritaet (wie im Web)
     var qty by remember { mutableStateOf("") }
     var unit by remember { mutableStateOf("") }
@@ -96,6 +104,7 @@ fun TaskEditor(href: String?, onClose: () -> Unit, list: String? = null) {
             ListTypes.itemOf(it.ics, it.summary).let { x -> qty = x.qty; unit = x.unit; article = x.item }
             section = ListTypes.sectionOf(it.ics) ?: ""
             priority = it.priority; completed = it.completed; reminder = it.reminderSeconds
+            assignee = Items.assigneeOf(it.ics)
             if (it.due != null) {
                 hasDue = true; withTime = !it.allDay
                 val d = LocalDateTime.ofInstant(java.time.Instant.ofEpochMilli(it.due), zone)
@@ -124,7 +133,8 @@ fun TaskEditor(href: String?, onClose: () -> Unit, list: String? = null) {
             else -> IcalTime(dueDate, null, null)
         }
         scope.launch {
-            app.repo.saveTask(existing?.href, cal.href, Items.TaskInput(title.trim(), notes.trim().ifEmpty { null }, due, priority, completed, if (hasDue) reminder else null))
+            app.repo.saveTask(existing?.href, cal.href, Items.TaskInput(title.trim(), notes.trim().ifEmpty { null }, due, priority, completed, if (hasDue) reminder else null,
+                assignee = assignee ?: ""))
             onClose()
         }
     }
@@ -136,6 +146,10 @@ fun TaskEditor(href: String?, onClose: () -> Unit, list: String? = null) {
             title = { Text(stringResource(if (existing == null) R.string.new_task else R.string.edit_task)) },
             navigationIcon = { IconButton(onClick = onClose) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.close)) } },
             actions = {
+                existing?.let { ex -> IconButton(onClick = { scope.launch {
+                    val r = try { app.chat.itemRef("task", ex.calendarHref, ex.href) } catch (_: Exception) { null }
+                    if (r == null) android.widget.Toast.makeText(ctx, ctx.getString(R.string.chat_only_own), android.widget.Toast.LENGTH_LONG).show() else sendChat = listOf(r)
+                } }) { Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = stringResource(R.string.chat_in_chat)) } }
                 if (existing != null) IconButton(onClick = { confirmDelete = true }) { Icon(Icons.Default.Delete, contentDescription = stringResource(R.string.delete)) }
                 TextButton(onClick = { save() }, enabled = loaded) { Text(stringResource(R.string.save)) }
             }
@@ -175,6 +189,12 @@ fun TaskEditor(href: String?, onClose: () -> Unit, list: String? = null) {
                 Picker(stringResource(R.string.reminder), reminder, REMINDER_OPTIONS, { Fmt.reminderLabel(ctx, it) }, { reminder = it })
             }
             if (info == null) Picker(stringResource(R.string.priority), if (priority in priorities) priority else 5, priorities, { Fmt.priorityLabel(ctx, it) }, { priority = it })
+            if (info == null && (people.size > 1 || assignee != null)) {
+                val me = app.prefs.account.value?.login
+                Picker(stringResource(R.string.task_assignee), assignee, listOf<String?>(null) + people.map { it.id },
+                    { id -> if (id == null) ctx.getString(R.string.task_assignee_none) else people.firstOrNull { it.id == id }?.let { p -> if (p.login.equals(me, true)) ctx.getString(R.string.task_assignee_me) else p.displayName } ?: "…" },
+                    { assignee = it })
+            }
             OutlinedTextField(value = notes, onValueChange = { notes = it }, label = { Text(stringResource(R.string.notes)) }, minLines = 3, modifier = Modifier.fillMaxWidth())
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             if (existing != null && existing?.etag == null) Text(stringResource(R.string.offline_pending), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

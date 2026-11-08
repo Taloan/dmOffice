@@ -54,8 +54,11 @@ public sealed class MailSync : BackgroundService
 
     private static readonly TimeSpan QuickEvery = TimeSpan.FromMinutes(1), FullEvery = TimeSpan.FromMinutes(10);
 
-    public MailSync(Spaces spaces, ImapPool pool, ILogger<MailSync> log)
+    private readonly ServerConfig? _config;
+
+    public MailSync(Spaces spaces, ImapPool pool, ILogger<MailSync> log, ServerConfig? config = null)
     {
+        _config = config;
         _spaces = spaces;
         _pool = pool;
         _log = log;
@@ -150,7 +153,26 @@ public sealed class MailSync : BackgroundService
                     {
                         // Beim naechsten Durchgang erneut; der Sync selbst laeuft weiter
                         folderError = Snooze.FolderName + ": " + ex.Message;
-                        _log.LogWarning("Mail-Sync {Account}, Erneut erinnern: {Error}", account.Email, ex.Message);
+                        _log.LogWarning("Mail-Sync {Account}, Erneut erinnern: {Error}", LogNames.Of(space, account), ex.Message);
+                    }
+                }
+                // Entfernen nach Zeit (in den Papierkorb, vernichten) - derselbe Weg wie die Wiedervorlage
+                if (Features.On(Features.MailExpiry) && MailExpiry.All(space.Db).Any(e => e.Account == account.Id && e.At <= DateTime.UtcNow))
+                {
+                    state.Phase = "Entfernen nach Zeit";
+                    try
+                    {
+                        var touched = new HashSet<string>();
+                        if (await MailExpiry.RunAsync(new MailExpiry.Imap(client), space, account, e => e.At <= DateTime.UtcNow, touched, stop) > 0)
+                        {
+                            lock (state) state.KickFolders.UnionWith(touched);
+                            Touch(space.User.Id);
+                        }
+                    }
+                    catch (Exception ex) when (Skippable(client, ex) || ex is InvalidOperationException)
+                    {
+                        folderError = "Entfernen nach Zeit: " + ex.Message;
+                        _log.LogWarning("Mail-Sync {Account}, Entfernen nach Zeit: {Error}", LogNames.Of(space, account), ex.Message);
                     }
                 }
 
@@ -175,7 +197,7 @@ public sealed class MailSync : BackgroundService
                     {
                         // Ein Ordner, der sich nicht oeffnen laesst (NO, NOPERM), haelt die anderen nicht auf
                         folderError = folder.Name + ": " + ex.Message;
-                        _log.LogWarning("Mail-Sync {Account}, Ordner {Folder}: {Error}", account.Email, folder.Path, ex.Message);
+                        _log.LogWarning("Mail-Sync {Account}, ein Ordner: {Error}", LogNames.Of(space, account), ex.Message);
                     }
                 }
 
@@ -192,7 +214,7 @@ public sealed class MailSync : BackgroundService
                 await DownloadBodies(client, space, account, folders, state, TimeSpan.FromSeconds(full ? 120 : 30), stop);
                 // Pakete, Fluege, Hotels ... aus neuen Mails in den Kalender
                 try { if (SmartMail.Scan(space, account) > 0) Touch(space.User.Id); }
-                catch (Exception ex) { _log.LogInformation("Termine aus Mails {Account}: {Error}", account.Email, ex.Message); }
+                catch (Exception ex) { _log.LogInformation("Termine aus Mails {Account}: {Error}", LogNames.Of(space, account), ex.Message); }
                 // Journal nach dem Laden einarbeiten, damit es nicht waechst
                 try { space.Db.Checkpoint(); } catch { /* beim naechsten Mal */ }
             }, stop);
@@ -206,7 +228,7 @@ public sealed class MailSync : BackgroundService
             state.Failed = true;
             state.LastQuick = DateTime.UtcNow;   // nicht im Takt von 15 s gegen einen kaputten Zugang laufen
             state.LastFull ??= DateTime.UtcNow;
-            _log.LogWarning("Mail-Sync {Account}: {Error}", account.Email, ex.Message);
+            _log.LogWarning("Mail-Sync {Account}: {Error}", LogNames.Of(space, account), ex.Message);
         }
         finally
         {
@@ -229,7 +251,7 @@ public sealed class MailSync : BackgroundService
 
     // ---------------- Ordner ----------------
 
-    private static async Task RefreshFolders(ImapClient c, UserSpace space, MailAccount account, CancellationToken ct)
+    internal static async Task RefreshFolders(ImapClient c, UserSpace space, MailAccount account, CancellationToken ct)
     {
         var all = new List<IMailFolder>();
         foreach (var ns in c.PersonalNamespaces)
@@ -237,7 +259,7 @@ public sealed class MailSync : BackgroundService
         if (!all.Any(f => f.FullName.Equals("INBOX", StringComparison.OrdinalIgnoreCase))) all.Insert(0, c.Inbox);
 
         var existing = all.Where(f => f.Exists).ToList();
-        var specials = AssignSpecials(existing.Select(f => (f.FullName, f.Name, f.ParentFolder?.FullName, f.Attributes)).ToList());
+        var specials = AssignSpecials(existing.Select(f => (f.FullName, f.Name, f.ParentFolder?.FullName, f.Attributes)).ToList(), account.FolderMap);
         var rows = existing
             .Select((f, i) => (f.FullName, f.Name, f.DirectorySeparator.ToString(), specials[i],
                 !f.Attributes.HasFlag(FolderAttributes.NoSelect) && !f.Attributes.HasFlag(FolderAttributes.NonExistent)))
@@ -262,7 +284,9 @@ public sealed class MailSync : BackgroundService
     /// gilt nur dieser - gleichnamige Ordner ("Gesendete Elemente", von einem anderen Programm angelegt) bleiben normale
     /// Ordner mit ihrem Namen. Ohne Kennzeichnung entscheidet der Name, je Art nur einer (der erste Name der Liste gewinnt).
     /// </summary>
-    internal static List<string?> AssignSpecials(IReadOnlyList<(string FullName, string Name, string? Parent, FolderAttributes Attributes)> folders)
+    /// <param name="map">Im Konto selbst festgelegte Zuordnung (MailAccount.FolderMap) - geht der Erkennung vor</param>
+    internal static List<string?> AssignSpecials(IReadOnlyList<(string FullName, string Name, string? Parent, FolderAttributes Attributes)> folders,
+        IReadOnlyDictionary<string, string>? map = null)
     {
         string? ByAttribute(FolderAttributes a) => Specials.FirstOrDefault(s => s.Attr != FolderAttributes.None && a.HasFlag(s.Attr)).Kind;
         (string Kind, int Rank)? ByName(string name, string? parent)
@@ -287,6 +311,14 @@ public sealed class MailSync : BackgroundService
             if (f.FullName.Equals("INBOX", StringComparison.OrdinalIgnoreCase)) { result.Add("inbox"); continue; }
             if (ByAttribute(f.Attributes) is { } k) { result.Add(k); continue; }
             result.Add(ByName(f.Name, f.Parent) is { } h && best.TryGetValue(h.Kind, out var bi) && bi == i ? h.Kind : null);
+        }
+        // Selbst festgelegt: dieser Ordner (leer: keiner) statt des erkannten - der Posteingang bleibt Posteingang
+        foreach (var (kind, path) in map ?? new Dictionary<string, string>())
+        {
+            if (!MailAccount.MappableFolders.Contains(kind)) continue;
+            for (int i = 0; i < result.Count; i++) if (result[i] == kind) result[i] = null;
+            var at = folders.ToList().FindIndex(f => f.FullName == path);
+            if (path.Length > 0 && at >= 0 && result[at] != "inbox") result[at] = kind;
         }
         return result;
     }
@@ -343,13 +375,20 @@ public sealed class MailSync : BackgroundService
         var user = space.User.Id;
         var fresh = server.Where(u => !local.Contains(u.Id) && !MailPending.Removing(user, account.Id, row.Path, u.Id))
             .OrderByDescending(u => u.Id).ToList();
+        // Postfach der Catchall-Aliase: die Kopfzeilen mit dem eigentlichen Empfänger mitholen (CatchallAliases)
+        var aliases = CatchallAliases.Load(db);
+        var aliasOn = CatchallAliases.ActiveFor(aliases, account.Id);
+        const MessageSummaryItems items = MessageSummaryItems.UniqueId | MessageSummaryItems.Envelope |
+            MessageSummaryItems.Flags | MessageSummaryItems.InternalDate | MessageSummaryItems.Size |
+            MessageSummaryItems.BodyStructure | MessageSummaryItems.References;
         foreach (var batch in fresh.Chunk(250))
         {
             ct.ThrowIfCancellationRequested();
-            var summaries = await f.FetchAsync(batch, MessageSummaryItems.UniqueId | MessageSummaryItems.Envelope |
-                MessageSummaryItems.Flags | MessageSummaryItems.InternalDate | MessageSummaryItems.Size |
-                MessageSummaryItems.BodyStructure | MessageSummaryItems.References, ct);
+            var summaries = aliasOn
+                ? await f.FetchAsync(batch, new FetchRequest(items, CatchallAliases.FetchHeaders), ct)
+                : await f.FetchAsync(batch, items, ct);
             MailStore.Insert(db, account.Id, row.Path, summaries);
+            if (aliasOn) CatchallAliases.Record(db, aliases, summaries);
             // Gerade von hier gesendet: den Inhalt hat der Server schon - gleich ablegen statt spaeter vom Anbieter zu holen
             foreach (var s in summaries)
                 if (SentCache.Take(user, account.Id, row.Path, s.Envelope?.MessageId) is { } raw)
@@ -373,7 +412,8 @@ public sealed class MailSync : BackgroundService
             foreach (var s in changed)
                 // Fahne/gelesen gerade unterwegs zum Server: den alten Stand nicht zurueckschreiben
                 if (s.Flags is MessageFlags fl && !MailPending.Flagging(user, account.Id, row.Path, s.UniqueId.Id))
-                    MailStore.SetFlags(db, account.Id, row.Path, s.UniqueId.Id, fl, s.Keywords);
+                    // Microsoft mit Graph: Kategorien kommen von dort (GraphCategories), IMAP kennt sie nicht
+                    MailStore.SetFlags(db, account.Id, row.Path, s.UniqueId.Id, fl, GraphCategories.Uses(account) ? null : s.Keywords);
         }
 
         var unread = (await f.SearchAsync(SearchQuery.NotSeen.And(SearchQuery.NotDeleted), ct)).Count;
@@ -446,7 +486,8 @@ public sealed class MailSync : BackgroundService
         if (open.Count == 0) return false;
 
         // Nichts zu tun: trotzdem merken, sonst liefen sie spaeter doch noch (Regel neu, Rueckkehr)
-        if (rules.Count == 0 && !spamActive && !learnKnown && !(settings.FocusedInbox && account.FocusedInbox))
+        if (rules.Count == 0 && !spamActive && !settings.Spam.Enabled && !learnKnown && settings.Spam.Lists.Count == 0 && !settings.FocusOn(account) && !settings.CategoriesOn(account)
+            && !CatchallAliases.ActiveFor(db, account))
         {
             MailStore.SetProcessed(db, account.Id, open.Select(k => k.Value).Distinct(), MailStore.StageDone);
             return false;
@@ -493,12 +534,12 @@ public sealed class MailSync : BackgroundService
                 if (tries >= MaxRuleTries)
                 {
                     MailStore.SetProcessed(db, account.Id, new[] { key }, MailStore.StageDone);
-                    _log.LogWarning("Regeln/Spamfilter {Account}: Mail {Uid} nach {Tries} Versuchen aufgegeben: {Error}", account.Email, uid.Id, tries, ex.Message);
+                    _log.LogWarning("Regeln/Spamfilter {Account}: Mail {Uid} nach {Tries} Versuchen aufgegeben: {Error}", LogNames.Of(space, account), uid.Id, tries, ex.Message);
                 }
                 else
                 {
                     pending = true;
-                    _log.LogWarning("Regeln/Spamfilter {Account}: Mail {Uid} fehlgeschlagen (Versuch {Tries}): {Error}", account.Email, uid.Id, tries, ex.Message);
+                    _log.LogWarning("Regeln/Spamfilter {Account}: Mail {Uid} fehlgeschlagen (Versuch {Tries}): {Error}", LogNames.Of(space, account), uid.Id, tries, ex.Message);
                 }
             }
         }
@@ -512,19 +553,66 @@ public sealed class MailSync : BackgroundService
         var settings = space.Settings;
         var message = await Fetch(inbox, space, account, uid, ct);
         if (message == null) return;
+        // Virenprüfung (wenn eingeschaltet): Mails mit Anhang einmal beim Eingang
+        try { await MailVirus.CheckAsync(space, account, inbox.FullName, uid.Id, message, ct); }
+        catch (Exception e) when (e is IOException or System.Net.Sockets.SocketException) { _log.LogWarning("Virenscanner: {Error}", e.Message); }
+
+        // Gesperrter Catchall-Alias (oder unbekannte bei „Junk“): gleich in Junk oder Papierkorb - vor allem anderen, auch vor
+        // sicheren Absendern (die Adresse ist ja gerade deshalb gesperrt, weil sie weitergegeben wurde)
+        if (CatchallAliases.Judge(space.Db, account, message) is { } alias)
+        {
+            if (message.MessageId is { } mid) CatchallAliases.Hit(space.Db, CatchallAliases.Load(space.Db), alias.Alias, mid,
+                message.From.Mailboxes.FirstOrDefault()?.Address, message.From.Mailboxes.FirstOrDefault()?.Name, message.Date);
+            if (await Special(c, space, account, alias.Action == "delete" ? "trash" : "junk", ct) is { } target)
+            {
+                if (alias.Action == "junk")
+                {
+                    MailStore.SetSpamScore(space.Db, account.Id, inbox.FullName, uid.Id, Math.Max(0.99, settings.Spam.SpamCutoff));
+                    JunkLearn.MarkMoved(space.Db, message);
+                }
+                await inbox.MoveToAsync(uid, target, ct);
+                MailStore.Delete(space.Db, account.Id, inbox.FullName, new[] { uid.Id });
+                lock (StateOf(space.User.Id, account.Id)) StateOf(space.User.Id, account.Id).KickFolders.Add(target.FullName);
+                Touch(space.User.Id);
+                return;
+            }
+        }
 
         // Sichere Absender (Adressbuch, selbst angeschrieben): nie Junk, auf Wunsch als gut lernen
         var spam = settings.Spam;
-        bool known = spam.Enabled && (spam.TrustKnown || spam.LearnKnown) && SafeSenders.IsKnown(space, message);
+        // Nie mit nachweislich gefälschter Absenderadresse (DMARC gescheitert) - sonst käme Chef-Betrug mit der Adresse eines Kontakts
+        // durch; dazu die selbst eingetragenen sicheren Absender, nur mit bestätigter Domain (SpamSignals.Trusted, SafeList)
+        var signals = spam.Enabled ? SpamSignals.Of(message, [account.ImapHost, PhishCheck.DomainOf(account.Email)]) : null;
+        bool known = signals is { DmarcFailed: false } && (spam.TrustKnown || spam.LearnKnown) && SafeSenders.IsKnown(space, message);
+        bool trusted = signals != null && SpamSignals.Trusted(space, message, signals).Trusted;
         if (known && spam.LearnKnown) SpamFilter.Train(space.Db, message, spam: false);
 
-        // Bewertet wird erst, wenn genug gelernt ist - vorher kaeme fuer jede Mail 50 % heraus
-        if (spamActive)
+        // Globale Spamlisten: Treffer gehen in die Bewertung ein, je Liste auf Wunsch gleich nach Junk
+        if (spam.Enabled && spam.Lists.Count > 0 && !trusted)
         {
-            var score = SpamFilter.Score(space.Db, message);
-            MailStore.SetSpamScore(space.Db, account.Id, inbox.FullName, uid.Id, score);
-            if (score >= settings.Spam.SpamCutoff && !(known && spam.TrustKnown) && await Special(c, space, account, "junk", ct) is { } junk)
+            List<string> hits = [];
+            try { hits = await Blocklists.CheckAsync(space.Db, message, spam.Lists, _config?.SpamhausKey(), ct); }
+            catch (Exception e) when (e is not OperationCanceledException) { _log.LogDebug(e, "Spamlisten nicht erreichbar"); }
+            if (hits.Any(spam.ListsJunk.Contains) && await Special(c, space, account, "junk", ct) is { } listJunk)
             {
+                JunkLearn.MarkMoved(space.Db, message);
+                await inbox.MoveToAsync(uid, listJunk, ct);
+                MailStore.Delete(space.Db, account.Id, inbox.FullName, new[] { uid.Id });
+                lock (StateOf(space.User.Id, account.Id)) StateOf(space.User.Id, account.Id).KickFolders.Add(listJunk.FullName);
+                return;
+            }
+        }
+
+        // Bewertet wird erst, wenn genug gelernt ist - vorher kaeme fuer jede Mail 50 % heraus; feste Regeln (Echtheit, Markenimitation)
+        // greifen immer (SpamSignals)
+        var judged = spam.Enabled ? SpamSignals.Judge(space, account, message, spamActive ? SpamFilter.Score(space.Db, message) : null).Score : null;
+        if (judged is double score)
+        {
+            MailStore.SetSpamScore(space.Db, account.Id, inbox.FullName, uid.Id, score);
+            if (score >= settings.Spam.SpamCutoff && !trusted && await Special(c, space, account, "junk", ct) is { } junk)
+            {
+                // Selbst verschoben: daraus nicht wieder lernen (JunkLearn)
+                JunkLearn.MarkMoved(space.Db, message);
                 await inbox.MoveToAsync(uid, junk, ct);
                 MailStore.Delete(space.Db, account.Id, inbox.FullName, new[] { uid.Id });
                 lock (StateOf(space.User.Id, account.Id)) StateOf(space.User.Id, account.Id).KickFolders.Add(junk.FullName);
@@ -533,13 +621,54 @@ public sealed class MailSync : BackgroundService
         }
 
         // Prio-Posteingang: Relevant oder Sonstige (nach Inhalt, Absender, Gelerntem)
-        if (settings.FocusedInbox && account.FocusedInbox)
+        if (settings.FocusOn(account))
             MailStore.SetFocus(space.Db, account.Id, inbox.FullName, new[] { uid.Id }, Focus.Classify(space, message));
+        // Lernende Kategorien: Etikett (IMAP-Schlagwort) vor den Regeln - es bleibt, wenn eine Regel die Mail verschiebt
+        if (settings.CategoriesOn(account) && GraphCategories.Uses(account) && SmartInbox.Decide(space, SmartInbox.Of(message, space.Zone)) is { Count: > 0 } outlook)
+        {
+            foreach (var l in outlook)
+                try { await GraphCategories.SetAsync(space, account, inbox.FullName, [uid.Id], l, true, ct); }
+                catch (Exception e) when (e is Pim.GraphException or HttpRequestException or MailKit.Security.AuthenticationException)
+                {
+                    // Microsoft nicht erreichbar: lokal trotzdem einordnen
+                    MailStore.SetKeyword(space.Db, account.Id, inbox.FullName, [uid.Id], l, true);
+                }
+        }
+        else if (settings.CategoriesOn(account) && SmartInbox.Decide(space, SmartInbox.Of(message, space.Zone)) is { Count: > 0 } labels
+            && (inbox.PermanentFlags.HasFlag(MessageFlags.UserDefined) || labels.All(inbox.PermanentKeywords.Contains)))
+        {
+            var req = new StoreFlagsRequest(StoreAction.Add, MessageFlags.None) { Silent = true };
+            foreach (var l in labels) req.Keywords.Add(l);
+            await inbox.StoreAsync(new[] { uid }, req, ct);
+            foreach (var l in labels) MailStore.SetKeyword(space.Db, account.Id, inbox.FullName, new[] { uid.Id }, l, true);
+        }
 
-        if (rules.Count == 0) return;
-        var outcome = Rules.Evaluate(rules, account.Id, message);
-        if (outcome.Applied.Count == 0) return;
-        await Apply(c, space, account, inbox, uid, key, stage, message, outcome, ct);
+        if (rules.Count > 0)
+        {
+            var outcome = Rules.Evaluate(rules, account.Id, message);
+            if (outcome.Applied.Count > 0)
+            {
+                await Apply(c, space, account, inbox, uid, key, stage, message, outcome, ct);
+                // Eine Regel hat die Mail woandershin gelegt: dabei bleibt es
+                if (outcome.Delete || outcome.MoveTo != null && outcome.MoveTo != inbox.FullName) return;
+            }
+        }
+
+        // Catchall-Aliase: in den Ordner des Alias, Unbekannte in den Ordner der Domain (CatchallFolders)
+        var aliases = CatchallAliases.Load(space.Db);
+        if (CatchallAliases.ActiveFor(aliases, account.Id) && CatchallAliases.Of(aliases, message) is { } to
+            && await CatchallFolders.TargetAsync(c, space.Db, to, ct) is { } aliasFolder && aliasFolder.FullName != inbox.FullName)
+        {
+            if (!MailStore.Folders(space.Db, account.Id).Any(f => f.Path == aliasFolder.FullName)) await RefreshFolders(c, space, account, ct);
+            var moved = await inbox.MoveToAsync(uid, aliasFolder, ct);
+            MailStore.Delete(space.Db, account.Id, inbox.FullName, new[] { uid.Id });
+            // Entfernen nach Zeit, wie am Alias eingestellt (gefunden wird die Mail dann über die Message-ID)
+            if (CatchallAliases.Get(space.Db, to) is { } toAlias
+                && CatchallAliases.ExpiryFor(toAlias, account.Id, aliasFolder.FullName, moved?.Id ?? 0, message, DateTime.UtcNow) is { } expiry)
+                await MailExpiry.ScheduleAsync(space.Db, [expiry]);
+            lock (StateOf(space.User.Id, account.Id)) StateOf(space.User.Id, account.Id).KickFolders.Add(aliasFolder.FullName);
+            Touch(space.User.Id);
+        }
     }
 
     private async Task Apply(ImapClient c, UserSpace space, MailAccount account, IMailFolder inbox, UniqueId uid,
@@ -559,7 +688,7 @@ public sealed class MailSync : BackgroundService
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException) { _log.LogWarning("Regel: Weiterleiten an {To} fehlgeschlagen: {Error}", to, ex.Message); }
             }
-            MailStore.SetProcessed(space.Db, account.Id, new[] { key }, MailStore.StageForwarded);
+            if (key.Length > 0) MailStore.SetProcessed(space.Db, account.Id, new[] { key }, MailStore.StageForwarded);
         }
         if (o.MarkRead)
         {
@@ -575,33 +704,129 @@ public sealed class MailSync : BackgroundService
         {
             try
             {
-                var req = new StoreFlagsRequest(StoreAction.Add, MessageFlags.None) { Silent = true };
-                foreach (var k in o.Categories) req.Keywords.Add(k);
-                await inbox.StoreAsync(new[] { uid }, req, ct);
-                foreach (var k in o.Categories) MailStore.SetKeyword(space.Db, account.Id, inbox.FullName, new[] { uid.Id }, k, true);
+                if (GraphCategories.Uses(account))
+                    foreach (var k in o.Categories) await GraphCategories.SetAsync(space, account, inbox.FullName, [uid.Id], k, true, ct);
+                else
+                {
+                    var req = new StoreFlagsRequest(StoreAction.Add, MessageFlags.None) { Silent = true };
+                    foreach (var k in o.Categories) req.Keywords.Add(k);
+                    await inbox.StoreAsync(new[] { uid }, req, ct);
+                    foreach (var k in o.Categories) MailStore.SetKeyword(space.Db, account.Id, inbox.FullName, new[] { uid.Id }, k, true);
+                }
             }
-            catch (Exception ex) when (Skippable(c, ex)) { _log.LogWarning("Regel: Kategorie setzen: {Error}", ex.Message); }
+            catch (Exception ex) when (Skippable(c, ex) || ex is Pim.GraphException or InvalidOperationException) { _log.LogWarning("Regel: Kategorie setzen: {Error}", ex.Message); }
         }
         if (stage < MailStore.StageCopied && o.CopyTo.Count > 0)
         {
             foreach (var target in o.CopyTo)
                 try { await inbox.CopyToAsync(uid, await c.GetFolderAsync(target, ct), ct); Kick(space.User.Id, account.Id, target); }
                 catch (FolderNotFoundException) { }
-            MailStore.SetProcessed(space.Db, account.Id, new[] { key }, MailStore.StageCopied);
+            if (key.Length > 0) MailStore.SetProcessed(space.Db, account.Id, new[] { key }, MailStore.StageCopied);
         }
 
         string? moveTo = o.Delete ? (await Special(c, space, account, "trash", ct))?.FullName : o.MoveTo;
+        var (where, whereUid) = (inbox.FullName, uid.Id);
         if (moveTo != null && moveTo != inbox.FullName)
         {
             try
             {
-                await inbox.MoveToAsync(uid, await c.GetFolderAsync(moveTo, ct), ct);
+                var moved = await inbox.MoveToAsync(uid, await c.GetFolderAsync(moveTo, ct), ct);
                 MailStore.Delete(space.Db, account.Id, inbox.FullName, new[] { uid.Id });
                 lock (StateOf(space.User.Id, account.Id)) StateOf(space.User.Id, account.Id).KickFolders.Add(moveTo);
+                (where, whereUid) = (moveTo, moved?.Id ?? 0);
             }
-            catch (FolderNotFoundException) { _log.LogWarning("Regel: Ordner {Folder} gibt es nicht", moveTo); }
+            catch (FolderNotFoundException) { _log.LogWarning("Regel: Zielordner gibt es nicht"); }
         }
+        // In den Papierkorb / vernichten nach X Tagen: gezaehlt ab dem Eingang, gefunden spaeter ueber die Message-ID
+        var expiries = new List<MailExpiry.Entry>();
+        if (o.TrashAfterDays is int td && !o.Delete)
+            expiries.Add(new() { Account = account.Id, Folder = where, Uid = whereUid, MessageId = message.MessageId, At = DateTime.UtcNow.AddDays(td), Kind = MailExpiry.Trash, Subject = message.Subject ?? "" });
+        if (o.DestroyAfterDays is int dd)
+            expiries.Add(new() { Account = account.Id, Folder = where, Uid = whereUid, MessageId = message.MessageId, At = DateTime.UtcNow.AddDays(dd), Kind = MailExpiry.Destroy, Subject = message.Subject ?? "" });
+        if (expiries.Count > 0) await MailExpiry.ScheduleAsync(space.Db, expiries);
         Touch(space.User.Id);
+    }
+
+    public sealed record RuleRun(int Checked, int Matched);
+
+    /// <summary>Höchstens so viele Mails beim Einordnen des ganzen Posteingangs (die neuesten).</summary>
+    public const int ReclassifyMax = 1000;
+
+    /// <summary>
+    /// „Neu einordnen“ im Posteingang: Mails, die schon da waren (etwa vor dem Anlegen des Kontos in dmOffice), laufen durch dieselbe
+    /// Einordnung wie neu eintreffende - Junk-Erkennung (auch das Verschieben nach Junk), Relevant/Sonstige und lernende Kategorien.
+    /// Regeln nicht (dafür gibt es „Jetzt ausführen“ an der Regel). Ohne Auswahl die neuesten <see cref="ReclassifyMax"/>.
+    /// </summary>
+    public async Task<int> Reclassify(UserSpace space, MailAccount account, IReadOnlyCollection<uint>? uids, ImapPool pool, CancellationToken ct)
+    {
+        var spam = space.Settings.Spam;
+        var (nspam, nham) = SpamFilter.Counts(space.Db);
+        bool spamActive = spam.Enabled && nspam >= spam.MinTrained && nham >= spam.MinTrained;
+        int done = 0;
+        // Eigene Verbindung - Öffnen und Verschieben in der Oberfläche warten nicht auf das Einordnen
+        await pool.UseAsync(account, "classify", async c =>
+        {
+            var inbox = c.Inbox;
+            await inbox.OpenAsync(FolderAccess.ReadWrite, ct);
+            var list = uids?.Select(u => new UniqueId(u)).ToList()
+                ?? (await inbox.SearchAsync(SearchQuery.All, ct)).OrderByDescending(u => u.Id).Take(ReclassifyMax).ToList();
+            using var job = Activity.Start(space.User.Id, Activity.MailClassify, account.Email, list.Count);
+            foreach (var uid in list)
+            {
+                ct.ThrowIfCancellationRequested();
+                try { await ProcessOne(c, space, account, inbox, uid, "", MailStore.StageForwarded, [], spamActive, ct); }
+                catch (Exception ex) when (Skippable(c, ex)) { _log.LogWarning("Neu einordnen {Account}: Mail {Uid}: {Error}", LogNames.Of(space, account), uid.Id, ex.Message); }
+                job.Progress(++done);
+            }
+            Kick(space.User.Id, account.Id, inbox.FullName);
+            return 0;
+        }, ct);
+        return done;
+    }
+
+    /// <summary>
+    /// Knopf "Jetzt ausfuehren": die Regel auf die Mails im Posteingang anwenden, die schon da sind (auch wenn sie
+    /// ausgeschaltet ist). Weitergeleitet wird dabei nicht - das waere auf einen Schlag eine Flut alter Mails.
+    /// Mit Bedingungen auf den Text hoechstens die neuesten 500, sonst die neuesten 5000 (nur Kopfzeilen).
+    /// </summary>
+    public async Task<RuleRun> RunRule(UserSpace space, MailRule rule, ImapPool pool, CancellationToken ct)
+    {
+        var once = new MailRule { Name = rule.Name, Enabled = true, Match = rule.Match, Conditions = rule.Conditions, Actions = rule.Actions };
+        bool needsBody = rule.Conditions.Any(c => c.Field is "body" or "any");
+        int seen = 0, hit = 0;
+        foreach (var account in space.Settings.MailAccounts.Where(a => rule.AccountId == null || a.Id == rule.AccountId))
+        {
+            await pool.UseAsync(account, ImapPool.Ui, async c =>
+            {
+                var inbox = c.Inbox;
+                await inbox.OpenAsync(FolderAccess.ReadWrite, ct);
+                var uids = (await inbox.SearchAsync(SearchQuery.All, ct)).OrderByDescending(u => u.Id).Take(needsBody ? 500 : 5000).ToList();
+                if (uids.Count == 0) return;
+                var summaries = await inbox.FetchAsync(uids, MessageSummaryItems.UniqueId | MessageSummaryItems.Headers, ct);
+                foreach (var s in summaries)
+                {
+                    seen++;
+                    MimeMessage? m;
+                    if (needsBody) m = await Fetch(inbox, space, account, s.UniqueId, ct);
+                    else
+                    {
+                        using var ms = new MemoryStream();
+                        s.Headers.WriteTo(ms);
+                        ms.Write("\r\n"u8);
+                        ms.Position = 0;
+                        m = MimeMessage.Load(ms, ct);
+                    }
+                    if (m == null) continue;
+                    var o = Rules.Evaluate(new[] { once }, account.Id, m);
+                    if (o.Applied.Count == 0) continue;
+                    o.ForwardTo.Clear();
+                    hit++;
+                    await Apply(c, space, account, inbox, s.UniqueId, "", MailStore.StageForwarded, m, o, ct);
+                }
+                Kick(space.User.Id, account.Id, inbox.FullName);
+            }, ct);
+        }
+        return new RuleRun(seen, hit);
     }
 
     // ---------------- Inhalte ----------------
@@ -644,7 +869,7 @@ public sealed class MailSync : BackgroundService
                 }
                 catch (Exception ex) when (Skippable(c, ex))
                 {
-                    _log.LogWarning("Mail-Sync {Account}, Inhalte in {Folder}: {Error}", account.Email, row.Path, ex.Message);
+                    _log.LogWarning("Mail-Sync {Account}, Inhalte eines Ordners: {Error}", LogNames.Of(space, account), ex.Message);
                     continue;
                 }
                 // Schlank: fuer Mails ohne Inhalt hier nur die Vorschau (Liste und Suche) - wenige Bytes je Mail
@@ -660,7 +885,7 @@ public sealed class MailSync : BackgroundService
                     }
                     catch (Exception ex) when (Skippable(c, ex))
                     {
-                        _log.LogWarning("Mail-Sync {Account}: Vorschau in {Folder} nicht geladen: {Error}", account.Email, row.Path, ex.Message);
+                        _log.LogWarning("Mail-Sync {Account}: Vorschau nicht geladen: {Error}", LogNames.Of(space, account), ex.Message);
                         break;
                     }
                 }
@@ -683,7 +908,7 @@ public sealed class MailSync : BackgroundService
                         {
                             // Eine kaputte Mail (FETCH NO, nicht lesbar) haelt die anderen nicht auf - spaeter erneut
                             MailStore.BodyFailed(space.Db, account.Id, row.Path, uid);
-                            _log.LogWarning("Mail-Sync {Account}: Inhalt {Folder}/{Uid} nicht geladen: {Error}", account.Email, row.Path, uid, ex.Message);
+                            _log.LogWarning("Mail-Sync {Account}: Inhalt {Uid} nicht geladen: {Error}", LogNames.Of(space, account), uid, ex.Message);
                         }
                     }
                 }
@@ -693,7 +918,7 @@ public sealed class MailSync : BackgroundService
         {
             // Auch nach einem Fehler, sonst bleibt der alte Stand stehen
             try { state.PendingBodies = MailStore.MissingCount(space.Db, account.Id, limit, slim); }
-            catch (Exception ex) { _log.LogWarning("Mail-Sync {Account}: fehlende Inhalte zaehlen: {Error}", account.Email, ex.Message); }
+            catch (Exception ex) { _log.LogWarning("Mail-Sync {Account}: fehlende Inhalte zaehlen: {Error}", LogNames.Of(space, account), ex.Message); }
             if (any) Touch(space.User.Id);
         }
     }

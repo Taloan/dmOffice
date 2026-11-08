@@ -69,13 +69,17 @@ for its duration (minutes for several GB).
 - The backups hold the same secrets as the data folder (the databases are encrypted, but `users.json` and, without
   `DMOFFICE_MASTER_KEY`, `master.key` are in there). Protect them like the data folder.
 
-## Going back
+## Going back to an earlier version
 
-1. Stop the container and pin the image of the version that created the backup (for example `ghcr.io/taloan/dmoffice:1.1.0`
-   instead of `latest`).
-2. Copy `pre-update/<backup>/users/*.db` to `<data>/users/` (delete the `*.db-wal` and `*.db-shm` files of the same name first).
-3. Copy `users.json`, `server.json`, `shares.json` (and `master.key`, `keys/`) from the backup back to the data folder.
-4. Start the container. Changes since the backup are lost. Blob files do not have to go back; surplus ones are cleaned up.
+1. Stop dmOffice and set the image version that matches the backup, for example `ghcr.io/taloan/dmoffice:1.1.0` instead of `latest`.
+2. Restore the user databases: copy all `pre-update/<backup>/users/*.db` files to `<data>/users/`. First delete the matching files
+   ending in `-wal` and `-shm` in the target folder.
+3. Restore settings and keys: copy `users.json`, `server.json` and `shares.json` and, if present, `master.key` and the `keys/` folder
+   from the backup back to `<data>`.
+4. Start dmOffice again. The server is now at the state of the backup.
+
+Important: all changes since the backup are lost. The blob files do not need to be copied back. dmOffice removes files no longer
+needed automatically.
 
 ## What changed in which version
 
@@ -94,6 +98,10 @@ Updating from 1.0 or 1.1 runs steps 11 to 18 in one go; this is covered by an au
 
 ## Notes for special setups
 
+- Container without root: dmOffice runs as UID/GID 1654. On the first start after the switch, `/data` is handed to that user once
+  (this can take a while with many files). `DMOFFICE_UID` and `DMOFFICE_GID` choose another user, e.g. 99/100 on Unraid. Other
+  mounted folders (external folders, music, photos) are not changed: they need matching rights themselves.
+  `DMOFFICE_RUN_AS_ROOT=1` keeps the old behaviour for mounts only root may write to; not recommended.
 - `DMOFFICE_BLOBS` (own volume for file contents): the space check for moving looks at that volume, the one for the database
   conversion and the backup at the data folder.
 - Network file systems sometimes report wrong free space. `DMOFFICE_ASSUME_FREE_MB` replaces the measurement by a fixed number

@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import at.dimes.dmoffice.api.Folder
 import at.dimes.dmoffice.api.MailAccount
 import at.dimes.dmoffice.api.MailCategory
+import at.dimes.dmoffice.api.AliasState
 
 /** Alle Posteingaenge zusammen - kein Ordner auf dem Server (MailStore.UnifiedFolder). */
 const val UNIFIED = "__unified"
@@ -65,11 +66,12 @@ private fun iconOf(f: Folder): ImageVector = when (f.special) {
 @Composable
 fun FolderDrawer(
     accounts: List<MailAccount>, account: String, folders: List<Folder>, current: String, categories: List<MailCategory>,
-    onAccount: (String) -> Unit, onFolder: (String) -> Unit,
+    catchall: AliasState?, onAccount: (String) -> Unit, onFolder: (String) -> Unit,
 ) {
     val order = listOf("inbox", "drafts", "sent", "flagged", "snoozed", "junk", "archive", "trash")
     val system = folders.filter { it.special in order }.sortedBy { order.indexOf(it.special) }
-    val own = folders.filter { it.special !in order }.sortedBy { it.path.lowercase() }
+    // Ordner der Catchall-Aliase stehen nur in ihrem eigenen Abschnitt
+    val own = folders.filter { it.special !in order && catchall?.owns(account, it.path) != true }.sortedBy { it.path.lowercase() }
     Column(Modifier.fillMaxHeight().verticalScroll(rememberScrollState()).padding(vertical = 12.dp)) {
         val acc = accounts.firstOrNull { it.id == account }
         Text("dmOffice Mail", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
@@ -101,6 +103,10 @@ fun FolderDrawer(
             // Ebene aus dem Pfad ("Kunden/2026" -> eine Stufe eingerueckt), angezeigt wird nur der letzte Teil
             val depth = f.path.count { it == '/' || it == '.' }.coerceAtMost(4)
             Entry(iconOf(f), f.name.substringAfterLast('/'), f.unread, f.path == current, depth, iconTint = MaterialTheme.colorScheme.primary) { onFolder(f.path) }
+        }
+        if (catchall != null && catchall.config.account == account && catchall.domains.isNotEmpty()) {
+            HorizontalDivider(Modifier.padding(vertical = 8.dp))
+            CatchallDrawerSection(catchall, folders, current, onFolder)
         }
         if (categories.isNotEmpty()) HorizontalDivider(Modifier.padding(vertical = 8.dp))
         for (c in categories) {

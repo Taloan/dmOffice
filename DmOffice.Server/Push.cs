@@ -176,7 +176,10 @@ public sealed class Fcm
     }
 
     /// <summary>Datennachricht "sync" mit hoher Prioritaet - weckt die App, ohne etwas anzuzeigen.</summary>
-    public async Task<Result> SendSync(string token, CancellationToken ct)
+    public Task<Result> SendSync(string token, CancellationToken ct) => Send(token, new() { ["t"] = "sync" }, ct);
+
+    /// <summary>Datennachricht mit hoher Prioritaet (nur Kennungen, nie Inhalte) - die App holt den Rest selbst.</summary>
+    public async Task<Result> Send(string token, Dictionary<string, string> data, CancellationToken ct)
     {
         if (_sa == null) return Result.Failed;
         try
@@ -187,7 +190,7 @@ public sealed class Fcm
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", access);
             req.Content = new StringContent(JsonSerializer.Serialize(new
             {
-                message = new { token, data = new Dictionary<string, string> { ["t"] = "sync" }, android = new { priority = "high", ttl = "300s" } }
+                message = new { token, data, android = new { priority = "high", ttl = "300s" } }
             }), Encoding.UTF8, "application/json");
             using var res = await client.SendAsync(req, ct);
             if (res.IsSuccessStatusCode) return Result.Sent;

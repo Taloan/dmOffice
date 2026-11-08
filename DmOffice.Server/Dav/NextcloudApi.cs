@@ -61,7 +61,7 @@ public static class NextcloudApi
         {
             app.MapPost(prefix, (HttpContext http) =>
             {
-                var flow = Flows.Start(DeviceName(http.Request.Headers.UserAgent.ToString()), v1: false);
+                var flow = Flows.Start(DeviceName(http.Request.Headers.UserAgent.ToString()), v1: false, Auth.IpKey(http.Connection.RemoteIpAddress));
                 var origin = Origin(http);
                 return Results.Json(new
                 {
@@ -84,7 +84,7 @@ public static class NextcloudApi
         // ---------------- Login Flow v1 (Handy-Apps, in einer eingebetteten Webansicht) ----------------
         app.MapGet("/index.php/login/flow", [Microsoft.AspNetCore.RateLimiting.EnableRateLimiting("public")] (HttpContext http) =>
         {
-            var flow = Flows.Start(DeviceName(http.Request.Headers.UserAgent.ToString()), v1: true);
+            var flow = Flows.Start(DeviceName(http.Request.Headers.UserAgent.ToString()), v1: true, Auth.IpKey(http.Connection.RemoteIpAddress));
             return Results.Redirect("/index.php/login/v2/flow/" + flow.LoginToken);
         });
     }
@@ -103,9 +103,9 @@ public static class NextcloudApi
             capabilities = new Dictionary<string, object>
             {
                 ["core"] = new Dictionary<string, object> { ["pollinterval"] = 60, ["webdav-root"] = "remote.php/webdav" },
-                // Ohne "chunking": Kleine Dateien kommen mit einem PUT. Grosse wuerde der Client in Stuecken
-                // nach altem Verfahren schicken - das lehnt DavServer ab (noch nicht umgesetzt).
-                ["dav"] = new Dictionary<string, object>(),
+                // Grosse Dateien in Stuecken nach dem neuen Verfahren (/remote.php/dav/uploads, DavUploads.cs);
+                // das alte (OC-Chunked) lehnt DavServer weiter ab
+                ["dav"] = new Dictionary<string, object> { ["chunking"] = "1.0" },
                 ["files"] = new Dictionary<string, object>
                 {
                     ["bigfilechunking"] = false,
@@ -149,6 +149,8 @@ public static class NextcloudApi
         if (http.User.FindFirst(Auth.ScopeClaim)?.Value == AppPasswords.ScopeNotizi) return Results.StatusCode(403);
         var space = http.Space();
         var db = space.Db;
+        // Vorschau fuer Nextcloud-Clients (Geraete-Abgleich): nur gezeigte Ordner fehlen
+        http.Items[SharedFiles.DeviceSync] = true;
         if (FileStore.FilesOff(db)) return Results.StatusCode(403);
         // Auch in mit mir geteilten Ordnern (fileid mit Freigabe in den oberen Bits, Pfad unter "Mit mir geteilt") - nur mit Freigabe
         FileEntry? f;
@@ -191,6 +193,9 @@ public static class NextcloudApi
     internal static string DeviceName(string userAgent)
     {
         var ua = userAgent ?? "";
+        // Desktop-Client beim Anmelden: „Rechnername (Desktop Client - Windows)“
+        if (System.Text.RegularExpressions.Regex.Match(ua.Trim(), @"^(.+?) \(Desktop Client - ([^)]+)\)$") is { Success: true } desk)
+            return $"Nextcloud Desktop · {(desk.Groups[1].Value.Length > 40 ? desk.Groups[1].Value[..40] : desk.Groups[1].Value)}";
         string kind = ua.Contains("mirall", StringComparison.OrdinalIgnoreCase) ? "Desktop"
             : ua.Contains("android", StringComparison.OrdinalIgnoreCase) ? "Android"
             : ua.Contains("iOS", StringComparison.Ordinal) || ua.Contains("iPhone", StringComparison.Ordinal) ? "iOS"
@@ -213,6 +218,8 @@ public static class NextcloudApi
             public required string LoginToken { get; init; }
             public required string Name { get; init; }
             public required bool V1 { get; init; }
+            /// <summary>Adresse, von der das Programm die Anmeldung begonnen hat - zum Vergleich mit dem bestätigenden Browser.</summary>
+            public string From { get; init; } = "";
             public DateTime Expires { get; } = DateTime.UtcNow.AddMinutes(20);
             public Result? Result { get; set; }
         }
@@ -222,12 +229,12 @@ public static class NextcloudApi
         private static readonly ConcurrentDictionary<string, Flow> ByPoll = new();
         private static readonly ConcurrentDictionary<string, Flow> ByLogin = new();
 
-        public static Flow Start(string name, bool v1)
+        public static Flow Start(string name, bool v1, string from = "")
         {
             Cleanup();
             // Obergrenze gegen anonymes Zumuellen: so viele offene Flows kann es nicht geben
             if (ByPoll.Count > 10_000) throw new InvalidOperationException("Zu viele offene Anmeldungen. Bitte später erneut versuchen.");
-            var f = new Flow { PollToken = Passwords.NewToken() + Passwords.NewToken(), LoginToken = Passwords.NewToken(), Name = name, V1 = v1 };
+            var f = new Flow { PollToken = Passwords.NewToken() + Passwords.NewToken(), LoginToken = Passwords.NewToken(), Name = name, V1 = v1, From = from };
             ByPoll[f.PollToken] = f;
             ByLogin[f.LoginToken] = f;
             return f;
@@ -293,11 +300,18 @@ public static class NextcloudApi
                   <label>Passwort<input name="password" type="password" autocomplete="current-password" required></label>
                   <label>Code (nur mit Zwei-Faktor-Anmeldung)<input name="code" inputmode="numeric" autocomplete="one-time-code"></label>
                   """;
+            // Phishing per Zustimmung: jemand beginnt die Anmeldung selbst und schickt den Link. Den Namen nennt das Programm
+            // selbst (nicht geprüft); kommt die Anmeldung aus einem anderen Netz als dieser Browser, deutlich warnen.
+            var elsewhere = flow.From.Length > 0 && flow.From != Auth.IpKey(http.Connection.RemoteIpAddress);
+            var warning = elsewhere
+                ? "<p class='err'><b>Achtung:</b> Die Anmeldung wurde aus einem anderen Netz begonnen (" + E(flow.From) + ") als dem, aus dem diese Seite geöffnet ist. Hat jemand diesen Link geschickt, nicht erlauben.</p>"
+                : "";
             body = $"""
                 <h1>Zugriff erlauben?</h1>
-                <p><b>{E(flow.Name)}</b> möchte deine dmOffice-Dateien abgleichen. Es bekommt dafür ein eigenes
-                App-Passwort, das du in den Einstellungen jederzeit widerrufen kannst.</p>
-                <p class="warn">Nur erlauben, wenn du das Programm gerade selbst eingerichtet hast.</p>
+                <p>Ein Programm möchte deine dmOffice-Dateien abgleichen. Es nennt sich <b>{E(flow.Name)}</b> (Angabe des Programms,
+                nicht geprüft). Es bekommt dafür ein eigenes App-Passwort, das du in den Einstellungen jederzeit widerrufen kannst.</p>
+                {warning}
+                <p class="warn">Nur erlauben, wenn du das Programm gerade selbst auf diesem Gerät eingerichtet hast.</p>
                 {(error != null ? $"<p class=\"err\">{E(error)}</p>" : "")}
                 <form method="post">{fields}<button>Zugriff erlauben</button></form>
                 """;
@@ -355,13 +369,14 @@ public static class NextcloudApi
                 if (!string.IsNullOrWhiteSpace(code)) { Auth.Failed(ip); Auth.Failed(nameKey); await Task.Delay(700); }
                 return FlowPage(http, token, string.IsNullOrWhiteSpace(code) ? "Bitte den Code aus der Authenticator-App eingeben." : "Code falsch oder abgelaufen.");
             }
-            Auth.Succeeded(ip); Auth.Succeeded(nameKey);
+            Auth.SucceededLogin(ip, nameKey);
             user = u;
         }
 
         // Bereich "dav": der Login-Flow dient DAV-Clients (Nextcloud, DAVx5, Thunderbird). Kein Zugriff auf die
         // Web-API (Mail, Kalender, Notizen) - so richtet ein per Phishing erschlichenes Passwort weniger Schaden an.
         var appPassword = AppPasswords.Create(spaces.Get(user.Id).Db, flow.Name, AppPasswords.ScopeDav);
+        SecurityNotice.Important(http.RequestServices, user.Id, $"neuer Zugang für „{flow.Name}“ (Dateien, Kalender, Kontakte)");
         var server = Origin(http);
         Flows.Done(flow, new Flows.Result(server, user.Login, appPassword));
         if (flow.V1)

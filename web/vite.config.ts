@@ -1,7 +1,7 @@
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import { createHash } from 'node:crypto'
-import { readdirSync, readFileSync } from 'node:fs'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 const here = (p: string) => fileURLToPath(new URL(p, import.meta.url))
@@ -16,8 +16,11 @@ function serviceWorker(): Plugin {
     name: 'dmoffice-sw',
     apply: 'build',
     generateBundle(_, bundle) {
-      const pub = readdirSync(here('public')).filter(f => !f.startsWith('.'))
-      const files = [...Object.keys(bundle).filter(f => f !== 'index.html'), ...pub].map(f => '/' + f).sort()
+      // Auch Unterordner (public/pukki/...); Pfade immer mit „/“, versteckte Dateien und Ordner nicht
+      const pub = (readdirSync(here('public'), { recursive: true }) as string[]).map(f => f.replaceAll('\\', '/'))
+        .filter(f => !f.split('/').some(part => part.startsWith('.')) && statSync(here('public/' + f)).isFile())
+      // Lizenzliste (third-party.json) nicht vorab laden: groß und selten geöffnet
+      const files = [...Object.keys(bundle).filter(f => f !== 'index.html'), ...pub.filter(f => f !== 'third-party.json')].map(f => '/' + f).sort()
       const hash = createHash('sha256')
       for (const [name, item] of Object.entries(bundle)) hash.update(name).update(item.type === 'chunk' ? item.code : item.source)
       for (const f of pub) hash.update(f).update(readFileSync(here('public/' + f)))

@@ -15,11 +15,14 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AlternateEmail
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.Badge
 import androidx.compose.material3.DropdownMenu
@@ -87,6 +90,16 @@ fun MailScreen(onOpen: (account: String, folder: String, uid: Long) -> Unit, onC
     var page by remember { mutableStateOf(0) }
     var folderMenu by remember { mutableStateOf(false) }
     var accountMenu by remember { mutableStateOf(false) }
+    var aliases by remember { mutableStateOf(false) }
+    // Catchall-Aliase: eigener Abschnitt in der Ordnerleiste, neu nach jeder Änderung (CatchallSignal)
+    val catchallVersion by CatchallSignal.version.collectAsState()
+    var catchall by remember { mutableStateOf<at.dimes.dmoffice.api.AliasState?>(null) }
+    LaunchedEffect(catchallVersion) { catchall = try { app.mail.aliases() } catch (_: Exception) { null } }
+    // Suche (Version 2): Lupe in der Kopfzeile, gesucht wird auf dem Server in allen Ordnern des Kontos
+    val search = rememberTabSearch()
+    val outMail by at.dimes.dmoffice.sync.Outbox.mail.collectAsState()
+    LaunchedEffect(Unit) { at.dimes.dmoffice.sync.Outbox.load(ctx) }
+    var hits by remember { mutableStateOf<List<at.dimes.dmoffice.api.MailItem>?>(null) }
 
     suspend fun refresh(acc: String) {
         refreshing = true; error = null
@@ -128,24 +141,33 @@ fun MailScreen(onOpen: (account: String, folder: String, uid: Long) -> Unit, onC
             try { app.mail.refresh(acc, folder, 0) } catch (_: Exception) { }
         }
     }
-    val focusOn = inbox && focusInfo?.enabled == true
+    LaunchedEffect(search.query, search.open, acc) {
+        hits = null
+        if (!search.active) return@LaunchedEffect
+        kotlinx.coroutines.delay(300)
+        hits = try { app.mail.search(search.query.trim(), acc) } catch (e: Exception) { error = e.message; emptyList() }
+    }
+    // Alias gesperrt oder übernommen: Ordner und Liste neu (neue Ordner, Zustand an den Mails)
+    LaunchedEffect(catchallVersion) { if (catchallVersion > 0) refresh(acc) }
+    val focusOn = inbox && focusInfo?.enabled == true && !search.open
     val shownItems = if (!focusOn) items else items.filter { (it.focus ?: true) == focusTab }
     val categories by app.mail.categories.collectAsState()
     // Ordnerleiste wie bei Proton (von links oder ueber den Ordnernamen oben)
     val drawer = androidx.compose.material3.rememberDrawerState(androidx.compose.material3.DrawerValue.Closed)
     val title = if (folder == UNIFIED) stringResource(R.string.all_inboxes)
-        else current?.let { folderLabel(it) } ?: categories.firstOrNull { "cat:" + it.key == folder }?.name ?: folder
+        else catchallTitle(catchall, acc, folder) ?: current?.let { folderLabel(it) } ?: categories.firstOrNull { "cat:" + it.key == folder }?.name ?: folder
 
     androidx.compose.material3.ModalNavigationDrawer(drawerState = drawer, gesturesEnabled = drawer.isOpen, drawerContent = {
         androidx.compose.material3.ModalDrawerSheet(Modifier.width(300.dp)) {
-            FolderDrawer(accounts, acc, folders, folder, categories,
+            FolderDrawer(accounts, acc, folders, folder, categories, catchall,
                 onAccount = { id -> scope.launch { drawer.close() }; account = id; app.prefs.setMailAccount(id); folder = "INBOX"; scope.launch { refresh(id) } },
                 onFolder = { path -> scope.launch { drawer.close() }; folder = path; scope.launch { refresh(acc) } })
         }
     }) {
     Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (search.open) TabTopBar(title, search, insets = androidx.compose.foundation.layout.WindowInsets(0))
+        else Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { scope.launch { drawer.open() } }) { Icon(Icons.Default.Menu, contentDescription = stringResource(R.string.folders)) }
             Row(Modifier.clip(MaterialTheme.shapes.small).clickable { scope.launch { drawer.open() } }.padding(horizontal = 4.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column {
@@ -157,9 +179,21 @@ fun MailScreen(onOpen: (account: String, folder: String, uid: Long) -> Unit, onC
                 if ((current?.unread ?: 0) > 0) { Spacer(Modifier.width(8.dp)); Badge { Text(current!!.unread.toString()) } }
             }
             Spacer(Modifier.weight(1f))
+            IconButton(onClick = { search.open = true }) { Icon(Icons.Default.Search, contentDescription = stringResource(R.string.search)) }
+            IconButton(onClick = { aliases = true }) { Icon(Icons.Default.AlternateEmail, contentDescription = stringResource(R.string.alias_title)) }
             IconButton(onClick = { scope.launch { app.mail.sync(); refresh(acc) } }) { Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.refresh)) }
+            ServerBadge()
         }
         error?.let { Text(stringResource(R.string.error_generic, it), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp)) }
+        // Postausgang (Version 2): ohne Netz geschriebene Mails warten hier
+        val waitingMail = outMail.filter { it.account == acc }
+        if (waitingMail.isNotEmpty()) Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
+            .clip(MaterialTheme.shapes.small).background(MaterialTheme.colorScheme.secondaryContainer).padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.Schedule, contentDescription = null, Modifier.size(18.dp))
+            Text(androidx.compose.ui.res.pluralStringResource(R.plurals.mail_waiting, waitingMail.size, waitingMail.size), Modifier.weight(1f).padding(start = 8.dp),
+                style = MaterialTheme.typography.bodyMedium)
+            TextButton(onClick = { scope.launch { at.dimes.dmoffice.sync.Outbox.flush(ctx) } }) { Text(stringResource(R.string.send_now)) }
+        }
         if (focusOn) androidx.compose.material3.TabRow(selectedTabIndex = if (focusTab) 0 else 1) {
             val fi = focusInfo!!
             androidx.compose.material3.Tab(selected = focusTab, onClick = { focusTab = true },
@@ -167,6 +201,20 @@ fun MailScreen(onOpen: (account: String, folder: String, uid: Long) -> Unit, onC
             androidx.compose.material3.Tab(selected = !focusTab, onClick = { focusTab = false },
                 text = { Text(stringResource(R.string.other) + if (fi.other > 0) " (${fi.other})" else "") })
         }
+        if (search.open) {
+            val found = hits
+            when {
+                !search.active -> {}
+                found == null -> Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { androidx.compose.material3.CircularProgressIndicator() }
+                found.isEmpty() -> Text(stringResource(R.string.no_messages), Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                else -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 88.dp)) {
+                    items(found.size, key = { i -> "s/" + found[i].account + "/" + found[i].folder + "/" + found[i].uid }) { i ->
+                        val m = found[i]
+                        MailRow(m, "") { onOpen(m.account.ifEmpty { acc }, m.folder, m.uid) }
+                    }
+                }
+            }
+        } else
         PullToRefreshBox(isRefreshing = refreshing, onRefresh = { scope.launch { refresh(acc) } }, modifier = Modifier.fillMaxSize()) {
             if (shownItems.isEmpty() && !refreshing) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(stringResource(R.string.no_messages), color = MaterialTheme.colorScheme.onSurfaceVariant) }
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 88.dp)) {
@@ -193,7 +241,8 @@ fun MailScreen(onOpen: (account: String, folder: String, uid: Long) -> Unit, onC
                                     }
                                 } catch (e: Exception) { error = e.message }
                                 // Alle Posteingaenge sind eine eigene Liste: nach der Aktion neu holen
-                                if (folder == UNIFIED) try { refresh(acc) } catch (_: Exception) { }
+                                // ebenso Kategorien (die Mail ist dort ein Verweis auf den echten Ordner)
+                                if (folder == UNIFIED || folder.startsWith("cat:")) try { refresh(acc) } catch (_: Exception) { }
                             }
                         }) {
                         MailRow(m, folder) { onOpen(ma, mf, m.uid) }
@@ -204,8 +253,9 @@ fun MailScreen(onOpen: (account: String, folder: String, uid: Long) -> Unit, onC
         }
     }
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomEnd) {
-        ExtendedFloatingActionButton(onClick = { onCompose(acc) }, icon = { Icon(Icons.Default.Edit, contentDescription = null) }, text = { Text(stringResource(R.string.compose)) }, modifier = Modifier.padding(16.dp))
+        AddButton(stringResource(R.string.compose), Modifier.padding(16.dp)) { onCompose(acc) }
     }
+    if (aliases) AliasesDialog(onDismiss = { aliases = false })
     }
     }
 }
@@ -214,6 +264,8 @@ fun MailScreen(onOpen: (account: String, folder: String, uid: Long) -> Unit, onC
 fun MailRow(m: MailItem, currentFolder: String, onClick: () -> Unit) {
     val ctx = LocalContext.current
     val categories by App.get(ctx).mail.categories.collectAsState()
+    val expiries by App.get(ctx).mail.expiries.collectAsState()
+    val expiry = App.get(ctx).mail.expiryOf(expiries, m.account, m.folder.ifEmpty { currentFolder }, m.uid, m.messageId)
     val zone = ZoneId.systemDefault()
     val date = try { Instant.parse(m.date) } catch (_: Exception) { try { java.time.OffsetDateTime.parse(m.date).toInstant() } catch (_: Exception) { null } }
     val dateText = date?.let { d -> if (d.atZone(zone).toLocalDate() == LocalDate.now(zone)) Fmt.time(ctx, d.toEpochMilli()) else Fmt.shortDate(d.atZone(zone).toLocalDate()) } ?: ""
@@ -232,8 +284,10 @@ fun MailRow(m: MailItem, currentFolder: String, onClick: () -> Unit) {
                 Text(dateText, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Text(m.subject.ifBlank { "(…)" }, style = MaterialTheme.typography.bodyMedium, fontWeight = weight, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            AliasLine(m.alias, m.aliasState, m.from?.name)
             if (m.preview.isNotBlank()) Text(m.preview, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
             CategoryChips(categories.filter { it.key in m.keywords })
+            expiry?.let { ExpiryTag(it) }
         }
     }
 }

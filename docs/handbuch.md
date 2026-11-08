@@ -112,6 +112,15 @@ Kategorien sind farbige Schlagworte für Mails. dmOffice speichert sie als **IMA
 
 Eine Mail für später zurücklegen: *Wiedervorlage* → *In 1 Stunde*, *Heute Abend*, *Morgen*, *Nächste Woche* … oder ein eigenes Datum. Die Mail verschwindet in den Ordner *Wiedervorlage* und taucht zur gewählten Zeit **ungelesen oben im Posteingang** wieder auf. Mit *Wiedervorlage aufheben* kommt sie sofort zurück.
 
+### Entfernen nach Zeit
+
+Im Menü einer Mail (Rechtsklick, *…* im Lesebereich, in der App das Menü oben rechts): *In den Papierkorb nach …* oder *Vernichten nach …* – *1 Tag*, *7 Tage*, *30 Tage* oder *Am …* mit Datum und Uhrzeit. Im Web geht das auch für mehrere markierte Mails. Bis dahin bleibt die Mail, wo sie ist, und zeigt eine Sanduhr: „Wird am … in den Papierkorb verschoben“ bzw. „Wird am … vernichtet“. *Zurücknehmen* geht jederzeit bis zum Zeitpunkt.
+
+- **In den Papierkorb:** Die Mail kommt in den Papierkorb des Kontos und lässt sich dort wiederherstellen.
+- **Vernichten:** Die Mail wird auf dem Mailserver gelöscht und sofort getilgt, ohne Papierkorb. In dmOffice verschwinden auch Zwischenspeicher, Suchindex und Anhang-Kopien. Vorher fragt dmOffice einmal nach.
+
+Ausgeführt wird auf dem Server, auch wenn kein Gerät offen ist. Wurde die Mail inzwischen verschoben, findet dmOffice sie über ihre Message-ID. **Grenze:** dmOffice erreicht nur das Postfach auf dem Mailserver. Kopien auf anderen Geräten, beim Absender oder in Sicherungen des Mail-Anbieters bleiben, wie sie sind.
+
 ### Schreiben
 
 ![Neue E-Mail](img/de/mail-verfassen.png)
@@ -129,7 +138,7 @@ Eine Mail für später zurücklegen: *Wiedervorlage* → *In 1 Stunde*, *Heute A
 
 ### Regeln
 
-*Einstellungen* → *E-Mail* → *Regeln*. Eine Regel prüft neue Mails im Posteingang (Absender, Empfänger, Betreff, Text, Kopfzeile) und kann verschieben, kopieren, weiterleiten, als gelesen markieren, kennzeichnen, eine Kategorie zuweisen oder löschen. Jede Mail durchläuft die Regeln **einmal** – auch wenn sie später wieder im Posteingang landet.
+*Einstellungen* → *E-Mail* → *Regeln*. Eine Regel prüft neue Mails im Posteingang (Absender, Empfänger, Betreff, Text, Kopfzeile) und kann verschieben, kopieren, weiterleiten, als gelesen markieren, kennzeichnen, eine Kategorie zuweisen, löschen oder die Mail nach X Tagen in den Papierkorb legen bzw. vernichten (gezählt ab Eingang, siehe *Entfernen nach Zeit*). Jede Mail durchläuft die Regeln **einmal** – auch wenn sie später wieder im Posteingang landet.
 
 ![Regeln](img/de/einstellungen-regeln.png)
 
@@ -160,7 +169,7 @@ Oben rechts der Mond schaltet zwischen hell, dunkel und Systemeinstellung um.
 
 ### Teilnehmer einladen
 
-Im Termin-Editor nimmt *Teilnehmer einladen* Adressen oder Namen aus den Kontakten. Die Einladung geht per Mail von einem deiner Mailkonten aus – auch an Adressen außerhalb von dmOffice –, Antworten aktualisieren den Termin. Änderst du den Termin, lassen sich die Teilnehmer darüber informieren; beim Löschen bekommen sie eine Absage. Ohne Mailkonto werden Teilnehmer gespeichert, aber nicht benachrichtigt.
+Im Termin-Editor nimmt *Teilnehmer einladen* Adressen oder Namen aus den Kontakten. Die Einladung geht per Mail von einem deiner Mailkonten aus – auch an Adressen außerhalb von dmOffice –, Antworten aktualisieren den Termin. Änderst du den Termin, lassen sich die Teilnehmer darüber informieren; beim Löschen bekommen sie eine Absage. Ohne Mailkonto werden Teilnehmer gespeichert, aber nicht benachrichtigt. Benutzer desselben dmOffice bietet das Feld mit ihrer internen Adresse (`anmeldename@dmoffice.intern`) an: Sie bekommen die Einladung von Pukki. Eine eingetippte Mailadresse geht immer per Mail hinaus, auch wenn sie jemand hier als Mailkonto eingetragen hat.
 
 ### Kalender abonnieren
 

@@ -77,7 +77,7 @@ export function StatsSettings() {
       <div className={s.tiles}>
         {tile(fmtSize(stats.database), t('Datenbank (verschlüsselt)'), t('Die ganze Datei auf dem Server, mit allem'))}
         {tile(n(stats.mails), t('Mails hier'), t('davon vollständig gespeichert: {size} (komprimiert)', { size: fmtSize(stats.mailBytes) }))}
-        {slim.length > 0 && tile(fmtSize(saved), t('Gespart durch „Schlank“'),
+        {slim.length > 0 && tile(fmtSize(saved), t('Gespart durch Slim Mode'),
           t('So viel Mail (Größe beim Anbieter) liegt nur dort und wird beim Öffnen geholt.'))}
         {tile(n(stats.events), t('Termine'))}
         {tile(n(stats.tasks), t('Aufgaben'))}
@@ -100,11 +100,12 @@ export function StatsSettings() {
               {a.email} · {a.syncMonths === 1 ? t('letzter Monat synchronisiert') : a.syncMonths ? t('letzte {n} Monate synchronisiert', { n: a.syncMonths }) : t('alles synchronisiert')} ·
               {' '}{sum.server === 1 ? t('{local} von 1 Mail hier', { local: n(sum.local) }) : t('{local} von {server} Mails hier', { local: n(sum.local), server: n(sum.server) })}
               {' · '}{t('{size} auf dem Server, {stored} gespeichert', { size: fmtSize(sum.size), stored: fmtSize(sum.stored) })}
-              {a.storage === 'slim' && <>{' · '}{t('Schlank: vollständig hier sind die Mails der letzten {days} Tage (neue und zuletzt geöffnete zuerst, zusammen höchstens {max}), von älteren Kopfdaten und Vorschau; {saved} liegen nur beim Anbieter', {
+              {a.storage === 'slim' && <>{' · '}{t('Slim Mode: vollständig hier sind die Mails der letzten {days} Tage (neue und zuletzt geöffnete zuerst, zusammen höchstens {max}), von älteren Kopfdaten und Vorschau; {saved} liegen nur beim Anbieter', {
                 days: a.slimDays ?? 30, max: fmtSize((a.slimMb ?? 200) * 1024 * 1024), saved: fmtSize(a.serverOnly ?? 0) })}</>}
             </Text>
             <div style={{ overflowX: 'auto' }}>
-            <Table size="small" style={{ minWidth: 960 }}>
+            {/* Spalten nach Inhalt (Fluent legt sie sonst gleich breit fest - der Zeitraum wurde abgeschnitten) */}
+            <Table size="small" style={{ minWidth: 960, tableLayout: 'auto' }}>
               <TableHeader>
                 <TableRow>
                   <TableHeaderCell style={{ width: 230 }}>{t('Ordner')}</TableHeaderCell>
@@ -121,7 +122,7 @@ export function StatsSettings() {
               <TableBody>
                 {a.folders.map(f => (
                   <TableRow key={f.path}>
-                    <TableCell title={f.path} style={{ minWidth: 0, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{folderLabel({ ...f, delimiter: '/', selectable: true, total: f.serverTotal, synced: null })}</TableCell>
+                    <TableCell title={f.path} style={{ maxWidth: 230, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{folderLabel({ ...f, delimiter: '/', selectable: true, total: f.serverTotal, synced: null })}</TableCell>
                     <TableCell className={s.barCell}><div className={s.bar}><div className={s.fill} style={{ width: `${(f.size / max) * 100}%` }} /></div></TableCell>
                     <TableCell className={s.num}>{fmtSize(f.size)}</TableCell>
                     <TableCell className={s.num}>{n(f.local)}</TableCell>

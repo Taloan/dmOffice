@@ -6,6 +6,9 @@ import { useState } from 'react'
 import { useApp } from '../App'
 import { t } from '../i18n'
 import { copyText } from './browser'
+import { brandLogo } from '../theme'
+import { currentPrefs } from '../prefs'
+import { OpenSourceDialog } from './OpenSource'
 
 export const WEBSITE = 'https://dmoffice.de'
 export const GITHUB = 'https://github.com/Taloan/dmOffice'
@@ -41,15 +44,17 @@ export function HelpMenu({ className, release, build }: { className?: string; re
 
 function AboutDialog({ release, build, onClose }: { release: string; build: string; onClose: () => void }) {
   const { notify } = useApp()
+  const [oss, setOss] = useState(false)
   const text = [release && `v${release}`, build && `(${t('Build')} ${build})`].filter(Boolean).join(' ')
   return (
+    <>
     <Dialog open onOpenChange={(_, d) => { if (!d.open) onClose() }}>
       <DialogSurface style={{ maxWidth: 440 }}>
         <DialogBody>
           <DialogTitle>{t('Über dmOffice')}</DialogTitle>
           <DialogContent style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <img src="/favicon.svg" width={44} height={44} alt="" />
+              <img src={brandLogo(currentPrefs.accent)} width={44} height={44} alt="" />
               <div>
                 <Text weight="semibold" size={500} block>dmOffice {release && <span style={{ fontWeight: 400 }}>v{release}</span>}</Text>
                 <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>{t('Mail, Kalender, Kontakte, Aufgaben, Notizen und Dateien auf deinem eigenen Server.')}</Text>
@@ -65,7 +70,7 @@ function AboutDialog({ release, build, onClose }: { release: string; build: stri
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               <Link href={WEBSITE} target="_blank" rel="noopener noreferrer">{WEBSITE.replace('https://', '')}</Link>
               <Link href={GITHUB} target="_blank" rel="noopener noreferrer">{GITHUB.replace('https://', '')}</Link>
-              <Link href={GITHUB + '/blob/master/THIRD-PARTY-NOTICES.md'} target="_blank" rel="noopener noreferrer">{t('Lizenzen verwendeter Bibliotheken')}</Link>
+              <Link onClick={() => setOss(true)}>{t('Open-Source-Bibliotheken')}</Link>
             </div>
           </DialogContent>
           <DialogActions>
@@ -74,5 +79,7 @@ function AboutDialog({ release, build, onClose }: { release: string; build: stri
         </DialogBody>
       </DialogSurface>
     </Dialog>
+    {oss && <OpenSourceDialog onClose={() => setOss(false)} />}
+    </>
   )
 }

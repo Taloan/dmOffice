@@ -42,6 +42,9 @@ Die App spricht CalDAV mit dem dmOffice-Server (`/dav/calendars/<login>/`), nutz
 - **Notizen** (Mehr → Notizen): Liste mit Suche, Lesen; Bearbeiten absatzweise mit Versionsprüfung
   (gesperrte Blöcke und Notizen mit Tabellen/Bildern bleiben unverändert).
 - **Dateien** (Reiter Dateien): durchsuchen, Liste oder Kacheln, Vorschau (Bilder, PDF, Text, Video), in anderen Apps öffnen, umbenennen, löschen, Ordner anlegen, hochladen, frühere Versionen, Freigabelinks (ansehen, hochladen, nur hochladen; Ablaufdatum und Passwort). **Offline verfügbar** hält eine Kopie markierter Dateien oder Ordner auf dem Handy und aktuell. Office-Dokumente öffnen im Editor des Office-Servers (siehe [docs/office.de.md](../../docs/office.de.md)).
+- **Audiothek** (Version 2, wenn der Server sie anbietet): Playlists und Auto-Playlists vom Server, Alben, alle Titel, Suche.
+  Spielt im Hintergrund weiter, mit Benachrichtigung, Sperrbildschirm und Bluetooth-Tasten (Media3). Gehörtes zählt wie im
+  Web in den Hörverlauf; ohne Netz wird es nachgemeldet. Playlists bearbeitet man im Web.
 - **Automatisches Hochladen** (Optionen): Regeln laden neue Fotos, Videos oder andere Dateien aus einem Ordner des Handys in einen Ordner der dmOffice-Dateien.
   - Quellen: Kamera, Screenshots, WhatsApp-Medien, ein beliebiger Medienordner oder ein von Hand gewählter Ordner.
   - Zielordner in dmOffice, wahlweise mit Unterordnern nach Jahr, Monat oder Tag oder mit den Unterordnern der Quelle.
@@ -155,6 +158,11 @@ Mehrtägige Termine folgen in allen Widgets derselben Regel (`MultiDayRule`), au
 Die Umsetzung liegt in `widget/Widgets.kt` (gemeinsame Bausteine, Agenda, Aufgaben, Raster) und
 `widget/MonthWidget.kt`.
 
+**dmOffice Musik** (Version 2, nur angeboten, wenn der Server eine Audiothek hat): Player mit Cover, Titel und Interpret,
+zurück, Abspielen/Pause und weiter; 4×1, größenveränderlich (schmal ohne „zurück“). Tippen auf Cover oder Titel öffnet
+die Audiothek; ohne Warteschlange öffnet sie auch der Abspielknopf. Der Wiedergabedienst hält das Widget aktuell
+(`widget/AudioWidget.kt`).
+
 ## Push über Firebase (optional)
 
 Ohne Push fragt die App alle 15 Minuten nach Neuem. Mit Push schickt dmOffice bei jeder Änderung
@@ -195,6 +203,7 @@ Fingerabdruck aus Mail-Version, Kalender-Synctokens und Notizen-Stand und schick
 | `mail/` | Mail-Repository mit Cache; `data/ContactsRepo.kt`, `data/NotesRepo.kt` ebenso |
 | `files/` | Dateien, Offline-Kopien, Vorschaubilder, Dokumentenanbieter, Anbindung des Office-Editors |
 | `upload/` | Automatisches Hochladen (Suche, Warteschlange, Regeln) und die Logik für „Speicherplatz freigeben“ |
+| `audio/` | Audiothek: Repository (Titel, Playlists, Hörverlauf), Wiedergabedienst (Media3) und seine Steuerung |
 | `update/` | Update-Suche, Download und Prüfung der Signatur |
 | `sync/ProviderSync.kt` | Spiegel in CalendarContract und ContactsContract |
 | `sync/PushService.kt` | Push über Firebase: Token anmelden, Signal startet den Abgleich |

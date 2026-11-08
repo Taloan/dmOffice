@@ -24,10 +24,11 @@ object MailNotifyRules {
      * bei mehr als [limit] nur die neuesten. "Relevant": Prio-Posteingang (focus) nicht ausdruecklich "Sonstige";
      * "VIP": Absender unter [vips] (Kleinschreibung).
      */
-    fun fresh(items: List<MailItem>, lastUid: Long, mode: String, vips: Set<String>, limit: Int = 6): List<MailItem> {
+    fun fresh(items: List<MailItem>, lastUid: Long, mode: String, vips: Set<String>, limit: Int = 6,
+              categories: List<at.dimes.dmoffice.api.MailCategory> = emptyList()): List<MailItem> {
         if (lastUid < 0 || mode == OFF) return emptyList()
         return items.asSequence()
-            .filter { it.uid > lastUid && !it.seen }
+            .filter { it.uid > lastUid && !it.seen && !silenced(categories, it.keywords) }
             .filter { when (mode) {
                 RELEVANT -> it.focus != false
                 VIP -> (it.from?.address?.lowercase() ?: "") in vips
@@ -35,6 +36,13 @@ object MailNotifyRules {
             } }
             .sortedBy { it.uid }
             .toList().takeLast(limit)
+    }
+
+    /** Keine Benachrichtigung: Die Mail traegt Kategorien, und alle stehen auf "ohne Benachrichtigung" (wie auf dem Server). */
+    fun silenced(categories: List<at.dimes.dmoffice.api.MailCategory>, keywords: List<String>): Boolean {
+        val kw = keywords.map { it.lowercase() }.toSet()
+        val mine = categories.filter { it.key.lowercase() in kw }
+        return mine.isNotEmpty() && mine.all { it.quiet }
     }
 
     /** Kanal je Konto: Ton, Vibration und Wichtigkeit stellt Android dafuer einzeln ein. */

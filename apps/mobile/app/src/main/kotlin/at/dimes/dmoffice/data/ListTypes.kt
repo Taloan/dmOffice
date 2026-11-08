@@ -16,11 +16,17 @@ object ListTypes {
     const val TASKS = "tasks"; const val SHOP = "shop"; const val CHECK = "check"
 
     /** Vorschlag beim Tippen: was schon einmal auf der Liste stand oder eingelesen wurde (Web: Vorschlaege uebernehmen). */
-    @Serializable data class Known(val name: String = "", val unit: String? = null, val section: String? = null, val count: Int = 0)
+    @Serializable data class Known(val name: String = "", val unit: String? = null, val section: String? = null, val count: Int = 0,
+                                   /** Foto des Artikels (welche Marke, welche Packung) - Kennung, die Bilddaten holt [photo]. */
+                                   val photo: String? = null)
 
-    @Serializable data class Info(val id: Long, val type: String, val sections: List<String>, val history: List<Known> = emptyList(), val done: String? = null)
+    /** graph: Name des Microsoft-Kontos (Kontoname, sonst Adresse), mit dem die Sammlung abgeglichen wird (eigener Abschnitt je Konto); subscribed: Kalender-Abo. */
+    @Serializable data class Info(val id: Long, val type: String, val sections: List<String>, val history: List<Known> = emptyList(), val done: String? = null,
+                                  val graph: String? = null, val graphError: String? = null, val subscribed: Boolean = false)
 
-    @Serializable private data class Coll(val id: Long, val uri: String = "", val listType: String? = null, val calendarKind: String? = null)
+    @Serializable private data class Graph(val email: String = "", val name: String? = null, val lastError: String? = null)
+    @Serializable private data class Coll(val id: Long, val uri: String = "", val listType: String? = null, val calendarKind: String? = null,
+                                          val graph: Graph? = null, val subscription: kotlinx.serialization.json.JsonElement? = null)
     @Serializable private data class Meta(val type: String = TASKS, val sections: List<String> = emptyList(), val history: List<Known> = emptyList(), val done: String? = null)
 
     private val state = MutableStateFlow<Map<String, Info>>(emptyMap())
@@ -31,6 +37,13 @@ object ListTypes {
     val mealUris: StateFlow<Set<String>> = meals
 
     fun uriOf(calendarHref: String) = calendarHref.trimEnd('/').substringAfterLast('/')
+
+    /** Abschnitt einer Sammlung wie im Web: "" eigene, "g:<Adresse>" je Microsoft-Konto, "s" abonniert - in dieser Reihenfolge. */
+    fun sectionOf(info: Info?): String = when { info?.graph != null -> "g:" + info.graph; info?.subscribed == true -> "s"; else -> "" }
+    fun sectionOrder(key: String) = when { key.isEmpty() -> 0; key.startsWith("g:") -> 1; else -> 2 }
+
+    /** Art einer Liste ohne Netz (Widget): letzter gespeicherter Stand. */
+    fun infoOf(context: Context, calendarHref: String): Info? { loadSaved(context); return state.value[uriOf(calendarHref)] }
 
     // Letzter Stand auf dem Geraet: ohne Netz (Einkaufen im Funkloch) bleibt die Einkaufsliste nach einem Neustart eine Einkaufsliste
     private const val PREFS = "listtypes"
@@ -55,7 +68,9 @@ object ListTypes {
                 val meta = if (type == TASKS) null else try {
                     api.get<Meta>(api.url("/api/pim/lists/${c.id}"))
                 } catch (_: Exception) { null }
-                c.uri to Info(c.id, type, meta?.sections.orEmpty(), meta?.history.orEmpty().filter { it.name.isNotBlank() }, meta?.done)
+                c.uri to Info(c.id, type, meta?.sections.orEmpty(), meta?.history.orEmpty().filter { it.name.isNotBlank() }, meta?.done,
+                    graph = c.graph?.let { g -> g.name?.ifBlank { null } ?: g.email.ifBlank { "Microsoft" } }, graphError = c.graph?.lastError,
+                    subscribed = c.subscription != null && c.subscription !is kotlinx.serialization.json.JsonNull)
             }
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("byUri", store.encodeToString(state.value))
                 .putStringSet("meals", meals.value).apply()
@@ -114,6 +129,36 @@ object ListTypes {
     suspend fun forget(context: Context, id: Long, item: String): Boolean = withContext(Dispatchers.IO) {
         val api = App.get(context).api ?: return@withContext false
         try { api.postText(api.url("/api/pim/lists/$id/forget"), json("item" to item)) } catch (_: Exception) { return@withContext false }
+        refresh(context)
+        true
+    }
+
+    private val photos = android.util.LruCache<String, android.graphics.Bitmap>(40)
+
+    /** Foto eines Artikels: aus dem Speicher, vom Geraet (im Laden oft ohne Netz) oder vom Server. Null: nicht zu haben. */
+    suspend fun photo(context: Context, listId: Long, photo: String): android.graphics.Bitmap? = withContext(Dispatchers.IO) {
+        photos.get(photo)?.let { return@withContext it }
+        if (!photo.all { it.isLetterOrDigit() }) return@withContext null
+        val file = java.io.File(java.io.File(context.cacheDir, "listphotos").apply { mkdirs() }, "$photo.webp")
+        val bytes = if (file.exists()) file.readBytes() else {
+            val api = App.get(context).api ?: return@withContext null
+            try { api.getBytes(api.url("/api/pim/lists/$listId/photos/$photo")).first.also { file.writeBytes(it) } } catch (_: Exception) { return@withContext null }
+        }
+        android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.also { photos.put(photo, it) }
+    }
+
+    /** Foto (JPEG) zu einem Artikel zuordnen oder ersetzen; der Server verkleinert es. */
+    suspend fun setPhoto(context: Context, id: Long, item: String, jpeg: ByteArray): Boolean = withContext(Dispatchers.IO) {
+        val api = App.get(context).api ?: return@withContext false
+        try { api.postMultipart(api.url("/api/pim/lists/$id/photo", "item" to item), "{}", listOf(Triple("foto.jpg", "image/jpeg", jpeg))) }
+        catch (_: Exception) { return@withContext false }
+        refresh(context)
+        true
+    }
+
+    suspend fun removePhoto(context: Context, id: Long, item: String): Boolean = withContext(Dispatchers.IO) {
+        val api = App.get(context).api ?: return@withContext false
+        try { api.delete(api.url("/api/pim/lists/$id/photo", "item" to item)) } catch (_: Exception) { return@withContext false }
         refresh(context)
         true
     }

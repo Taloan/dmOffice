@@ -250,7 +250,7 @@ public sealed class UpdateCenter
 
         var running = Activity.Get(u.Id, Activity.Migration) is { State: "running" };
         if (running) plan.State = "running";
-        else if (plan.MissingBytes > 0) { plan.State = "space"; plan.Message = "Nicht genug freier Platz fÃ¼r die DatenÃ¤nderung."; }
+        else if (plan.MissingBytes > 0) { plan.State = "space"; plan.Message = "Nicht genug freier Platz für die Datenänderung."; }
         else if (plan.NeedsConsent && !MigrationApproved) plan.State = "consent";
         else if (plan.WillBackup && plan.BackupMissingBytes > 0) plan.State = "backup-space";
         else plan.State = "ready";
@@ -277,13 +277,13 @@ public sealed class UpdateCenter
         switch (plan.State)
         {
             case "space":
-                throw new UpdatePendingException($"Die DatenÃ¤nderung wartet: es fehlen etwa {DiskSpace.Format(plan.MissingBytes)} freier Platz.", "space");
+                throw new UpdatePendingException($"Die Datenänderung wartet: es fehlen etwa {DiskSpace.Format(plan.MissingBytes)} freier Platz.", "space");
             case "consent":
-                throw new UpdatePendingException("Die DatenÃ¤nderung ist groÃŸ und wartet auf â€žJetzt startenâ€œ in der Verwaltung.", "consent");
+                throw new UpdatePendingException("Die Datenänderung ist groß und wartet auf „Jetzt starten“ in der Verwaltung.", "consent");
             case "backup-space":
-                throw new UpdatePendingException($"FÃ¼r die Sicherung vor der DatenÃ¤nderung fehlen etwa {DiskSpace.Format(plan.BackupMissingBytes)}. Die Verwaltung kann ohne Sicherung fortfahren.", "backup-space");
+                throw new UpdatePendingException($"Für die Sicherung vor der Datenänderung fehlen etwa {DiskSpace.Format(plan.BackupMissingBytes)}. In der Verwaltung lässt sich ohne Sicherung fortfahren.", "backup-space");
             case "error":
-                throw new UpdatePendingException("Die letzte DatenÃ¤nderung ist gescheitert: " + plan.Message, "error");
+                throw new UpdatePendingException("Die letzte Datenänderung ist gescheitert: " + plan.Message, "error");
         }
         if (plan.WillBackup)
         {
@@ -293,7 +293,7 @@ public sealed class UpdateCenter
             {
                 activity.Fail(ex.Message);
                 Failed(user.Id, ex);
-                throw new UpdatePendingException("Die Sicherung vor der DatenÃ¤nderung ist fehlgeschlagen, die Daten sind unverÃ¤ndert: " + ex.Message, "backup-failed");
+                throw new UpdatePendingException("Die Sicherung vor der Datenänderung ist fehlgeschlagen, die Daten sind unverändert: " + ex.Message, "backup-failed");
             }
         }
         return true;

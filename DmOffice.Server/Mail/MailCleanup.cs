@@ -58,7 +58,7 @@ public sealed class MailCleanup(Spaces spaces, ImapPool pool, MailSync sync, ILo
         foreach (var account in space.Settings.MailAccounts.Where(a => a.Slim).ToList())
         {
             var (n, b) = MailStore.Discard(space.Db, account.Id, MailStore.SlimLimit.Of(account, DateTimeOffset.UtcNow)!);
-            if (n > 0) log.LogInformation("Schlank {Account}: {Count} Inhalte verworfen ({Bytes} Bytes)", account.Email, n, b);
+            if (n > 0) log.LogInformation("Schlank {Account}: {Count} Inhalte verworfen ({Bytes} Bytes)", LogNames.Of(space, account), n, b);
             count += n;
             bytes += b;
         }
@@ -85,10 +85,10 @@ public sealed class MailCleanup(Spaces spaces, ImapPool pool, MailSync sync, ILo
                     try
                     {
                         var n = await RunAsync(space, account, pool, sync, stop);
-                        if (n > 0) log.LogInformation("Aufgeraeumt {Account}: {Count} alte Mails aus Papierkorb/Junk", account.Email, n);
+                        if (n > 0) log.LogInformation("Aufgeraeumt {Account}: {Count} alte Mails aus Papierkorb/Junk", LogNames.Of(space, account), n);
                     }
                     catch (OperationCanceledException) when (stop.IsCancellationRequested) { return; }
-                    catch (Exception e) { activity.Fail(e.Message); log.LogWarning("Aufraeumen {Account}: {Error}", account.Email, e.Message); }
+                    catch (Exception e) { activity.Fail(e.Message); log.LogWarning("Aufraeumen {Account}: {Error}", LogNames.Of(space, account), e.Message); }
                 }
             try { await Task.Delay(TimeSpan.FromHours(1), stop); } catch (OperationCanceledException) { break; }
         }

@@ -13,6 +13,8 @@ import at.dimes.dmoffice.api.NoteSaveResult
 import at.dimes.dmoffice.api.NotesList
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -32,8 +34,30 @@ import kotlinx.serialization.json.put
  * Notizen (notizi, Ende-zu-Ende verschluesselt im Abgleichordner): die Liste, die Ordner und
  * geoeffnete Notizen werden gecacht. Bearbeiten blockweise: unveraenderte Bloecke als Nummer,
  * neue als HTML, mit Versionspruefung (409 bei Aenderung auf einem anderen Geraet).
+ *
+ * [vault]: eine notizi-Datenbank im Tresor (Ordnername, docs/tresor-konzept.md Stufe 4). Dann geht nichts in die
+ * Datenbank der App - Liste, Ordner und Bilder nur im Speicher, solange die Ansicht offen ist; offline gibt es nichts.
  */
-class NotesRepo(private val context: Context, private val db: AppDb) {
+class NotesRepo(private val context: Context, private val db: AppDb, val vault: String? = null) {
+    private val base = vault?.let { "/api/notes/vault/" + android.net.Uri.encode(it) } ?: "/api/notes"
+    private val memItems = MutableStateFlow<List<NoteItem>>(emptyList())
+    private val memFolders = MutableStateFlow<List<NoteFolder>>(emptyList())
+
+    /** Im Tresor: alles aus dem Speicher nehmen (Tresor zu oder Ansicht verlassen). */
+    fun forget() { memItems.value = emptyList(); memFolders.value = emptyList(); blobs.evictAll() }
+
+    /** Reihenfolge der Liste, aus der zuletzt eine Notiz geöffnet wurde – nach Archivieren oder Löschen geht die nächste auf. */
+    var order: List<Long> = emptyList()
+
+    /** Nächste Notiz nach [id] in der gemerkten Liste (bei der letzten die davor); [id] fällt aus der Liste. */
+    fun nextAfter(id: Long): Long? {
+        val i = order.indexOf(id)
+        if (i < 0) return null
+        val next = order.getOrNull(i + 1) ?: order.getOrNull(i - 1)
+        order = order - id
+        return next
+    }
+
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false; coerceInputValues = true }
     private fun api(): ApiClient = App.get(context).api ?: throw ApiException(401, "no account")
 
@@ -42,13 +66,18 @@ class NotesRepo(private val context: Context, private val db: AppDb) {
         override fun sizeOf(key: String, value: ByteArray) = value.size
     }
 
-    fun all(): Flow<List<NoteItem>> = db.notes().all().map { l -> l.map { json.decodeFromString<NoteItem>(it.json) } }
-    fun search(q: String): Flow<List<NoteItem>> = (if (q.isBlank()) db.notes().all() else db.notes().search(q.trim())).map { l -> l.map { json.decodeFromString<NoteItem>(it.json) } }
-    fun observe(id: Long): Flow<NoteDetail?> = db.notes().observe(id).map { e -> e?.detailJson?.let { json.decodeFromString<NoteDetail>(it) } }
-    fun folders(): Flow<List<NoteFolder>> = db.noteFolders().all().map { l -> l.map { NoteFolder(it.id, it.name, it.parent, it.sortOrder) } }
+    fun all(): Flow<List<NoteItem>> = if (vault != null) memItems else db.notes().all().map { l -> l.map { json.decodeFromString<NoteItem>(it.json) } }
+    fun search(q: String): Flow<List<NoteItem>> = if (vault != null) memItems.map { l -> l.filter { q.isBlank() || it.title.contains(q.trim(), true) || it.snippet.contains(q.trim(), true) } } else (if (q.isBlank()) db.notes().all() else db.notes().search(q.trim())).map { l -> l.map { json.decodeFromString<NoteItem>(it.json) } }
+    fun observe(id: Long): Flow<NoteDetail?> = if (vault != null) flowOf(null) else db.notes().observe(id).map { e -> e?.detailJson?.let { json.decodeFromString<NoteDetail>(it) } }
+    fun folders(): Flow<List<NoteFolder>> = if (vault != null) memFolders else db.noteFolders().all().map { l -> l.map { NoteFolder(it.id, it.name, it.parent, it.sortOrder) } }
 
     suspend fun refresh() = withContext(Dispatchers.IO) {
-        val list: NotesList = api().get(api().url("/api/notes", "view" to "all"))
+        val list: NotesList = api().get(api().url(base, "view" to "all"))
+        if (vault != null) {
+            memItems.value = list.items
+            memFolders.value = api().get(api().url("$base/folders"))
+            return@withContext
+        }
         val existing = db.notes()
         // Geoeffnete Notizen behalten ihren Inhalt, auch wenn er inzwischen aelter ist: ohne Netz (Einkaufen im Funkloch)
         // ist der letzte Stand besser als keiner; load holt mit Netz ohnehin den neuen
@@ -59,27 +88,33 @@ class NotesRepo(private val context: Context, private val db: AppDb) {
         existing.upsert(entities)
         existing.deleteMissing(entities.map { it.id }.ifEmpty { listOf(-1L) })
         try {
-            val folders: List<NoteFolder> = api().get(api().url("/api/notes/folders"))
+            val folders: List<NoteFolder> = api().get(api().url("$base/folders"))
             db.noteFolders().replace(folders.map { NoteFolderEntity(it.syncId, it.parent, it.name, it.sortOrder) })
         } catch (_: Exception) { /* Ordner beim naechsten Mal */ }
     }
 
     /** Volltextsuche auf dem Server (auch im Text, nicht nur in Titel und Vorschau). */
     suspend fun searchServer(q: String): List<NoteItem> = withContext(Dispatchers.IO) {
-        api().get<NotesList>(api().url("/api/notes", "q" to q.trim())).items
+        api().get<NotesList>(api().url(base, "q" to q.trim())).items
+    }
+
+    /** Notizen eines Ordners vom Server - für mit mir geteilte Ordner (der Server erkennt die Freigabe am Ordner). */
+    suspend fun folderItems(folder: String): List<NoteItem> = withContext(Dispatchers.IO) {
+        api().get<NotesList>(api().url(base, "folder" to folder)).items
     }
 
     /** Archiv oder Papierkorb - nicht gecacht, kommt jedes Mal vom Server. */
     suspend fun view(view: String): List<NoteItem> = withContext(Dispatchers.IO) {
-        api().get<NotesList>(api().url("/api/notes", "view" to view)).items
+        api().get<NotesList>(api().url(base, "view" to view)).items
     }
 
     suspend fun load(id: Long, force: Boolean = false): NoteDetail = withContext(Dispatchers.IO) {
+        if (vault != null) return@withContext api().get<NoteDetail>(api().url("$base/$id"))
         val cached = db.notes().byId(id)
         val stale = cached?.detailJson?.let { json.decodeFromString<NoteDetail>(it) }
         // Ohne force: der gemerkte Inhalt, solange er zum Stand der Liste passt (oder offline gespeichert ist)
         if (!force && stale != null && (stale.modified == cached.modified || db.notePending().byId(id) != null)) return@withContext stale
-        val d: NoteDetail = try { api().get(api().url("/api/notes/$id")) } catch (e: Exception) {
+        val d: NoteDetail = try { api().get(api().url("$base/$id")) } catch (e: Exception) {
             // Ohne Netz den letzten Stand - aber nur, wenn ihn niemand ausdruecklich frisch verlangt hat
             if (!force && stale != null && isOffline(e)) return@withContext stale else throw e
         }
@@ -97,14 +132,14 @@ class NotesRepo(private val context: Context, private val db: AppDb) {
             put("plain", plain)
             put("blocks", blocks)
         }
-        json.decodeFromString<NoteSaveResult>(api().putText(api().url("/api/notes/$id/content"), body.toString()))
+        json.decodeFromString<NoteSaveResult>(api().putText(api().url("$base/$id/content"), body.toString()))
     }
 
     /** Kein Netz (im Unterschied zu einer Antwort des Servers mit Fehler): dann offline speichern. */
     fun isOffline(e: Throwable) = e is java.io.IOException && e !is ApiException
 
     val pendingCount: Flow<Int> = db.notePending().count()
-    suspend fun hasPending(id: Long) = db.notePending().byId(id) != null
+    suspend fun hasPending(id: Long) = vault == null && db.notePending().byId(id) != null
 
     /**
      * Ohne Netz speichern, Bloecke wie beim normalen Speichern ({i} = Block der angezeigten Fassung, {html} = neu).
@@ -112,6 +147,7 @@ class NotesRepo(private val context: Context, private val db: AppDb) {
      * null: geht offline nicht (bearbeitete Bilder in gesperrten Bloecken), sonst die neue lokale Fassung.
      */
     suspend fun saveOffline(shown: NoteDetail, blocks: JsonArray, plain: String): NoteDetail? = withContext(Dispatchers.IO) {
+        if (vault != null) return@withContext null
         val mine = ArrayList<String>()
         val prot = ArrayList<Boolean>()
         for (b in blocks) {
@@ -140,6 +176,7 @@ class NotesRepo(private val context: Context, private val db: AppDb) {
      * Ergebnis: Titel der dabei angelegten Kopien. Ohne Netz bleibt alles fuer das naechste Mal liegen.
      */
     suspend fun flushPending(): List<String> = withContext(Dispatchers.IO) {
+        if (vault != null) return@withContext emptyList()
         val copies = ArrayList<String>()
         for (p in db.notePending().all()) {
             try { flushOne(p)?.let { copies += it } }
@@ -190,7 +227,7 @@ class NotesRepo(private val context: Context, private val db: AppDb) {
     }
 
     suspend fun create(folder: String?): Long = withContext(Dispatchers.IO) {
-        val r = api().postText(api().url("/api/notes"), buildJsonObject { if (folder != null) put("folder", folder) }.toString())
+        val r = api().postText(api().url(base), buildJsonObject { if (folder != null) put("folder", folder) }.toString())
         val id = (json.parseToJsonElement(r) as JsonObject)["id"]!!.let { (it as JsonPrimitive).content.toLong() }
         try { refresh() } catch (_: Exception) { }
         id
@@ -198,26 +235,26 @@ class NotesRepo(private val context: Context, private val db: AppDb) {
 
     /** Titel, Farbe, Wichtig, Ordner ("" = oberste Ebene). */
     suspend fun setMeta(id: Long, meta: NoteMeta) = withContext(Dispatchers.IO) {
-        api().putText(api().url("/api/notes/$id/meta"), json.encodeToString(meta))
+        api().putText(api().url("$base/$id/meta"), json.encodeToString(meta))
         try { refresh() } catch (_: Exception) { }
     }
 
     /** "archive", "restore" oder "trash" - laesst sich zurueckholen. */
     suspend fun act(id: Long, action: String) = withContext(Dispatchers.IO) {
-        api().postText(api().url("/api/notes/$id/$action"), null)
+        api().postText(api().url("$base/$id/$action"), null)
         try { refresh() } catch (_: Exception) { }
     }
 
     /** Endgueltig loeschen (nur aus dem Papierkorb). */
     suspend fun deleteForever(id: Long) = withContext(Dispatchers.IO) {
-        api().delete(api().url("/api/notes/$id"))
+        api().delete(api().url("$base/$id"))
         try { refresh() } catch (_: Exception) { }
     }
 
     /** Ein Bild oder Anhang der Notizen (Blobname wie im Abgleichordner). Blockiert - nicht im Hauptthread. */
     fun blob(name: String): ByteArray {
         blobs.get(name)?.let { return it }
-        val (bytes, _) = api().getBytes(api().url("/api/notes/blob/" + java.net.URLEncoder.encode(name, "UTF-8").replace("+", "%20")))
+        val (bytes, _) = api().getBytes(api().url("$base/blob/" + java.net.URLEncoder.encode(name, "UTF-8").replace("+", "%20")))
         blobs.put(name, bytes)
         return bytes
     }
@@ -227,7 +264,7 @@ class NotesRepo(private val context: Context, private val db: AppDb) {
     /** Ein Bild fuer den Editor ablegen (Foto, Zeichnung); der Server vergibt den Blobnamen wie der Abgleich. */
     suspend fun uploadImage(bytes: ByteArray, mime: String): String = withContext(Dispatchers.IO) {
         val ext = if (mime.contains("jpeg")) "jpg" else mime.substringAfter('/', "png")
-        val r = api().postMultipart(api().url("/api/notes/images"), "{}", listOf(Triple("bild.$ext", mime, bytes)))
+        val r = api().postMultipart(api().url("$base/images"), "{}", listOf(Triple("bild.$ext", mime, bytes)))
         val name = ((json.parseToJsonElement(r) as JsonObject)["name"] as JsonPrimitive).content
         blobs.put(name, bytes)
         name

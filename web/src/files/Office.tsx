@@ -3,7 +3,7 @@
 import { Button, MessageBar, MessageBarBody, Spinner, Text, makeStyles, tokens } from '@fluentui/react-components'
 import { ArrowLeft24Regular } from '@fluentui/react-icons'
 import { useEffect, useRef, useState } from 'react'
-import { api } from '../api'
+import { api, featureOn } from '../api'
 import { t, tError } from '../i18n'
 import { extOf } from './common'
 
@@ -29,10 +29,12 @@ function loadScript(src: string): Promise<void> {
 
 let cached: Promise<OfficeConfig> | null = null
 
-/** Ist ein Office-Server eingestellt, und welche Endungen kann er? Einmal je Seitenaufruf gefragt. */
+/** Ist ein Office-Server eingestellt (und das Modul an), und welche Endungen kann er? Einmal je Seitenaufruf gefragt. */
 export function useOffice(): OfficeConfig | null {
   const [cfg, setCfg] = useState<OfficeConfig | null>(null)
   useEffect(() => {
+    // Modul Office ausgeschaltet (Verwaltung): kein Editor
+    if (!featureOn('office')) { setCfg({ enabled: false }); return }
     cached ??= api.get<OfficeConfig>('/api/office/config').catch(() => ({ enabled: false }))
     let live = true
     cached.then(c => { if (live) setCfg(c) })
@@ -49,7 +51,8 @@ export function officeMode(i: { name: string; isDir: boolean }, cfg: OfficeConfi
   if (!cfg?.enabled || i.isDir) return null
   const ext = extOf(i.name).slice(1)
   if (cfg.edit?.includes(ext)) return 'edit'
-  if (ext !== 'pdf' && cfg.view?.includes(ext)) return 'view'
+  // PDF auch hier (nur ansehen): der eingebaute Betrachter des Browsers lässt sich in der Seite nicht überall einbetten
+  if (cfg.view?.includes(ext)) return 'view'
   return null
 }
 

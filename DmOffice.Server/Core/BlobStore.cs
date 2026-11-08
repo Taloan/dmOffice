@@ -15,6 +15,12 @@ public sealed record BlobInfo(string? Id, long Size, byte[] Sha256);
 /// Aufbau: "DMB1", 16 Byte Zufall, dann die Bloecke (Geheimtext + 16 Byte Tag). Nonce = Blocknummer; der letzte Block
 /// ist im Nonce markiert, Abschneiden faellt also auf. Welche Zeilen auf einen Blob zeigen, steht in der Datenbank.
 /// </summary>
+/// <summary>Ein verdraengter Inhalt liess sich gerade nicht aus S3 holen (Zwischenspeicher-Betrieb) - kein Datenverlust.</summary>
+public sealed class BlobUnavailableException(string message) : IOException(message);
+
+/// <summary>Ein Inhalt ist weder hier noch (bei S3-Betrieb) im S3-Speicher - er fehlt wirklich.</summary>
+public sealed class BlobMissingException(string message) : FileNotFoundException(message);
+
 public sealed class BlobStore
 {
     public const int ChunkSize = 64 * 1024;
@@ -75,7 +81,65 @@ public sealed class BlobStore
     }
 
     /// <summary>Entschluesselnder Stream mit Laenge und Suchen. Datei fehlt: FileNotFoundException.</summary>
-    public Stream OpenRead(string id) => new BlobReadStream(this, id, PathOf(id));
+    /// <summary>
+    /// Zwischenspeicher-Betrieb (S3Mirror): fehlt ein Inhalt hier, weil er verdraengt wurde, holt ihn dieser Rueckruf aus S3
+    /// und legt ihn ab - oder reicht ihn, wenn er gross ist, direkt aus S3 durch (Raw: die verschluesselten Bytes in Ausschnitten).
+    /// Null: hier nicht zustaendig (kein S3). Ok false: Holen gescheitert.
+    /// </summary>
+    public static Func<BlobStore, string, FetchResult?>? Fetch;
+    /// <summary>Missing: in S3 gibt es ihn auch nicht (statt: S3 gerade nicht erreichbar).</summary>
+    public sealed record FetchResult(bool Ok, Stream? Raw = null, bool Missing = false);
+    /// <summary>Ein Inhalt ist hier neu abgelegt worden (Bytes auf der Platte) - fuer den Zwischenspeicher.</summary>
+    public static Action<long>? Written;
+    private static readonly AsyncLocal<bool> NoFetch = new();
+
+    /// <summary>Fuer Hintergrundarbeiten (Pruefsummen, Volltext): in diesem Ablauf nichts aus S3 holen - verdraengte
+    /// Inhalte gelten als nicht da, statt alles wieder herunterzuladen.</summary>
+    public static IDisposable WithoutFetch()
+    {
+        var before = NoFetch.Value;
+        NoFetch.Value = true;
+        return new Restore(() => NoFetch.Value = before);
+    }
+    private sealed class Restore(Action undo) : IDisposable { public void Dispose() => undo(); }
+
+    private static readonly AsyncLocal<bool> Transient = new();
+
+    /// <summary>Fuer Hintergrundarbeiten, die verdraengte Inhalte nur einmal lesen (Volltext): aus S3 holen, aber direkt
+    /// durchreichen statt hier abzulegen - der Zwischenspeicher bleibt, wie er ist.</summary>
+    public static IDisposable FetchWithoutKeeping()
+    {
+        var before = Transient.Value;
+        Transient.Value = true;
+        return new Restore(() => Transient.Value = before);
+    }
+
+    /// <summary>Aus S3 Geholtes hier ablegen (sonst nur durchreichen, siehe <see cref="FetchWithoutKeeping"/>).</summary>
+    public static bool KeepFetched => !Transient.Value;
+
+    /// <summary>Benutzer, dem dieser Speicher gehoert (der Ordnername, siehe DataPaths.UserBlobs).</summary>
+    public string Owner => Path.GetFileName(Dir);
+
+    /// <summary>Der Speicher eines Benutzers, den der S3-Betrieb spiegelt - nur hier wird Fehlendes in S3 gesucht (nicht im Tresor:
+    /// dessen Inhalte liegen in einem Unterordner, den S3 nicht kennt).</summary>
+    public bool Mirrored { get; init; }
+
+    public Stream OpenRead(string id)
+    {
+        var path = PathOf(id);
+        if (!File.Exists(path) && Mirrored && Fetch != null && !NoFetch.Value && Fetch(this, id) is { } got)
+        {
+            if (got.Missing) throw new BlobMissingException("Der Inhalt fehlt - weder auf dem Server noch im Storage Extender.");
+            if (!got.Ok) throw new BlobUnavailableException("Der Inhalt liegt im Storage Extender, der gerade nicht erreichbar ist. Bitte später noch einmal versuchen.");
+            // Gross (oder kein Platz): nicht ablegen, direkt aus S3 lesen
+            if (got.Raw != null) return new BlobReadStream(this, id, got.Raw);
+        }
+        // Zuletzt gelesen - danach richtet sich das Verdraengen (hoechstens stuendlich geschrieben)
+        try { if (DateTime.UtcNow - File.GetLastAccessTimeUtc(path) > TimeSpan.FromHours(1)) File.SetLastAccessTimeUtc(path, DateTime.UtcNow); }
+        catch (IOException) { } catch (UnauthorizedAccessException) { }
+        try { return new BlobReadStream(this, id, path); }
+        catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException) { throw new BlobMissingException("Der Inhalt fehlt auf dem Server."); }
+    }
 
     public byte[] ReadAll(string id)
     {
@@ -86,6 +150,29 @@ public sealed class BlobStore
     }
 
     public bool Exists(string id) => File.Exists(PathOf(id));
+
+    /// <summary>Platz fuer einen schon verschluesselten Blob von aussen (S3-Kopie), vor <see cref="Adopt"/>.</summary>
+    public string RawTemp()
+    {
+        Directory.CreateDirectory(TempDir);
+        return Path.Combine(TempDir, Convert.ToHexString(RandomNumberGenerator.GetBytes(8)).ToLowerInvariant() + ".raw");
+    }
+
+    /// <summary>Einen von aussen geholten Blob uebernehmen: erst ganz entschluesseln (prueft jeden Block und das Ende),
+    /// dann an seinen Platz legen. Passt er nicht (falscher Schluessel, beschaedigt), bleibt nichts liegen.</summary>
+    public void Adopt(string id, string raw)
+    {
+        try
+        {
+            using (var check = new BlobReadStream(this, id, raw)) check.CopyTo(Stream.Null);
+            var target = PathOf(id);
+            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+            // Gleichzeitig schon von jemand anderem geholt: gut so
+            if (File.Exists(target)) return;
+            File.Move(raw, target, overwrite: false);
+        }
+        finally { if (File.Exists(raw)) File.Delete(raw); }
+    }
 
     public void Delete(string id)
     {
@@ -225,6 +312,7 @@ public sealed class BlobWriter : Stream
         var target = _store.PathOf(Id);
         Directory.CreateDirectory(Path.GetDirectoryName(target)!);
         File.Move(_temp, target);
+        BlobStore.Written?.Invoke(_length);
         return new BlobInfo(Id, _length, sha);
     }
 
@@ -252,7 +340,7 @@ public sealed class BlobWriter : Stream
 /// Ein veraenderter oder abgeschnittener Blob wirft CryptographicException.</summary>
 internal sealed class BlobReadStream : Stream
 {
-    private readonly FileStream _file;
+    private readonly Stream _file;
     private readonly AesGcm _aes;
     private readonly long _chunks, _length;
     private readonly byte[] _plain = new byte[BlobStore.ChunkSize];
@@ -261,10 +349,14 @@ internal sealed class BlobReadStream : Stream
     private int _loadedLength;
     private long _pos;
 
+    // Delete erlaubt: Aufraeumen darf einen Blob entfernen, waehrend er noch ausgeliefert wird
     public BlobReadStream(BlobStore store, string id, string path)
+        : this(store, id, new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete, 1, FileOptions.RandomAccess)) { }
+
+    /// <summary>Aus einer beliebigen durchsuchbaren Quelle der verschluesselten Bytes (Datei oder Ausschnitte aus S3).</summary>
+    public BlobReadStream(BlobStore store, string id, Stream raw)
     {
-        // Delete erlaubt: Aufraeumen darf einen Blob entfernen, waehrend er noch ausgeliefert wird
-        _file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete, 1, FileOptions.RandomAccess);
+        _file = raw;
         try
         {
             Span<byte> head = stackalloc byte[BlobStore.HeaderSize];
@@ -350,4 +442,44 @@ internal sealed class BlobReadStream : Stream
         if (disposing) { _file.Dispose(); _aes.Dispose(); }
         base.Dispose(disposing);
     }
+}
+
+/// <summary>
+/// Ein Objekt im S3-Speicher als durchsuchbarer Lesestrom: holt Ausschnitte (Range) von 4 MB und behaelt den letzten -
+/// fuer grosse Inhalte, die im Zwischenspeicher-Betrieb nicht abgelegt, sondern direkt durchgereicht werden. Spulen
+/// (Video) laedt nur den gebrauchten Ausschnitt.
+/// </summary>
+public sealed class RangeReadStream(Func<long, int, byte[]> read, long length) : Stream
+{
+    private const int Window = 4 * 1024 * 1024;
+    private byte[] _buf = [];
+    private long _bufAt = -1;
+    private long _pos;
+    public override bool CanRead => true;
+    public override bool CanSeek => true;
+    public override bool CanWrite => false;
+    public override long Length => length;
+    public override long Position { get => _pos; set { ArgumentOutOfRangeException.ThrowIfNegative(value); _pos = value; } }
+    public override long Seek(long offset, SeekOrigin origin) => Position = origin switch { SeekOrigin.Begin => offset, SeekOrigin.Current => _pos + offset, _ => length + offset };
+    public override int Read(byte[] buffer, int offset, int count) => Read(buffer.AsSpan(offset, count));
+    public override int Read(Span<byte> buffer)
+    {
+        int total = 0;
+        while (buffer.Length > 0 && _pos < length)
+        {
+            if (_bufAt < 0 || _pos < _bufAt || _pos >= _bufAt + _buf.Length)
+            {
+                _bufAt = _pos / Window * Window;
+                _buf = read(_bufAt, (int)Math.Min(Window, length - _bufAt));
+                if (_buf.Length == 0) break;
+            }
+            int at = (int)(_pos - _bufAt), n = Math.Min(buffer.Length, _buf.Length - at);
+            _buf.AsSpan(at, n).CopyTo(buffer);
+            buffer = buffer[n..]; _pos += n; total += n;
+        }
+        return total;
+    }
+    public override void Flush() { }
+    public override void SetLength(long value) => throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 }

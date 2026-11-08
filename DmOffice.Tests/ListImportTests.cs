@@ -61,4 +61,37 @@ public class ListImportTests
         Lists.LearnFromIcs(db, 7, null, "kaputt");
         Assert.Single(Lists.Get(db, 7).History);
     }
+
+    [Fact]
+    public void Foto_am_Artikel_bleibt_beim_Vorschlag_und_geht_mit_ihm()
+    {
+        var dir = Directory.CreateTempSubdirectory("dmphoto");
+        var db = new Core.UserDb(Path.Combine(dir.FullName, "u.db"), new byte[32], "t");
+        Lists.Update(db, 7, Lists.Shop, null);
+        using var bmp = new SkiaSharp.SKBitmap(1600, 1200);
+        using (var c = new SkiaSharp.SKCanvas(bmp)) c.Clear(SkiaSharp.SKColors.Orange);
+        var png = bmp.Encode(SkiaSharp.SKEncodedImageFormat.Png, 100).ToArray();
+
+        // Auch fuer einen Artikel, der noch nie auf der Liste stand
+        var first = Lists.SetPhoto(db, 7, "Joghurt", png);
+        Assert.NotNull(first);
+        Assert.Null(Lists.SetPhoto(db, 7, "Joghurt", [1, 2, 3]));   // kein Bild: nichts geaendert
+        Assert.Equal(first, Lists.Get(db, 7).History.Single().Photo);
+        var data = Lists.Photo(db, 7, first!)!;
+        using (var small = SkiaSharp.SKBitmap.Decode(data)) Assert.Equal(Lists.PhotoSize, Math.Max(small.Width, small.Height));
+        Assert.Null(Lists.Photo(db, 8, first!));   // gehoert zu einer anderen Liste
+
+        // Ersetzen raeumt das alte weg, Lernen behaelt das Foto, Vergessen nimmt es mit
+        var second = Lists.SetPhoto(db, 7, "joghurt", png)!;
+        Assert.NotEqual(first, second);
+        Assert.Null(db.Get("pim.listphoto." + first));
+        Lists.Learn(db, 7, "Joghurt", "Becher", "Kühlregal");
+        Assert.Equal(second, Lists.Get(db, 7).History.Single().Photo);
+        Lists.Forget(db, 7, "Joghurt");
+        Assert.Null(db.Get("pim.listphoto." + second));
+
+        Lists.SetPhoto(db, 7, "Brot", png);
+        Lists.RemovePhoto(db, 7, "Brot");
+        Assert.Null(Lists.Get(db, 7).History.Single().Photo);
+    }
 }

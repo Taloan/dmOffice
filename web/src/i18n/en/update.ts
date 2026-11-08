@@ -65,15 +65,17 @@ export const update: Record<string, string> = {
   'Angelegt mit Version {v} am {date}, {size}.': 'Created with version {v} on {date}, {size}.',
   '{login}: Datenbank im Stand {schema} ({size})': '{login}: database at schema {schema} ({size})',
   'users.json, server.json, shares.json, Hauptschlüssel und keys/ (soweit vorhanden)': 'users.json, server.json, shares.json, master key and keys/ (where present)',
-  'Zurückgehen': 'Going back',
-  'dmOffice (den Container) stoppen und die Image-Version festnageln, die zu dieser Sicherung passt, z. B. ghcr.io/taloan/dmoffice:{v}.':
-    'Stop dmOffice (the container) and pin the image version that matches this backup, e.g. ghcr.io/taloan/dmoffice:{v}.',
-  'Aus dem Sicherungsordner users/*.db nach {dir}/users/ kopieren; die gleichnamigen Dateien mit -wal und -shm dort vorher löschen.':
-    'Copy users/*.db from the backup folder to {dir}/users/; first delete the files of the same name ending in -wal and -shm there.',
-  'users.json, server.json, shares.json (und master.key, keys/) aus dem Sicherungsordner in {dir} zurückkopieren.':
-    'Copy users.json, server.json, shares.json (and master.key, keys/) from the backup folder back to {dir}.',
-  'Container starten. Änderungen seit der Sicherung gehen dabei verloren; Blob-Dateien müssen nicht zurück (überzählige räumt dmOffice selbst weg).':
-    'Start the container. Changes since the backup are lost; blob files do not need to go back (dmOffice removes surplus ones itself).',
+  'Zurückgehen auf eine frühere Version': 'Going back to an earlier version',
+  'dmOffice stoppen und die Image-Version einstellen, die zur Sicherung passt, z. B. {image}.':
+    'Stop dmOffice and set the image version that matches the backup, e.g. {image}.',
+  'Benutzerdatenbanken wiederherstellen: Alle Dateien users/*.db aus der Sicherung nach {dir}/users/ kopieren. Zuvor die zugehörigen Dateien mit den Endungen -wal und -shm im Zielordner löschen.':
+    'Restore the user databases: copy all users/*.db files from the backup to {dir}/users/. First delete the matching files ending in -wal and -shm in the target folder.',
+  'Einstellungen und Schlüssel wiederherstellen: Die Dateien users.json, server.json und shares.json sowie, falls vorhanden, master.key und den Ordner keys/ aus der Sicherung nach {dir} zurückkopieren.':
+    'Restore settings and keys: copy users.json, server.json and shares.json and, if present, master.key and the keys/ folder from the backup back to {dir}.',
+  'dmOffice wieder starten. Der Server befindet sich nun auf dem Stand der Sicherung.':
+    'Start dmOffice again. The server is now at the state of the backup.',
+  'Wichtig: Alle Änderungen seit der Sicherung gehen verloren. Die Blob-Dateien müssen nicht zurückkopiert werden. Nicht mehr benötigte Dateien bereinigt dmOffice automatisch.':
+    'Important: all changes since the backup are lost. The blob files do not need to be copied back. dmOffice removes files no longer needed automatically.',
   'Ohne Sicherung fortfahren?': 'Continue without backup?',
   'Für die Sicherung reicht der Platz nicht. dmOffice baut die Datenbank trotzdem um – jeder Schritt ist für sich sicher (ganz oder gar nicht), aber wenn etwas Unerwartetes schiefgeht, gibt es keine Kopie von vorher. Hast du den Datenordner selbst gesichert?':
     'There is not enough space for the backup. dmOffice will convert the database anyway – every step is safe on its own (all or nothing), but if something unexpected goes wrong there is no copy from before. Have you backed up the data folder yourself?',
@@ -97,7 +99,7 @@ export const update: Record<string, string> = {
   'Browser-Geräte': 'Browser devices',
   'Push-Tokens': 'Push tokens',
   'Prio-Posteingang': 'Priority inbox',
-  'Speichermodus Schlank': 'Slim storage mode',
+  'Slim Mode': 'Slim Mode',
   'Dateinummern für Nextcloud-Clients': 'File numbers for Nextcloud clients',
   'Bereich der App-Passwörter': 'Scope of app passwords',
   'Papierkorb, Versionen und Links der Dateiablage': 'Trash, versions and links of the file store',

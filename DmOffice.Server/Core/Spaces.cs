@@ -50,7 +50,22 @@ public sealed class UserSpace
     public MailAccount Account(string id) =>
         Settings.MailAccounts.FirstOrDefault(a => a.Id == id) ?? throw new KeyNotFoundException("Konto nicht gefunden.");
 
-    public TimeZoneInfo Zone => Dav.Ics.Zone(Settings.TimeZone) ?? TimeZoneInfo.Utc;
+    public TimeZoneInfo Zone => DeviceZone.Value ?? Dav.Ics.Zone(Settings.TimeZone) ?? TimeZoneInfo.Utc;
+
+    private static readonly AsyncLocal<TimeZoneInfo?> DeviceZone = new();
+
+    private sealed class ZoneScope(TimeZoneInfo? before) : IDisposable
+    {
+        public void Dispose() => DeviceZone.Value = before;
+    }
+
+    /// <summary>Innerhalb des Blocks gilt die Zeitzone des Geräts statt der des Kontos (null: die des Kontos).</summary>
+    public static IDisposable UseZone(TimeZoneInfo? zone)
+    {
+        var scope = new ZoneScope(DeviceZone.Value);
+        DeviceZone.Value = zone;
+        return scope;
+    }
 }
 
 /// <summary>

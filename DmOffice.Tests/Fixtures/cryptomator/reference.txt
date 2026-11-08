@@ -1,0 +1,16 @@
+D	/Ebene 1	0	-
+D	/Ebene 1/Ebene 2	0	-
+D	/Ebene 1/Ebene 2/Ebene 3	0	-
+D	/Ebene 1/Ebene 2/Ä Ordner	0	-
+D	/Leerer Ordner	0	-
+D	/Ordner mit sehr langem Namen xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx	0	-
+F	/Ebene 1/Ebene 2/Ebene 3/tief.txt	4	756bf0365598969f8b61567ed33e38cad61e2442fe9f88b99c3c227933ba3e8b
+F	/Ebene 1/Ebene 2/Ä Ordner/x.txt	1	2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881
+F	/Ebene 1/Sehr langer Dateiname äöü äöü äöü äöü äöü äöü äöü äöü äöü äöü äöü äöü äöü äöü äöü äöü äöü äöü äöü äöü äöü äöü äöü äöü äöü äöü äöü äöü äöü äöü äöü äöü äöü äöü äöü äöü äöü äöü äöü äöü Ende.txt	11	a4a586104e905053ad65ec4a86fee99cf09efd9fee79b9e4e1b70b419783a6a6
+F	/Grüße aus Köln.txt	36	efb18f562fed24a792ae177518b624c3879cb1097c48a908bd20b2bc8db93f9e
+F	/Leerzeichen und Emoji 😀.md	8	864be1eb648fcd57bc761e1e60b77674107d6957d086482456f4ee56825c6e1c
+F	/Müller NFD.txt	3	df7353de1c454ee3ce46ede1f61a0a89aeb6310f6814e325b0cf7ec5bfadad80
+F	/Ordner mit sehr langem Namen xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/innen.txt	5	add77b80e6e7f0be851f1956baae9cb36b7b90f2c8b12730b09924aa7baec82e
+F	/genau32k.bin	32768	2d21c2c468cb7a03206f2cf624d79ac7b8dbde4300359dd1432d2ab45728cd58
+F	/gross.bin	100123	63438cb44f86a0102e625214683efffb4ca564682c6fa23fa421341aaf0b6427
+F	/leer.txt	0	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855

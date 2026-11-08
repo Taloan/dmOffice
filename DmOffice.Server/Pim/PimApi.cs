@@ -9,10 +9,11 @@ public static class PimApi
     public record SubscribeBody(string Url, string? Name, string? Color, int? Interval);
     public record CollectionBody(string Name, string? Color, string? Description, string? Components, string? CalendarKind = null);
     public record AddressesBody(List<string> Addresses, long? Book);
+    public record RestoreBody(string Data);
     public record ListBody(string? Type, List<string>? Sections, string? Done);
     public record ForgetBody(string Item);
     public record ImportBody(string Text, bool Apply);
-    public record ShareBody(List<string> Members, List<string>? ReadOnly);
+    public record ShareBody(List<string> Members, List<string>? ReadOnly, List<string>? ShowOnly = null);
 
     public static void Map(WebApplication app)
     {
@@ -24,17 +25,26 @@ public static class PimApi
             var db = space.Db;
             PimStore.EnsureDefaults(db);
             var subs = Subscriptions.All(db);
+            var links = Graph.All(db);
+            var accounts = space.Settings.MailAccounts;
             var k = Kind(kind);
             string? NameOf(string id) => users.ById(id)?.DisplayName;
             // Mitglieder einer Freigabe mit ihrem Recht (ohne "except")
             object Members(Share sh, string? except) => sh.Members.Where(m => m != except)
-                .Select(m => new { id = m, name = NameOf(m), readOnly = sh.ReadOnly.Contains(m) }).Where(m => m.name != null).ToList();
+                .Select(m => new { id = m, name = NameOf(m), readOnly = sh.ReadOnly.Contains(m), level = sh.LevelOf(m) }).Where(m => m.name != null).ToList();
             var own = PimStore.Collections(db, k).Select(c => new
             {
                 c.Id, c.Uri, c.Name, c.Color, c.Description, components = c.Components.Split(',', StringSplitOptions.RemoveEmptyEntries),
                 // Abonniert: schreibgeschuetzt, wird regelmaessig neu geholt
                 subscription = subs.FirstOrDefault(s => s.Collection == c.Id) is { } sub
                     ? new { sub.Url, sub.Interval, sub.LastFetch, sub.LastError } : null,
+                // Mit Microsoft verbunden: beschreibbar, eigener Abschnitt je Konto
+                graph = links.FirstOrDefault(l => l.Collection == c.Id) is { } gl
+                    ? new { gl.Account, email = accounts.FirstOrDefault(a => a.Id == gl.Account)?.Email ?? "",
+                        // Ueberschrift des Abschnitts: Kontoname aus den Einstellungen ("Kontoname (in der Ordnerliste)"), sonst die Adresse
+                        name = accounts.FirstOrDefault(a => a.Id == gl.Account) is { } ga ? (string.IsNullOrWhiteSpace(ga.Name) ? ga.Email : ga.Name) : "",
+                        gl.Kind, gl.LastSync, gl.LastError,
+                        pending = Graph.Waiting(db, c.Id).Pending } : null,
                 count = Convert.ToInt32(db.Scalar("SELECT COUNT(*) FROM objects WHERE collection=$c", ("$c", c.Id))),
                 // Getrennt gezaehlt: ein Kalender kann Termine und Aufgaben enthalten
                 events = Convert.ToInt32(db.Scalar("SELECT COUNT(*) FROM objects WHERE collection=$c AND component='VEVENT'", ("$c", c.Id))),
@@ -47,10 +57,11 @@ public static class PimApi
                 sharedWith = shares.Of(space.User.Id, c.Id) is { } sh ? Members(sh, null) : null,
                 owner = (string?)null,
                 canWrite = true,
+                showOnly = false,
             }).ToList();
             if (k != PimStore.Calendar) return Results.Ok(own);
             // Mit mir geteilte Kalender und Aufgabenlisten (Id negativ)
-            var withMe = SharedLists.WithMe(http).Select(x => new
+            var withMe = SharedLists.WithMe(http).Where(x => !Journal.JournalStore.IsJournal(x.Coll)).Select(x => new
             {
                 Id = -(long)x.Share.Id, Uri = "shared-" + x.Share.Id, x.Coll.Name, x.Coll.Color, x.Coll.Description,
                 components = x.Coll.Components.Split(',', StringSplitOptions.RemoveEmptyEntries),
@@ -64,6 +75,8 @@ public static class PimApi
                 sharedWith = Members(x.Share, space.User.Id),
                 owner = (string?)x.Owner.User.DisplayName,
                 canWrite = !x.Share.ReadOnly.Contains(space.User.Id) && !Subscriptions.IsSubscribed(x.Owner.Db, x.Coll.Id),
+                // Nur gezeigt (Version 2): ansehen in dmOffice, kein Export, nicht auf Geraete
+                showOnly = x.Share.IsShowOnly(space.User.Id),
             });
             return Results.Ok(own.Select(o => (object)o).Concat(withMe));
         });
@@ -72,16 +85,18 @@ public static class PimApi
         api.MapGet("/people", (HttpContext http, UserStore users) =>
         {
             var me = http.Space().User.Id;
-            return users.All().Where(u => u.Id != me).Select(u => new { u.Id, u.Login, u.DisplayName }).OrderBy(u => u.DisplayName);
+            return users.All().Where(u => u.Id != me)
+                .Select(u => new { u.Id, u.Login, u.DisplayName }).OrderBy(u => u.DisplayName);
         });
 
         // Einen eigenen Kalender oder eine Liste teilen (ReadOnly: wer davon nur lesen darf); leere Mitglieder: Freigabe aufheben
         api.MapPut("/shares/{id:long}", (long id, ShareBody body, HttpContext http, ShareStore shares, UserStore users) =>
         {
             var space = http.Space();
+            if (DmOffice.Journal.TresorJournals.Is(id)) throw new ArgumentException("Tagebücher im Tresor können nicht geteilt werden.");
             var c = PimStore.Find(space.Db, id) ?? throw new KeyNotFoundException();
             var members = body.Members.Where(m => m != space.User.Id && users.ById(m) != null).ToList();
-            shares.Set(space.User.Id, id, members, body.ReadOnly);
+            shares.Set(space.User.Id, id, members, body.ReadOnly, body.ShowOnly);
             return Results.Ok();
         });
 
@@ -118,6 +133,7 @@ public static class PimApi
             var db = http.Space().Db;
             var c = PimStore.Find(db, id) ?? throw new KeyNotFoundException();
             if (PimStore.Collections(db, c.Kind).Count <= 1) return Results.BadRequest(new { error = "Die letzte Sammlung bleibt." });
+            if (Graph.IsLinked(db, id)) return Results.BadRequest(new { error = "Mit Microsoft verbunden – in den Einstellungen des E-Mail-Kontos abschalten." });
             PimStore.DeleteCollection(db, id);
             Subscriptions.Remove(db, id);
             Lists.Remove(db, id);
@@ -164,11 +180,16 @@ public static class PimApi
             int invited = 0, cancelled = 0;
             try
             {
+                // Benutzer dieses dmOffice bekommen die Einladung von Pukki (Version 2), alle anderen per Mail
+                var services = http.RequestServices;
+                var outBefore = InternalInvites.Split(services, space.User.Id, before).Outside;
+                var outNow = InternalInvites.Split(services, space.User.Id, now).Outside;
                 // Neue Teilnehmer oder etwas, das sie angeht (Zeit, Ort, Titel ...) - nicht bei eigener Erinnerung oder frei/beschaeftigt
-                if (obj != null && now.Count > 0 && (now.Except(before).Any() || Mail.Invites.Changed(old, obj.Data)))
-                    invited = Mail.Invites.Send(space, obj.Data, "REQUEST");
-                var removed = before.Except(now).ToList();
+                if (obj != null && outNow.Count > 0 && (outNow.Except(outBefore).Any() || Mail.Invites.Changed(old, obj.Data)))
+                    invited = Mail.Invites.Send(space, obj.Data, "REQUEST", outNow);
+                var removed = outBefore.Except(outNow).ToList();
                 if (obj != null && removed.Count > 0) cancelled = Mail.Invites.Send(space, obj.Data, "CANCEL", removed);
+                if (obj != null) invited += InternalInvites.Saved(services, space, old, obj.Data, obj.Collection, obj.Uri);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -205,7 +226,7 @@ public static class PimApi
             var url = Subscriptions.Normalize(body.Url).ToString();
             var name = string.IsNullOrWhiteSpace(body.Name) ? new Uri(url).Host : body.Name.Trim();
             var coll = PimStore.CreateCollection(space.Db, PimStore.Calendar, Guid.NewGuid().ToString("N")[..12], name, body.Color, "VEVENT");
-            var sub = new Subscription { Collection = coll.Id, Url = body.Url.Trim(), Interval = Math.Clamp(body.Interval ?? 360, 15, 10080) };
+            var sub = new Subscription { Collection = coll.Id, Url = body.Url.Trim(), Interval = Subscriptions.IntervalOf(body.Interval) };
             Subscriptions.Add(space.Db, sub);
             try
             {
@@ -229,7 +250,7 @@ public static class PimApi
             Subscriptions.Update(db, id, s =>
             {
                 if (!string.IsNullOrWhiteSpace(body.Url) && body.Url.Trim() != s.Url) { s.Url = body.Url.Trim(); s.ETag = null; s.LastFetch = null; }
-                if (body.Interval is int i) s.Interval = Math.Clamp(i, 15, 10080);
+                if (body.Interval is int i) s.Interval = Subscriptions.IntervalOf(i);
             });
             return Results.Ok();
         });
@@ -262,17 +283,29 @@ public static class PimApi
                         one.Set("SEQUENCE", vcal.Of("VEVENT").First(e => e.Get("RECURRENCE-ID") == null).Text("SEQUENCE") ?? "1");
                         vcal.Children.RemoveAll(c => c.Name == "VEVENT" && c != one);
                     }
-                    cancelled = Mail.Invites.Send(r.Space, vcal.ToString(), "CANCEL");
+                    // Benutzer dieses dmOffice: Pukki sagt es ihnen und nimmt den Termin heraus (Version 2); alle anderen per Mail
+                    var outside = InternalInvites.Split(http.RequestServices, r.Space.User.Id, Mail.Invites.Attendees(r.Space, obj.Data)).Outside;
+                    if (outside.Count > 0) cancelled = Mail.Invites.Send(r.Space, vcal.ToString(), "CANCEL", outside);
+                    cancelled += InternalInvites.Deleted(http.RequestServices, r.Space, obj.Data, instance);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException) { /* Loeschen geht trotzdem */ }
             }
+            // Für „Rückgängig“ direkt nach dem Löschen: der Stand von vorher, nicht wenn schon Absagen unterwegs sind
+            var before = cancelled == 0 ? PimStore.Object(r.Space.Db, r.Collection, uri)?.Data : null;
             CalendarModel.DeleteEvent(r.Space, r.Collection, uri, instance);
-            return Results.Ok(new { cancelled });
+            return Results.Ok(new { cancelled, undo = before });
+        });
+
+        api.MapPost("/events/{calendar:long}/{uri}/restore", (long calendar, string uri, RestoreBody body, HttpContext http) =>
+        {
+            var r = SharedLists.Resolve(http, calendar).Writable();
+            PimStore.Put(r.Space.Db, PimStore.Find(r.Space.Db, r.Collection) ?? throw new KeyNotFoundException(), uri, body.Data, zone: r.Space.Zone);
+            return Results.Ok();
         });
 
         api.MapGet("/events/{calendar:long}/{uri}/ics", (long calendar, string uri, HttpContext http) =>
         {
-            var r = SharedLists.Resolve(http, calendar);
+            var r = SharedLists.Resolve(http, calendar).NotShowOnly();
             var obj = PimStore.Object(r.Space.Db, r.Collection, uri) ?? throw new KeyNotFoundException();
             return Results.File(Encoding.UTF8.GetBytes(obj.Data), "text/calendar", uri);
         });
@@ -298,6 +331,13 @@ public static class PimApi
             return result;
         });
 
+        // Zuweisen (Version 2): an wen man eine Aufgabe dieser Liste geben kann (Besitzer und Mitglieder)
+        api.MapGet("/lists/{id:long}/people", (long id, HttpContext http) =>
+            SharedLists.People(http.RequestServices, SharedLists.Resolve(http, id)).Select(u => new { u.Id, u.Login, u.DisplayName }));
+        // Dasselbe fuer die App, die Listen nur ueber CalDAV kennt
+        api.MapGet("/list-people", (string uri, HttpContext http) =>
+            SharedLists.ByUri(http, uri) is { } r ? Results.Ok(SharedLists.People(http.RequestServices, r).Select(u => new { u.Id, u.Login, u.DisplayName })) : Results.NotFound());
+
         api.MapPost("/tasks", (TaskInput body, HttpContext http) => Saved(() =>
         {
             var from = SharedLists.Resolve(http, body.List).Writable();
@@ -305,8 +345,21 @@ public static class PimApi
             body.List = from.Collection;
             body.MoveTo = null;
             if (to != null && to.Space == from.Space) body.MoveTo = to.Collection;
+            // Zuweisen (Version 2): nur an jemanden, der die Liste sieht; wer neu zugewiesen wird, erfaehrt es von Pukki
+            string? before = null;
+            if (body.Assignee is { Length: > 0 } who)
+            {
+                if (SharedLists.People(http.RequestServices, to ?? from).All(u => u.Id != who)) throw new ArgumentException("Diese Person hat keinen Zugriff auf die Liste.");
+                if (body.Uri != null) before = CalendarModel.Tasks(from.Space, [from.Collection]).FirstOrDefault(t => t.Uri == body.Uri)?.Assignee;
+            }
             var id = CalendarModel.SaveTask(from.Space, body);
             var uri = id[(id.IndexOf('/') + 1)..];
+            if (body.Assignee is { Length: > 0 } assignee && assignee != before && assignee != http.Space().User.Id)
+            {
+                var listOwner = to ?? from;
+                DmOffice.Chat.Pukki.TaskAssigned(http.RequestServices, http.Space().User.Id, assignee, listOwner.Space.User.Id, listOwner.Collection, uri, body.Title,
+                    PimStore.Find(listOwner.Space.Db, listOwner.Collection)?.Name ?? "");
+            }
             // In eine Liste einer anderen Datenbank (eigene <-> geteilte): kopieren und hier loeschen
             if (to != null && to.Space != from.Space)
             {
@@ -350,6 +403,38 @@ public static class PimApi
             var r = SharedLists.Resolve(http, id).Writable();
             Lists.Forget(r.Space.Db, r.Collection, body.Item);
             return Results.Ok();
+        });
+
+        // Foto zu einem Artikel: welche Marke, welche Packung - erscheint neben dem Eintrag und im Vorschlag
+        api.MapPost("/lists/{id:long}/photo", async (long id, string item, HttpRequest request, HttpContext http, CancellationToken ct) =>
+        {
+            var r = SharedLists.Resolve(http, id).Writable();
+            if (PimStore.Find(r.Space.Db, r.Collection) == null) throw new KeyNotFoundException();
+            await foreach (var file in MultipartUpload.Files(request, ct))
+            {
+                using var buffer = new MemoryStream();
+                await file.Body.CopyToAsync(buffer, ct);
+                if (buffer.Length > 30_000_000) return Results.BadRequest(new { error = "Das Bild ist zu groß." });
+                var photo = Lists.SetPhoto(r.Space.Db, r.Collection, item, buffer.ToArray());
+                return photo == null ? Results.BadRequest(new { error = "Das ist kein Bild." }) : Results.Ok(new { photo });
+            }
+            return Results.BadRequest(new { error = "Kein Bild mitgeschickt." });
+        }).DisableAntiforgery();
+
+        api.MapDelete("/lists/{id:long}/photo", (long id, string item, HttpContext http) =>
+        {
+            var r = SharedLists.Resolve(http, id).Writable();
+            Lists.RemovePhoto(r.Space.Db, r.Collection, item);
+            return Results.Ok();
+        });
+
+        api.MapGet("/lists/{id:long}/photos/{photo}", (long id, string photo, HttpContext http) =>
+        {
+            var r = SharedLists.Resolve(http, id);
+            if (Lists.Photo(r.Space.Db, r.Collection, photo) is not { } data) return Results.NotFound();
+            // Neues Foto = neue Kennung: darf lange im Browser bleiben
+            http.Response.Headers.CacheControl = "private, max-age=31536000, immutable";
+            return Results.File(data, "image/webp");
         });
 
         // Vorschlaege uebernehmen (AnyList-HTML oder ein Eintrag je Zeile); ohne Apply nur zaehlen
@@ -424,11 +509,25 @@ public static class PimApi
         api.MapDelete("/contacts/{book:long}/{uri}", (long book, string uri, HttpContext http) =>
         {
             var db = http.Space().Db;
+            var before = PimStore.Object(db, book, uri)?.Data;
             PimStore.Delete(db, PimStore.Find(db, book) ?? throw new KeyNotFoundException(), uri);
+            return Results.Ok(new { undo = before });
+        });
+
+        api.MapPost("/contacts/{book:long}/{uri}/restore", (long book, string uri, RestoreBody body, HttpContext http) =>
+        {
+            var db = http.Space().Db;
+            PimStore.Put(db, PimStore.Find(db, book) ?? throw new KeyNotFoundException(), uri, body.Data, zone: http.Space().Zone);
             return Results.Ok();
         });
 
-        api.MapGet("/suggest", (string q, HttpContext http) => ContactStore.Suggest(http.Space(), q));
+        api.MapGet("/suggest", (string q, string? people, HttpContext http) =>
+        {
+            var list = ContactStore.Suggest(http.Space(), q);
+            // Termine (Version 2): Benutzer dieses dmOffice zuerst - sie lädt Pukki ohne Mail ein
+            if (people == "1") list = [.. InternalInvites.Suggest(http.RequestServices, http.Space().User.Id, q), .. list];
+            return list.DistinctBy(s => s.Address.ToLowerInvariant()).Take(12).ToList();
+        });
 
         // Zuletzt benutzte Adressen (Adressvorschlaege) verwalten
         api.MapGet("/recent", (HttpContext http) =>
@@ -472,7 +571,7 @@ public static class PimApi
 
         api.MapGet("/export/{id:long}", (long id, HttpContext http) =>
         {
-            var r = SharedLists.Resolve(http, id);
+            var r = SharedLists.Resolve(http, id).NotShowOnly();
             var db = r.Space.Db;
             var coll = PimStore.Find(db, r.Collection) ?? throw new KeyNotFoundException();
             var objects = PimStore.Objects(db, r.Collection);
@@ -511,7 +610,7 @@ public static class PimApi
     };
 
     /// <summary>Eine gelesene Aufgabe unveraendert zurueckschreiben - bis auf "erledigt".</summary>
-    private static TaskInput Input(TaskDto t, bool completed) => new()
+    internal static TaskInput Input(TaskDto t, bool completed) => new()
     {
         List = t.List, Uri = t.Uri, Etag = t.Etag, Title = t.Title, Description = t.Description, Due = t.Due, DueAllDay = t.DueAllDay,
         Priority = t.Priority, Completed = completed, Percent = completed ? 100 : 0, Categories = t.Categories,

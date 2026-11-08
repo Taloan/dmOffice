@@ -19,12 +19,20 @@ public static class MailApi
         List<Addr> Bcc, List<Addr> ReplyTo, DateTimeOffset Date, string Html, bool HasRemoteImages, string Text,
         List<AttachmentDto> Attachments, string? MessageId, string? InReplyTo, List<string> References,
         bool Seen, bool Flagged, double? Spam, bool Cached, bool ImagesAllowed, bool ImagesTrusted, Unsubscribe.Info? Unsubscribe = null,
-        bool Junk = false, List<PhishCheck.Finding>? Phish = null);
+        bool Junk = false, List<PhishCheck.Finding>? Phish = null,
+        /** Kopfzeile List-Id (Newsletter, Mailinglisten) - fuer "Regel erstellen" */
+        string? ListId = null,
+        /** An diesen Catchall-Alias gegangen (CatchallAliases) - und ob die Antwort sie als Absender nehmen darf */
+        string? Alias = null, bool AliasReply = false, string? AliasState = null,
+        /** OpenPGP: "mime"/"inline" (signiert), "key" (Schlüssel dabei) - dann holt die Oberfläche /signature */
+        string? Pgp = null);
 
     public record UidsBody(string Folder, List<uint> Uids);
+    public record TrustBody(string Token, string Scope);
     public record FlagsBody(string Folder, List<uint> Uids, bool? Seen, bool? Flagged);
     public record MoveBody(string Folder, List<uint> Uids, string Target);
     public record FolderBody(string Path, string? NewName);
+    public record ReclassifyBody(string Folder, List<uint>? Uids);
     public record SnoozeBody(string Folder, List<uint> Uids, DateTime Until);
     public record ToNotiziBody(string Folder, uint Uid, bool Attachments = true);
     public record FollowUpBody(string Folder, List<uint> Uids, string? Due, bool Done = false);
@@ -86,18 +94,18 @@ public static class MailApi
             {
                 var inboxes = space.Settings.MailAccounts.SelectMany(a => MailStore.Folders(space.Db, a.Id).Where(f => f.Special == "inbox").Select(f => a.Id + "|" + f.Path)).ToList();
                 var (ut, uu, ui) = inboxes.Count == 0 ? (0, 0, new List<MailRow>()) : MailStore.Query(space.Db, new MailCriteria { Folders = inboxes }, p, n, filter is "focused" or "other" ? null : filter, sort);
-                return Results.Ok(new { total = ut, unread = uu, page = p, size = n, items = ui });
+                return Results.Ok(new { total = ut, unread = uu, page = p, size = n, items = CatchallAliases.Tag(space.Db, ui) });
             }
             // Suchordner und Kategorie-Ordner: ueber alle Konten
             if (MailStore.Virtual(space.Settings, folder) is { } criteria)
             {
                 var (vt, _, vi) = MailStore.Query(space.Db, criteria, p, n, filter, sort);
-                return Results.Ok(new { total = vt, page = p, size = n, items = vi });
+                return Results.Ok(new { total = vt, page = p, size = n, items = CatchallAliases.Tag(space.Db, vi) });
             }
             // Prio-Posteingang: noch nicht Eingeordnetes erst einordnen
             if (filter is "focused" or "other") Focus.Backfill(space, acc, folder);
             var (total, items) = MailStore.List(space.Db, acc, folder, p, n, filter, sort);
-            return Results.Ok(new { total, page = p, size = n, items });
+            return Results.Ok(new { total, page = p, size = n, items = CatchallAliases.Tag(space.Db, items) });
         });
 
         // Zaehler fuer Suchordner und Kategorien im Ordnerbereich
@@ -161,8 +169,14 @@ public static class MailApi
             if (markSeen == true && !row.Seen) SetFlags(space, account, outbox, folder, new() { uid }, seen: true, flagged: null);
             // Phishing-Merkmale (Warnbalken), nicht fuer eigene Mails
             var phish = special is "sent" or "drafts" ? null : PhishCheck.Check(space, account, message);
+            // Virenfund beim Eingang: zuerst und deutlich
+            if (MailVirus.Of(space.Db, MailVirus.KeyOf(message, acc, folder, uid)) is { } virus)
+                (phish ??= []).Insert(0, new PhishCheck.Finding("virus", true, Detail: virus));
+            var aliases = CatchallAliases.Load(space.Db);
+            var alias = CatchallAliases.ActiveFor(aliases, acc) ? CatchallAliases.Of(aliases, message) : null;
             return Results.Ok(Detail(acc, folder, uid, message, images == true, row with { Seen = row.Seen || markSeen == true }, trusted && !junk, junk)
-                with { Phish = phish });
+                with { Phish = phish, Alias = alias, AliasReply = alias != null && CatchallAliases.CanSendAs(space.Db, account, alias),
+                    AliasState = alias != null ? CatchallAliases.StateOf(space.Db, alias) : null });
         });
 
         api.MapGet("/{acc}/part", async (string acc, string folder, uint uid, int index, bool? download,
@@ -172,15 +186,60 @@ public static class MailApi
             var message = await Load(space, space.Account(acc), folder, uid, pool, ct);
             var parts = MailCompose.Parts(message);
             if (index < 0 || index >= parts.Count) return Results.NotFound();
+            if (MailVirus.Of(space.Db, MailVirus.KeyOf(message, acc, folder, uid)) is { } virus)
+                return Results.Json(new { error = $"Diese Mail enthält Schadsoftware ({virus}) – ihre Anhänge sind gesperrt." }, statusCode: 403);
             var part = parts[index];
-            var mime = part.ContentType.MimeType;
-            // Nur harmlose Rasterbilder inline (Positivliste, Schreibweise egal) - SVG und alles andere als Download,
-            // damit kein HTML oder Skript aus einer Mail unter dieser Adresse laeuft. nosniff gegen MIME-Raten.
-            bool inline = download != true && mime.ToLowerInvariant() is "image/png" or "image/jpeg" or "image/gif" or "image/webp" or "image/bmp";
             var name = part.FileName ?? part.ContentType.Name ?? $"anhang-{index}";
+            var mime = ViewableMime(part.ContentType.MimeType, name);
+            // Zum Ansehen in dmOffice nur harmlose Arten inline (Positivliste): Rasterbilder, PDF, Audio, Video - SVG, HTML und
+            // alles andere als Download, damit kein Skript aus einer Mail unter dieser Adresse laeuft. nosniff gegen MIME-Raten.
+            bool inline = download != true && mime != null;
             http.Response.Headers.XContentTypeOptions = "nosniff";
-            if (inline) http.Response.Headers.ContentSecurityPolicy = "sandbox; default-src 'none'";
-            return Results.File(MailCompose.Decode(part), inline ? mime : "application/octet-stream", inline ? null : name);
+            // PDF ohne sandbox: sonst blockiert der Browser seinen eigenen PDF-Betrachter (wie bei den Dateien)
+            if (inline && mime != "application/pdf") http.Response.Headers.ContentSecurityPolicy = "sandbox; default-src 'none'; media-src 'self'";
+            return Results.File(MailCompose.Decode(part), inline ? mime! : "application/octet-stream", inline ? null : name, enableRangeProcessing: true);
+        });
+
+        // Anhang im Office-Server ansehen (Word, Excel, PowerPoint ...): als Kopie in den Systemordner der Dateiablage
+        // („sys-dmoffice-mail“, je Mail und Anhang ein Unterordner, nach drei Tagen wieder weg), dann wie eine Datei oeffnen
+        api.MapPost("/{acc}/part/office", async (string acc, PartBody body, HttpContext http, ImapPool pool, CancellationToken ct) =>
+        {
+            var space = http.Space();
+            if (DmOffice.Dav.FileStore.FilesOff(space.Db)) return Results.Json(new { error = "Die Dateiablage ist für dieses Konto abgeschaltet." }, statusCode: 403);
+            var message = await Load(space, space.Account(acc), body.Folder, body.Uid, pool, ct);
+            var parts = MailCompose.Parts(message);
+            if (body.Index < 0 || body.Index >= parts.Count) return Results.NotFound();
+            var part = parts[body.Index];
+            var name = string.Concat((part.FileName ?? part.ContentType.Name ?? $"anhang-{body.Index}").Split(Path.GetInvalidFileNameChars())).Trim();
+            if (name.Length == 0) name = $"anhang-{body.Index}";
+            return Results.Ok(new { path = MailAttachmentCopy.Store(space.Db, $"{acc}|{body.Folder}|{body.Uid}|{body.Index}|{message.MessageId}", name, MailCompose.Decode(part)) });
+        });
+
+        // Warum hat der Spamfilter so eingestuft? Die stärksten Merkmale je Richtung, Treffer der Spamlisten, wie viel gelernt ist
+        api.MapGet("/{acc}/spam-why", async (string acc, string folder, uint uid, HttpContext http, ImapPool pool, CancellationToken ct) =>
+        {
+            var space = http.Space();
+            var message = await Load(space, space.Account(acc), folder, uid, pool, ct);
+            var account = space.Account(acc);
+            var (score, junk, good, lists, nspam, nham) = SpamFilter.Explain(space.Db, message);
+            // Feste Regeln obendrauf (SpamSignals): bestätigte Absender, Markenimitation, gefälschte Absenderadresse
+            var (final, rule, sig) = SpamSignals.Judge(space, account, message, nspam > 0 && nham > 0 ? score : null);
+            var (known, knownRule) = SpamSignals.Trusted(space, message, sig);
+            return Results.Ok(new
+            {
+                // Alle Prüfungen, nicht nur die Wörter: Absenderbestätigung, bekannter Absender, Verteiler, Markenimitation,
+                // Meldungen anderer, Erkennungsregeln, Urteil des eigenen Mailservers
+                checks = new
+                {
+                    dmarc = sig.Dmarc, dkim = sig.DkimDomains, known = known ? knownRule : null, list = sig.List,
+                    obfuscated = sig.Obfuscated, randomId = sig.RandomId, forwarded = sig.Forwarded?.Service, freemailOrg = sig.FreemailOrg, notToMe = sig.NotToMe,
+                    server = SpamHeaders.Tokens(message).ToList(),
+                },
+                score = Math.Round(score, 2), junk, good, nspam, nham,
+                final = final is double f ? Math.Round(f, 2) : (double?)null, rule, verified = sig.VerifiedDomain,
+                alias = rule is "alias-blocked" or "alias-unknown" ? CatchallAliases.Of(CatchallAliases.Load(space.Db), message) : null, shared = sig.SharedReports, custom = sig.StrongestRule?.Name, rules = sig.Rules.Select(x => new { id = x.Id, name = x.Name }),
+                lists = lists.Select(id => new { id, name = Blocklists.All.FirstOrDefault(l => l.Id == id)?.Name ?? id }),
+            });
         });
 
         api.MapGet("/{acc}/source", async (string acc, string folder, uint uid, HttpContext http, ImapPool pool, CancellationToken ct) =>
@@ -205,10 +264,11 @@ public static class MailApi
         api.MapGet("/{acc}/focus", (string acc, string folder, HttpContext http) =>
         {
             var space = http.Space();
-            if (!(space.Settings.FocusedInbox && space.Account(acc).FocusedInbox)) return Results.Ok(new { enabled = false, focused = 0, other = 0 });
+            if (!space.Settings.FocusOn(space.Account(acc))) return Results.Ok(new { enabled = false, focused = 0, other = 0 });
             Focus.Backfill(space, acc, folder);
             var (focused, other) = MailStore.FocusUnread(space.Db, acc, folder);
-            return Results.Ok(new { enabled = space.Settings.FocusedInbox, focused, other });
+            var (focusedTotal, otherTotal) = MailStore.FocusTotal(space.Db, acc, folder);
+            return Results.Ok(new { enabled = true, focused, other, focusedTotal, otherTotal });
         });
 
         // Nach Relevant/Sonstige verschieben: lernt aus dem Inhalt; "always" merkt sich den Absender fest
@@ -274,12 +334,42 @@ public static class MailApi
             var from = MailStore.Folder(space.Db, acc, body.Folder)?.Special;
             var to = MailStore.Folder(space.Db, acc, body.Target)?.Special;
             bool? spam = from == "junk" && to is not ("junk" or "trash") ? false : to == "junk" && from != "junk" ? true : null;
+            // Komfort: Archivieren heißt „das war in Ordnung“ - als „Kein Junk“ lernen (abschaltbar unter Junk-E-Mail)
+            if (spam == null && to == "archive" && from is not ("junk" or "archive") && space.Settings.Spam.Enabled && space.Settings.Spam.LearnArchive)
+            {
+                spam = false;
+                foreach (var uid in body.Uids) MailStore.SetSpamScore(space.Db, acc, body.Folder, uid, 0);
+            }
+            // Aus Junk in den Papierkorb gezogen: wie Löschen im Junk-Ordner als Junk lernen
+            if (from == "junk" && to == "trash") await LearnDeletedJunk(space, account, body.Folder, body.Uids, pool, ct);
             if (spam is bool isSpam)
                 foreach (var uid in body.Uids)
-                    try { SpamFilter.Train(space.Db, await Load(space, account, body.Folder, uid, pool, ct), spam: isSpam); }
+                    try
+                    {
+                        var m = await Load(space, account, body.Folder, uid, pool, ct);
+                        SpamFilter.Train(space.Db, m, spam: isSpam);
+                        // Gemeinsames Junk-Wissen: melden bzw. die eigene Meldung zurücknehmen
+                        if (isSpam) JunkPrints.Shared?.Report(space, m); else JunkPrints.Shared?.Withdraw(space, m);
+                    }
                     catch (Exception) { /* Lernen ist Zugabe - das Verschieben selbst darf daran nicht scheitern */ }
             Move(space, account, outbox, sync, body.Folder, body.Uids, body.Target);
             return Results.Ok();
+        });
+
+        // Neu einordnen (nur Posteingang): Junk-Erkennung, Relevant/Sonstige, Kategorien für Mails, die schon da waren - im Hintergrund,
+        // der Fortschritt steht unter „Aktivität“. Ohne Auswahl die neuesten Mails des Posteingangs.
+        api.MapPost("/{acc}/reclassify", (string acc, ReclassifyBody body, HttpContext http, MailSync sync, ImapPool pool, ILogger<MailSync> log) =>
+        {
+            var space = http.Space();
+            var account = space.Account(acc);
+            if (MailStore.Folder(space.Db, acc, body.Folder)?.Special != "inbox") return Results.BadRequest(new { error = "Neu einordnen geht nur im Posteingang." });
+            var count = body.Uids?.Count ?? Math.Min(MailSync.ReclassifyMax, MailStore.Uids(space.Db, acc, body.Folder).Count);
+            _ = Task.Run(async () =>
+            {
+                try { await sync.Reclassify(space, account, body.Uids, pool, CancellationToken.None); }
+                catch (Exception ex) { log.LogWarning("Neu einordnen {Account}: {Error}", LogNames.Of(space, account), ex.Message); }
+            });
+            return Results.Ok(new { count });
         });
 
         api.MapPost("/{acc}/delete", async (string acc, UidsBody body, HttpContext http, ImapPool pool, MailSync sync, MailOutbox outbox, CancellationToken ct) =>
@@ -287,6 +377,8 @@ public static class MailApi
             var space = http.Space();
             var account = space.Account(acc);
             var trash = MailStore.Folders(space.Db, acc).FirstOrDefault(f => f.Special == "trash");
+            // Im Junk-Ordner gelöscht heißt „das ist Müll“: als Junk lernen
+            if (MailStore.Folder(space.Db, acc, body.Folder)?.Special == "junk") await LearnDeletedJunk(space, account, body.Folder, body.Uids, pool, ct);
             if (trash != null && trash.Path != body.Folder)
             {
                 Move(space, account, outbox, sync, body.Folder, body.Uids, trash.Path);
@@ -310,7 +402,12 @@ public static class MailApi
             var space = http.Space();
             var account = space.Account(acc);
             foreach (var uid in body.Uids)
-                SpamFilter.Train(space.Db, await Load(space, account, body.Folder, uid, pool, ct), spam: true);
+            {
+                var m = await Load(space, account, body.Folder, uid, pool, ct);
+                SpamFilter.Train(space.Db, m, spam: true);
+                // Gemeinsames Junk-Wissen (wenn eingeschaltet): Fingerabdruck melden - schützt die anderen im Haushalt
+                JunkPrints.Shared?.Report(space, m);
+            }
             var junk = MailStore.Folders(space.Db, acc).FirstOrDefault(f => f.Special == "junk")
                 ?? throw new InvalidOperationException("Kein Junk-Ordner gefunden.");
             if (junk.Path != body.Folder) Move(space, account, outbox, sync, body.Folder, body.Uids, junk.Path);
@@ -321,14 +418,37 @@ public static class MailApi
         {
             var space = http.Space();
             var account = space.Account(acc);
+            var inJunk = MailStore.Folder(space.Db, acc, body.Folder)?.Special == "junk";
+            // Erst den Wert, dann lernen: Lernen lädt die Mails (dauert) - eine Liste, die solange neu lädt, zeigte sonst weiter „unsicher“
+            if (!inJunk) foreach (var uid in body.Uids) MailStore.SetSpamScore(space.Db, acc, body.Folder, uid, 0);
             foreach (var uid in body.Uids)
-                SpamFilter.Train(space.Db, await Load(space, account, body.Folder, uid, pool, ct), spam: false);
-            var inbox = MailStore.Folders(space.Db, acc).First(f => f.Special == "inbox");
-            if (MailStore.Folder(space.Db, acc, body.Folder)?.Special == "junk")
+            {
+                var m = await Load(space, account, body.Folder, uid, pool, ct);
+                SpamFilter.Train(space.Db, m, spam: false);
+                JunkPrints.Shared?.Withdraw(space, m);
+            }
+            if (inJunk)
+            {
+                var inbox = MailStore.Folders(space.Db, acc).First(f => f.Special == "inbox");
                 Move(space, account, outbox, sync, body.Folder, body.Uids, inbox.Path);
-            else
-                foreach (var uid in body.Uids) MailStore.SetSpamScore(space.Db, acc, body.Folder, uid, 0);
+            }
             return Results.Ok();
+        });
+
+        // Sichere Absender nach „Kein Junk“: was sich eintragen ließe (Adresse, Domain, verifiziert, Freemail) und eintragen
+        api.MapGet("/{acc}/trust", async (string acc, string folder, uint uid, HttpContext http, ImapPool pool, CancellationToken ct) =>
+        {
+            var space = http.Space();
+            var account = space.Account(acc);
+            var m = await Load(space, account, folder, uid, pool, ct);
+            var check = SafeList.Inspect(space.Db, m, SpamSignals.Of(m, [account.ImapHost, PhishCheck.DomainOf(account.Email)]));
+            return new { check.Address, check.Domain, check.Verified, check.Freemail, check.AddressListed, check.DomainListed, token = SafeList.Remember(space.User.Id, check) };
+        });
+        api.MapPost("/trust", (TrustBody body, HttpContext http) =>
+        {
+            var space = http.Space();
+            var check = SafeList.Recall(space.User.Id, body.Token) ?? throw new ArgumentException("Das ist schon zu lange her – bitte die Mail noch einmal öffnen.");
+            return Results.Ok(new { entry = SafeList.Add(space.Db, check, body.Scope) });
         });
 
         // ---------------- Termine aus Mails (Pakete, Reisen) ----------------
@@ -377,18 +497,27 @@ public static class MailApi
             var space = http.Space();
             var key = body.Key.Trim().ToLowerInvariant();
             if (!Settings.Categories.ValidKey(key)) return Results.BadRequest(new { error = "Ungültige Kategorie." });
-            await pool.UseAsync(space.Account(acc), ImapPool.Ui, async c =>
+            var account = space.Account(acc);
+            // Microsoft-Konten mit Graph: Outlook-Kategorien statt IMAP-Schlagworte (setzt auch lokal)
+            if (GraphCategories.Uses(account)) await GraphCategories.SetAsync(space, account, body.Folder, body.Uids, key, body.On, ct);
+            else await pool.UseAsync(account, ImapPool.Ui, async c =>
             {
                 var f = await c.GetFolderAsync(body.Folder, ct);
                 await f.OpenAsync(FolderAccess.ReadWrite, ct);
                 // Nimmt der Server keine eigenen Schlagworte an (z. B. Gmail), meldet er das hier
                 if (!f.PermanentFlags.HasFlag(MessageFlags.UserDefined) && !f.PermanentKeywords.Contains(key))
-                    throw new InvalidOperationException("Dieser Mailserver speichert keine Kategorien (eigene IMAP-Schlagworte).");
+                    throw new InvalidOperationException(account.Auth == MailAuth.Microsoft ? GraphCategories.NotConnected
+                        : "Dieser Mailserver speichert keine Kategorien (eigene IMAP-Schlagworte).");
                 var req = new StoreFlagsRequest(body.On ? StoreAction.Add : StoreAction.Remove, MessageFlags.None) { Silent = true };
                 req.Keywords.Add(key);
                 await f.StoreAsync(body.Uids.Select(u => new UniqueId(u)).ToList(), req, ct);
             }, ct);
-            MailStore.SetKeyword(space.Db, acc, body.Folder, body.Uids, key, body.On);
+            if (!GraphCategories.Uses(account)) MailStore.SetKeyword(space.Db, acc, body.Folder, body.Uids, key, body.On);
+            // Lernende Kategorie: von Hand gesetzt = gehört dazu, entfernt = gehört nicht dazu
+            if (Settings.Categories.Of(space.Settings).Any(c => c.Key == key && c.Smart))
+                foreach (var uid in body.Uids)
+                    if (SmartInbox.OfStored(space, acc, body.Folder, uid) is { } doc)
+                        SmartInbox.Train(space.Db, doc, key, body.On);
             sync.Touch(space.User.Id);
             return Results.Ok();
         });
@@ -602,6 +731,9 @@ public static class MailApi
             var space = http.Space();
             var account = space.Account(acc);
             var (draft, files) = await ReadDraft(request, ct);
+            // Als Catchall-Alias senden: nur, wenn das eingeschaltet und die Adresse bekannt ist
+            if (!string.IsNullOrEmpty(draft.From) && !CatchallAliases.CanSendAs(space.Db, account, draft.From))
+                return Results.BadRequest(new { error = "Als diese Adresse kann aus diesem Postfach nicht gesendet werden." });
             var source = SourceOf(space, account, draft);
             // Anhaenge als Freigabelink: Links anlegen und als Abschnitt unter den Text
             try { draft.Html += await MailLinks.CreateAsync(http, space, account, draft, files, ct); }
@@ -609,7 +741,11 @@ public static class MailApi
             catch (Dav.QuotaExceededException ex) { return Results.Json(new { error = ex.Message }, statusCode: 507); }
             MimeMessage message;
             // Ungueltige Adresse: 400 mit Meldung, wie die anderen Eingabefehler
-            try { message = MailCompose.Build(account, draft, await Attachments(space, source, draft, files, pool, ct)); }
+            try
+            {
+                message = MailCompose.Build(account, draft, await Attachments(space, source, draft, files, pool, ct, http.RequestServices.GetRequiredService<ServerConfig>()));
+                OpenPgpMail.Outgoing(space.Db, account, message, draft.Sign ?? OpenPgpKeys.SignsByDefault(space.Db, account.Id));
+            }
             catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
             if (!message.To.Mailboxes.Any() && !message.Cc.Mailboxes.Any() && !message.Bcc.Mailboxes.Any())
                 return Results.BadRequest(new { error = "Kein Empfänger." });
@@ -687,9 +823,10 @@ public static class MailApi
             var space = http.Space();
             var account = space.Account(acc);
             var (draft, files) = await ReadDraft(request, ct);
+            if (!string.IsNullOrEmpty(draft.From) && !CatchallAliases.CanSendAs(space.Db, account, draft.From)) draft.From = null;
             var source = SourceOf(space, account, draft);
             MimeMessage message;
-            try { message = MailCompose.Build(account, draft, await Attachments(space, source, draft, files, pool, ct)); }
+            try { message = MailCompose.Build(account, draft, await Attachments(space, source, draft, files, pool, ct, http.RequestServices.GetRequiredService<ServerConfig>())); }
             catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
             var result = await pool.UseAsync(account, ImapPool.Ui, async c =>
             {
@@ -746,7 +883,24 @@ public static class MailApi
     }
 
     /// <summary>Aus der Datenbank; fehlt der Inhalt noch (Sync nicht so weit, zu gross), vom Server.</summary>
-    private static async Task<MimeMessage> Load(UserSpace space, MailAccount account, string folder, uint uid, ImapPool pool, CancellationToken ct)
+    public record PartBody(string Folder, uint Uid, int Index);
+
+    /// <summary>Art zum Ansehen in dmOffice (Positivliste), aus dem MIME-Typ oder - bei „application/octet-stream“ - der Endung; sonst null.</summary>
+    internal static string? ViewableMime(string mime, string name)
+    {
+        var m = mime.ToLowerInvariant();
+        if (m == "application/octet-stream" || m.Length == 0)
+            m = Path.GetExtension(name).ToLowerInvariant() switch
+            {
+                ".pdf" => "application/pdf", ".jpg" or ".jpeg" => "image/jpeg", ".png" => "image/png", ".gif" => "image/gif", ".webp" => "image/webp",
+                ".mp3" => "audio/mpeg", ".m4a" => "audio/mp4", ".ogg" or ".opus" => "audio/ogg", ".wav" => "audio/wav", ".mp4" or ".m4v" => "video/mp4", ".webm" => "video/webm",
+                _ => m,
+            };
+        return m is "image/png" or "image/jpeg" or "image/gif" or "image/webp" or "image/bmp" or "application/pdf"
+            or "audio/mpeg" or "audio/mp4" or "audio/ogg" or "audio/wav" or "audio/x-wav" or "audio/webm" or "video/mp4" or "video/webm" or "video/quicktime" ? m : null;
+    }
+
+    internal static async Task<MimeMessage> Load(UserSpace space, MailAccount account, string folder, uint uid, ImapPool pool, CancellationToken ct)
     {
         if (MailStore.Raw(space.Db, account.Id, folder, uid) is { } raw) return MimeMessage.Load(new MemoryStream(raw));
         return await pool.UseAsync(account, ImapPool.Ui, async c =>
@@ -766,8 +920,8 @@ public static class MailApi
         using (var smtp = await ImapPool.SmtpAsync(account, ct))
         {
             // Antwort des Mailservers festhalten: "250 ... queued as ..." heisst angenommen - mehr kann der Absender nicht wissen
-            smtp.MessageSent += (_, e) => log?.LogInformation("Senden {Account}: Mailserver hat angenommen ({Recipients}): {Response}",
-                account.Email, string.Join(", ", message.To.Mailboxes.Concat(message.Cc.Mailboxes).Concat(message.Bcc.Mailboxes).Select(m => m.Address)), e.Response);
+            smtp.MessageSent += (_, e) => log?.LogInformation("Senden {Account}: Mailserver hat angenommen ({Count} Empfänger): {Response}",
+                LogNames.Of(space, account), message.To.Mailboxes.Count() + message.Cc.Mailboxes.Count() + message.Bcc.Mailboxes.Count(), e.Response);
             await smtp.SendAsync(message, ct);
             await smtp.DisconnectAsync(true, ct);
         }
@@ -781,7 +935,7 @@ public static class MailApi
             catch (Exception ex)
             {
                 warnings.Add(what + ": " + ex.Message);
-                log?.LogWarning("Senden {Account}: {What} fehlgeschlagen: {Error}", account.Email, what, ex.Message);
+                log?.LogWarning("Senden {Account}: {What} fehlgeschlagen: {Error}", LogNames.Of(space, account), what, ex.Message);
             }
         }
 
@@ -822,7 +976,7 @@ public static class MailApi
     }
 
     /// <summary>Fahne/gelesen: sofort in der Datenbank, zum IMAP-Server im Hintergrund.</summary>
-    private static void SetFlags(UserSpace space, MailAccount account, MailOutbox outbox, string folder, List<uint> uids,
+    internal static void SetFlags(UserSpace space, MailAccount account, MailOutbox outbox, string folder, List<uint> uids,
         bool? seen, bool? flagged)
     {
         if (seen is bool s2) MailStore.SetFlag(space.Db, account.Id, folder, uids, "seen", s2);
@@ -839,9 +993,18 @@ public static class MailApi
         });
     }
 
+    /// <summary>Im Junk-Ordner gelöschte Mails als Junk lernen (JunkLearn.LearnDeleted). Lernen ist Zugabe - das Löschen darf
+    /// daran nicht scheitern.</summary>
+    private static async Task LearnDeletedJunk(UserSpace space, MailAccount account, string folder, List<uint> uids, ImapPool pool, CancellationToken ct)
+    {
+        foreach (var uid in uids)
+            try { JunkLearn.LearnDeleted(space, await Load(space, account, folder, uid, pool, ct)); }
+            catch (Exception) { }
+    }
+
     /// <summary>Verschieben: sofort aus dem Ordner in der Datenbank, zum IMAP-Server im Hintergrund;
     /// danach holt der Sync die Mail im Zielordner.</summary>
-    private static void Move(UserSpace space, MailAccount account, MailOutbox outbox, MailSync sync,
+    internal static void Move(UserSpace space, MailAccount account, MailOutbox outbox, MailSync sync,
         string folder, List<uint> uids, string target)
     {
         MailStore.Delete(space.Db, account.Id, folder, uids);
@@ -905,7 +1068,7 @@ public static class MailApi
     }
 
     private static async Task<List<(string, string, byte[])>> Attachments(UserSpace space, MailAccount account,
-        MailCompose.Draft d, List<IFormFile> files, ImapPool pool, CancellationToken ct)
+        MailCompose.Draft d, List<IFormFile> files, ImapPool pool, CancellationToken ct, ServerConfig? config = null)
     {
         var result = new List<(string, string, byte[])>();
         foreach (var file in files)
@@ -933,6 +1096,23 @@ public static class MailApi
         long fromFiles = 0;
         foreach (var raw in d.FilePaths.Distinct())
         {
+            // Foto aus einem Galerie-Ordner (externer Ordner, „ext:Quelle/Pfad“): vom externen Ordner gelesen
+            if (raw.StartsWith("ext:") && config != null)
+            {
+                var (src, rel) = DmOffice.Gallery.GalleryFolders.Resolve(space, config, raw[4..]);
+                var (driver, _) = DmOffice.Storage.ExternalFolders.Open(space, config, src.Mount);
+                using (driver)
+                {
+                    await using var es = await driver.OpenReadAsync(rel, ct);
+                    using var ems = new MemoryStream();
+                    await es.CopyToAsync(ems, ct);
+                    fromFiles += ems.Length;
+                    if (fromFiles > MaxFilesAttached) throw new ArgumentException($"Zusammen höchstens {MaxFilesAttached / 1024 / 1024} MB aus der Dateiablage - für Größeres einen Link teilen.");
+                    var ename = rel[(rel.LastIndexOf('/') + 1)..];
+                    result.Add((ename, Dav.DavServer.Mime(ename), ems.ToArray()));
+                }
+                continue;
+            }
             var path = Dav.FileStore.Normalize(raw);
             if (space.User.FilesOff && !Dav.FileStore.InRoot(path, space.Settings.Notizi.Root)) throw new ArgumentException("Die Dateiablage ist abgeschaltet.");
             var entry = Dav.FileStore.Get(space.Db, path);
@@ -956,9 +1136,12 @@ public static class MailApi
         string PartUrl(int i) => $"/api/mail/{Uri.EscapeDataString(acc)}/part?folder={Uri.EscapeDataString(folder)}&uid={uid}&index={i}";
 
         var cids = new HashSet<int>();
-        var rawHtml = m.HtmlBody ?? (m.TextBody is { } t ? MailHtml.FromText(t) : "");
+        var rawHtml = MailCompose.InlineSequence(m, parts, cids) ?? m.HtmlBody ?? (m.TextBody is { } t ? MailHtml.FromText(t) : "");
         var sanitized = MailHtml.Sanitize(rawHtml, images, cid =>
         {
+            // Bilder aus InlineSequence (ohne eigene Content-ID): Nummer des Teils
+            if (cid.StartsWith(MailCompose.SequencePart, StringComparison.Ordinal) && int.TryParse(cid[MailCompose.SequencePart.Length..], out var n) && n >= 0 && n < parts.Count)
+                return PartUrl(n);
             var i = parts.FindIndex(p => p.ContentId != null && p.ContentId.Trim('<', '>') == cid);
             if (i < 0) return null;
             cids.Add(i);
@@ -968,13 +1151,13 @@ public static class MailApi
         var attachments = parts.Select((p, i) => new AttachmentDto(i,
                 p.FileName ?? p.ContentType.Name ?? (p.ContentType.MimeType == "message/rfc822" ? "Nachricht.eml" : $"Teil {i + 1}"),
                 p.ContentType.MimeType, Size(p), cids.Contains(i)))
-            .Where(a => !a.Inline)
+            .Where(a => !a.Inline && a.Mime != "application/pgp-signature")
             .ToList();
 
         return new MessageDto(acc, uid, folder, m.Subject ?? "", Addrs(m.From).FirstOrDefault(), Addrs(m.To), Addrs(m.Cc),
             Addrs(m.Bcc), Addrs(m.ReplyTo), m.Date, sanitized.Html, sanitized.HasRemoteImages, MailStore.BodyText(m),
             attachments, m.MessageId, m.InReplyTo, m.References.ToList(), row.Seen, row.Flagged, row.Spam, row.Cached, images, trusted,
-            Unsubscribe.Of(m), junk);
+            Unsubscribe.Of(m), junk, ListId: m.Headers[HeaderId.ListId], Pgp: Features.On(Features.Pgp) ? OpenPgpMail.Hint(m) : null);
     }
 
     private static long Size(MimePart p)

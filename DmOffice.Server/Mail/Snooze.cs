@@ -37,9 +37,12 @@ public static class Snooze
     // dieser Sperre, je Benutzer. Die IMAP-Arbeit laeuft ausserhalb; danach frisch lesen und einarbeiten.
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> Locks = new();
 
+    /// <summary>Dieselbe Sperre fuer das Entfernen nach Zeit (MailExpiry) - beide Listen aendern Oberflaeche und Sync.</summary>
+    internal static SemaphoreSlim Gate(UserDb db) => Locks.GetOrAdd(db.UserId, _ => new SemaphoreSlim(1, 1));
+
     private static async Task UpdateAsync(UserDb db, Action<List<Entry>> change)
     {
-        var gate = Locks.GetOrAdd(db.UserId, _ => new SemaphoreSlim(1, 1));
+        var gate = Gate(db);
         // Ohne Abbruch: die IMAP-Arbeit ist schon geschehen, der Eintrag muss dazu passen
         await gate.WaitAsync();
         try
@@ -100,6 +103,10 @@ public static class Snooze
         });
         MailStore.Delete(space.Db, account.Id, folder, uids);
     }
+
+    /// <summary>Eine vernichtete Mail vergessen (MailExpiry) - sonst holte die Wiedervorlage sie ins Leere.</summary>
+    internal static Task ForgetAsync(UserDb db, string account, string messageId) =>
+        UpdateAsync(db, list => list.RemoveAll(e => e.Account == account && e.MessageId == messageId));
 
     /// <summary>Faellige Mails (oder auf Wunsch bestimmte sofort) zurueckholen. Gibt zurueck, wie viele.</summary>
     public static async Task<int> ReturnAsync(ImapClient c, UserSpace space, MailAccount account, Func<Entry, bool> which, CancellationToken ct)

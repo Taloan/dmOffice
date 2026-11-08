@@ -18,6 +18,7 @@ Calendar, tasks, mail, contacts, notes and files from dmOffice on your phone, wi
 - **Contacts** (More → Contacts): list with search, card with call, SMS, mail, map; cached locally.
 - **Notes** (More → Notes): list with search, reading; editing paragraph by paragraph with version check (locked blocks and notes with tables/images stay unchanged).
 - **Files** (Files tab): browse, search, list or tiles, preview (pictures, PDF, text, video), open in other apps, rename, delete, create folders, upload, previous versions, share links (view, upload, upload only; expiry and password). **Available offline** keeps a copy of marked files or folders on the phone and keeps it in sync. Office documents open in the editor of your office server (see [docs/office.md](../../docs/office.md)).
+- **Music library** (version 2, when the server offers it): playlists and auto playlists from the server, albums, all tracks, search. Plays in the background with notification, lock screen and Bluetooth buttons (Media3). Listening counts towards the history like in the web; without network it is reported later. Playlists are edited in the web interface.
 - **Auto upload**: rules that upload new photos, videos or other files from a folder on the phone to a folder in your dmOffice files.
   - Sources: camera, screenshots, WhatsApp media, any media folder or a folder chosen by hand.
   - Target folder in dmOffice, optionally with subfolders by year, month or day, or keeping the source’s subfolders.
@@ -97,6 +98,8 @@ Three widgets, each with its own settings (cog in the title row or when adding),
 
 Multi-day events follow the same rule (`MultiDayRule`) in all widgets, including the month grid. The implementation is in `widget/Widgets.kt` (shared building blocks, agenda, tasks, grid) and `widget/MonthWidget.kt`.
 
+**dmOffice Music** (version 2, only offered when the server has a music library): player with cover, title and artist, previous, play/pause and next; 4×1, resizable (narrow: without “previous”). Tapping cover or title opens the music library; with nothing queued, the play button opens it too. The playback service keeps the widget up to date (`widget/AudioWidget.kt`).
+
 ## Push through Firebase (optional)
 
 Without push the app asks for news every 15 minutes. With push, dmOffice sends a content-free signal through Google Firebase Cloud Messaging on every change (mail, events, tasks, contacts, notes), and the app syncs immediately. Only “there is news” travels through Google; the app fetches the data itself through dmOffice’s encrypted envelope.
@@ -121,6 +124,7 @@ Technique: `DmOffice.Server/Push.cs` checks every 10 seconds, for users with a s
 | `mail/` | Mail repository with cache; `data/ContactsRepo.kt`, `data/NotesRepo.kt` likewise |
 | `files/` | File repository, offline copies, thumbnails, document provider, Office editor glue |
 | `upload/` | Auto upload (scanner, queue, rules) and the logic for “free up space” |
+| `audio/` | Music library: repository (tracks, playlists, listening history), playback service (Media3) and its controller |
 | `update/` | Update check, download and signature verification |
 | `sync/ProviderSync.kt` | Mirror into CalendarContract and ContactsContract |
 | `sync/PushService.kt` | Push through Firebase: register token, signal starts the sync |

@@ -18,6 +18,18 @@ public static class Categories
 
     public static List<MailCategory> Of(UserSettings s) => s.Categories ?? Defaults.Select(c => new MailCategory { Key = c.Key, Name = c.Name, Color = c.Color }).ToList();
 
+    /// <summary>
+    /// Keine Benachrichtigung für diese Mail: Sie trägt mindestens eine bekannte Kategorie, und alle ihre Kategorien stehen auf
+    /// „ohne Benachrichtigung“. Eine Kategorie mit Benachrichtigung reicht, damit gemeldet wird; ohne Kategorie gilt das Übliche.
+    /// </summary>
+    public static bool Silenced(UserSettings s, IEnumerable<string>? keywords)
+    {
+        if (keywords == null) return false;
+        var kw = keywords.Select(k => k.ToLowerInvariant()).ToHashSet();
+        var mine = Of(s).Where(c => kw.Contains(c.Key.ToLowerInvariant())).ToList();
+        return mine.Count > 0 && mine.All(c => c.Quiet);
+    }
+
     public static bool ValidKey(string key) =>
         key.Length is > 3 and <= 60 && (key.StartsWith("dm_") || key.StartsWith("$label")) && key.All(c => c is >= 'a' and <= 'z' or >= '0' and <= '9' or '_' or '$');
 

@@ -151,6 +151,29 @@ public class FilesApiTests : IClassFixture<FilesServerFixture>
     }
 
     [Fact]
+    public async Task Fertiges_Foto_ersetzt_Vorabbild_mit_gleicher_Aenderungszeit_und_das_Vorabbild_bleibt_als_Version()
+    {
+        // Die Kamera ersetzt ihr Vorabbild, die Aenderungszeit bleibt die der Aufnahme: keine zweite Datei
+        var c = _fx.Client();
+        var ms = new DateTimeOffset(2026, 11, 6, 21, 24, 6, TimeSpan.Zero).ToUnixTimeMilliseconds();
+        var form = new MultipartFormDataContent { { new ByteArrayContent([1, 2, 3]), "files", "IMG_2.jpg" } };
+        var first = await Json(await c.PostAsync($"/api/files/upload?path=vorab&conflict=rename&mtime={ms}", form));
+        Assert.Equal("vorab/IMG_2.jpg", first.GetProperty("files")[0].GetProperty("path").GetString());
+        form = new MultipartFormDataContent { { new ByteArrayContent([4, 5, 6, 7, 8]), "files", "IMG_2.jpg" } };
+        var second = await Json(await c.PostAsync($"/api/files/upload?path=vorab&conflict=replace&mtime={ms}", form));
+        Assert.Equal("vorab/IMG_2.jpg", second.GetProperty("files")[0].GetProperty("path").GetString());
+        Assert.NotEqual(first.GetProperty("files")[0].GetProperty("sha256").GetString(), second.GetProperty("files")[0].GetProperty("sha256").GetString());
+
+        var items = (await Json(await c.GetAsync("/api/files?path=vorab"))).GetProperty("items");
+        Assert.Equal(1, items.GetArrayLength());
+        Assert.Equal(5, items[0].GetProperty("size").GetInt64());
+        Assert.Equal(ms, DateTimeOffset.Parse(items[0].GetProperty("modified").GetString()!).ToUnixTimeMilliseconds());
+        var versions = (await Json(await c.GetAsync("/api/files/versions?path=vorab/IMG_2.jpg"))).GetProperty("items");
+        Assert.Equal(1, versions.GetArrayLength());
+        Assert.Equal(3, versions[0].GetProperty("size").GetInt64());
+    }
+
+    [Fact]
     public async Task Konflikte_beim_Hochladen_und_Verschieben()
     {
         var c = _fx.Client();
@@ -260,6 +283,22 @@ public class FilesApiTests : IClassFixture<FilesServerFixture>
     }
 
     [Fact]
+    public async Task RAW_Foto_bekommt_Vorschaubild_aus_der_eingebetteten_Vorschau()
+    {
+        var c = _fx.Client();
+        using var bmp = new SKBitmap(640, 400);
+        using (var cv = new SKCanvas(bmp)) cv.Clear(SKColors.SeaGreen);
+        var jpg = SKImage.FromBitmap(bmp).Encode(SKEncodedImageFormat.Jpeg, 80).ToArray();
+        // Kein echtes RAW: Hauptsache, irgendwo steckt eine JPEG-Vorschau drin
+        await Upload(c, "", "DSC01234.ARW", [.. new byte[300], .. jpg, .. new byte[40]]);
+        var r = await c.GetAsync("/api/files/thumb?path=DSC01234.ARW&size=256");
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        Assert.Equal("image/webp", r.Content.Headers.ContentType?.MediaType);
+        using var thumb = SKBitmap.Decode(await r.Content.ReadAsByteArrayAsync());
+        Assert.Equal(256, thumb.Width);
+    }
+
+    [Fact]
     public async Task Vorschaubild_und_Bereichsanfragen_ueber_die_Schnittstelle()
     {
         var c = _fx.Client();
@@ -287,6 +326,20 @@ public class FilesApiTests : IClassFixture<FilesServerFixture>
     {
         var link = await Json(await c.PostAsJsonAsync("/api/files/links", new { path, mode, password, expires }));
         return link.GetProperty("token").GetString()!;
+    }
+
+    [Fact]
+    public async Task Link_auf_die_Wurzel_zeigt_keine_Systemordner()
+    {
+        var c = _fx.Client();
+        // Medien des Tagebuchs: in der Ablage unsichtbar, also auch nicht über einen Link auf „Dateien“
+        DmOffice.Dav.FileStore.EnsureDir(_fx.Db, DmOffice.Journal.JournalMediaStore.Root);
+        DmOffice.Dav.FileStore.Put(_fx.Db, DmOffice.Journal.JournalMediaStore.Root + "/geheim.jpg", Encoding.UTF8.GetBytes("x"), "image/jpeg");
+        var token = await Share(c, "", "read");
+        var anon = _fx.Client(signedIn: false);
+        var info = await Json(await anon.GetAsync($"/api/public/{token}"));
+        Assert.DoesNotContain(info.GetProperty("items").EnumerateArray(), i => i.GetProperty("name").GetString() == DmOffice.Journal.JournalMediaStore.Root);
+        Assert.Equal(HttpStatusCode.NotFound, (await anon.GetAsync($"/api/public/{token}/download?path={DmOffice.Journal.JournalMediaStore.Root}/geheim.jpg")).StatusCode);
     }
 
     [Fact]

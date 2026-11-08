@@ -41,6 +41,12 @@ public static class MailCompose
         public List<string> LinkPaths { get; set; } = new();
         /// <summary>... und hochgeladene Dateien (ihre Namen im Formular) - die kommen erst in die Dateiablage.</summary>
         public List<string> LinkUploads { get; set; } = new();
+        /// <summary>Absender statt der Adresse des Kontos - nur einen Catchall-Alias (CatchallAliases.CanSendAs prüft der Aufrufer).</summary>
+        public string? From { get; set; }
+        /// <summary>OpenPGP-signieren; null: wie fürs Konto eingestellt (OpenPgpKeys.AccountSettings.Sign).</summary>
+        public bool? Sign { get; set; }
+        /// <summary>Antwortadresse (Reply-To), etwa aus den Einstellungen von Finanzen; leer: keine.</summary>
+        public string? ReplyTo { get; set; }
     }
 
     public static string Wrap(string html) =>
@@ -53,19 +59,23 @@ public static class MailCompose
         IEnumerable<MimePart>? linked = null)
     {
         var m = new MimeMessage();
-        m.From.Add(new MailboxAddress(string.IsNullOrEmpty(account.DisplayName) ? null : account.DisplayName, account.Email));
+        m.From.Add(new MailboxAddress(string.IsNullOrEmpty(account.DisplayName) ? null : account.DisplayName,
+            string.IsNullOrWhiteSpace(d.From) ? account.Email : d.From.Trim()));
         AddAddresses(m.To, d.To, "An");
         AddAddresses(m.Cc, d.Cc, "Cc");
         AddAddresses(m.Bcc, d.Bcc, "Bcc");
+        if (!string.IsNullOrWhiteSpace(d.ReplyTo)) AddAddresses(m.ReplyTo, d.ReplyTo, "Antwort an");
         m.Subject = d.Subject;
         // Message-ID mit der Domain des Absenders statt dem Rechnernamen (im Container ein Zufallsname): Mailprogramme und
         // Spamfilter beim Empfaenger werten eine Kennung ohne echte Domain schlecht
-        var domain = account.Email.Contains('@') ? account.Email[(account.Email.LastIndexOf('@') + 1)..].Trim() : "";
+        // Bei einem Catchall-Alias deren Domain - sonst verriete die Kennung das eigentliche Postfach
+        var sender = m.From.Mailboxes.First().Address;
+        var domain = sender.Contains('@') ? sender[(sender.LastIndexOf('@') + 1)..].Trim() : "";
         if (domain.Contains('.') && domain.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '-')) m.MessageId = MimeKit.Utils.MimeUtils.GenerateMessageId(domain);
         if (!string.IsNullOrEmpty(d.InReplyTo)) m.InReplyTo = d.InReplyTo;
         foreach (var r in d.References) m.References.Add(r);
         if (d.HighPriority) m.Priority = MessagePriority.Urgent;
-        if (d.ReadReceipt) m.Headers.Add(HeaderId.DispositionNotificationTo, account.Email);
+        if (d.ReadReceipt) m.Headers.Add(HeaderId.DispositionNotificationTo, sender);
         m.Headers.Add(HeaderId.ContentLanguage, account.Language == "en" ? "en" : "de");
 
         var builder = new BodyBuilder { HtmlBody = Wrap(d.Html), TextBody = MailHtml.ToText(d.Html) };
@@ -107,6 +117,52 @@ public static class MailCompose
         return m.BodyParts.OfType<MimePart>()
             .Where(p => !(p is TextPart tp && !p.IsAttachment && (tp.IsHtml ? tp.Text == html : tp.Text == text)))
             .ToList();
+    }
+
+    public const string SequencePart = "dm-part-";
+
+    /// <summary>
+    /// Apple Mail und das iPhone schicken Text, Bild und weiteren Text als Teile nacheinander in multipart/mixed (alle inline,
+    /// das Bild ohne Content-ID). Dann zeigen wir sie wie dort in dieser Reihenfolge als einen Inhalt statt den ersten Text plus
+    /// „Anhänge“. Die verwendeten Teile kommen in <paramref name="used"/> (Nummern aus <see cref="Parts"/>), damit sie nicht
+    /// noch einmal als Anhang erscheinen. null, wenn die Mail nicht so aufgebaut ist.
+    /// </summary>
+    public static string? InlineSequence(MimeMessage m, List<MimePart> parts, HashSet<int> used)
+    {
+        if (m.Body is not Multipart mixed || !mixed.ContentType.IsMimeType("multipart", "mixed")) return null;
+        var html = new System.Text.StringBuilder();
+        var take = new List<int>();
+        int shown = 0, pictures = 0;
+        foreach (var child in mixed)
+        {
+            switch (child)
+            {
+                case TextPart tp when !tp.IsAttachment && (tp.IsHtml || tp.IsPlain):
+                    html.Append(tp.IsHtml ? tp.Text : MailHtml.FromText(tp.Text));
+                    if (parts.IndexOf(tp) is var ti and >= 0) take.Add(ti);
+                    shown++;
+                    break;
+                case MimePart mp when !mp.IsAttachment && mp.ContentType.MediaType.Equals("image", StringComparison.OrdinalIgnoreCase) && parts.IndexOf(mp) is var pi and >= 0:
+                    html.Append($"<div><img src=\"cid:{SequencePart}{pi}\" alt=\"{WebUtility.HtmlEncode(mp.FileName ?? "")}\" style=\"max-width:100%\"></div>");
+                    take.Add(pi);
+                    shown++; pictures++;
+                    break;
+                case Multipart alt when alt.ContentType.IsMimeType("multipart", "alternative") || alt.ContentType.IsMimeType("multipart", "related"):
+                    // Text und HTML zur Wahl bzw. HTML mit eigenen Bildern: das HTML, sonst der Text
+                    var h = alt.OfType<TextPart>().FirstOrDefault(x => x.IsHtml) ?? alt.OfType<Multipart>().SelectMany(x => x.OfType<TextPart>()).FirstOrDefault(x => x.IsHtml);
+                    var p = alt.OfType<TextPart>().FirstOrDefault(x => x.IsPlain);
+                    if (h == null && p == null) return null;
+                    html.Append(h != null ? h.Text : MailHtml.FromText(p!.Text));
+                    shown++;
+                    break;
+                default:
+                    break; // echte Anhänge bleiben Anhänge
+            }
+        }
+        // Nur wenn es wirklich mehrere Stücke sind, darunter ein Bild im Text - sonst wie bisher
+        if (shown < 2 || pictures == 0) return null;
+        foreach (var i in take) used.Add(i);
+        return html.ToString();
     }
 
     public static byte[] Decode(MimePart part)

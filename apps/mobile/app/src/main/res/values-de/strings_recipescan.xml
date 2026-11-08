@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Rezept-Scan in den Notizen (docs/rezept-scan-konzept.md) -->
+<resources>
+    <string name="recipe_scan">Rezept scannen</string>
+    <string name="recipe_scan_check">Rezept prüfen</string>
+    <string name="recipe_scan_pages_hint">Kochbuchseiten abfotografieren, bis zu 10 Seiten in der Reihenfolge des Rezepts.</string>
+    <string name="recipe_scan_add_pages">Seiten scannen</string>
+    <string name="recipe_scan_pick_pages">Fotos wählen</string>
+    <string name="recipe_scan_page">Seite %1$d</string>
+    <string name="recipe_scan_remove_page">Seite entfernen</string>
+    <string name="recipe_scan_recognize">Erkennen</string>
+    <string name="recipe_scan_recognizing">Erkennt …</string>
+    <string name="recipe_scan_no_ocr">Texterkennung ist auf diesem Server nicht verfügbar.</string>
+    <string name="recipe_scan_ai">Mit KI erkennen</string>
+    <string name="recipe_scan_by_ai">Von der KI gelesen.</string>
+    <string name="recipe_scan_recipe_n">Rezept %1$d</string>
+    <string name="recipe_scan_remove_recipe">Dieses Rezept entfernen</string>
+    <string name="recipe_scan_title">Titel</string>
+    <string name="recipe_scan_yield">Portionen</string>
+    <string name="recipe_scan_prep">Arbeitszeit</string>
+    <string name="recipe_scan_cook">Koch-/Backzeit</string>
+    <string name="recipe_scan_total">Gesamtzeit</string>
+    <string name="recipe_scan_calories">Kalorien je Portion</string>
+    <string name="recipe_scan_calories_hint">Der Essensplan schlägt nur Rezepte mit dieser Angabe vor.</string>
+    <string name="recipe_scan_description">Beschreibung</string>
+    <string name="recipe_scan_ingredients">Zutaten</string>
+    <string name="recipe_scan_ingredients_hint">Eine Zeile je Zutat. Eine Zeile mit Doppelpunkt am Ende beginnt einen Unterabschnitt, z. B. „Für den Teig:“.</string>
+    <string name="recipe_scan_steps">Zubereitung</string>
+    <string name="recipe_scan_steps_hint">Eine Zeile je Schritt.</string>
+    <string name="recipe_scan_tip">Tipp</string>
+    <string name="recipe_scan_source">Quelle</string>
+    <string name="recipe_scan_source_hint">z. B. Buchtitel, S. 45</string>
+    <string name="recipe_scan_image">Titelbild</string>
+    <string name="recipe_scan_take_photo">Foto aufnehmen</string>
+    <string name="recipe_scan_gallery">Aus der Galerie</string>
+    <string name="recipe_scan_crop">Ausschnitt einer Seite</string>
+    <string name="recipe_scan_crop_hint">Die Ecken um das Bild des Gerichts legen.</string>
+    <string name="recipe_scan_crop_apply">Übernehmen</string>
+    <string name="recipe_scan_no_image">Ohne Titelbild</string>
+    <string name="recipe_scan_raw">Erkannter Text</string>
+    <string name="recipe_scan_create">Rezept anlegen</string>
+    <string name="recipe_scan_create_n">%1$d Rezepte anlegen</string>
+</resources>

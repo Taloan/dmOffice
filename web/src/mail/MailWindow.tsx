@@ -104,7 +104,12 @@ function ReadWindow() {
           onLoaded={m => { setMessage(m); if (!item.seen) tellOpener() }}
           onReply={all => message && account && setCompose(replyOf(message, account, all))}
           onForward={() => message && account && setCompose(forwardOf(message, account))}
-          onAct={act} />
+          onAct={act}
+          onRemoveCategory={async key => {
+            setItem(i => i && { ...i, keywords: (i.keywords ?? []).filter(k => k !== key) })
+            try { await api.post(`/api/mail/${item.account}/category`, { folder: item.folder, uids: [item.uid], key, on: false }); tellOpener() }
+            catch (e) { fail(e) }
+          }} />
       )}
     </div>
   )

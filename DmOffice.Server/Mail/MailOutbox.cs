@@ -47,12 +47,12 @@ public sealed class MailOutbox(ImapPool pool, MailSync sync, ILogger<MailOutbox>
                 }
                 catch (Exception e) when (attempt < Retry.Length)
                 {
-                    log.LogInformation("IMAP {What} ({Account}/{Folder}) Versuch {N}: {Error}", what, account.Email, folder, attempt + 1, e.Message);
+                    log.LogInformation("IMAP {What} ({Account}) Versuch {N}: {Error}", what, LogNames.Of(space, account), attempt + 1, e.Message);
                     await Task.Delay(Retry[attempt]);
                 }
                 catch (Exception e)
                 {
-                    log.LogWarning("IMAP {What} ({Account}/{Folder}) aufgegeben: {Error}", what, account.Email, folder, e.Message);
+                    log.LogWarning("IMAP {What} ({Account}) aufgegeben: {Error}", what, LogNames.Of(space, account), e.Message);
                     // Ordner komplett neu abgleichen (auch die Fahnen), damit wieder der Serverstand gilt
                     space.Db.Exec("UPDATE mail_folders SET modseq=0 WHERE account=$a AND path=$p", ("$a", account.Id), ("$p", folder));
                     foreach (var k in keys) MailPending.Remove(k);

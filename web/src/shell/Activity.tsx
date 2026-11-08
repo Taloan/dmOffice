@@ -1,7 +1,7 @@
 import { Button, Link, Popover, PopoverSurface, PopoverTrigger, ProgressBar, Spinner, Text, Tooltip, makeStyles, tokens } from '@fluentui/react-components'
 import { CheckmarkCircle16Regular, ErrorCircle16Regular, Pulse20Regular, Clock16Regular, Circle16Regular } from '@fluentui/react-icons'
 import { useEffect, useRef, useState } from 'react'
-import { api } from '../api'
+import { api, fmtSize } from '../api'
 import { locale, t, tError } from '../i18n'
 import { usePoll } from './hooks'
 
@@ -34,7 +34,7 @@ const useStyles = makeStyles({
   head: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', paddingBottom: '4px' },
   foot: { paddingTop: '8px', fontSize: '12px' },
   dot: {
-    position: 'absolute', top: '5px', right: '5px', width: '8px', height: '8px', borderRadius: '50%',
+    position: 'absolute', top: '-3px', right: '-3px', width: '8px', height: '8px', borderRadius: '50%',
     backgroundColor: tokens.colorBrandBackground, pointerEvents: 'none',
   },
 })
@@ -56,8 +56,10 @@ function nameOf(id: string): string {
   switch (id) {
     case 'mail-sync': return t('E-Mails abgleichen')
     case 'mail-queue': return t('Postausgang senden')
-    case 'mail-slim': return t('Schlank-Modus aufräumen')
+    case 'mail-slim': return t('Slim Mode aufräumen')
+    case 'files-transfer': return t('Dateien übertragen')
     case 'mail-trash': return t('Papierkorb und Junk leeren')
+    case 'mail-classify': return t('Posteingang neu einordnen')
     case 'files-blobs': return t('Dateiinhalte auslagern')
     case 'files-hashes': return t('Prüfsummen der Dateien berechnen')
     case 'files-cleanup': return t('Dateien aufräumen')
@@ -65,7 +67,23 @@ function nameOf(id: string): string {
     case 'thumbs': return t('Vorschaubilder erzeugen')
     case 'notes-sync': return t('Notizen abgleichen (notizi)')
     case 'subscriptions': return t('Kalender-Abos abrufen')
+    case 'graph': return t('Mit Microsoft abgleichen')
     case 'compact': return t('Datenbank verdichten')
+    case 'journal-import': return t('Tagebuch importieren')
+    case 'storage-sync': return t('Storage Extender abgleichen')
+    case 'core-backup': return t('Core-Backup')
+    case 'files-backup': return t('Files-Backup')
+    case 'mount-index': return t('Suche in Server-Mounts')
+    case 'files-meta': return t('Aufnahmedaten auslesen')
+    case 'gallery-scan': return t('Galerie-Ordner einlesen')
+    case 'gallery-import': return t('Importprofile')
+    case 'audio-scan': return t('Audiothek-Ordner einlesen')
+    case 'gallery-proxies': return t('Große Vorschauen erzeugen')
+    case 'photo-write': return t('Bearbeitete Fotos speichern')
+    case 'photo-auto': return t('Fotos automatisch verbessern')
+    case 'faces': return t('Gesichter erkennen')
+    case 'db-health': return t('Datenbanken prüfen')
+    case 'dms': return t('DMS: Dokumente verarbeiten')
     default: return id
   }
 }
@@ -76,7 +94,9 @@ function describe(i: ActivityItem): string {
   if (i.state === 'running') parts.push(t('läuft'))
   else if (i.state === 'waiting') parts.push(t('wartet'))
   if (i.detail) parts.push(i.detail)
-  if (i.total != null && i.done != null) parts.push(t('{done} von {total}', { done: n(i.done), total: n(i.total) }))
+  // Übertragen zählt Bytes - als Größe zeigen (190,0 MB von 3,1 GB), sonst Anzahl
+  const amount = (x: number) => (i.id === 'files-transfer' ? fmtSize(x) : n(x))
+  if (i.total != null && i.done != null) parts.push(t('{done} von {total}', { done: amount(i.done), total: amount(i.total) }))
   else if (i.pending) parts.push(t('noch {n}', { n: n(i.pending) }))
   if (i.state !== 'running') {
     if (i.finished) parts.push(t('zuletzt {when}', { when: ago(i.finished) }))
@@ -127,8 +147,17 @@ export function useActivity(watching: boolean): ActivityState | null {
 export function ActivityButton({ mobile, className }: { mobile: boolean; className?: string }) {
   const s = useStyles()
   const [open, setOpen] = useState(false)
-  const data = useActivity(open)
+  // Solange etwas läuft, öfter fragen; endet etwas (Import, Einlesen …), dürfen offene Ansichten wie die Galerie gleich nachladen
+  const [busy, setBusy] = useState(false)
+  const data = useActivity(open || busy)
   const now = data?.running ?? 0
+  const before = useRef(0)
+  useEffect(() => {
+    if (!data) return
+    if (data.running < before.current) window.dispatchEvent(new Event('dmoffice:files-changed'))
+    before.current = data.running
+    setBusy(data.running > 0)
+  }, [data])
   // Beim Oeffnen geht der Fokus auf den Link unten und scrollt die Liste ans Ende - zurueck an den Anfang
   const surface = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -141,11 +170,9 @@ export function ActivityButton({ mobile, className }: { mobile: boolean; classNa
   const button = (
     <Tooltip content={label} relationship="label">
       <Button appearance="transparent" className={className} aria-label={label}
-        style={{ position: 'relative' }}
-        icon={<Pulse20Regular />}
-        onClick={mobile ? () => { location.hash = '#/settings/activity' } : undefined}>
-        {now > 0 && <span className={s.dot} />}
-      </Button>
+        // Punkt im Symbol statt als Inhalt: sonst wird der Knopf breiter und die Leiste links davon verrutscht
+        icon={<span style={{ position: 'relative', display: 'inline-flex' }}><Pulse20Regular />{now > 0 && <span className={s.dot} />}</span>}
+        onClick={mobile ? () => { location.hash = '#/settings/activity' } : undefined} />
     </Tooltip>
   )
   if (mobile) return button
@@ -157,7 +184,8 @@ export function ActivityButton({ mobile, className }: { mobile: boolean; classNa
           <Text weight="semibold">{t('Aktivität')}</Text>
           <Text size={200}>{now > 0 ? t('{n} laufen', { n: now }) : t('Gerade ruhig')}</Text>
         </div>
-        <ActivityList data={data} />
+        {/* Im Fenster nur, was gerade ansteht; alle Dienste stehen hinter „Alles anzeigen“ */}
+        <ActivityList data={data && { ...data, items: data.items.filter(i => i.state !== 'idle') }} />
         <div className={s.foot}>
           <Link href="#/settings/activity" onClick={() => setOpen(false)}>{t('Alles anzeigen')}</Link>
         </div>

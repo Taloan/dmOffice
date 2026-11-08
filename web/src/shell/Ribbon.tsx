@@ -1,5 +1,5 @@
-import { Button, Menu, MenuItemRadio, MenuList, MenuPopover, MenuTrigger, makeStyles, mergeClasses, tokens } from '@fluentui/react-components'
-import { ChevronLeft20Regular, ChevronRight20Regular, Eye20Regular, Navigation20Regular, SlideText20Regular } from '@fluentui/react-icons'
+import { Button, Menu, MenuItemRadio, MenuList, MenuPopover, MenuTrigger, Tooltip, makeStyles, mergeClasses, tokens } from '@fluentui/react-components'
+import { ChevronLeft20Regular, ChevronRight20Regular, ChevronUp16Regular, Eye20Regular, Navigation20Regular, Pin16Regular, SlideText20Regular } from '@fluentui/react-icons'
 import { forwardRef, useCallback, useEffect, useRef, useState } from 'react'
 import { t } from '../i18n'
 import { usePrefs } from '../prefs'
@@ -20,14 +20,14 @@ const useStyles = makeStyles({
   },
   button: {
     display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-start', gap: '3px',
-    minWidth: '56px', maxWidth: '86px', height: '66px', padding: '6px 6px 4px', flexShrink: 0,
+    minWidth: '56px', maxWidth: '112px', height: '70px', padding: '6px 6px 4px', flexShrink: 0,
   },
   // Nur Symbole: kleiner, quadratisch; nur Text: eine Zeile
   iconsOnly: { minWidth: '40px', maxWidth: '40px', height: '40px', padding: '8px', justifyContent: 'center' },
   textOnly: { height: '32px', maxWidth: 'none', padding: '4px 10px', justifyContent: 'center', '& span': { whiteSpace: 'nowrap', display: 'block' } },
   icon: { fontSize: '24px', height: '24px', display: 'inline-flex', alignItems: 'center', '& svg': { width: '24px', height: '24px' } },
   label: {
-    fontSize: '12px', lineHeight: '14px', fontWeight: 400, textAlign: 'center', whiteSpace: 'normal',
+    fontSize: '12px', lineHeight: '16px', fontWeight: 400, textAlign: 'center', whiteSpace: 'normal', overflowWrap: 'anywhere', hyphens: 'auto',
     display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
   },
   divider: { width: '1px', margin: '8px 6px', backgroundColor: tokens.colorNeutralStroke2, flexShrink: 0 },
@@ -47,7 +47,42 @@ const useStyles = makeStyles({
   mobileWrap: { flex: 1, minWidth: 0, borderBottom: 'none' },
   mobileRibbon: { padding: '4px 2px' },
   mobileDivider: { margin: '10px 2px' },
+  // Menueband nur beim Darueberfahren: schwebt ueber dem Inhalt, statt ihn zu verschieben
+  frame: { position: 'relative', flexShrink: 0, zIndex: 5 },
+  floating: { position: 'absolute', left: 0, right: 0, top: '100%', backgroundColor: tokens.colorNeutralBackground2, boxShadow: tokens.shadow16 },
+  pin: { minWidth: 0, marginRight: '6px' },
 })
+
+/**
+ * Reiterzeile und Menueband; je Bereich einstellbar wie in Office: immer anzeigen oder nur, wenn die Maus darueber ist
+ * (oder ein Reiter angeklickt wird). Doppelklick auf einen Reiter schaltet um.
+ */
+export function RibbonFrame({ area, tabs, children }: { area: string; tabs: React.ReactNode; children: React.ReactNode }) {
+  const s = useStyles()
+  const { prefs, update } = usePrefs()
+  const hide = !!prefs.ribbonHide?.[area]
+  const [peek, setPeek] = useState(false)
+  const timer = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(timer.current), [])
+  const setHide = (v: boolean) => { setPeek(false); update({ ribbonHide: { ...prefs.ribbonHide, [area]: v } }) }
+  const onTab = (e: React.MouseEvent) => !!(e.target as HTMLElement).closest('[role=tab]')
+  const label = hide ? t('Menüband immer anzeigen') : t('Menüband nur beim Darüberfahren anzeigen')
+  return (
+    <div className={s.frame}
+      onMouseEnter={() => { window.clearTimeout(timer.current); if (hide) setPeek(true) }}
+      onMouseLeave={() => { if (hide) timer.current = window.setTimeout(() => setPeek(false), 300) }}
+      onClick={e => { if (hide && onTab(e)) setPeek(true) }}
+      onDoubleClick={e => { if (onTab(e)) setHide(!hide) }}>
+      <div style={{ display: 'flex', alignItems: 'center', minWidth: 0 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>{tabs}</div>
+        <Tooltip content={label} relationship="label">
+          <Button className={s.pin} size="small" appearance="subtle" icon={hide ? <Pin16Regular /> : <ChevronUp16Regular />} onClick={() => setHide(!hide)} />
+        </Tooltip>
+      </div>
+      {(!hide || peek) && <div className={hide ? s.floating : undefined}>{children}</div>}
+    </div>
+  )
+}
 
 export function Ribbon({ children, className, wrapClassName }: { children: React.ReactNode; className?: string; wrapClassName?: string }) {
   const s = useStyles()
@@ -94,34 +129,36 @@ export function RibbonTabs({ tabs, value, onChange }: { tabs: [string, string][]
 
 /**
  * Kopf eines Bereichs wie bei den Mails: Reiter "Start" und "Ansicht", darunter das Menueband.
- * Der gewaehlte Reiter bleibt je Bereich gespeichert.
+ * Der gewaehlte Reiter gilt je Bereich bis zum Neuladen; danach steht wieder "Start" da, wo die Knoepfe zum Arbeiten liegen.
  */
+const shownTabs = new Map<string, 'start' | 'view'>()
+
 export function RibbonHeader({ area, start, view, before, after, onMenu }: {
   area: string; start: React.ReactNode; view: React.ReactNode; before?: React.ReactNode; after?: React.ReactNode
   /** Handy: Knopf links, der die Navigationsspalte aufklappt */
   onMenu?: () => void
 }) {
-  const { prefs, update } = usePrefs()
-  const tab = prefs.ribbonTabs?.[area] ?? 'start'
+  const [tab, setTabState] = useState<'start' | 'view'>(() => shownTabs.get(area) ?? 'start')
+  const setTab = (v: 'start' | 'view') => { shownTabs.set(area, v); setTabState(v) }
   const mobile = useIsMobile()
   if (mobile) return (
-    <MobileRibbonRow onMenu={onMenu} view={tab === 'view'} onView={() => update({ ribbonTabs: { ...prefs.ribbonTabs, [area]: tab === 'view' ? 'start' : 'view' } })}
+    <MobileRibbonRow onMenu={onMenu} view={tab === 'view'} onView={() => setTab(tab === 'view' ? 'start' : 'view')}
       before={before} after={after}>
       {tab === 'view' ? view : start}
     </MobileRibbonRow>
   )
   return (
-    <>
+    <RibbonFrame area={area} tabs={
       <div style={{ display: 'flex', alignItems: 'center', minWidth: 0 }}>
         {before}
         <div style={{ flex: 1, minWidth: 0 }}>
           <RibbonTabs tabs={[['start', t('Start')], ['view', t('Ansicht')]]} value={tab}
-            onChange={v => update({ ribbonTabs: { ...prefs.ribbonTabs, [area]: v as 'start' | 'view' } })} />
+            onChange={v => setTab(v as 'start' | 'view')} />
         </div>
         {after}
-      </div>
+      </div>}>
       <Ribbon>{tab === 'view' ? <>{view}<RibbonDivider /><RibbonDisplayMenu /></> : start}</Ribbon>
-    </>
+    </RibbonFrame>
   )
 }
 

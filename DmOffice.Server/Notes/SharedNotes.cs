@@ -7,8 +7,12 @@ namespace DmOffice.Notes;
 /// Wo eine Notiz oder ein Ordner liegt, wie der angemeldete Benutzer darauf zugreift: in der eigenen Datenbank
 /// oder - mit Freigabe - in der des Besitzers. Share/Tree gesetzt: ein geteilter Ordner samt Unterordnern.
 /// </summary>
-public sealed record NoteScope(UserSpace Space, NotesDb Db, Share? Share, bool CanWrite, HashSet<string>? Tree)
+/// Vault: eine notizi-Datenbank im Tresor (Ordnername) - ohne Freigaben, nur bei offenem Tresor.
+public sealed record NoteScope(UserSpace Space, NotesDb Db, Share? Share, bool CanWrite, HashSet<string>? Tree, bool ShowOnly = false, long? Only = null, string? Vault = null)
 {
+    /// <summary>Nur gezeigt (Version 2): ansehen in dmOffice, keine Anhaenge herunterladen - sonst 403.</summary>
+    public NoteScope NotShowOnly() => ShowOnly ? throw new UnauthorizedAccessException("Nur gezeigt – herunterladen ist nicht erlaubt.") : this;
+
     public bool IsShared => Share != null;
     public string OwnerName => Space.User.DisplayName;
 
@@ -16,7 +20,8 @@ public sealed record NoteScope(UserSpace Space, NotesDb Db, Share? Share, bool C
     /// <summary>Nur dem Besitzer vorbehalten (endgueltig loeschen, archivieren, aus dem Ordner herausnehmen).</summary>
     public NoteScope OwnerOnly() => !IsShared ? this : throw new UnauthorizedAccessException("Das darf nur der Besitzer des Ordners.");
 
-    public bool Covers(NoteRow n) => Tree == null || (n.Folder != null && Tree.Contains(n.Folder));
+    /// <summary>Only: eine einzeln geteilte Notiz (Version 2) - der Zugriff gilt nur fuer sie.</summary>
+    public bool Covers(NoteRow n) => Only != null ? n.Id == Only : Tree == null || (n.Folder != null && Tree.Contains(n.Folder));
 
     /// <summary>Kennung der Notiz in der Oberflaeche: eigene = Id, geteilte = -(Freigabe * 2^32 + Id) - kollidiert nie mit eigenen.</summary>
     public long Wire(long id) => Share == null ? id : -((long)Share.Id * SharedNotes.Stride + id);
@@ -26,7 +31,16 @@ public static class SharedNotes
 {
     public const long Stride = 1L << 32;
 
-    public static NoteScope Own(HttpContext http) { var s = http.Space(); return new(s, NotesDb.Of(s), null, true, null); }
+    /// <summary>Die eigene Datenbank - unter /api/notes/vault/{vault} die notizi-Datenbank im Tresor (Tresor auf diesem Gerät offen, sonst 423).</summary>
+    public static NoteScope Own(HttpContext http)
+    {
+        var s = http.Space();
+        if (VaultOf(http) is not { } vault) return new(s, NotesDb.Of(s), null, true, null);
+        if (!Tresor.IsOpen(http)) throw new TresorClosedException();
+        return new(s, TresorNotes.Of(s, vault) ?? throw new KeyNotFoundException("Die Datenbank liegt nicht im Tresor."), null, true, null, Vault: vault);
+    }
+
+    public static string? VaultOf(HttpContext http) => http.GetRouteValue("vault") as string;
 
     /// <summary>Freigabe des angemeldeten Benutzers - null, wenn es sie nicht (mehr) gibt oder er nicht dazugehoert.</summary>
     private static NoteScope? Of(HttpContext http, Share share, string me)
@@ -36,12 +50,14 @@ public static class SharedNotes
         try { owner = http.RequestServices.GetRequiredService<Spaces>().Get(share.Owner); } catch { return null; }
         var db = NotesDb.Of(owner);
         var tree = db.FolderTree(share.Folder);
-        return tree.Count == 0 ? null : new NoteScope(owner, db, share, !share.ReadOnly.Contains(me), tree);
+        return tree.Count == 0 ? null : new NoteScope(owner, db, share, !share.ReadOnly.Contains(me), tree, share.IsShowOnly(me));
     }
 
     /// <summary>Alle mit mir geteilten Ordner, die es noch gibt.</summary>
     public static List<NoteScope> WithMe(HttpContext http)
     {
+        // Im Tresor gibt es keine Freigaben
+        if (VaultOf(http) != null) return [];
         var me = http.Space().User.Id;
         return http.RequestServices.GetRequiredService<ShareStore>().All().Where(s => s.Folder != null && s.Members.Contains(me))
             .Select(s => Of(http, s, me)).OfType<NoteScope>().ToList();
@@ -51,8 +67,19 @@ public static class SharedNotes
     public static (NoteScope Scope, long Id) ForNote(HttpContext http, long wire)
     {
         if (wire >= 0) return (Own(http), wire);
-        var share = http.RequestServices.GetRequiredService<ShareStore>().ById((int)(-wire / Stride));
-        var scope = share == null ? null : Of(http, share, http.Space().User.Id);
+        var shareId = (int)(-wire / Stride);
+        NoteScope? scope;
+        // Einzeln geteilte Notiz (Version 2): eigene Kennungen ab WireBase
+        if (shareId >= NoteShareStore.WireBase)
+        {
+            var ns = http.RequestServices.GetRequiredService<NoteShareStore>().ById(shareId - NoteShareStore.WireBase);
+            scope = ns == null ? null : SharedSingleNotes.Scope(http, ns, http.Space().User.Id);
+        }
+        else
+        {
+            var share = http.RequestServices.GetRequiredService<ShareStore>().ById(shareId);
+            scope = share == null ? null : Of(http, share, http.Space().User.Id);
+        }
         var id = -wire % Stride;
         // Archivierte und geloeschte Notizen sieht der Empfaenger nicht mehr
         if (scope?.Db.GetNote(id) is { Deleted: null, Archived: null } n && scope.Covers(n)) return (scope, id);
@@ -94,12 +121,26 @@ public static class SharedNotes
         try { return ForFolder(http, folder); } catch (KeyNotFoundException) { return null; }
     }
 
-    /// <summary>Bilder und Anhaenge: eigene, sonst die einer Notiz in einem geteilten Ordner. Null: nicht lesbar.</summary>
-    public static byte[]? Blob(HttpContext http, string name)
+    /// <summary>Bilder und Anhaenge: eigene, sonst die einer Notiz in einem geteilten Ordner (ShowOnly: nur gezeigt). Null: nicht lesbar.</summary>
+    public static (byte[] Data, bool ShowOnly)? Blob(HttpContext http, string name)
     {
-        if (NotesDb.Of(http.Space()).GetBlob(name) is { } mine) return mine;
+        if (Own(http).Db.GetBlob(name) is { } mine) return (mine, false);
+        if (VaultOf(http) != null) return null;
+        // Liegt es auch in einem Ordner, der mehr als zeigt, darf es heruntergeladen werden
+        (byte[] Data, bool ShowOnly)? found = null;
         foreach (var s in WithMe(http))
-            if (s.Db.BlobUsedIn(name, s.Tree!)) return s.Db.GetBlob(name);
-        return null;
+            if (s.Db.BlobUsedIn(name, s.Tree!) && s.Db.GetBlob(name) is { } data)
+            {
+                if (!s.ShowOnly) return (data, false);
+                found ??= (data, true);
+            }
+        // Bilder und Anhaenge einzeln geteilter Notizen (Version 2)
+        foreach (var (s, note) in SharedSingleNotes.WithMe(http))
+            if ((note.Images.Contains(name) || note.Attachments.Any(a => a.Blob == name)) && s.Db.GetBlob(name) is { } data)
+            {
+                if (!s.ShowOnly) return (data, false);
+                found ??= (data, true);
+            }
+        return found;
     }
 }

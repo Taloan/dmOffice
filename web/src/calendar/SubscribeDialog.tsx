@@ -15,7 +15,7 @@ const useStyles = makeStyles({
 })
 
 const palette = ['#69797E', '#0F6CBD', '#13A10E', '#CA5010', '#D13438', '#8764B8', '#00B7C3', '#C19C00']
-const intervals: [number, string][] = [[60, 'Stündlich'], [360, 'Alle 6 Stunden'], [1440, 'Täglich'], [10080, 'Wöchentlich']]
+const intervals: [number, string][] = [[60, 'Stündlich'], [360, 'Alle 6 Stunden'], [1440, 'Täglich'], [10080, 'Wöchentlich'], [0, 'Nur von Hand']]
 
 /** Kalender abonnieren (neu) oder ein Abo bearbeiten. */
 export function SubscribeDialog({ collection, onClose }: { collection: Collection | null; onClose: (changed: boolean) => void }) {
@@ -51,7 +51,7 @@ export function SubscribeDialog({ collection, onClose }: { collection: Collectio
           <DialogContent>
             <form className={s.form} onSubmit={e => { e.preventDefault(); save() }}>
               <Text className={s.hint}>
-                {t('Ein abonnierter Kalender wird regelmäßig neu geholt und bleibt aktuell, wenn der Anbieter etwas ändert – z. B. Müllabfuhr, Feiertage, Schulferien oder ein freigegebener Google- oder Outlook-Kalender. Er ist nur lesbar und erscheint auch auf verbundenen Geräten.')}
+                {t('Ein abonnierter Kalender wird neu geholt und bleibt so aktuell, wenn der Anbieter etwas ändert – z. B. Müllabfuhr, Feiertage, Schulferien oder ein freigegebener Google- oder Outlook-Kalender. Er ist nur lesbar und erscheint auch auf verbundenen Geräten.')}
               </Text>
               <Field label={t('Adresse')} required hint={t('webcal://…, https://… oder http://… (meist endet sie auf .ics)')}>
                 <Input value={url} onChange={(_, d) => setUrl(d.value)} placeholder="webcal://…" autoFocus />
@@ -64,7 +64,7 @@ export function SubscribeDialog({ collection, onClose }: { collection: Collectio
                   {palette.map(p => <button key={p} type="button" className={mergeClasses(s.color, p === color && s.on)} style={{ background: p }} onClick={() => setColor(p)} aria-label={p} />)}
                 </div>
               </Field>
-              <Field label={t('Aktualisieren')}>
+              <Field label={t('Aktualisieren')} hint={interval === 0 ? t('Wird einmal geholt, danach nur über „Jetzt aktualisieren“ im Menü des Kalenders.') : undefined}>
                 <Dropdown value={t(intervals.find(i => i[0] === interval)?.[1] ?? 'Alle 6 Stunden')} selectedOptions={[String(interval)]}
                   onOptionSelect={(_, d) => setInterval(Number(d.optionValue))}>
                   {intervals.map(([v, l]) => <Option key={v} value={String(v)}>{t(l)}</Option>)}

@@ -112,6 +112,15 @@ Categories are coloured keywords for messages. dmOffice stores them as an **IMAP
 
 Put a message aside for later: *Snooze* → *In 1 hour*, *This evening*, *Tomorrow*, *Next week* … or a date of your own. The message disappears into the *Snooze* folder and reappears at the chosen time **unread at the top of the Inbox**. With *Unsnooze* it comes back immediately.
 
+### Timed removal
+
+In a message's menu (right-click, *…* in the reading pane, in the app the menu at the top right): *Move to trash after …* or *Destroy after …* – *1 day*, *7 days*, *30 days* or *On …* with date and time. On the web this also works for several selected messages. Until then the message stays where it is and shows an hourglass: "Will be moved to the trash on …" or "Will be destroyed on …". *Undo* works at any time before then.
+
+- **Move to trash:** the message goes to the account's trash and can be restored from there.
+- **Destroy:** the message is deleted on the mail server and expunged right away, without the trash. In dmOffice its cache, search index and attachment copies are removed too. dmOffice asks once before scheduling it.
+
+This runs on the server, even when no device is open. If the message has been moved in the meantime, dmOffice finds it by its Message-ID. **Limit:** dmOffice only reaches the mailbox on the mail server. Copies on other devices, with the sender or in backups of the mail provider stay as they are.
+
 ### Writing
 
 ![New email](img/en/mail-verfassen.png)
@@ -129,7 +138,7 @@ Put a message aside for later: *Snooze* → *In 1 hour*, *This evening*, *Tomorr
 
 ### Rules
 
-*Settings* → *Mail* → *Rules*. A rule checks new messages in the Inbox (sender, recipient, subject, body, header) and can move, copy, forward, mark as read, flag, assign a category or delete. Every message runs through the rules **once** – even if it later lands in the Inbox again.
+*Settings* → *Mail* → *Rules*. A rule checks new messages in the Inbox (sender, recipient, subject, body, header) and can move, copy, forward, mark as read, flag, assign a category, delete, or move the message to the trash or destroy it after X days (counted from arrival, see *Timed removal*). Every message runs through the rules **once** – even if it later lands in the Inbox again.
 
 ![Rules](img/en/einstellungen-regeln.png)
 

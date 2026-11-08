@@ -2,7 +2,7 @@ import { Button, Divider, Menu, MenuItem, MenuList, MenuPopover, MenuTrigger, To
 import {
   TextBold20Regular, TextItalic20Regular, TextUnderline20Regular, TextStrikethrough20Regular, TextBulletListLtr20Regular,
   TextNumberListLtr20Regular, TextIndentIncreaseLtr20Regular, TextIndentDecreaseLtr20Regular, Link20Regular,
-  TextClearFormatting20Regular, TextColor20Regular, Highlight20Regular, Image20Regular, TextFontSize20Regular, TextQuote20Regular,
+  TextClearFormatting20Regular, TextColor20Regular, Highlight20Regular, Image20Regular, TextFontSize20Regular, TextQuote20Regular, TextHeader120Regular,
 } from '@fluentui/react-icons'
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
 import { t } from '../i18n'
@@ -35,10 +35,12 @@ interface Props {
   areaStyle?: React.CSSProperties
   /** Sprache fuer die Rechtschreibpruefung (Sprache des Kontos). */
   lang?: string
+  /** Ueberschriften anbieten (Notfalltext) */
+  headings?: boolean
 }
 
 /** Formatierter Text wie in Outlook: contentEditable mit den gaengigen Befehlen. */
-export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor({ initial, onChange, onImage, minimal, areaStyle, lang }, ref) {
+export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor({ initial, onChange, onImage, minimal, areaStyle, lang, headings }, ref) {
   const s = useStyles()
   const area = useRef<HTMLDivElement>(null)
   const fileInput = useRef<HTMLInputElement>(null)
@@ -91,6 +93,22 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
   return (
     <div className={s.wrap}>
       <Toolbar size="small" className={s.bar}>
+        {headings && (
+          <Menu>
+            <MenuTrigger disableButtonEnhancement>
+              <Tooltip content={t('Überschrift')} relationship="label">
+                <Button appearance="subtle" size="small" icon={<TextHeader120Regular />} onMouseDown={e => e.preventDefault()} />
+              </Tooltip>
+            </MenuTrigger>
+            <MenuPopover>
+              <MenuList>
+                {[[t('Überschrift'), 'h2'], [t('Unterüberschrift'), 'h3'], [t('Text'), 'div']].map(([l, v]) => (
+                  <MenuItem key={v} onMouseDown={e => e.preventDefault()} onClick={() => exec('formatBlock', v)}>{l}</MenuItem>
+                ))}
+              </MenuList>
+            </MenuPopover>
+          </Menu>
+        )}
         {btn(t('Fett (Strg+B)'), <TextBold20Regular />, 'bold')}
         {btn(t('Kursiv (Strg+I)'), <TextItalic20Regular />, 'italic')}
         {btn(t('Unterstrichen (Strg+U)'), <TextUnderline20Regular />, 'underline')}

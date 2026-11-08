@@ -10,7 +10,7 @@ namespace DmOffice.Dav;
 public static class Zip
 {
     /// <summary>Schon gepackt - nochmal komprimieren kostet nur Zeit.</summary>
-    private static readonly HashSet<string> Packed = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".mp4", ".mov", ".m4v", ".webm", ".mkv",
+    internal static readonly HashSet<string> Packed = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".mp4", ".mov", ".m4v", ".webm", ".mkv",
         ".mp3", ".m4a", ".aac", ".ogg", ".opus", ".flac", ".zip", ".7z", ".rar", ".gz", ".bz2", ".xz", ".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp", ".pdf"];
 
     /// <param name="baseDir">Namen im ZIP relativ zu diesem Ordner (meist der aktuelle).</param>

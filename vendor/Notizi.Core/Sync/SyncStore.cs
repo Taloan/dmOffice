@@ -62,6 +62,13 @@ namespace Notizi.Sync
         /// <summary>info.json, wie sie beim Oeffnen war.</summary>
         private readonly byte[] _info;
 
+        /// <summary>info.json, wie dieser Speicher sie kennt. Ein Geraet merkt
+        /// sie sich, um den Ordner auch zu oeffnen, wenn der Server das Lesen
+        /// gerade sperrt (<see cref="OpenFromInfo"/>). Geheim ist darin
+        /// nichts: Der Schluessel liegt nur mit dem E2EE-Passwort eingepackt
+        /// vor.</summary>
+        public byte[] InfoBytes => _info;
+
         private SyncStore(ISyncTransport transport, SyncCrypto crypto, byte[] info)
         {
             Transport = transport;
@@ -139,6 +146,20 @@ namespace Notizi.Sync
                 ?? throw new InvalidOperationException("info.json ist leer.");
             var crypto = SyncCrypto.Open(password, info);
             return crypto == null ? null : new SyncStore(transport, crypto, data);
+        }
+
+        /// <summary>
+        /// Oeffnet den Ordner mit einer gemerkten info.json
+        /// (<see cref="InfoBytes"/>), ohne sie zu lesen - fuer den Fall, dass
+        /// der Server das Lesen sperrt, Schreiben aber annimmt. Null bei
+        /// falschem Passwort.
+        /// </summary>
+        public static SyncStore? OpenFromInfo(ISyncTransport transport, string password, byte[] info)
+        {
+            var parsed = SyncCrypto.Info.FromJson(Encoding.UTF8.GetString(info))
+                ?? throw new InvalidOperationException("info.json ist leer.");
+            var crypto = SyncCrypto.Open(password, parsed);
+            return crypto == null ? null : new SyncStore(transport, crypto, info);
         }
 
         // ==================================================================

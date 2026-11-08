@@ -30,7 +30,7 @@ export function useNotiziTasks() {
 const openNote = (id: number) => { location.hash = `#/notes/${id}` }
 
 /**
- * Systemliste "Notizi-Aufgaben": die Kaestchen (☐/☑) aus den Notizen, nach Notiz gruppiert.
+ * Systemliste "Aufgaben aus Notizen": die Kaestchen (☐/☑) aus den Notizen, nach Notiz gruppiert.
  * Abhaken schreibt in die Notiz zurueck (und per Abgleich zu notizi), ein Klick oeffnet die Notiz.
  */
 export function NotiziTasks({ list, reload, showDone, setShowDone }: {

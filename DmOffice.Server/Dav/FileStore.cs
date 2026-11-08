@@ -28,6 +28,8 @@ public sealed class DavForbiddenException : Exception { public DavForbiddenExcep
 public sealed class QuotaExceededException : Exception
 {
     public QuotaExceededException(long quota) : base($"Speicher voll – das Kontingent von {quota / 1024 / 1024} MB ist ausgeschöpft") { }
+    /// <summary>Zwischenspeicher voll (S3): kein Kontingent, sondern vorübergehend - gleiche Behandlung (507).</summary>
+    public QuotaExceededException(string message) : base(message) { }
 }
 
 /// <summary>
@@ -45,7 +47,13 @@ public static class FileStore
     /// <summary>Grenze je Benutzer in Bytes (0 = unbegrenzt) - in Program.cs gesetzt.</summary>
     public static Func<string, long>? QuotaOf;
 
-    public static long Quota(UserDb db) => QuotaOf?.Invoke(db.UserId) ?? 0;
+    public static long Quota(UserDb db) => QuotaFor.TryGetValue(db.UserId, out var f) ? f() : QuotaOf?.Invoke(db.UserId) ?? 0;
+
+    /// <summary>
+    /// Tests: feste Grenze je Benutzer. QuotaOf ist global und wird beim Start jedes Testservers neu gesetzt - ein Test, der ihn
+    /// umstellt, verlor sonst mitten im Lauf seine Grenze, wenn parallel ein anderer Testserver startete.
+    /// </summary>
+    internal static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Func<long>> QuotaFor = new();
 
     /// <summary>Dateiablage fuer diesen Benutzer abgeschaltet - in Program.cs gesetzt.</summary>
     public static Func<string, bool>? FilesOffOf;
@@ -54,6 +62,89 @@ public static class FileStore
 
     /// <summary>Vorgabe: Papierkorb nach so vielen Tagen leeren (je Benutzer einstellbar, 0 = nie).</summary>
     public const int DefaultTrashDays = 30;
+
+    /// <summary>
+    /// Ordner des System-Tresors (docs/tresor-cryptomator-konzept.md, 2.1): darin keine Versionen und kein Papierkorb - der Tresor
+    /// verwaltet seine Dateien selbst, alte Stände verschlüsselter Dateien hätten keinen Nutzen.
+    /// </summary>
+    public const string SystemVault = "dmVAULT";
+    /// <summary>Bis 02.11.2026 hieß der Ordner so (Umzug: Schema-Schritt 21 in <see cref="UserDb"/>).</summary>
+    public const string OldSystemVault = "dmOfficeSystemVault";
+
+    /// <summary>
+    /// Ordner und Kerndateien des System-Tresors (docs/tresor-cryptomator-konzept.md, 2.2): auf keinem Weg löschen, verschieben oder
+    /// umbenennen - Web, App, WebDAV, Nextcloud, Sync-Clients, Papierkorb, Freigaben, Import-Profile gehen alle hier durch. Inhalte
+    /// darunter (d/…) bleiben änderbar. Nur der Tresor selbst („Tresor löschen“, Konto löschen) darf, über <see cref="SystemAccess"/>.
+    /// </summary>
+    public static bool IsSystemCore(string path) =>
+        path is SystemVault or SystemVault + "/vault" or SystemVault + "/vault/vault.cryptomator" or SystemVault + "/vault/masterkey.cryptomator" or SystemVault + "/vault/d";
+
+    private static readonly AsyncLocal<bool> SystemFlag = new();
+
+    /// <summary>Für den Tresor-Code selbst: die Sperre gilt in diesem Ablauf nicht (using … SystemAccess()).</summary>
+    public static IDisposable SystemAccess() { var before = SystemFlag.Value; SystemFlag.Value = true; return new Release(before); }
+    private sealed class Release(bool before) : IDisposable { public void Dispose() => SystemFlag.Value = before; }
+
+    private static void GuardSystem(string path, string what)
+    {
+        if (!SystemFlag.Value && IsSystemCore(path)) throw new DavForbiddenException($"Der Ordner des Tresors lässt sich nicht {what}.");
+    }
+
+    /// <summary>
+    /// vault.cryptomator und masterkey.cryptomator schreibt nur dmOffice selbst (docs/tresor-cryptomator-konzept.md, 2.2 und 3.3):
+    /// Eine fremde Fassung machte den Tresor unbrauchbar, der Server behält seinen Stand und antwortet 403.
+    /// </summary>
+    private static void GuardCoreFile(string path)
+    {
+        if (!SystemFlag.Value && path is SystemVault + "/vault/vault.cryptomator" or SystemVault + "/vault/masterkey.cryptomator")
+            throw new DavForbiddenException("Die Kerndateien des Tresors lassen sich nicht ersetzen.");
+    }
+
+    /// <summary>Gesetzt vom DMS: Liegt an diesem Pfad (mit Muster: auch darunter) ein fixiertes Dokument?</summary>
+    public static Func<UserDb, string, string?, bool>? HasFixed { get; set; }
+
+    /// <summary>Für den Tresor: Gilt die Sperre in diesem Ablauf nicht (<see cref="SystemAccess"/>)?</summary>
+    internal static bool InSystemAccess => SystemFlag.Value;
+
+    /// <summary>Fixierte Dokumente: Inhalt ersetzen und löschen geht auf keinem Weg, auch nicht über einen Ordner darüber. Verschieben und Umbenennen bleiben möglich.</summary>
+    private static void GuardFixed(UserDb db, string path, bool tree)
+    {
+        if (!SystemFlag.Value && HasFixed?.Invoke(db, path, tree ? Glob(path) + "/*" : null) == true)
+            throw new DavForbiddenException("Hier liegt ein fixiertes Dokument. Es lässt sich nicht ändern oder löschen, solange die Fixierung besteht.");
+    }
+
+    /// <summary>Neue Namen nur in Längen, die Dateisysteme und damit Sync-Programme ablegen können. Vorhandene bleiben unberührt.</summary>
+    private static void GuardNewName(string path)
+    {
+        if (System.Text.Encoding.UTF8.GetByteCount(path) > 4096 || System.Text.Encoding.UTF8.GetByteCount(path[(path.LastIndexOf('/') + 1)..]) > 255)
+            throw new ArgumentException("Der Name oder Pfad ist zu lang.");
+    }
+
+    private const string VaultInternalKey = "tresor.internal";
+
+    /// <summary>Verschlüsselte Einträge der internen Tresor-Daten merken (Pfade relativ zum System-Tresor).</summary>
+    public static void RememberVaultInternal(UserDb db, IEnumerable<string> nodes)
+    {
+        var json = System.Text.Json.JsonSerializer.Serialize(nodes.Select(n => SystemVault + "/vault/" + n).ToArray());
+        if (db.Get(VaultInternalKey) != json) db.Set(VaultInternalKey, json);
+    }
+
+    /// <summary>
+    /// Die internen Daten des Tresors schreibt nur dmOffice selbst (docs/tresor-cryptomator-konzept.md, 3.3): Der Server behält seinen Stand
+    /// und antwortet 403. Bei tree auch, wenn sie unter dem Pfad liegen (Ordner löschen oder verschieben).
+    /// </summary>
+    private static void GuardVaultInternal(UserDb db, string path, bool tree)
+    {
+        if (SystemFlag.Value || !(InRoot(path, SystemVault + "/vault/d") || (tree && path == SystemVault + "/vault/d"))) return;
+        if (db.Get(VaultInternalKey) is not { } json) return;
+        foreach (var node in System.Text.Json.JsonSerializer.Deserialize<string[]>(json) ?? [])
+            if (InRoot(path, node) || (tree && Contains(path, node)))
+                throw new DavForbiddenException("Die internen Daten des Tresors lassen sich nicht ändern.");
+    }
+
+    /// <summary>Liegt der Pfad im System-Tresor oder im Abgleichordner von notizi? Das geht nie aus der Hand, auch nicht als einzelne Datei.</summary>
+    public static bool IsVaultOrSync(UserDb db, string path) =>
+        InRoot(path, SystemVault) || InRoot(path, OldSystemVault) || InRoot(path, ProtectedRoot(db));
 
     /// <summary>Liegt der Pfad im Abgleichordner von notizi (oder ist er es)?</summary>
     public static bool InRoot(string path, string root)
@@ -70,6 +161,18 @@ public static class FileStore
     }
 
     /// <summary>Der Abgleichordner von notizi dieses Benutzers ("" = keiner) - aus seinen Einstellungen.</summary>
+    /// <summary>
+    /// Systemordner, die die Person in ihrer Ablage nicht sieht und die nie nach außen gehen: Abgleichordner von notizi,
+    /// Medien des Tagebuchs, System-Tresor. Für Links, Chat-Ordner und Alben - auch wenn ein Elternordner geteilt wird.
+    /// </summary>
+    public static bool IsSystem(UserDb db, string path) => IsSystem(path, ProtectedRoot(db));
+
+    public static bool IsSystem(string path, string notiziRoot) =>
+        InRoot(path, notiziRoot) || InRoot(path, DmOffice.Journal.JournalMediaStore.Root) || InRoot(path, SystemVault) || InRoot(path, OldSystemVault);
+
+    /// <summary>Für viele Pfade: die Einstellung nur einmal lesen.</summary>
+    public static Func<string, bool> SystemFilter(UserDb db) { var root = ProtectedRoot(db); return p => IsSystem(p, root); }
+
     public static string ProtectedRoot(UserDb db)
     {
         try { return Normalize(db.GetJson<UserSettings>("settings").Notizi?.Root ?? ""); }
@@ -84,7 +187,7 @@ public static class FileStore
         var quota = Quota(db);
         if (quota <= 0) return;
         // Das Kontingent gilt fuer alles, was der Benutzer belegt: Dateien und die Datenbank (Mails, Kalender, Kontakte, Notizen)
-        var used = Convert.ToInt64(UserDb.Query(conn, "SELECT COALESCE(SUM(size),0) FROM files", r => r.GetInt64(0)).First()) + UserStorage.Database(db);
+        var used = Convert.ToInt64(UserDb.Query(conn, "SELECT COALESCE(SUM(size),0) FROM files", r => r.GetInt64(0)).First()) + UserStorage.Database(db) + UserStorage.DmsAgainstFiles(db);
         if (used + added > quota) throw new QuotaExceededException(quota);
     }
 
@@ -113,11 +216,21 @@ public static class FileStore
     }
 
     /// <summary>Was hoechstens noch geschrieben werden darf, bevor die Grenze erreicht ist (die ersetzte Datei zaehlt mit).</summary>
-    private static long Room(UserDb db, long replaced)
+    private static long Room(UserDb db, long replaced) => Math.Min(QuotaRoom(db, replaced), CacheRoom?.Invoke() ?? long.MaxValue);
+
+    private static long QuotaRoom(UserDb db, long replaced)
     {
         var quota = Quota(db);
-        return quota <= 0 ? long.MaxValue : Math.Max(0, quota - Usage(db) - UserStorage.Database(db) + replaced);
+        return quota <= 0 ? long.MaxValue : Math.Max(0, quota - Usage(db) - UserStorage.Database(db) - UserStorage.DmsAgainstFiles(db) + replaced);
     }
+
+    /// <summary>Mit Storage Extender (S3Mirror): so viel darf hier noch abgelegt werden, bis den frei zu lassenden Speicherplatz erreicht ist.</summary>
+    public static Func<long>? CacheRoom;
+
+    /// <summary>Zu gross: Kontingent oder - voruebergehend - der Zwischenspeicher.</summary>
+    private static QuotaExceededException TooLarge(UserDb db, long replaced) =>
+        QuotaRoom(db, replaced) <= (CacheRoom?.Invoke() ?? long.MaxValue) ? new QuotaExceededException(Quota(db))
+            : new QuotaExceededException("Auf dem lokalen Speichervolumen ist nur noch der frei zu lassende Speicherplatz verfügbar, und es lässt sich nicht weiter bereinigen. Neue Dateien werden erst wieder angenommen, wenn Speicherplatz frei ist.");
 
     public static string Normalize(string path)
     {
@@ -142,6 +255,10 @@ public static class FileStore
 
     public static FileEntry? ById(UserDb db, long fileId) =>
         db.Query($"SELECT {Columns} FROM files WHERE fileid=$f", Read, ("$f", fileId)).FirstOrDefault();
+
+    /// <summary>Dateien (keine Ordner), deren fileid die Unterabfrage liefert - etwa die einer Kategorie.</summary>
+    public static List<FileEntry> ByFileIds(UserDb db, string subquery, params (string, object?)[] args) =>
+        db.Query($"SELECT {Columns} FROM files WHERE is_dir=0 AND fileid IN ({subquery}) ORDER BY modified DESC", Read, args);
 
     public static List<FileEntry> Children(UserDb db, string path) =>
         db.Query($"SELECT {Columns} FROM files WHERE parent=$p ORDER BY is_dir DESC, path", Read, ("$p", path));
@@ -241,7 +358,7 @@ public static class FileStore
     {
         var replaced = Precheck(db, path, ifMatch, ifNoneMatch);
         BlobInfo blob;
-        using (var w = db.Blobs.Create(Room(db, replaced), () => new QuotaExceededException(Quota(db))))
+        using (var w = db.Blobs.Create(Room(db, replaced), () => TooLarge(db, replaced)))
         {
             w.Write(data);
             blob = w.Complete();
@@ -256,7 +373,7 @@ public static class FileStore
     {
         // Vorab pruefen, was sich ohne Inhalt pruefen laesst - sonst kaeme ein 409 erst nach dem ganzen Upload
         var replaced = Precheck(db, path, ifMatch, ifNoneMatch);
-        var blob = await db.Blobs.WriteAsync(data, Room(db, replaced), () => new QuotaExceededException(Quota(db)), ct);
+        var blob = await db.Blobs.WriteAsync(data, Room(db, replaced), () => TooLarge(db, replaced), ct);
         return Commit(db, path, blob, mime, ifMatch, ifNoneMatch, mtime);
     }
 
@@ -271,7 +388,7 @@ public static class FileStore
     {
         path = FreeName(db, path);
         Precheck(db, path, null, "*");
-        var blob = await db.Blobs.WriteAsync(data, Room(db, 0), () => new QuotaExceededException(Quota(db)), ct);
+        var blob = await db.Blobs.WriteAsync(data, Room(db, 0), () => TooLarge(db, 0), ct);
         for (int i = 0; ; i++)
         {
             try { Commit(db, path, blob, mime, null, "*", null, keepBlobOnConflict: i < 5); return path; }
@@ -282,10 +399,14 @@ public static class FileStore
     /// <summary>Was sich vor dem Schreiben pruefen laesst; gibt die Groesse der ersetzten Datei zurueck (0: neu).</summary>
     private static long Precheck(UserDb db, string path, string? ifMatch, string? ifNoneMatch)
     {
+        GuardCoreFile(path);
+        GuardVaultInternal(db, path, false);
+        GuardFixed(db, path, false);
         if (path.Length == 0) throw new ArgumentException("Die Wurzel ist ein Ordner.");
         if (Get(db, Parent(path)!) is not { IsDir: true }) throw new DavConflictException("Übergeordneter Ordner fehlt.");
         var existing = Get(db, path);
         if (existing is { IsDir: true }) throw new DavConflictException("Dort liegt ein Ordner.");
+        if (existing == null) GuardNewName(path);
         if (ifNoneMatch == "*" && existing != null) throw new Pim.PreconditionFailedException();
         if (ifMatch != null && (existing == null || (ifMatch != "*" && ifMatch != existing.Etag))) throw new Pim.PreconditionFailedException();
         return existing?.Size ?? 0;
@@ -296,7 +417,12 @@ public static class FileStore
         DateTime? mtime, bool keepBlobOnConflict = false)
     {
         (string Etag, bool Created) result;
-        try { result = Commit(db, path, blob.Id, blob.Size, Etag(blob.Sha256), Hex(blob.Sha256), mime, ifMatch, ifNoneMatch, mtime); }
+        try
+        {
+            // Virenprüfung (Verwaltung → Sicherheit): ein Fund bricht ab, der Blob wird unten gelöscht
+            VirusScan.CheckBlob(db, blob, path);
+            result = Commit(db, path, blob.Id, blob.Size, Etag(blob.Sha256), Hex(blob.Sha256), mime, ifMatch, ifNoneMatch, mtime);
+        }
         catch (Pim.PreconditionFailedException) when (keepBlobOnConflict) { throw; }
         catch
         {
@@ -304,6 +430,7 @@ public static class FileStore
             throw;
         }
         CollectBlobs(db);
+        FolderWatch.Saved(db, path);
         return result;
     }
 
@@ -311,7 +438,13 @@ public static class FileStore
     private static (string Etag, bool Created) Commit(UserDb db, string path, string? blob, long size, string etag, string? sha256, string? mime,
         string? ifMatch, string? ifNoneMatch, DateTime? mtime)
     {
+        GuardCoreFile(path);
+        GuardVaultInternal(db, path, false);
+        GuardFixed(db, path, false);
         if (path.Length == 0) throw new ArgumentException("Die Wurzel ist ein Ordner.");
+        // Nextcloud-Client und Sync-Apps schicken oft nur application/octet-stream: dann nach der Endung (sonst gilt ein Foto
+        // nicht als Bild - keine Kameradaten, keine Galerie-Art)
+        if (mime is null or "" or "application/octet-stream") mime = DavServer.Mime(path);
         var root = ProtectedRoot(db);
         using var conn = db.Open();
         using var tx = conn.BeginTransaction();
@@ -330,7 +463,7 @@ public static class FileStore
         // Fruehere Version sichern: nur echter Inhalt (Windows legt erst eine leere Datei an), nur wenn er sich aendert
         // Wie viele, bestimmt die Aufbewahrung des Benutzers (FileRetention). Die Version uebernimmt den Blob - keine Kopie.
         var (keepVersion, maxVersions) = FileRetention.OnSave(FileRetention.Load(db));
-        if (keepVersion && exists && existing.Size > 0 && existing.Etag != etag && existing.FileId > 0 && !InRoot(path, root))
+        if (keepVersion && exists && existing.Size > 0 && existing.Etag != etag && existing.FileId > 0 && !InRoot(path, root) && !InRoot(path, SystemVault))
         {
             UserDb.Exec(conn, "INSERT INTO file_versions(fileid,size,etag,modified,saved,data,blob,sha256) SELECT fileid,size,etag,modified,$n,data,blob,sha256 FROM files WHERE path=$p",
                 ("$p", path), ("$n", Now()));
@@ -348,6 +481,7 @@ public static class FileStore
 
     public static void Mkcol(UserDb db, string path)
     {
+        GuardNewName(path);
         using var conn = db.Open();
         using var tx = conn.BeginTransaction();
         var parent = Parent(path) ?? throw new DavConflictException("Gibt es schon.");
@@ -414,12 +548,15 @@ public static class FileStore
     public static bool Delete(UserDb db, string path, out long trashId)
     {
         if (path.Length == 0) throw new ArgumentException("Die Wurzel bleibt.");
+        GuardSystem(path, "löschen");
+        GuardVaultInternal(db, path, true);
+        GuardFixed(db, path, true);
         var root = ProtectedRoot(db);
         trashId = 0;
         using var conn = db.Open();
         using var tx = conn.BeginTransaction();
         if (!Exists(conn, path)) return false;
-        if (!InRoot(path, root)) trashId = ToTrash(conn, path, root);
+        if (!InRoot(path, root) && !InRoot(path, SystemVault)) trashId = ToTrash(conn, path, root);
         UserDb.Exec(conn, "DELETE FROM files WHERE path=$p OR path GLOB $l", ("$p", path), ("$l", Glob(path) + "/*"));
         Touch(conn, Parent(path)!);
         tx.Commit();
@@ -487,8 +624,12 @@ public static class FileStore
         UserDb.Exec(conn, "DELETE FROM file_trash WHERE id=$i", ("$i", id));
         Touch(conn, Parent(target)!);
         tx.Commit();
+        FolderWatch.Saved(db, target);
         return target;
     }
+
+    /// <summary>Nach endgueltigem Loeschen aus dem Papierkorb: was an den Dateien hing, gleich mitnehmen (gesetzt vom DMS).</summary>
+    public static Action<UserDb>? TrashPurged { get; set; }
 
     /// <summary>Endgueltig loeschen: diese Eintraege, oder alle (ids = null).</summary>
     public static int PurgeTrash(UserDb db, IEnumerable<long>? ids)
@@ -501,6 +642,7 @@ public static class FileStore
         Orphans(conn);
         tx.Commit();
         CollectBlobs(db);
+        TrashPurged?.Invoke(db);
         return n;
     }
 
@@ -515,6 +657,7 @@ public static class FileStore
         Orphans(conn);
         tx.Commit();
         CollectBlobs(db);
+        if (n > 0) TrashPurged?.Invoke(db);
         // Einmal am Tag: Blobs ohne Verweis (Absturz zwischen Schreiben und Eintragen) und halbfertige Uploads
         if (!DateTime.TryParse(db.Get("blobs_swept"), null, DateTimeStyles.RoundtripKind, out var swept) || swept < now.ToUniversalTime().AddDays(-1))
         {
@@ -682,6 +825,12 @@ public static class FileStore
         replacedTrashId = 0;
         if (from.Length == 0 || to.Length == 0) throw new ArgumentException("Die Wurzel bleibt.");
         if (to == from) throw new DavForbiddenException("Quelle und Ziel sind gleich.");
+        if (!copy) GuardSystem(from, "verschieben oder umbenennen");
+        GuardSystem(to, "ersetzen");
+        if (!copy) GuardVaultInternal(db, from, true);
+        GuardVaultInternal(db, to, true);
+        // Ein ersetztes Ziel ginge in den Papierkorb, auch beim Kopieren
+        if (overwrite) GuardFixed(db, to, true);
         if (to.StartsWith(from + "/")) throw new ArgumentException("Ziel liegt in der Quelle.");
         // Ziel ueber der Quelle: Ueberschreiben loeschte die Quelle gleich mit
         if (from.StartsWith(to + "/")) throw new DavConflictException("Ziel ist ein Ordner über der Quelle.");
@@ -696,6 +845,7 @@ public static class FileStore
             throw new DavConflictException("Zielordner fehlt.");
         bool exists = Exists(conn, to);
         if (exists && !overwrite) throw new Pim.PreconditionFailedException();
+        if (!exists) GuardNewName(to);
         var rows = UserDb.Query(conn, "SELECT path, size FROM files WHERE path=$p OR path GLOB $l ORDER BY length(path)",
             r => (Path: r.GetString(0), Size: r.GetInt64(1)), ("$p", from), ("$l", Glob(from) + "/*"))
             .Where(r => skip == null || !InRoot(r.Path, skip)).ToList();
@@ -707,7 +857,7 @@ public static class FileStore
         }
         if (exists)
         {
-            if (!InRoot(to, root)) replacedTrashId = ToTrash(conn, to, root);
+            if (!InRoot(to, root) && !InRoot(to, SystemVault)) replacedTrashId = ToTrash(conn, to, root);
             UserDb.Exec(conn, "DELETE FROM files WHERE path=$p OR path GLOB $l", ("$p", to), ("$l", Glob(to) + "/*"));
         }
 
@@ -729,6 +879,7 @@ public static class FileStore
         MakeRoom(db, conn);
         tx.Commit();
         CollectBlobs(db);
+        FolderWatch.Saved(db, to);
         return !exists;
     }
 
@@ -736,8 +887,17 @@ public static class FileStore
     /// Ordner aendert ETag und Zeit, wenn sich darin etwas aendert - und ebenso jeder Ordner darueber
     /// bis zur Wurzel. Nextcloud-Clients steigen nur in Ordner mit neuem ETag hinab und finden Neues so.
     /// </summary>
+    /// <summary>Ordner und alle darüber gelten als geändert (z. B. wenn ein Ordner für WebDAV sichtbar oder unsichtbar wird).</summary>
+    public static void Touch(UserDb db, string dir)
+    {
+        using var conn = db.Open();
+        Touch(conn, dir);
+    }
+
     private static void Touch(SqliteConnection conn, string dir)
     {
+        // Geändertes Foto oder seine Sidecar-Datei: Bildangaben bald neu lesen (nicht erst beim nächsten Durchgang)
+        FileMetaJob.Wake();
         var now = Now();
         for (string? d = dir; d != null; d = Parent(d))
             UserDb.Exec(conn, "UPDATE files SET etag=$e, modified=$n WHERE path=$p AND is_dir=1",
@@ -746,6 +906,23 @@ public static class FileStore
 
     /// <summary>Belegt von den Dateien selbst (ohne Papierkorb und Versionen).</summary>
     public static long Usage(UserDb db) => Convert.ToInt64(db.Scalar("SELECT COALESCE(SUM(size),0) FROM files") ?? 0L);
+
+    /// <summary>
+    /// Suche im Papierkorb (ohne Groß-/Kleinschreibung): Einträge, deren Pfad passt (leere Liste), oder gelöschte Ordner mit
+    /// passenden Dateien darin (bis zu fünf Pfade relativ zum Ordner).
+    /// </summary>
+    public static Dictionary<long, List<string>> TrashSearch(UserDb db, string q)
+    {
+        var like = "%" + q.Replace("!", "!!").Replace("%", "!%").Replace("_", "!_") + "%";
+        var result = db.Query("SELECT id FROM file_trash WHERE path LIKE $q ESCAPE '!'", r => r.GetInt64(0), ("$q", like)).ToDictionary(x => x, _ => new List<string>());
+        foreach (var (id, rel) in db.Query("SELECT trash_id, rel FROM file_trash_items WHERE rel <> '' AND rel LIKE $q ESCAPE '!' ORDER BY trash_id, rel",
+                     r => (r.GetInt64(0), r.GetString(1)), ("$q", like)))
+        {
+            if (!result.TryGetValue(id, out var list)) result[id] = list = new List<string>();
+            if (list.Count < 5) list.Add(rel);
+        }
+        return result;
+    }
 
     public static long TrashUsage(UserDb db) => Convert.ToInt64(db.Scalar("SELECT COALESCE(SUM(size),0) FROM file_trash") ?? 0L);
 
@@ -756,18 +933,31 @@ public static class FileStore
 
     // ---------------- Suchen, zuletzt verwendet, Favoriten ----------------
 
+    /// <summary>Die neuesten Bilder in einem Ordner und allen darunter - fuer die Vorschau-Collage auf der Ordnerkachel.</summary>
+    public static List<FileEntry> CoverImages(UserDb db, string dir, int limit = 4) =>
+        db.Query($"SELECT {Columns} FROM files WHERE is_dir=0 AND path GLOB $l AND (" + string.Join(" OR ", CoverExts.Select(e => $"path LIKE '%{e}'")) +
+            ") ORDER BY modified DESC LIMIT $n", Read, ("$l", Glob(dir) + "/*"), ("$n", limit));
+
+    private static readonly string[] CoverExts = [".jpg", ".jpeg", ".png", ".webp", ".gif", ".heic", ".heif", ".avif"];
+
     /// <summary>Dateien und Ordner, deren Name den Begriff enthaelt (gross/klein und Akzente egal), unter einem Ordner.</summary>
     /// <param name="keep">weitere Bedingung - gilt vor der Grenze, sonst fallen Treffer hinter den ersten <paramref name="limit"/> Eintraegen weg</param>
     public static List<FileEntry> Search(UserDb db, string under, string term, int limit = 500, Func<FileEntry, bool>? keep = null)
     {
         var compare = CultureInfo.InvariantCulture.CompareInfo;
         term = term.Trim();
+        var spelled = SpellOut(term);
         // Neueste zuerst: stoesst die Suche an die Grenze, fehlen die alten Dateien, nicht die neuen
-        return db.Query($"SELECT {Columns} FROM files WHERE path<>'' AND ($u='' OR path GLOB $l) ORDER BY modified DESC", Read, ("$u", under), ("$l", Glob(under) + "/*"))
-            .Where(f => term.Length == 0 || compare.IndexOf(f.Name, term, CompareOptions.IgnoreCase | CompareOptions.IgnoreNonSpace) >= 0)
+        return db.Query($"SELECT {Columns} FROM files WHERE path<>'' AND ($u='' OR path GLOB $l OR path=$u AND is_dir=0) ORDER BY modified DESC", Read, ("$u", under), ("$l", Glob(under) + "/*"))
+            .Where(f => term.Length == 0 || compare.IndexOf(f.Name, term, CompareOptions.IgnoreCase | CompareOptions.IgnoreNonSpace) >= 0
+                || SpellOut(f.Name).Contains(spelled, StringComparison.Ordinal))
             .Where(f => keep == null || keep(f))
             .Take(limit).ToList();
     }
+
+    /// <summary>Umlaute ausgeschrieben und klein: „Mueller“ findet „Müller“, „gruesse“ findet „Grüße“.</summary>
+    internal static string SpellOut(string text) =>
+        text.ToLowerInvariant().Replace("ä", "ae").Replace("ö", "oe").Replace("ü", "ue").Replace("ß", "ss");
 
     /// <summary>Geoeffnet oder heruntergeladen (Weboberflaeche) - fuer "Zuletzt verwendet".</summary>
     public static void Used(UserDb db, long fileId)

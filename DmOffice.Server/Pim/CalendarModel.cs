@@ -60,7 +60,9 @@ public sealed record TaskDto(string Id, long List, string Uri, string Etag, stri
     string? Due, bool DueAllDay, string? Start, bool Completed, string? CompletedAt, int Priority, int Percent,
     string? Status, List<string> Categories, string? Parent, string Created,
     // Einkaufs- und Checklisten (Lists.cs): Artikel ohne Menge, Menge, Einheit, Abteilung
-    string? Item = null, string? Qty = null, string? Unit = null, string? Section = null);
+    string? Item = null, string? Qty = null, string? Unit = null, string? Section = null,
+    // Zugewiesen an (Version 2): Benutzer-Id, X-DM-ASSIGNEE - nur jemand, mit dem die Liste geteilt ist
+    string? Assignee = null);
 
 public sealed class TaskInput
 {
@@ -77,6 +79,8 @@ public sealed class TaskInput
     public long? MoveTo { get; set; }
     /// <summary>ETag des geladenen Stands (aus dem GET). Gesetzt: nur speichern, wenn er noch gilt; sonst 409.</summary>
     public string? Etag { get; set; }
+    /// <summary>Zugewiesen an (Version 2): Benutzer-Id; leer = niemand; null = unveraendert lassen.</summary>
+    public string? Assignee { get; set; }
     /// <summary>Einkaufs-/Checkliste: Artikel, Menge, Einheit, Abteilung. Null: unveraendert lassen.</summary>
     public string? Item { get; set; }
     public string? Qty { get; set; }
@@ -299,8 +303,11 @@ public static class CalendarModel
         if (input.Attendees != null)
         {
             var accounts = space.Settings.MailAccounts;
-            var organizer = accounts.FirstOrDefault(a => a.Id == input.Account) ?? accounts.FirstOrDefault();
-            ApplyAttendees(target, input.Attendees, organizer, accounts.Select(a => a.Email.ToLowerInvariant()).ToHashSet());
+            // Ohne Mailkonto (Version 2): Organisator mit der internen Adresse - Einladungen an Benutzer dieses dmOffice gehen trotzdem
+            var organizer = accounts.FirstOrDefault(a => a.Id == input.Account) ?? accounts.FirstOrDefault()
+                ?? new MailAccount { Email = InternalInvites.InternalAddress(space.User), DisplayName = space.User.DisplayName };
+            ApplyAttendees(target, input.Attendees, organizer,
+                accounts.Select(a => a.Email.ToLowerInvariant()).Append(InternalInvites.InternalAddress(space.User)).ToHashSet());
         }
 
         if (!input.AllDay && !vcal.Of("VTIMEZONE").Any(t => t.Text("TZID") == zone.Id) && zone != TimeZoneInfo.Utc)
@@ -378,8 +385,15 @@ public static class CalendarModel
         }
         else
         {
-            e.Set("DTSTART", Ics.Local(start, zone)).With("TZID", zone.Id);
-            e.Set("DTEND", Ics.Local(end, zone)).With("TZID", zone.Id);
+            // Das zweite Auftreten der doppelten Stunde lässt sich als Ortszeit nicht schreiben: einzelne Termine dann in UTC, sonst verlören sie ihre Dauer
+            void Time(string name, DateTime at)
+            {
+                var wall = TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(at, DateTimeKind.Utc), zone);
+                if (input.RRule == null && Ics.ToUtc(wall, zone) != at) e.Set(name, Ics.Utc(at));
+                else e.Set(name, Ics.Local(at, zone)).With("TZID", zone.Id);
+            }
+            Time("DTSTART", start);
+            Time("DTEND", end);
         }
 
         if (input.RRule != null)
@@ -604,7 +618,7 @@ public static class CalendarModel
                     t.All("CATEGORIES").SelectMany(p => p.Value.Split(',')).Select(Ics.Unescape).Where(x => x.Length > 0).ToList(),
                     t.All("RELATED-TO").FirstOrDefault(p => (p.Param("RELTYPE") ?? "PARENT").Equals("PARENT", StringComparison.OrdinalIgnoreCase))?.Text,
                     Iso(created, false),
-                    t.Text("X-DM-ITEM"), t.Text("X-DM-QTY"), t.Text("X-DM-UNIT"), t.Text("X-DM-SECTION")));
+                    t.Text("X-DM-ITEM"), t.Text("X-DM-QTY"), t.Text("X-DM-UNIT"), t.Text("X-DM-SECTION"), t.Text("X-DM-ASSIGNEE")));
             }
             catch { /* auslassen */ }
         }
@@ -676,6 +690,7 @@ public static class CalendarModel
         if (input.Qty != null) t.SetText("X-DM-QTY", input.Qty);
         if (input.Unit != null) t.SetText("X-DM-UNIT", input.Unit);
         if (input.Section != null) t.SetText("X-DM-SECTION", input.Section);
+        if (input.Assignee != null) { if (input.Assignee.Length > 0) t.SetText("X-DM-ASSIGNEE", input.Assignee); else t.Remove("X-DM-ASSIGNEE"); }
         t.Set("DTSTAMP", Ics.Stamp());
         t.Set("LAST-MODIFIED", Ics.Stamp());
 

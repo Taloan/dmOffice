@@ -28,7 +28,17 @@ public sealed class MicrosoftOAuth
         : env.Trim().ToLowerInvariant() is "off" or "none" or "0" or "false" ? null : env.Trim();
 
     public const string Authority = "https://login.microsoftonline.com/consumers/oauth2/v2.0/";
+    /// <summary>Private und geschäftliche Konten (OneDrive): die App-Registrierung gilt für alle Mandanten. Bei Firmenkonten kann
+    /// die Organisation verlangen, dass ihr Administrator zustimmt.</summary>
+    public const string CommonAuthority = "https://login.microsoftonline.com/common/oauth2/v2.0/";
     public const string Scopes = "offline_access https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send";
+    /// <summary>Kalender, Kontakte und Aufgaben (Microsoft Graph). Ein Token gilt nur fuer eine Ressource - daher eine
+    /// eigene Anmeldung und ein eigenes Refresh-Token (<see cref="MailAccount.GraphRefreshToken"/>).</summary>
+    public const string GraphScopes = "offline_access https://graph.microsoft.com/Calendars.ReadWrite https://graph.microsoft.com/Contacts.ReadWrite https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/Tasks.ReadWrite https://graph.microsoft.com/User.Read";
+
+    /// <summary>OneDrive (Microsoft Graph): Dateien lesen und schreiben - für externe Ordner (Anmeldung je Ordner) und als Ziel der
+    /// Datensicherung (Anmeldung je Person).</summary>
+    public const string FilesScopes = "offline_access https://graph.microsoft.com/Files.ReadWrite https://graph.microsoft.com/User.Read";
 
     /// <summary>Domains privater Microsoft-Konten - dort geht nur OAuth2.</summary>
     public static readonly HashSet<string> Domains = new(StringComparer.OrdinalIgnoreCase)
@@ -51,6 +61,10 @@ public sealed class MicrosoftOAuth
 
     /// <summary>Neues Refresh-Token: Konto, bisheriges Token (wie im Konto gespeichert), neues Token.</summary>
     public Action<string, string, string>? TokenRotated { get; set; }
+    /// <summary>Wie <see cref="TokenRotated"/>, fuer das Graph-Token.</summary>
+    public Action<string, string, string>? GraphTokenRotated { get; set; }
+    /// <summary>Wie <see cref="TokenRotated"/>, fuer das OneDrive-Token der Datensicherung (erster Wert: Benutzer statt Konto).</summary>
+    public Action<string, string, string>? FilesTokenRotated { get; set; }
 
     public MicrosoftOAuth(string? clientId, HttpClient http)
     {
@@ -62,10 +76,13 @@ public sealed class MicrosoftOAuth
 
     private sealed record TokenResponse(string? AccessToken, string? RefreshToken, int ExpiresIn, string? Error, string? Description);
 
-    private async Task<TokenResponse> TokenAsync(Dictionary<string, string> form, CancellationToken ct)
+    /// <summary>Anmeldestelle je Scopes: OneDrive auch für Firmenkonten, Mail und Kalender wie bisher nur private Konten.</summary>
+    private static string AuthorityFor(string scopes) => scopes == FilesScopes ? CommonAuthority : Authority;
+
+    private async Task<TokenResponse> TokenAsync(Dictionary<string, string> form, CancellationToken ct, string authority = Authority)
     {
         form["client_id"] = ClientId ?? throw new InvalidOperationException("Microsoft-Anmeldung ist nicht eingerichtet (DMOFFICE_MS_CLIENT_ID).");
-        using var res = await _http.PostAsync(Authority + "token", new FormUrlEncodedContent(form), ct);
+        using var res = await _http.PostAsync(authority + "token", new FormUrlEncodedContent(form), ct);
         var json = await ReadJsonAsync(res, ct);
         string? S(string name) => json.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
         var expires = json.TryGetProperty("expires_in", out var e) ? (e.ValueKind == JsonValueKind.Number ? e.GetInt32() : int.TryParse(e.GetString(), out var n) ? n : 3600) : 3600;
@@ -101,16 +118,42 @@ public sealed class MicrosoftOAuth
     /// <summary>Gilt ein Access-Token noch so lange, wird es nicht erneuert.</summary>
     private static readonly TimeSpan Margin = TimeSpan.FromMinutes(3);
 
+    /// <summary>Ketten je Scopes und Refresh-Token: dasselbe Token gibt fuer Outlook und Graph verschiedene Access-Tokens.</summary>
+    private static string ChainKey(string scopes, string refresh) => scopes + "\n" + refresh;
+
     /// <summary>Access-Token fuer XOAUTH2, bei Bedarf mit dem Refresh-Token erneuert.</summary>
-    public async Task<string> AccessTokenAsync(MailAccount account, CancellationToken ct)
+    public Task<string> AccessTokenAsync(MailAccount account, CancellationToken ct) =>
+        AccessTokenAsync(account.Id, account.OAuthRefreshToken, Scopes, TokenRotated,
+            "Nicht bei Microsoft angemeldet – Konto bearbeiten und neu anmelden.",
+            "Microsoft-Anmeldung abgelaufen – Konto bearbeiten und neu anmelden.", ct);
+
+    /// <summary>Access-Token fuer Microsoft Graph (Kalender, Kontakte, Aufgaben).</summary>
+    public Task<string> GraphTokenAsync(MailAccount account, CancellationToken ct) =>
+        AccessTokenAsync(account.Id, account.GraphRefreshToken, GraphScopes, GraphTokenRotated,
+            "Kalender, Kontakte und Aufgaben sind nicht mit Microsoft verbunden.",
+            "Verbindung für Kalender, Kontakte und Aufgaben abgelaufen – in den Kontoeinstellungen neu verbinden.", ct);
+
+    /// <summary>Access-Token fuer OneDrive (Datensicherung einer Person).</summary>
+    public Task<string> FilesTokenAsync(string userId, string? refresh, CancellationToken ct) =>
+        AccessTokenAsync(userId, refresh, FilesScopes, FilesTokenRotated,
+            "OneDrive ist nicht verbunden.",
+            "Die Anmeldung bei OneDrive ist abgelaufen – unter Einstellungen → Konto → Datenexport neu anmelden.", ct);
+
+    /// <summary>Access-Token für einen OneDrive-Ordner (key: Kennung des Ordners, an rotatedTo durchgereicht).</summary>
+    public Task<string> FilesTokenAsync(string key, string? refresh, Action<string, string, string>? rotatedTo, CancellationToken ct) =>
+        AccessTokenAsync(key, refresh, FilesScopes, rotatedTo,
+            "OneDrive ist nicht mit Microsoft verbunden.",
+            "OneDrive-Anmeldung abgelaufen – unter Einstellungen → Dateien → Externe Ziele bearbeiten und neu anmelden.", ct);
+
+    private async Task<string> AccessTokenAsync(string accountId, string? refresh, string scopes, Action<string, string, string>? rotatedTo,
+        string missing, string expired, CancellationToken ct)
     {
-        var refresh = account.OAuthRefreshToken;
         if (string.IsNullOrEmpty(refresh))
-            throw new MailKit.Security.AuthenticationException("Nicht bei Microsoft angemeldet – Konto bearbeiten und neu anmelden.");
+            throw new MailKit.Security.AuthenticationException(missing);
         if (!Enabled)
             throw new MailKit.Security.AuthenticationException("Microsoft-Anmeldung ist auf diesem Server nicht eingerichtet (DMOFFICE_MS_CLIENT_ID).");
 
-        var chain = _chains.GetOrAdd(refresh, t => new Chain { Refresh = t });
+        var chain = _chains.GetOrAdd(ChainKey(scopes, refresh), _ => new Chain { Refresh = refresh });
         string? rotated = null;
         await chain.Gate.WaitAsync(ct);
         try
@@ -120,20 +163,20 @@ public sealed class MicrosoftOAuth
             {
                 ["grant_type"] = "refresh_token",
                 ["refresh_token"] = chain.Refresh,
-                ["scope"] = Scopes,
-            }, ct);
+                ["scope"] = scopes,
+            }, ct, AuthorityFor(scopes));
             if (r.Error != null || string.IsNullOrEmpty(r.AccessToken))
                 throw new MailKit.Security.AuthenticationException(r.Error is "invalid_grant" or "interaction_required"
-                    ? "Microsoft-Anmeldung abgelaufen – Konto bearbeiten und neu anmelden."
+                    ? expired
                     : "Microsoft-Anmeldung: " + Short(r.Description, r.Error));
             chain.Access = r.AccessToken;
             chain.Expires = DateTime.UtcNow.AddSeconds(r.ExpiresIn);
             if (!string.IsNullOrEmpty(r.RefreshToken) && r.RefreshToken != chain.Refresh)
             {
-                if (chain.Prior != null) _chains.TryRemove(new KeyValuePair<string, Chain>(chain.Prior, chain));
+                if (chain.Prior != null) _chains.TryRemove(new KeyValuePair<string, Chain>(ChainKey(scopes, chain.Prior), chain));
                 chain.Prior = chain.Refresh;
                 chain.Refresh = r.RefreshToken;
-                _chains[r.RefreshToken] = chain;
+                _chains[ChainKey(scopes, r.RefreshToken)] = chain;
                 rotated = r.RefreshToken;
             }
             return chain.Access;
@@ -142,13 +185,13 @@ public sealed class MicrosoftOAuth
         {
             chain.Gate.Release();
             // Ausserhalb der Sperre: Speichern loest SettingsChanged aus, das darf wieder hierher fuehren
-            if (rotated != null) TokenRotated?.Invoke(account.Id, refresh, rotated);
+            if (rotated != null) rotatedTo?.Invoke(accountId, refresh, rotated);
         }
     }
 
     /// <summary>Neues Refresh-Token ins Konto schreiben - nur, wenn dort noch das bisherige steht
     /// (sonst hat sich der Benutzer inzwischen neu angemeldet).</summary>
-    public static bool Persist(IEnumerable<UserSpace> spaces, string accountId, string previous, string fresh)
+    public static bool Persist(IEnumerable<UserSpace> spaces, string accountId, string previous, string fresh, bool graph = false)
     {
         foreach (var space in spaces)
         {
@@ -157,8 +200,8 @@ public sealed class MicrosoftOAuth
             space.UpdateSettings(s =>
             {
                 var a = s.MailAccounts.FirstOrDefault(x => x.Id == accountId);
-                if (a == null || a.Auth != MailAuth.Microsoft || a.OAuthRefreshToken != previous) return;
-                a.OAuthRefreshToken = fresh;
+                if (a == null || a.Auth != MailAuth.Microsoft || (graph ? a.GraphRefreshToken : a.OAuthRefreshToken) != previous) return;
+                if (graph) a.GraphRefreshToken = fresh; else a.OAuthRefreshToken = fresh;
                 done = true;
             });
             return done;
@@ -174,23 +217,25 @@ public sealed class MicrosoftOAuth
     {
         public required string UserId;
         public required string DeviceCode;
+        public required string Scopes;
         public DateTime Expires;
         public string? Refresh;
     }
 
     private readonly ConcurrentDictionary<string, Flow> _flows = new();
 
-    /// <summary>Anmeldung beginnen: Code fuer microsoft.com/devicelogin.</summary>
-    public async Task<DeviceStart> StartAsync(string userId, CancellationToken ct)
+    /// <summary>Anmeldung beginnen: Code fuer microsoft.com/devicelogin. Ohne scopes: Mail (IMAP/SMTP).</summary>
+    public async Task<DeviceStart> StartAsync(string userId, CancellationToken ct, string? scopes = null)
     {
+        scopes ??= Scopes;
         if (!Enabled) throw new InvalidOperationException("Microsoft-Anmeldung ist nicht eingerichtet (DMOFFICE_MS_CLIENT_ID).");
         foreach (var (key, old) in _flows)
             if (old.Expires < DateTime.UtcNow.AddMinutes(-30)) _flows.TryRemove(key, out _);
 
-        using var res = await _http.PostAsync(Authority + "devicecode", new FormUrlEncodedContent(new Dictionary<string, string>
+        using var res = await _http.PostAsync(AuthorityFor(scopes) + "devicecode", new FormUrlEncodedContent(new Dictionary<string, string>
         {
             ["client_id"] = ClientId!,
-            ["scope"] = Scopes,
+            ["scope"] = scopes,
         }), ct);
         var json = await ReadJsonAsync(res, ct);
         string? S(string name) => json.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
@@ -200,7 +245,7 @@ public sealed class MicrosoftOAuth
 
         var id = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
         var expiresIn = N("expires_in", 900);
-        _flows[id] = new Flow { UserId = userId, DeviceCode = device, Expires = DateTime.UtcNow.AddSeconds(expiresIn) };
+        _flows[id] = new Flow { UserId = userId, DeviceCode = device, Scopes = scopes, Expires = DateTime.UtcNow.AddSeconds(expiresIn) };
         return new DeviceStart(id, code, S("verification_uri") ?? "https://www.microsoft.com/link", expiresIn, Math.Max(1, N("interval", 5)));
     }
 
@@ -214,7 +259,7 @@ public sealed class MicrosoftOAuth
         {
             ["grant_type"] = "urn:ietf:params:oauth:grant-type:device_code",
             ["device_code"] = flow.DeviceCode,
-        }, ct);
+        }, ct, AuthorityFor(flow.Scopes));
         switch (r.Error)
         {
             case "authorization_pending" or "slow_down": return "pending";
@@ -226,13 +271,21 @@ public sealed class MicrosoftOAuth
         flow.Refresh = r.RefreshToken;
         // Gleich nutzbar - der Verbindungstest danach braucht keine Erneuerung
         if (!string.IsNullOrEmpty(r.AccessToken))
-            _chains[r.RefreshToken] = new Chain { Refresh = r.RefreshToken, Access = r.AccessToken, Expires = DateTime.UtcNow.AddSeconds(r.ExpiresIn) };
+            _chains[ChainKey(flow.Scopes, r.RefreshToken)] = new Chain { Refresh = r.RefreshToken, Access = r.AccessToken, Expires = DateTime.UtcNow.AddSeconds(r.ExpiresIn) };
         return "ok";
     }
 
     /// <summary>Refresh-Token einer abgeschlossenen Anmeldung dieses Benutzers, sonst null.</summary>
-    public string? Grant(string userId, string? flowId) =>
-        flowId != null && _flows.TryGetValue(flowId, out var f) && f.UserId == userId ? f.Refresh : null;
+    public string? Grant(string userId, string? flowId) => Grant(userId, flowId, Scopes);
+
+    /// <summary>Wie <see cref="Grant(string, string?)"/>, fuer eine Anmeldung mit den Graph-Scopes.</summary>
+    public string? GraphGrant(string userId, string? flowId) => Grant(userId, flowId, GraphScopes);
+
+    /// <summary>Wie <see cref="Grant(string, string?)"/>, für eine Anmeldung mit den OneDrive-Scopes.</summary>
+    public string? FilesGrant(string userId, string? flowId) => Grant(userId, flowId, FilesScopes);
+
+    private string? Grant(string userId, string? flowId, string scopes) =>
+        flowId != null && _flows.TryGetValue(flowId, out var f) && f.UserId == userId && f.Scopes == scopes ? f.Refresh : null;
 
     /// <summary>Nach dem Speichern: die Anmeldung wird nicht mehr gebraucht.</summary>
     public void Forget(string? flowId)

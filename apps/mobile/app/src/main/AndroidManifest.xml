@@ -5,6 +5,11 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Chat: Sprachnachrichten (v2) -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Standort-Anfrage (Chat): Position einmal bestimmen, wenn man "Standort schicken" tippt -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.VIBRATE" />
@@ -33,13 +38,31 @@
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Audiothek: Musik im Hintergrund (Media3) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- Chat: Standort live teilen (1-30 Minuten, mit Benachrichtigung) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <!-- Coach: nur lesen aus Health Connect (Uhr, Waage) -->
+    <uses-permission android:name="android.permission.health.READ_STEPS" />
+    <uses-permission android:name="android.permission.health.READ_ACTIVE_CALORIES_BURNED" />
+    <uses-permission android:name="android.permission.health.READ_DISTANCE" />
+    <uses-permission android:name="android.permission.health.READ_SLEEP" />
+    <uses-permission android:name="android.permission.health.READ_RESTING_HEART_RATE" />
+    <uses-permission android:name="android.permission.health.READ_WEIGHT" />
+    <uses-permission android:name="android.permission.health.READ_BODY_FAT" />
+    <uses-permission android:name="android.permission.health.READ_HEALTH_DATA_IN_BACKGROUND" />
+    <uses-permission android:name="android.permission.health.READ_HEALTH_DATA_HISTORY" />
+
+    <queries>
+        <package android:name="com.google.android.apps.healthdata" />
+    </queries>
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <application
         android:name=".App"
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
-        android:label="@string/app_name"
+        android:label="${appLabel}"
         android:supportsRtl="true"
         android:theme="@style/Theme.DmOffice"
         android:networkSecurityConfig="@xml/network_security_config"
@@ -64,6 +87,24 @@
             </intent-filter>
         </activity>
 
+        <!-- Teilen an dmOffice (Version 2): Dateien in einen gewählten Ordner der Dateiablage, Fotos und Videos ins Tagebuch -->
+        <activity
+            android:name=".ui.ShareActivity"
+            android:exported="true"
+            android:taskAffinity=""
+            android:excludeFromRecents="true">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity>
+
         <!-- Office-Editor (WebView): Drehen und Tastatur ohne Neuladen -->
         <activity
             android:name=".ui.OfficeActivity"
@@ -74,6 +115,7 @@
         <activity
             android:name=".widget.WidgetConfigActivity"
             android:exported="true"
+            android:taskAffinity=""
             android:excludeFromRecents="true"
             android:theme="@style/Theme.DmOffice">
             <intent-filter>
@@ -107,6 +149,38 @@
             <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_tasks_info" />
         </receiver>
 
+        <!-- Audiothek: Player für den Startbildschirm (ausgeblendet, solange der Server keine Audiothek anbietet) -->
+        <receiver
+            android:name=".widget.AudioWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_audio">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_audio_info" />
+        </receiver>
+
+        <!-- Tagebuch: neuer Eintrag mit Foto (Kamera) bzw. ohne -->
+        <receiver
+            android:name=".widget.JournalPhotoWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_journal_photo">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_journal_photo_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.JournalNewWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_journal_new">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_journal_new_info" />
+        </receiver>
+
         <receiver
             android:name=".widget.MonthWidgetReceiver"
             android:exported="true"
@@ -117,7 +191,35 @@
             <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_month_info" />
         </receiver>
 
+        <!-- Coach: Kalorien des Tages, Eintragen und Barcode -->
+        <receiver
+            android:name=".widget.CoachWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_coach">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_coach_info" />
+        </receiver>
+
+        <!-- Coach groß: Kalorien, Nährstoffe, Wasser, Schritte, Gewicht, Körperwerte, Knöpfe -->
+        <receiver
+            android:name=".widget.CoachWidgetLargeReceiver"
+            android:exported="true"
+            android:label="@string/widget_coach_large">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_coach_large_info" />
+        </receiver>
+
         <!-- Push von dmOffice ueber FCM (nur aktiv mit google-services.json beim Bauen) -->
+        <!-- Audiothek (Version 2): Wiedergabe mit Benachrichtigung, Sperrbildschirm und Bluetooth-Tasten -->
+        <service android:name=".audio.AudioService" android:exported="true" android:foregroundServiceType="mediaPlayback">
+            <intent-filter>
+                <action android:name="androidx.media3.session.MediaSessionService" />
+            </intent-filter>
+        </service>
         <service android:name=".sync.PushService" android:exported="false">
             <intent-filter>
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
@@ -184,6 +286,8 @@
             android:foregroundServiceType="dataSync"
             tools:node="merge" />
         <receiver android:name=".upload.UploadActionReceiver" android:exported="false" />
+        <!-- Chat: Standort live teilen, nur solange gestartet (hoechstens 30 Minuten) -->
+        <service android:name=".chat.LiveLocationService" android:exported="false" android:foregroundServiceType="location" />
 
         <!-- WorkManager ohne automatischen Start, Initialisierung in App -->
         <provider
@@ -193,5 +297,23 @@
             tools:node="merge">
             <meta-data android:name="androidx.work.WorkManagerInitializer" android:value="androidx.startup" tools:node="remove" />
         </provider>
+        <!-- Coach: Erklärung, wofür die Gesundheitsdaten gelesen werden (Health Connect zeigt sie bei der Freigabe) -->
+        <activity
+            android:name=".coach.HealthRationaleActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE" />
+            </intent-filter>
+        </activity>
+        <activity-alias
+            android:name="ViewPermissionUsageActivity"
+            android:exported="true"
+            android:targetActivity=".coach.HealthRationaleActivity"
+            android:permission="android.permission.START_VIEW_PERMISSION_USAGE">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW_PERMISSION_USAGE" />
+                <category android:name="android.intent.category.HEALTH_PERMISSIONS" />
+            </intent-filter>
+        </activity-alias>
     </application>
 </manifest>

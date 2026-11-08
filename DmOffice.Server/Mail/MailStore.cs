@@ -19,6 +19,12 @@ public sealed record MailRow(long Id, string Account, string Folder, uint Uid, s
     /// <summary>Nur in Suchergebnissen: gefunden im Inhalt dieses Anhangs (Search/TextIndex.cs).</summary>
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public DmOffice.Search.AttachmentMatch? Match { get; init; }
+    /// <summary>An diesen Catchall-Alias gegangen (CatchallAliases.Tag).</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? Alias { get; init; }
+    /// <summary>Zustand des Alias: „open“, „blocked“ oder „unknown“ (Adresse der Domain, nicht in der Liste).</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? AliasState { get; init; }
 }
 
 /// <summary>
@@ -496,6 +502,11 @@ public static class MailStore
     /// <summary>Ungelesene in Relevant und Sonstige - fuer die Reiter ueber der Liste.</summary>
     public static (int Focused, int Other) FocusUnread(UserDb db, string account, string folder) =>
         db.Query("SELECT COALESCE(SUM(COALESCE(focus,1)=1),0), COALESCE(SUM(focus=0),0) FROM mail WHERE account=$a AND folder=$f AND seen=0",
+            r => (r.GetInt32(0), r.GetInt32(1)), ("$a", account), ("$f", folder)).First();
+
+    /// <summary>Alle in Relevant und Sonstige - wenn der Posteingang die Gesamtzahl zeigt.</summary>
+    public static (int Focused, int Other) FocusTotal(UserDb db, string account, string folder) =>
+        db.Query("SELECT COALESCE(SUM(COALESCE(focus,1)=1),0), COALESCE(SUM(focus=0),0) FROM mail WHERE account=$a AND folder=$f",
             r => (r.GetInt32(0), r.GetInt32(1)), ("$a", account), ("$f", folder)).First();
 
     public static (int Total, int Unread) FlaggedCounts(UserDb db, string account) =>

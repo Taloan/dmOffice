@@ -41,6 +41,8 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
         // Offline gespeicherte Notizen (Checklisten im Funkloch abgehakt) vor dem Neuladen hochbringen
         try { app.notes.flushPending() } catch (_: Exception) { }
         try { app.notes.refresh() } catch (_: Exception) { }
+        // Chat (Version 2): ohne Push-Signal hier die neuen Nachrichten melden
+        try { at.dimes.dmoffice.notify.ChatNotify.check(applicationContext) } catch (_: Exception) { }
         try { ProviderSync.afterSync(applicationContext) } catch (_: Exception) { }
         return if (r.isSuccess) Result.success() else if (runAttemptCount < 3) Result.retry() else Result.failure()
     }

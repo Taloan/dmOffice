@@ -98,6 +98,41 @@ object FileViews {
             .groupBy { it.first.second }.map { (k, v) -> Group(k, v.map { it.third }) }
     }
 
+    private val RAW = setOf("arw", "cr2", "cr3", "nef", "nrw", "orf", "rw2", "raf", "pef", "dng", "srw", "3fr", "erf")
+    private val LEAD = listOf("jpg", "jpeg", "heic", "heif")
+
+    /**
+     * Galerie: JPG und RAW gleichen Namens im selben Ordner als ein Stapel - das JPG steht vorn (Bild, Teilen), die RAW-Dateien
+     * haengen daran (Verschieben, Kopieren, Loeschen nehmen sie mit). Reihenfolge bleibt.
+     */
+    fun stack(items: List<FileItem>): List<FileItem> {
+        fun key(i: FileItem) = i.path.substringBeforeLast('.').lowercase()
+        fun ext(i: FileItem) = i.name.substringAfterLast('.', "").lowercase()
+        // Nur, wo der Pfad auf den Namen endet - Album-Eintraege (alb:) nicht, sonst fielen fremde Fotos zusammen
+        val byKey = items.filter { !it.isDir && it.path.endsWith(it.name) }.groupBy(::key)
+        val lead = byKey.mapNotNull { (k, g) ->
+            if (g.size < 2 || g.none { ext(it) in RAW }) null else LEAD.firstNotNullOfOrNull { e -> g.firstOrNull { ext(it) == e } }?.let { k to it }
+        }.toMap()
+        if (lead.isEmpty()) return items
+        return items.mapNotNull { i ->
+            val h = if (i.isDir || !i.path.endsWith(i.name)) null else lead[key(i)]
+            when { h == null -> i; h === i -> i.copy(stack = byKey[key(i)]!!.filter { it !== i }); else -> null }
+        }
+    }
+
+    /** Stapel aufloesen: Eintrag und seine RAW-Dateien. */
+    fun unstack(items: List<FileItem>): List<FileItem> = items.flatMap { listOf(it) + it.stack }
+
+    /**
+     * Galerie: nach Aufnahmedatum (sonst Aenderung), neueste zuerst, gruppiert nach Jahr ("2026"), Monat ("2026-10") oder Tag
+     * ("2026-10-24"). [taken] liefert ms oder 0.
+     */
+    fun byDate(items: List<FileItem>, by: String, taken: (FileItem) -> Long, zone: ZoneId = ZoneId.systemDefault(), oldest: Boolean = false): List<Group> =
+        (if (oldest) items.sortedBy { taken(it) } else items.sortedByDescending { taken(it) }).groupBy {
+            val d = Instant.ofEpochMilli(taken(it)).atZone(zone).toLocalDate()
+            when (by) { "year" -> "%04d".format(d.year); "day" -> "%04d-%02d-%02d".format(d.year, d.monthValue, d.dayOfMonth); else -> "%04d-%02d".format(d.year, d.monthValue) }
+        }.map { (k, v) -> Group(k, v) }
+
     /** Galerie: nach Monat der Aenderung (neueste zuerst), Schluessel "2026-10". */
     fun byMonth(items: List<FileItem>, zone: ZoneId = ZoneId.systemDefault()): List<Group> =
         items.sortedByDescending { it.modifiedMs }.groupBy {

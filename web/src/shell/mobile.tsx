@@ -2,6 +2,7 @@ import { Button, makeStyles, mergeClasses, tokens } from '@fluentui/react-compon
 import { ArrowLeft20Regular } from '@fluentui/react-icons'
 import { useEffect, useRef, useState } from 'react'
 import { t } from '../i18n'
+import { usePaneWidth } from './Splitter'
 
 // Handybreite: die Oberflaeche arbeitet einspaltig wie eine App - Navigation als ausklappbare Leiste,
 // Inhalt in voller Breite, Einzelansichten im Vollbild mit Zurueck. Ab 768 px bleibt alles wie am Desktop.
@@ -43,13 +44,21 @@ const useStyles = makeStyles({
  * Navigationsspalte eines Bereichs. Am Desktop wie bisher links daneben (ein-/ausblendbar),
  * auf dem Handy als Leiste, die ueber dem Inhalt aufklappt; ein Tipp daneben schliesst sie.
  */
-export function SidePane({ open, onClose, className, children, as = 'div', style }: {
+export function SidePane({ open, onClose, className, children, as = 'div', style, width }: {
   open: boolean; onClose: () => void; className?: string; children: React.ReactNode; as?: 'div' | 'aside'; style?: React.CSSProperties
+  /** Verstellbare Breite am Desktop: Schlüssel in prefs.paneWidths und Vorgabe in px */
+  width?: { key: string; def: number }
 }) {
   const s = useStyles()
   const mobile = useIsMobile()
+  const pane = usePaneWidth(width?.key ?? '', width?.def ?? 240)
   const Tag = as
-  if (!mobile) return <Tag className={className} style={open ? style : { ...style, display: 'none' }}>{children}</Tag>
+  if (!mobile) return (
+    <>
+      <Tag className={className} style={open ? (width ? { ...style, width: pane.width } : style) : { ...style, display: 'none' }}>{children}</Tag>
+      {open && width && pane.handle('right')}
+    </>
+  )
   // Tipp auf einen Eintrag (Ordner, Liste ...) schliesst die Leiste; Knoepfe, Felder und Haekchen nicht
   const pick = (e: React.MouseEvent) => {
     const el = e.target as HTMLElement
@@ -86,6 +95,33 @@ export const useMobileStyles = useStyles
  * Handy: eine offene Einzelansicht schliesst auch mit der Zurueck-Taste des Geraets bzw. Browsers.
  * Beim Oeffnen kommt ein Eintrag in den Verlauf; Zurueck nimmt ihn wieder heraus.
  */
+/**
+ * Wie useBackClose, aber auch am Rechner: Zurück im Browser schließt die oberste Ansicht (Eintrag, Tag aus dem Kalender).
+ * close darf false liefern (z. B. „Änderungen verwerfen?“ abgelehnt) - dann bleibt sie offen und Zurück gilt wieder für sie.
+ * Liefert close ein Promise (Rückfrage läuft), bleibt der Verlaufseintrag erst stehen; schließt die Ansicht danach, baut das Aufräumen ihn ab.
+ */
+export function useHistoryClose(open: boolean, close: () => boolean | void | Promise<boolean>) {
+  const closeRef = useRef(close)
+  closeRef.current = close
+  useEffect(() => {
+    if (!open) return
+    const depth = (Number(history.state?.dmBack) || 0) + 1
+    history.pushState({ dmBack: depth }, '')
+    let popped = false
+    const onPop = () => {
+      if ((Number(history.state?.dmBack) || 0) >= depth) return
+      const r = closeRef.current()
+      if (r === false || r instanceof Promise) { history.pushState({ dmBack: depth }, ''); return }
+      popped = true
+    }
+    window.addEventListener('popstate', onPop)
+    return () => {
+      window.removeEventListener('popstate', onPop)
+      if (!popped && history.state?.dmBack === depth) history.back()
+    }
+  }, [open])
+}
+
 export function useBackClose(open: boolean, close: () => void) {
   const mobile = useIsMobile()
   const closeRef = useRef(close)

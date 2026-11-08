@@ -37,6 +37,9 @@ object Items {
 
     fun parseCalendar(ics: String): Component? = Ical.parse(ics).firstOrNull { it.name == "VCALENDAR" }
 
+    /** Zugewiesen an (Version 2): Benutzer-Id aus der Aufgabe, null = niemand. */
+    fun assigneeOf(ics: String): String? = try { parseCalendar(ics)?.of("VTODO")?.firstOrNull()?.text("X-DM-ASSIGNEE")?.takeIf { it.isNotBlank() } } catch (_: Exception) { null }
+
     /** Felder fuer die Datenbank aus dem iCalendar-Text; null wenn kein VEVENT/VTODO drin ist. */
     fun fromIcs(href: String, calendarHref: String, etag: String?, ics: String, zone: ZoneId, dirty: Boolean = false): ItemEntity? {
         val cal = parseCalendar(ics) ?: return null
@@ -138,6 +141,19 @@ object Items {
             Occurrence(it, it.due!!, if (allDay) it.due + 86400_000 else it.due, allDay, colors[it.calendarHref])
         }
 
+    // Erledigt-Zeitpunkt je Aufgabe (aus COMPLETED), nach Inhalt zwischengespeichert - der Kalender fragt oft
+    private val doneAt = android.util.LruCache<String, Long>(500)
+
+    /** Erledigte Aufgaben ganztägig an dem Tag, an dem sie erledigt wurden (wie im Web), nicht mehr am alten Fälligkeitstag. */
+    fun doneOccurrences(tasks: List<ItemEntity>, colors: Map<String, Int?>, zone: ZoneId, from: Long, to: Long): List<Occurrence> =
+        tasks.mapNotNull { t ->
+            val key = t.href + "|" + t.ics.hashCode()
+            val at = doneAt.get(key) ?: (try { parseCalendar(t.ics)?.let { master(it) }?.let { Ical.time(it.get("COMPLETED"), zone) }?.toInstant(zone)?.toEpochMilli() } catch (_: Exception) { null }
+                ?: return@mapNotNull null).also { doneAt.put(key, it) }
+            val day = java.time.Instant.ofEpochMilli(at).atZone(zone).toLocalDate().atStartOfDay(zone).toInstant().toEpochMilli()
+            if (day + 86400_000 <= from || day >= to) null else Occurrence(t, day, day + 86400_000, true, colors[t.calendarHref])
+        }
+
     // ---------------- Schreiben ----------------
 
     fun newCalendar(): Component {
@@ -162,6 +178,8 @@ object Items {
         val completed: Boolean, val reminderSeconds: Long?,
         /** Einkaufs-/Checkliste: Artikel, Einheit, Abteilung als X-DM-ITEM, X-DM-UNIT, X-DM-SECTION (wie im Web). */
         val item: String? = null, val unit: String? = null, val section: String? = null, val qty: String? = null,
+        /** Zugewiesen an (Version 2): Benutzer-Id als X-DM-ASSIGNEE; "" = niemand; null = unveraendert lassen. */
+        val assignee: String? = null,
     )
 
     /** Termin in ein (bestehendes oder neues) VCALENDAR schreiben; nur bekannte Felder anfassen. */
@@ -223,6 +241,7 @@ object Items {
         input.unit?.let { m.setText("X-DM-UNIT", it) }
         input.qty?.let { m.setText("X-DM-QTY", it) }
         input.section?.let { m.setText("X-DM-SECTION", it) }
+        input.assignee?.let { if (it.isEmpty()) m.remove("X-DM-ASSIGNEE") else m.setText("X-DM-ASSIGNEE", it) }
         setCompleted(m, input.completed)
         m.set("SEQUENCE", ((m.text("SEQUENCE")?.toIntOrNull() ?: 0) + 1).toString())
         setReminder(m, input.reminderSeconds)

@@ -6,6 +6,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.longOrNull
 
 /** Neueste Version auf GitHub: Tag, versionCode aus dem Tag, Release-Notizen und die APK. */
@@ -69,6 +70,20 @@ object UpdateLogic {
         val size = apk["size"]?.jsonPrimitive?.longOrNull ?: 0L
         if (size > MAX_APK_BYTES) return null
         return Release(tag, name, code, shortNotes(o.str("body") ?: ""), url, size, o.str("html_url") ?: "https://github.com/Taloan/dmOffice/releases/latest")
+    }
+
+    /**
+     * Test-App (Version 2): Antwort von GET /api/app/info des eigenen Servers - die App im Image, die zu ihm gehoert.
+     * null, wenn der Server keine App hat oder die Angaben nicht passen.
+     */
+    fun parseServerInfo(body: String, base: String): Release? {
+        val o = try { json.parseToJsonElement(body).jsonObject } catch (_: Exception) { return null }
+        if (!o.bool("available")) return null
+        val version = o.str("version") ?: return null
+        val code = o["versionCode"]?.jsonPrimitive?.intOrNull?.takeIf { it > 0 } ?: return null
+        val size = o["size"]?.jsonPrimitive?.longOrNull ?: 0L
+        if (size > MAX_APK_BYTES) return null
+        return Release(version, version, code, "", base.trimEnd('/') + "/app/dmoffice.apk", size, base)
     }
 
     /** Release-Notizen kurz: Markdown-Zeichen weg, Leerzeilen zusammen, hoechstens [max] Zeichen. */

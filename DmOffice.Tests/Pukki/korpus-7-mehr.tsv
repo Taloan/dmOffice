@@ -1,0 +1,111 @@
+# Pukkis Sprachkorpus 7: Aussagen, Links, Telefonnummern, Gekauftes, Verfügbarkeit, Ablehnen mit Angebot und weitere Gespräche
+# Aussagen statt Aufträge: zuhören, nichts anlegen
+	unsinn	der hund bellt	+Verstehe
+	unsinn	ich mag pizza	+Verstehe
+	unsinn	mein auto ist rot	+Verstehe
+	unsinn	heute ist ein schöner tag	+Verstehe
+	unsinn	die sonne scheint	+Wetterbericht
+	unsinn	das essen schmeckt gut	+Verstehe
+	unsinn	ich finde dich nett	+freut mich
+	unsinn	es regnet	+Wetterbericht
+	unsinn	mein Sohn heißt Ben	+Verstehe
+	unsinn	unsere Katze heißt Minka	+Verstehe
+	unsinn	gestern war ich beim zahnarzt	+Vergangenheit
+	unsinn	letzte woche war ich krank	+Verstehe
+# Links, Adressen, Nummern
+	unsinn	https://www.example.com/irgendwas	+Link als Notiz
+	unsinn	www.dmoffice.de	+Link als Notiz
+	unsinn	max@example.com	+E-Mail-Adresse als Notiz
+	unsinn	+49 170 1234567	+Telefonnummer als Notiz
+	unsinn	030/123456	+Telefonnummer als Notiz
+	unsinn	<b>fett</b>	+Quelltext
+# Gekauft? Verfügbar? Pizza?
+	frage	wurde die milch schon gekauft?	+weiß ich leider nicht ;; +noch offen
+	frage	hat jemand butter gekauft?	+weiß ich leider nicht ;; +auf keiner Einkaufsliste
+	frage	gibt es morgen pizza?	+Spaghetti
+	frage	gibt es morgen spaghetti?	+Ja, morgen gibt es Spaghetti
+	frage	gibt es heute linsensuppe?	+Ja, heute gibt es Linsensuppe
+	frage	hab ich morgen um 15 uhr zeit?	+steht schon etwas an ;; +Zahnarzt Kontrolle
+	frage	hab ich morgen um 12 uhr zeit?	+nichts eingetragen
+	frage	bin ich morgen um 9 frei?	+Zahnreinigung
+	frage	wann war ich zuletzt beim friseur	+vergangenen Termin
+	talk	hast du morgen zeit?	+rund um die Uhr
+	talk	Pukki?	~Ja\?|Was kann ich
+	talk	was treibst du so	+rund um die Uhr
+	talk	mmh lecker	+Guten Appetit
+	talk	jein	+lass dir Zeit
+	talk	vielleicht	+lass dir Zeit
+# Ablehnen mit Angebot
+	dialog	überweise die miete	+kann ich leider nicht ;; +„Miete überweisen“ als Aufgabe ;; @knopf:Als Aufgabe ;; @nichts
+	dialog	bezahl die stromrechnung	+kann ich leider nicht ;; +Stromrechnung bezahlen ;; @nichts
+	dialog	buch mir einen flug nach rom	+kann ich leider nicht ;; +Flug nach rom buchen ;; @nichts
+R1	dialog	überweise die miete	+als Aufgabe notieren
+R1	dialog	ja	+Notiert: Miete überweisen ;; @neu
+R2	dialog	bezahl die rechnung	+als Aufgabe notieren
+R2	dialog	nein	+lasse ich das ;; @nichts
+# Termin im Gespräch: wo, wer, erinnern
+S1	frage	wann ist das konzert	+Beethoven-Konzert
+S1	frage	wo ist das?	+Stadthalle
+S1	frage	wer kommt mit?	+Anna ;; +Ben
+S2	frage	wann ist das konzert	+Beethoven-Konzert
+S2	dialog	erinnere mich einen tag vorher daran	+Okay, ich erinnere dich ;; @neu
+S3	frage	wann ist der friseur	+Friseur
+S3	frage	und wo ist das?	+kein Ort
+S4	frage	was ist mein nächster termin	+Zahnreinigung
+S4	frage	wo ist das?	+Zahnarztpraxis am Markt
+# Kontakte im Gespräch
+T1	frage	nummer von oma	+030 123456
+T1	frage	und von dr. weiß?	+030 987654
+T2	frage	wann hat oma geburtstag	+Hilde Berger
+T2	frage	und wie ist ihre nummer?	+030 123456
+# Wochenende, Woche
+U1	frage	was ist am wochenende	!Soll ich
+U1	frage	und nächste woche?	!Soll ich ;; ~Beethoven-Konzert|Geburtstag Oma|Elternabend|nichts eingetragen
+U2	frage	was steht diese woche an	+Friseur
+U2	frage	und am wochenende?	!Soll ich ;; !übermorgen ist nichts
+# Einkauf im Gespräch
+V1	einkauf	Milch und Kekse	+Kekse
+V1	dialog	und noch Schokolade	+Schokolade ;; @neu
+V1	dialog	danke	+Gern geschehen
+V2	frage	was steht auf der einkaufsliste	+Milch
+V2	dialog	setz noch butter mit drauf	+Butter ;; @neu
+V3	frage	ist käse auf der liste?	+Nein
+V3	dialog	ja bitte	+Käse ;; +Möchtest du noch etwas ;; @neu
+V3	dialog	Wurst und Senf	+Wurst ;; +Senf ;; @neu
+V4	frage	haben wir noch kaffee?	+weiß ich leider nicht
+V4	frage	wieso?	+in deine Vorräte ;; +Kaffee steht aber auf keiner Einkaufsliste
+V4	dialog	ja	+Kaffee ;; @neu
+V5	einkauf	milch abhaken	+Abgehakt: Milch ;; @neu
+V5	frage	ist milch auf der liste?	+Nein ;; +Milch
+V5	dialog	ja	+Milch ;; @neu
+V6	einkauf	Brot und Milch gekauft	+Abgehakt: Brot und Milch ;; @neu
+V6	dialog	rückgängig	+Wieder offen: Brot und Milch
+# Termine im Gespräch ändern
+W1	termin	morgen 9 uhr friseur	+Eingetragen ;; +09:00
+W1	dialog	nein, erst um 10	+Geändert ;; +10:00
+W1	dialog	und dann noch übermorgen auch	+Eingetragen ;; +übermorgen ;; @neu
+W2	termin	freitag 17 uhr yoga	+Eingetragen
+W2	dialog	sorry, samstag	+Geändert ;; ~Samstag|übermorgen|morgen
+W3	termin	morgen 10 uhr friseur	+Eingetragen
+W3	dialog	nein, morgen 11 uhr zahnarzt	+Zurückgenommen: Termin „Friseur“ ;; +Eingetragen ;; +Zahnarzt ;; @neu
+W4	termin	termin morgen 15 uhr steuerberater	+Eingetragen
+W4	dialog	verleg das auf übermorgen	+Geändert ;; +übermorgen ;; +15:00
+W5	aufgabe	aufgabe Keller aufräumen	+Notiert
+W5	dialog	nein, als termin	+Wann ist ;; @nichts
+W5	dialog	samstag 10 uhr	+Eingetragen ;; +10:00 ;; +Keller aufräumen ;; @neu
+# Gemischte kleine Gespräche
+X1	talk	guten morgen	+Guten Morgen
+X1	frage	was steht heute an	+Steuer machen
+X1	aufgabe	steuer machen ist erledigt	+Abgehakt ;; @neu
+X1	talk	super	+👍
+X2	talk	ich bin so müde	+Pause
+X2	frage	was steht morgen an	+Zahnarzt Kontrolle
+X2	talk	gute nacht	+Gute Nacht
+X3	talk	hallo	+Was kann ich
+X3	unsinn	asdf	+nicht verstanden
+X3	talk	sorry, vertippt	+Kein Problem
+X4	frage	wie viele tage noch bis silvester?	+Silvester
+X4	talk	cool	+👍
+X5	talk	was kannst du?	+Das kann ich
+X5	termin	dann trag mir morgen um 8 joggen ein	+Eingetragen ;; +08:00 ;; +Joggen
+X5	dialog	danke dir	+Gern geschehen

@@ -1,3 +1,4 @@
+import { sendToChat } from '../chat/SendToChat'
 import {
   Avatar, Button, Dropdown, Field, Input, Option, SearchBox, Spinner, Switch, Text, Textarea, Toolbar, ToolbarButton, makeStyles, mergeClasses, tokens,
   Menu, MenuDivider, MenuItem, MenuList, MenuPopover, MenuTrigger, Link,
@@ -7,8 +8,11 @@ import {
   Building20Regular, Gift20Regular, Globe20Regular, Book20Regular, Star20Regular, Star20Filled, Star12Filled,
   BookAdd20Regular, ArrowImport20Regular, ArrowExport20Regular, ArrowSort20Regular, PanelLeft20Regular,
   MoreHorizontal16Regular, Open20Regular, Rename20Regular, People20Regular, CheckboxChecked20Regular,
+  Chat20Regular,
 } from '@fluentui/react-icons'
-import { ContextMenu, TargetMenu, askText, isTyping, useContextMenu, useMultiSelect } from '../shell/context'
+import { Cloud16Regular, Cloud20Regular } from '@fluentui/react-icons'
+import { graphAccounts, graphTitle } from '../calendar/graph'
+import { ContextMenu, TargetMenu, askConfirm, askText, isTyping, useContextMenu, useMultiSelect } from '../shell/context'
 import { useNavStyles } from '../shell/nav'
 import { MenuItemRadio } from '@fluentui/react-components'
 import { RibbonButton, RibbonDivider, RibbonHeader, useSidePane } from '../shell/Ribbon'
@@ -19,6 +23,7 @@ import { api, Collection, Contact } from '../api'
 import { useApp } from '../App'
 import { CollectionDialog, importInto, removeCollection } from '../calendar/CollectionDialog'
 import { locale, t } from '../i18n'
+import { usePaneWidth } from '../shell/Splitter'
 
 const useStyles = makeStyles({
   outer: { display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 },
@@ -59,7 +64,8 @@ const empty = (book: number): Contact => ({
 
 export default function ContactsView() {
   const s = useStyles()
-  const { fail, notify } = useApp()
+  const listW = usePaneWidth('contacts.list', 320, 220, 720)
+  const { fail, notify, undoable } = useApp()
   const [books, setBooks] = useState<Collection[]>([])
   const [book, setBook] = useState<number | 'all'>('all')
   const [contacts, setContacts] = useState<Contact[] | null>(null)
@@ -86,8 +92,8 @@ export default function ContactsView() {
   }
 
   const loadBooks = () => api.get<Collection[]>('/api/pim/collections/addressbooks').then(setBooks).catch(fail)
-  const load = () => api.get<Contact[]>('/api/pim/contacts' + (book === 'all' ? '' : `?books=${book}`)).then(setContacts).catch(fail)
-  useEffect(() => { loadBooks() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  // Mit den Kontakten auch die Adressbücher neu - deren Zähler ändern sich bei jedem Anlegen, Löschen, Verschieben
+  const load = () => { loadBooks(); return api.get<Contact[]>('/api/pim/contacts' + (book === 'all' ? '' : `?books=${book}`)).then(setContacts).catch(fail) }
   useEffect(() => { load() }, [book]) // eslint-disable-line react-hooks/exhaustive-deps
   const loadDetail = (c: Contact) =>
     api.get<Contact>(`/api/pim/contacts/${c.book}/${encodeURIComponent(c.uri)}`).then(setDetail).catch(fail)
@@ -122,8 +128,12 @@ export default function ContactsView() {
   }
 
   const remove = async (c: Contact) => {
-    if (!confirm(t('„{name}“ löschen?', { name: c.displayName }))) return
-    try { await api.del(`/api/pim/contacts/${c.book}/${encodeURIComponent(c.uri)}`); setSelected(null); load() } catch (e) { fail(e) }
+    if (!await askConfirm('', t('„{name}“ löschen? Es gibt dafür keinen Papierkorb, nur direkt danach „Rückgängig“.', { name: c.displayName }))) return
+    try {
+      const r = await api.del(`/api/pim/contacts/${c.book}/${encodeURIComponent(c.uri)}`) as { undo?: string } | undefined
+      setSelected(null); load()
+      if (r?.undo) undoable(t('Kontakt gelöscht'), () => api.post(`/api/pim/contacts/${c.book}/${encodeURIComponent(c.uri)}/restore`, { data: r.undo }).then(() => { load() }))
+    } catch (e) { fail(e) }
   }
 
   const writeMail = (addr: string | string[]) => {
@@ -172,14 +182,24 @@ export default function ContactsView() {
       }
     } catch (err) { fail(err) }
     if (n) notify(copy ? t('{n} kopiert', { n }) : t('{n} verschoben', { n }))
-    setSelected(null); mx.clear(); load(); loadBooks()
+    setSelected(null); mx.clear(); load()
   }
   const removeMany = async (list: Contact[]) => {
     if (!list.length) return
     if (list.length === 1) { remove(list[0]); return }
-    if (!confirm(t('{n} Kontakte löschen?', { n: list.length }))) return
-    try { for (const c of list) await api.del(`/api/pim/contacts/${c.book}/${encodeURIComponent(c.uri)}`) } catch (err) { fail(err) }
-    setSelected(null); mx.clear(); load(); loadBooks()
+    if (!await askConfirm('', t('{n} Kontakte löschen? Es gibt dafür keinen Papierkorb, nur direkt danach „Rückgängig“.', { n: list.length }))) return
+    const gone: { c: Contact; data: string }[] = []
+    try {
+      for (const c of list) {
+        const r = await api.del(`/api/pim/contacts/${c.book}/${encodeURIComponent(c.uri)}`) as { undo?: string } | undefined
+        if (r?.undo) gone.push({ c, data: r.undo })
+      }
+    } catch (err) { fail(err) }
+    setSelected(null); mx.clear(); load()
+    if (gone.length) undoable(t('{n} Kontakte gelöscht', { n: gone.length }), async () => {
+      for (const { c, data } of gone) await api.post(`/api/pim/contacts/${c.book}/${encodeURIComponent(c.uri)}/restore`, { data })
+      load()
+    })
   }
   const setVip = async (list: Contact[], vip: boolean) => {
     try { for (const c of list) await api.post('/api/pim/contacts', { ...(await full(c)), photo: undefined, vip, moveTo: c.book }) } catch (err) { fail(err) }
@@ -206,7 +226,7 @@ export default function ContactsView() {
     try { await api.put(`/api/pim/collections/${b.id}`, { name }); loadBooks() } catch (err) { fail(err) }
   }
   const deleteBook = async (b: Collection) => {
-    try { if (await removeCollection(b, 'addressbooks')) { if (book === b.id) setBook('all'); loadBooks(); load() } } catch (err) { fail(err) }
+    try { if (await removeCollection(b, 'addressbooks')) { if (book === b.id) setBook('all'); load() } } catch (err) { fail(err) }
   }
   const newContact = (b?: number) => { setSelected(null); setEdit(empty(b ?? (book === 'all' ? books[0]?.id : book))) }
   const onListKey = (e: React.KeyboardEvent) => {
@@ -241,7 +261,9 @@ export default function ContactsView() {
         <MenuItem icon={<ArrowImport20Regular />} onClick={() => importTo(b.id)}>{t('Importieren (.vcf) …')}</MenuItem>
         <MenuItem icon={<ArrowExport20Regular />} onClick={() => window.open(`/api/pim/export/${b.id}`)}>{t('Exportieren (.vcf)')}</MenuItem>
         <MenuDivider />
-        <MenuItem icon={<Delete20Regular />} onClick={() => deleteBook(b)}>{t('Löschen')}</MenuItem>
+        {b.graph
+          ? <MenuItem icon={<Cloud20Regular />} onClick={() => { location.hash = '#/settings/accounts' }}>{t('Microsoft-Abgleich …')}</MenuItem>
+          : <MenuItem icon={<Delete20Regular />} onClick={() => deleteBook(b)}>{t('Löschen')}</MenuItem>}
       </>
     }
     const sel = (contacts ?? []).filter(c => x.ids.includes(c.id))
@@ -260,10 +282,27 @@ export default function ContactsView() {
       <TargetMenu kind="move" targets={books.filter(b => !(inBooks.size === 1 && inBooks.has(b.id))).map(b => ({ id: b.id, label: b.name }))} onPick={id => transfer(sel, Number(id), false)} />
       <TargetMenu kind="copy" targets={books.filter(b => !(inBooks.size === 1 && inBooks.has(b.id))).map(b => ({ id: b.id, label: b.name }))} onPick={id => transfer(sel, Number(id), true)} />
       {one && <MenuItem icon={<ArrowExport20Regular />} onClick={() => window.open(`/api/pim/contacts/${one.book}/${encodeURIComponent(one.uri)}/vcf`)}>{t('Exportieren (.vcf)')}</MenuItem>}
+      {sel.every(c => c.book > 0) && <MenuItem icon={<Chat20Regular />} onClick={() => sendToChat(sel.map(c => ({ type: 'contact' as const, collection: c.book, item: c.uri })))}>{t('Im Chat …')}</MenuItem>}
       <MenuDivider />
       <MenuItem icon={<Delete20Regular />} onClick={() => removeMany(sel)}>{t('Löschen')}</MenuItem>
     </>
   }
+
+  const bookRow = (b: Collection) => (
+    <div key={b.id} className={mergeClasses(nv.row, book === b.id && nv.active, dropOn === b.id && nv.drop)} onClick={() => setBook(b.id)} tabIndex={0}
+      onContextMenu={e => cm.open(e, { kind: 'book', b })} {...bookDrop(b.id)} title={b.graph ? graphTitle(b) : undefined}
+      onKeyDown={e => {
+        if (e.key === 'Enter') setBook(b.id)
+        else if (e.key === 'F2') { e.preventDefault(); renameBook(b) }
+        else if (e.key === 'Delete' && !b.graph) { e.preventDefault(); deleteBook(b) }
+      }}>
+      <Book20Regular /><span className={nv.name}>{b.name}</span>
+      {b.graph?.lastError && <Cloud16Regular style={{ color: 'var(--colorPaletteRedForeground1)' }} />}
+      <span className={nv.count}>{b.count}</span>
+      <Button className="dm-more" appearance="transparent" size="small" icon={<MoreHorizontal16Regular />} aria-label={t('Mehr')}
+        onClick={e => { e.stopPropagation(); cm.open(e, { kind: 'book', b }) }} />
+    </div>
+  )
 
   let last = ''
   return (
@@ -296,26 +335,19 @@ export default function ContactsView() {
           <RibbonButton icon={<PanelLeft20Regular />} label={t('Ordnerbereich')} pressed={sidePane} onClick={toggleSide} />
         </>} />
       <div className={s.root}>
-      <SidePane className={mergeClasses(s.books, nv.pane)} open={sidePane} onClose={closeSide}>
+      <SidePane className={mergeClasses(s.books, nv.pane)} open={sidePane} onClose={closeSide} width={{ key: 'contacts.books', def: 220 }}>
         <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }} onContextMenu={e => cm.open(e, { kind: 'side' })}>
         <div className={mergeClasses(nv.row, book === 'all' && nv.active)} onClick={() => setBook('all')}><People20Regular /><span className={nv.name}>{t('Alle Kontakte')}</span></div>
         <div className={nv.section}><span style={{ flex: 1 }}>{t('Adressbücher')}</span>
           <Button appearance="subtle" size="small" icon={<BookAdd20Regular />} aria-label={t('Neues Adressbuch')} title={t('Neues Adressbuch')} onClick={() => setBookDialog('new')} />
         </div>
-        {books.map(b => (
-          <div key={b.id} className={mergeClasses(nv.row, book === b.id && nv.active, dropOn === b.id && nv.drop)} onClick={() => setBook(b.id)} tabIndex={0}
-            onContextMenu={e => cm.open(e, { kind: 'book', b })} {...bookDrop(b.id)}
-            onKeyDown={e => {
-              if (e.key === 'Enter') setBook(b.id)
-              else if (e.key === 'F2') { e.preventDefault(); renameBook(b) }
-              else if (e.key === 'Delete') { e.preventDefault(); deleteBook(b) }
-            }}>
-            <Book20Regular /><span className={nv.name}>{b.name}</span><span className={nv.count}>{b.count}</span>
-            <Button className="dm-more" appearance="transparent" size="small" icon={<MoreHorizontal16Regular />} aria-label={t('Mehr')}
-              onClick={e => { e.stopPropagation(); cm.open(e, { kind: 'book', b }) }} />
-          </div>
-        ))}
+        {/* Mit Microsoft verbundene Adressbuecher stehen je Konto darunter */}
+        {books.filter(b => !b.graph).map(bookRow)}
         <Link className={nv.link} onClick={() => setBookDialog('new')}>{t('+ Adressbuch')}</Link>
+        {graphAccounts(books).map(g => <div key={g.account} style={{ display: 'contents' }}>
+          <div className={nv.section} title={g.email}><Cloud16Regular /><span style={{ flex: 1, marginLeft: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t('Outlook · {name}', { name: g.name })}</span></div>
+          {books.filter(b => b.graph?.account === g.account).map(bookRow)}
+        </div>)}
         <div style={{ flex: 1, minHeight: 24 }} />
         </div>
         <input ref={importInput} type="file" accept=".vcf,text/vcard" hidden onChange={async e => {
@@ -325,7 +357,7 @@ export default function ContactsView() {
               const r = await importInto(Number(importInput.current!.dataset.book), f)
               notify(r.added === 1 ? t('1 Kontakt übernommen') : t('{n} Kontakte übernommen', { n: r.added }),
                 r.failed ? (r.failed === 1 ? t('1 Eintrag ließ sich nicht lesen') : t('{n} ließen sich nicht lesen', { n: r.failed })) : undefined)
-              load(); loadBooks()
+              load()
             } catch (err) { fail(err) }
           }
           e.target.value = ''
@@ -333,7 +365,8 @@ export default function ContactsView() {
       </SidePane>
       <div className={s.main}>
       <div className={s.panes}>
-      <div className={s.list}>
+      <div className={s.list} style={listW.width ? { width: listW.width, position: 'relative' } : undefined}>
+        {listW.handle('right', true)}
         <div style={{ padding: 10 }}><SearchBox placeholder={t('Kontakte durchsuchen')} value={search} onChange={(_, d) => setSearch(d.value)} style={{ width: '100%' }} /></div>
         <div className={s.items} ref={listRef} tabIndex={-1} onKeyDown={onListKey}
           onContextMenu={e => cm.open(e, { kind: 'list' })}>

@@ -17,7 +17,21 @@ class App : Application(), Configuration.Provider {
     val mail by lazy { at.dimes.dmoffice.mail.MailRepo(this, db) }
     val contacts by lazy { at.dimes.dmoffice.data.ContactsRepo(this, db) }
     val notes by lazy { at.dimes.dmoffice.data.NotesRepo(this, db) }
+    /** Notizen einer Datenbank im Tresor, solange sie gezeigt wird (Notizenliste und Editor); sonst null. */
+    @Volatile var vaultNotes: at.dimes.dmoffice.data.NotesRepo? = null
+    /** Notizen, die Liste und Editor gerade zeigen: die im Tresor oder die gewählte Datenbank. */
+    val shownNotes: at.dimes.dmoffice.data.NotesRepo get() = vaultNotes ?: notes
+    /** Weg zu einer Notiz der gerade gezeigten Datenbank - im Tresor mit ihrem Namen, sonst die gewöhnliche Adresse. */
+    fun noteRoute(id: Long): String = "note/$id" + (vaultNotes?.vault?.let { "?vault=" + android.net.Uri.encode(it) } ?: "")
+    /** Notizen für den Editor: im Tresor nur, wenn der Weg die Datenbank ausdrücklich nennt (Notizen aus Chat oder Übersicht sind nie im Tresor). */
+    fun notesFor(vault: String?): at.dimes.dmoffice.data.NotesRepo =
+        if (vault == null) notes else vaultNotes?.takeIf { it.vault == vault } ?: at.dimes.dmoffice.data.NotesRepo(this, db, vault)
     val files by lazy { at.dimes.dmoffice.files.FilesRepo(this) }
+    val chat by lazy { at.dimes.dmoffice.chat.ChatRepo(this) }
+    val journal by lazy { at.dimes.dmoffice.journal.JournalRepo(this) }
+    val coach by lazy { at.dimes.dmoffice.coach.CoachRepo(this) }
+    val dashboard by lazy { at.dimes.dmoffice.dashboard.DashboardRepo(this) }
+    val audio by lazy { at.dimes.dmoffice.audio.AudioRepo(this) }
 
     /** API-Client fuer das aktuelle Konto (null ohne Konto); wird bei Kontowechsel neu gebaut. */
     @Volatile private var apiFor: Pair<Account, at.dimes.dmoffice.api.ApiClient>? = null
@@ -34,6 +48,7 @@ class App : Application(), Configuration.Provider {
         super.onCreate()
         Reminders.ensureChannel(this)
         at.dimes.dmoffice.notify.MailNotify.ensureChannels(this)
+        at.dimes.dmoffice.notify.ChatNotify.ensureChannel(this)
         at.dimes.dmoffice.update.UpdateWorker.ensureChannel(this)
         at.dimes.dmoffice.update.UpdateWorker.schedule(this)
         if (prefs.account.value != null) SyncWorker.schedule(this)
@@ -42,6 +57,7 @@ class App : Application(), Configuration.Provider {
         at.dimes.dmoffice.sync.Push.register(this)
         at.dimes.dmoffice.files.FilesProvider.watchAccount(this)
         at.dimes.dmoffice.upload.AutoUpload.init(this)
+        at.dimes.dmoffice.ui.TresorScreenLock.register(this)
     }
 
     /**
@@ -76,5 +92,7 @@ class App : Application(), Configuration.Provider {
 
     companion object {
         fun get(context: Context): App = context.applicationContext as App
+        /** Für Stellen ohne Context (Tresor: „Handy gesperrt“). */
+        @Volatile var lastContext: Context? = null
     }
 }

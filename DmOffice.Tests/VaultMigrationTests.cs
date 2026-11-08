@@ -37,13 +37,18 @@ public class VaultMigrationTests
                 $"<key><descriptor><encryptedSecret><vaultEncrypted><value>{before.Wrap(Secret("<masterKey/>"))}</value></vaultEncrypted></encryptedSecret></descriptor></key>");
             File.WriteAllText(Path.Combine(paths.Keys, "fcm.json"), "{\"private_key\":\"-----BEGIN PRIVATE KEY----- nicht eingepackt\"}");
 
-            // Erster Start mit der Variable: alles umgepackt, Datei weg
+            // Erster Start mit der Variable: alles umgepackt, die alte Datei bleibt fuer aeltere Sicherungen liegen
             var after = new Vault(paths, "neuer-hauptschluessel-aus-der-umgebung");
             Assert.Null(after.MigrationError);
             Assert.Equal(5, after.Migrated);
-            Assert.False(File.Exists(after.KeyFile));
+            Assert.True(after.OldKeyFileLeft);
 
-            // Naechster Start: kein alter Schluessel mehr - alles muss mit dem neuen aufgehen
+            // Naechster Start mit der Datei: nichts mehr umzupacken
+            Assert.Equal(0, new Vault(paths, "neuer-hauptschluessel-aus-der-umgebung").Migrated);
+
+            // Datei geloescht (Knopf in der Verwaltung): kein alter Schluessel mehr - alles muss mit dem neuen aufgehen
+            after.DeleteOldKeyFile();
+            Assert.False(File.Exists(after.KeyFile));
             var next = new Vault(paths, "neuer-hauptschluessel-aus-der-umgebung");
             Assert.Null(next.Previous);
             string Open(string wrapped) => Encoding.UTF8.GetString(next.Unwrap(wrapped));

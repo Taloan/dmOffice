@@ -1,16 +1,18 @@
 // Dialoge der Dateiablage: Konflikt (ersetzen / beide behalten / ueberspringen, fuer alle), Name eingeben,
 // Ordner waehlen, Freigabe-Links verwalten.
+import { copyText } from '../shell/browser'
 import {
   Button, Checkbox, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Divider, Field, Input, Radio, RadioGroup,
   Spinner, Switch, Text, makeStyles, tokens,
 } from '@fluentui/react-components'
 import { Copy20Regular, Delete20Regular, Link20Regular, LockClosed16Regular } from '@fluentui/react-icons'
-import { PeopleList, Right, usePeople } from '../calendar/ShareDialog'
+import { PeopleList, Right, rightOf, usePeople } from '../calendar/ShareDialog'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, q } from '../api'
 import { locale, t } from '../i18n'
 import { Item } from './common'
 import { loadFileSettings } from '../settings/FilesSettings'
+import { askConfirm } from '../shell/context'
 
 const useStyles = makeStyles({
   links: { display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '12px' },
@@ -120,42 +122,90 @@ export const linkUrl = (l: Link) => `${location.origin}/s/${l.token}`
 // Wie bei den Freigaben an Personen: Senden = der andere bekommt die Datei (ansehen, herunterladen),
 // Teilen = er arbeitet mit (legt Dateien dazu); "Nur hochladen" ist ein Briefkasten und keins von beiden
 /** In Listen der Freigaben: Stand des Links ("Gesendet", "Geteilt") */
-export const linkStatus = (m: string) => m === 'upload' ? t('Geteilt') : m === 'drop' ? t('Nur hochladen') : t('Gesendet')
-export const modeLabel = (m: string) => m === 'upload' ? t('Teilen – ansehen und hochladen') : m === 'drop' ? t('Nur hochladen') : t('Senden – ansehen und herunterladen')
+export const linkStatus = (m: string) => modeLabel(m)
+export const modeLabel = (m: string) => m === 'upload' ? t('Ansehen und hochladen') : m === 'drop' ? t('Nur hochladen') : t('Ansehen und herunterladen')
 
-export async function copyText(text: string): Promise<boolean> {
-  try { await navigator.clipboard.writeText(text); return true } catch {
-    // Ohne HTTPS gibt es die Zwischenablage-Schnittstelle nicht
-    const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select()
-    const ok = document.execCommand('copy'); ta.remove(); return ok
-  }
-}
+// Kopieren auch ohne HTTPS - eine Hilfsfunktion für alle (hier weitergereicht für bestehende Importe)
+export { copyText }
 
 const dateOnly = (iso: string | null) => (iso ? new Date(iso).toISOString().slice(0, 10) : '')
 
 /**
- * Teilen einer Datei oder eines Ordners. Ordner: oben "Mit Personen teilen" (andere Benutzer dieses Servers, Lesen oder Bearbeiten,
+ * Mehrere Dateien oder Ordner auf einmal mit Personen teilen: die Gewählten kommen bei jedem dazu (wer schon Zugriff hat, behält ihn;
+ * eine hier gewählte Stufe gilt). Entziehen geht einzeln im Teilen-Dialog.
+ */
+export function ShareManyDialog({ items, onClose, notify, fail }: {
+  items: Item[]; onClose: () => void; notify: (m: string) => void; fail: (e: unknown) => void
+}) {
+  const people = usePeople({})
+  const [busy, setBusy] = useState(false)
+  const chosen = Object.entries(people.rights).filter(([, r]) => r !== 'none') as [string, Right][]
+  const save = async () => {
+    setBusy(true)
+    try {
+      for (const i of items) {
+        const d = await api.get<{ items: { members: { id: string; readOnly: boolean; level?: string }[] }[] }>('/api/files/shares?' + q({ path: i.path }))
+        const rights: Record<string, Right> = Object.fromEntries((d.items[0]?.members ?? []).map(m => [m.id, rightOf(m)]))
+        for (const [id, r] of chosen) rights[id] = r
+        const members = Object.keys(rights)
+        await api.put('/api/files/shares', { path: i.path, members, readOnly: members.filter(id => rights[id] === 'read' || rights[id] === 'show'), showOnly: members.filter(id => rights[id] === 'show') })
+      }
+      notify(t('{n} Einträge geteilt', { n: items.length }))
+      onClose()
+    } catch (e) { fail(e) } finally { setBusy(false) }
+  }
+  return (
+    <Dialog open onOpenChange={(_, d) => !d.open && onClose()}>
+      <DialogSurface style={{ maxWidth: 560 }}>
+        <DialogBody>
+          <DialogTitle>{t('{n} Einträge mit Personen teilen', { n: items.length })}</DialogTitle>
+          <DialogContent>
+            <PeopleList state={people} intro={t('Die gewählten Personen sehen die Einträge bei sich unter „Mit mir geteilt“. Wer schon Zugriff hat, behält ihn; entziehen geht einzeln über „Teilen …“.')} />
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={onClose}>{t('Abbrechen')}</Button>
+            <Button appearance="primary" disabled={busy || chosen.length === 0} onClick={save}>{busy ? <Spinner size="tiny" /> : t('Teilen')}</Button>
+          </DialogActions>
+        </DialogBody>
+      </DialogSurface>
+    </Dialog>
+  )
+}
+
+/**
+ * Teilen einer Datei oder eines Ordners. Ordner: oben "Mit Personen teilen" (andere Benutzer dieses Servers, Zeigen, Senden oder Teilen,
  * der Inhalt bleibt bei dir), darunter "Link" (ohne Anmeldung, mit Ablauf, Abrufgrenze, Passwort). Dateien: nur der Link.
  */
 export function ShareDialog({ item, onClose, notify, fail }: {
   item: Item; onClose: () => void; notify: (m: string) => void; fail: (e: unknown) => void
 }) {
   const s = useStyles()
-  const withPeople = item.isDir && item.path.length > 0
+  const withPeople = item.path.length > 0
   const people = usePeople({})
   const [peopleReady, setPeopleReady] = useState(!withPeople)
+  const rightsKey = (r: Record<string, Right>) => JSON.stringify(Object.entries(r).filter(([, v]) => v !== 'none').sort())
+  const savedRights = useRef(rightsKey({}))
   useEffect(() => {
     if (!withPeople) return
-    api.get<{ items: { members: { id: string; readOnly: boolean }[] }[] }>('/api/files/shares?' + q({ path: item.path })).then(d => {
-      people.setRights(Object.fromEntries((d.items[0]?.members ?? []).map(m => [m.id, (m.readOnly ? 'read' : 'write') as Right])))
+    api.get<{ items: { members: { id: string; readOnly: boolean; level?: string }[] }[] }>('/api/files/shares?' + q({ path: item.path })).then(d => {
+      const loaded = Object.fromEntries((d.items[0]?.members ?? []).map(m => [m.id, rightOf(m)]))
+      people.setRights(loaded)
+      savedRights.current = rightsKey(loaded)
       setPeopleReady(true)
     }).catch(fail)
   }, [item.path]) // eslint-disable-line react-hooks/exhaustive-deps
   const savePeople = async () => {
     try {
       await api.put('/api/files/shares', { path: item.path, ...people.body })
+      savedRights.current = rightsKey(people.rights)
       notify(people.body.members.length ? t('Freigabe gespeichert') : t('Freigabe aufgehoben'))
     } catch (e) { fail(e) }
+  }
+  // Gewählte Personen nicht stillschweigend verwerfen
+  const close = async () => {
+    if (withPeople && peopleReady && rightsKey(people.rights) !== savedRights.current
+      && await askConfirm('', t('Die Freigabe ist noch nicht gespeichert. Jetzt speichern?'), t('Speichern'))) await savePeople()
+    onClose()
   }
   const [links, setLinks] = useState<Link[] | null>(null)
   const [mode, setMode] = useState<'read' | 'upload' | 'drop'>('read')
@@ -188,7 +238,7 @@ export function ShareDialog({ item, onClose, notify, fail }: {
     } catch (e) { fail(e) } finally { setBusy(false) }
   }
   const remove = async (l: Link) => {
-    if (!confirm(t('Link widerrufen? Wer ihn hat, kommt dann nicht mehr an die Inhalte.'))) return
+    if (!await askConfirm('', t('Link widerrufen? Wer ihn hat, kommt dann nicht mehr an die Inhalte.'))) return
     try { await api.del('/api/files/links/' + l.id); await load() } catch (e) { fail(e) }
   }
   const change = async (l: Link, patch: Partial<{ mode: string; expires: string | null; password: string | null; maxDownloads: number }>) => {
@@ -202,7 +252,7 @@ export function ShareDialog({ item, onClose, notify, fail }: {
   }
 
   return (
-    <Dialog open onOpenChange={(_, d) => !d.open && onClose()}>
+    <Dialog open onOpenChange={(_, d) => { if (!d.open) void close() }}>
       <DialogSurface style={{ maxWidth: 560 }}>
         <DialogBody>
           <DialogTitle>{t('„{name}“ teilen', { name: item.name || t('Meine Dateien') })}</DialogTitle>
@@ -210,8 +260,9 @@ export function ShareDialog({ item, onClose, notify, fail }: {
             {withPeople && <>
               <Text block weight="semibold">{t('Mit Personen teilen')}</Text>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 6 }}>
-                <PeopleList state={people} intro={t('Wer hier Zugriff hat, sieht den Ordner samt Unterordnern bei sich unter „Mit mir geteilt“ – auch in WebDAV, Nextcloud-Clients und der Weboberfläche. Mit „Bearbeiten“ lassen sich Dateien hochladen, ändern, umbenennen und löschen; Gelöschtes landet in deinem Papierkorb und der Speicherplatz zählt bei dir.')}
-                  hint={t('Den Zugriff kannst du jederzeit ändern oder entziehen. Einzelne Dateien teilst du per Link.')} />
+                <PeopleList state={people} intro={item.isDir
+                  ? t('Wer hier Zugriff hat, sieht den Ordner samt Unterordnern bei sich unter „Mit mir geteilt“ – mit „Ansehen und Kopie behalten“ und „Gemeinsam bearbeiten“ auch auf ihren Geräten und in verbundenen Programmen, mit „Nur ansehen“ nur in dmOffice. Mit „Gemeinsam bearbeiten“ lassen sich Dateien hochladen, ändern, umbenennen und löschen; Gelöschtes landet in deinem Papierkorb und der Speicherplatz zählt bei dir.')
+                  : t('Wer hier Zugriff hat, sieht die Datei bei sich unter „Mit mir geteilt“ – mit „Ansehen und Kopie behalten“ und „Gemeinsam bearbeiten“ auch auf ihren Geräten und in verbundenen Programmen, mit „Nur ansehen“ nur in dmOffice. Mit „Gemeinsam bearbeiten“ darf er sie auch ändern; die Datei bleibt bei dir.')} />
                 {!people.nobody && (
                   <div><Button appearance="primary" disabled={!people.people || !peopleReady} onClick={savePeople}>{t('Personen speichern')}</Button></div>
                 )}
@@ -275,13 +326,13 @@ export function ShareDialog({ item, onClose, notify, fail }: {
                     }}>{l.hasPassword ? t('Passwort ändern') : t('Passwort setzen')}</Button>
                   </div>
                   <span className={s.muted}>
-                    {l.expired ? t('Abgelaufen') + ' · ' : ''}{t('Erstellt {date}', { date: new Date(l.created).toLocaleDateString(locale) })} · {l.maxDownloads ? t('{n} von {max} Abrufen', { n: l.downloads, max: l.maxDownloads }) : t('{n}× heruntergeladen', { n: l.downloads })}
+                    {l.expired ? t('Abgelaufen') + ' · ' : ''}{t('Erstellt {date}', { date: new Date(l.created).toLocaleDateString(locale) })} · {l.maxDownloads ? t('{n} von {max} Abrufen', { n: l.downloads, max: l.maxDownloads }) : t('{n} Abrufe', { n: l.downloads })}
                   </span>
                 </div>
               ))}
             </div>
           </DialogContent>
-          <DialogActions><Button onClick={onClose}>{t('Schließen')}</Button></DialogActions>
+          <DialogActions><Button onClick={() => void close()}>{t('Schließen')}</Button></DialogActions>
         </DialogBody>
       </DialogSurface>
     </Dialog>

@@ -101,12 +101,14 @@ public sealed class NotesSync : BackgroundService
         _log = log;
     }
 
-    public static State StateOf(UserSpace s) => States.GetOrAdd(s.User.Id, _ => new State());
+    /// <summary>Stand des Abgleichs: der gewählten Datenbank oder (vault) einer Datenbank im Tresor.</summary>
+    public static State StateOf(UserSpace s, string? vault = null) => States.GetOrAdd(vault == null ? s.User.Id : s.User.Id + "|tresor|" + vault, _ => new State());
 
-    public static object Status(UserSpace s)
+    public static object Status(UserSpace s, string? vault = null)
     {
-        var st = StateOf(s);
-        return new { st.LastRun, st.Report, st.Error, st.Running, pending = NotesDb.Of(s).PendingCount() };
+        var st = StateOf(s, vault);
+        var db = vault == null ? NotesDb.Of(s) : TresorNotes.Of(s, vault) ?? throw new KeyNotFoundException("Die Datenbank liegt nicht im Tresor.");
+        return new { st.LastRun, st.Report, st.Error, st.Running, pending = db.PendingCount() };
     }
 
     /// <summary>Bald abgleichen - nach dem Speichern einige Sekunden gesammelt.</summary>
@@ -121,14 +123,23 @@ public sealed class NotesSync : BackgroundService
         await Task.Delay(TimeSpan.FromSeconds(5), stop);
         while (!stop.IsCancellationRequested)
         {
-            foreach (var space in _spaces.All())
+            // Modul Notizen ausgeschaltet (Verwaltung): kein Abgleich
+            foreach (var space in Features.On(Features.Notes) ? _spaces.All() : Enumerable.Empty<UserSpace>())
             {
                 var n = space.Settings.Notizi;
                 if (!n.Enabled || string.IsNullOrEmpty(n.E2eePassword)) continue;
-                if (string.IsNullOrEmpty(n.DbFolder) && !await AutoPickAsync(space, stop)) continue;
+                bool kicked = _due.TryGetValue(space.User.Id, out var at) && at <= DateTime.UtcNow;
+                // Datenbanken im Tresor: nur, solange er auf einem Gerät offen ist
+                if (Tresor.OpenAnywhere(space.User.Id))
+                    foreach (var vault in TresorNotizi.Folders(space))
+                    {
+                        var vs = StateOf(space, vault);
+                        if (!vs.Running && (kicked || vs.LastRun == null || DateTime.UtcNow - vs.LastRun > TimeSpan.FromMinutes(1)))
+                            await RunTresorAsync(space, vault, stop);
+                    }
+                if (string.IsNullOrEmpty(n.DbFolder) && !await AutoPickAsync(space, stop)) { if (kicked) _due.TryRemove(space.User.Id, out _); continue; }
                 var st = StateOf(space);
-                bool due = st.LastRun == null || DateTime.UtcNow - st.LastRun > TimeSpan.FromMinutes(1)
-                           || (_due.TryGetValue(space.User.Id, out var at) && at <= DateTime.UtcNow);
+                bool due = st.LastRun == null || DateTime.UtcNow - st.LastRun > TimeSpan.FromMinutes(1) || kicked;
                 if (!due || st.Running) continue;
                 _due.TryRemove(space.User.Id, out _);
                 await RunAsync(space, stop);
@@ -192,6 +203,58 @@ public sealed class NotesSync : BackgroundService
         }
     }
 
+    /// <summary>Eine Datenbank im Tresor abgleichen (Tresor auf einem Gerät offen): Abgleich-Ordner und Notizen liegen beide im Tresor.</summary>
+    public async Task RunTresorAsync(UserSpace space, string vault, CancellationToken ct)
+    {
+        var st = StateOf(space, vault);
+        await st.Gate.WaitAsync(ct);
+        st.Running = true;
+        try
+        {
+            var db = TresorNotes.Of(space, vault) ?? throw new KeyNotFoundException("Die Datenbank liegt nicht im Tresor.");
+            var store = await OpenTresorAsync(space, vault, ct);
+            if (store == null) { st.Error = "Das E2EE-Passwort passt nicht zu dieser Datenbank."; return; }
+            var report = await new SyncEngine(store, db, "dmOffice").RunAsync(ct);
+            st.Report = report.ToString();
+            st.Error = report.Problems.Count > 0 ? string.Join("; ", report.Problems.Take(3)) : null;
+        }
+        catch (TresorClosedException) { st.Store = null; }
+        catch (Exception ex)
+        {
+            st.Error = ex.Message;
+            st.Store = null;
+            _log.LogWarning("Notizen-Abgleich {User} (Tresor): {Error}", space.User.Login, ex.Message);
+        }
+        finally
+        {
+            st.LastRun = DateTime.UtcNow;
+            st.Running = false;
+            st.Gate.Release();
+        }
+    }
+
+    /// <summary>Abgleich-Ordner einer Datenbank im Tresor öffnen; eingerichtet wird er hier nie (er kommt mit „In den Tresor verschieben“).</summary>
+    public static async Task<SyncStore?> OpenTresorAsync(UserSpace space, string vault, CancellationToken ct)
+    {
+        var n = space.Settings.Notizi;
+        var st = StateOf(space, vault);
+        var key = $"{vault}|{n.E2eePassword}";
+        if (st.Store != null && st.StoreKey == key) return st.Store;
+        var transport = new TresorNotiziTransport(space, vault);
+        if (string.IsNullOrEmpty(n.E2eePassword) || !await SyncStore.IsSetUpAsync(transport, ct)) return null;
+        var store = await Task.Run(() => SyncStore.OpenAsync(transport, n.E2eePassword!, ct), ct);
+        st.Store = store;
+        st.StoreKey = key;
+        return store;
+    }
+
+    /// <summary>Name einer Datenbank im Tresor (name.nz) - null, wenn er sich nicht lesen lässt.</summary>
+    public static async Task<string?> TresorNameAsync(UserSpace space, string vault, CancellationToken ct)
+    {
+        try { return await OpenTresorAsync(space, vault, ct) is { } store ? await store.ReadNameAsync(ct) : null; }
+        catch (Exception) when (!ct.IsCancellationRequested) { return null; }
+    }
+
     /// <summary>Den Abgleichordner oeffnen (Schluessel ableiten kostet eine halbe Sekunde - gemerkt).
     /// Ist er leer, wird er eingerichtet - so laesst sich auch hier anfangen.</summary>
     public static async Task<SyncStore?> OpenAsync(UserSpace space, bool create, CancellationToken ct)
@@ -219,9 +282,13 @@ public sealed class NotesSync : BackgroundService
     /// Name fuer einen Anhang oder ein Bild: mit eingerichtetem Abgleich wie im Abgleichordner (HMAC),
     /// sonst vorlaeufig der SHA-256. Wird der Abgleich spaeter eingeschaltet, benennt RekeyBlobs um.
     /// </summary>
-    public static async Task<string> BlobNameAsync(UserSpace space, byte[] data, CancellationToken ct)
+    public static async Task<string> BlobNameAsync(UserSpace space, byte[] data, CancellationToken ct, string? vault = null)
     {
         var n = space.Settings.Notizi;
+        // Im Tresor: Name nach dem Schlüssel dieses Abgleich-Ordners (jede Datenbank hat ihren eigenen)
+        if (vault != null)
+            return await OpenTresorAsync(space, vault, ct) is { } vs ? vs.Crypto.BlobName(data)
+                : throw new InvalidOperationException("Das E2EE-Passwort passt nicht zu dieser Datenbank.");
         if (n.Enabled && !string.IsNullOrEmpty(n.E2eePassword) && !string.IsNullOrEmpty(n.DbFolder))
         {
             try { if (await OpenAsync(space, create: false, ct) is { } store) return store.Crypto.BlobName(data); }

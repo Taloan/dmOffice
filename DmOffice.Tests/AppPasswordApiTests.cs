@@ -77,4 +77,32 @@ public class AppPasswordApiTests
         // Der Browser-Principal desselben Benutzers ist Admin
         Assert.True(Auth.Principal(admin, "Cookies").IsInRole("admin"));
     }
+
+    [Fact]
+    public void Umbenennen_und_Geraetename_beim_Koppeln()
+    {
+        var db = new UserDb(Path.Combine(Directory.CreateTempSubdirectory("apppw").FullName, "u.db"), new byte[32], "t");
+        AppPasswords.Create(db, "Handy-App · 08.11.2026");
+        AppPasswords.Create(db, "Mein Handy");
+        var list = AppPasswords.List(db);
+        var auto = list.First(x => x.Name.StartsWith("Handy-App", StringComparison.Ordinal)).Id;
+        var own = list.First(x => x.Name == "Mein Handy").Id;
+        // Die App nennt beim Koppeln ihr Gerät: ersetzt nur das Datum im vorgegebenen Namen
+        AppPasswords.NameDevice(db, auto, "OPPO  CPH2581");
+        AppPasswords.NameDevice(db, own, "OPPO CPH2581");
+        list = AppPasswords.List(db);
+        Assert.Equal("Handy-App · OPPO CPH2581", list.First(x => x.Id == auto).Name);
+        Assert.Equal("Mein Handy", list.First(x => x.Id == own).Name);
+        // Umbenennen
+        AppPasswords.Rename(db, own, "  Pixel 8  ");
+        Assert.Equal("Pixel 8", AppPasswords.List(db).First(x => x.Id == own).Name);
+        Assert.Throws<ArgumentException>(() => AppPasswords.Rename(db, own, " "));
+        Assert.Throws<ArgumentException>(() => AppPasswords.Rename(db, own, new string('x', 81)));
+        Assert.Throws<KeyNotFoundException>(() => AppPasswords.Rename(db, "gibt-es-nicht", "x"));
+    }
+
+    [Theory]
+    [InlineData("DESKTOP-4711 (Desktop Client - Windows)", "Nextcloud Desktop · DESKTOP-4711")]
+    [InlineData("Mozilla/5.0 (Windows) mirall/3.13.0 (Nextcloud, windows-10.0)", "Nextcloud Desktop")]
+    public void Name_aus_dem_Login_Flow(string userAgent, string name) => Assert.Equal(name, DmOffice.Dav.NextcloudApi.DeviceName(userAgent));
 }

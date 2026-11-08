@@ -15,7 +15,12 @@ interface Invite {
   location?: string | null; organizerName?: string | null; organizerEmail?: string | null; recurring: boolean
   myStatus?: string | null; calendarId?: number | null; calendarName?: string | null; outdated: boolean
   conflicts: string[]; replyFrom?: string | null; replyStatus?: string | null
+  /** Eigene Einladung: keine Antwortknöpfe, stattdessen die Teilnehmer */
+  mine?: boolean; attendees?: { name: string; status: string }[] | null
 }
+
+const attendeeText = (s: string) =>
+  s === 'ACCEPTED' ? t('zugesagt') : s === 'TENTATIVE' ? t('mit Vorbehalt') : s === 'DECLINED' ? t('abgesagt') : t('noch keine Antwort')
 
 const useStyles = makeStyles({
   card: { margin: '0 20px 10px', padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '8px', flexShrink: 0 },
@@ -85,7 +90,12 @@ export function InviteCard({ item }: { item: MailItem }) {
           </Text>
           {invite.method !== 'REPLY' && <Text>{when(invite)}{invite.recurring ? ' · ' + t('Serie') : ''}</Text>}
           {invite.location && invite.method !== 'REPLY' && <Text className={s.muted}>{invite.location}</Text>}
-          {organizer && invite.method === 'REQUEST' && <Text size={200} className={s.muted}>{t('Organisator: {name}', { name: organizer })}</Text>}
+          {organizer && invite.method === 'REQUEST' && !invite.mine && <Text size={200} className={s.muted}>{t('Organisator: {name}', { name: organizer })}</Text>}
+          {invite.mine && invite.method === 'REQUEST' && (
+            <Text size={200} className={s.muted}>
+              {t('Deine Einladung.')} {invite.attendees?.length ? invite.attendees.map(a => `${a.name}: ${attendeeText(a.status)}`).join(' · ') : ''}
+            </Text>
+          )}
           {invite.method === 'REPLY' && (
             <Text>
               {invite.replyStatus === 'ACCEPTED' ? t('{name} hat zugesagt.', { name: invite.replyFrom ?? '' })
@@ -94,7 +104,7 @@ export function InviteCard({ item }: { item: MailItem }) {
                 : t('{name} hat geantwortet.', { name: invite.replyFrom ?? '' })}
             </Text>
           )}
-          {invite.calendarName && invite.method === 'REQUEST' && (
+          {invite.calendarName && invite.method === 'REQUEST' && !invite.mine && (
             <Text size={200} className={s.muted}>{statusText(invite.myStatus) ?? ''} {t('Steht im Kalender „{name}“.', { name: invite.calendarName })}</Text>
           )}
           {invite.outdated && <Text size={200} className={s.warn}><Warning16Regular /> {t('Im Kalender steht schon eine neuere Version dieser Einladung.')}</Text>}
@@ -103,7 +113,10 @@ export function InviteCard({ item }: { item: MailItem }) {
           )}
         </div>
       </div>
-      {invite.method === 'REQUEST' && !invite.outdated && (
+      {invite.calendarName && invite.method === 'REQUEST' && invite.mine && (
+        <Text size={200} className={s.muted}>{t('Steht im Kalender „{name}“.', { name: invite.calendarName })}</Text>
+      )}
+      {invite.method === 'REQUEST' && !invite.outdated && !invite.mine && (
         <div className={s.actions}>
           <Button appearance={invite.myStatus === 'ACCEPTED' ? 'primary' : 'secondary'} icon={<CalendarCheckmark20Regular />} disabled={busy} onClick={() => respond('accept')}>{t('Zusagen')}</Button>
           <Button appearance={invite.myStatus === 'TENTATIVE' ? 'primary' : 'secondary'} icon={<CalendarQuestionMark20Regular />} disabled={busy} onClick={() => respond('tentative')}>{t('Mit Vorbehalt')}</Button>

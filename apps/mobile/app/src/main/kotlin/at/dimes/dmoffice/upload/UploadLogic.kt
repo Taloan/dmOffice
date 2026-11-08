@@ -88,6 +88,38 @@ object UploadLogic {
     /** Versteckte und noch nicht fertige Dateien nie hochladen (".nomedia", ".pending-…", ".trashed-…"). */
     fun ignoredName(name: String): Boolean = name.isEmpty() || name.startsWith(".")
 
+    /**
+     * So lange beobachtet die App eine neue Datei, bevor sie hochgeladen wird. Manche Kameras (Oppo Find X) speichern zuerst ein schnelles Bild und
+     * ersetzen es, sobald das fertige Foto berechnet ist. Die Aenderungszeit bleibt dabei die der Aufnahme: Verlass ist nur auf die Groesse, also auf eigenes Beobachten.
+     */
+    const val SETTLE_MS = 30_000L
+
+    /** Nur was gerade erst entstand, wird beobachtet. Aeltere Dateien (erster Lauf einer Regel) warten nicht. */
+    const val RECENT_MS = 10 * 60_000L
+
+    data class Seen(val size: Long, val modified: Long, val at: Long)
+
+    /**
+     * Darf die Datei jetzt hoch? Merkt sich in seen, seit wann sie mit dieser Groesse und Aenderungszeit gesehen wird. Aendert sich eines davon, beginnt die Frist neu.
+     * Geht das Gemerkte verloren (Prozess beendet), beginnt die Frist ebenfalls neu: Das verzoegert hoechstens, laedt aber nichts zu frueh hoch.
+     */
+    fun settled(seen: MutableMap<String, Seen>, path: String, size: Long, modified: Long, added: Long, now: Long): Boolean {
+        if (now - maxOf(modified, added) >= RECENT_MS) { seen.remove(path); return true }
+        val before = seen[path]
+        if (before == null || before.size != size || before.modified != modified) { seen[path] = Seen(size, modified, now); return false }
+        if (now - before.at < SETTLE_MS) return false
+        seen.remove(path)
+        return true
+    }
+
+    /**
+     * Hat die Kamera ihr schon hochgeladenes Vorabbild durch das fertige Foto ersetzt? Gleicher Pfad und gleiche Aenderungszeit, aber andere Groesse.
+     * Das kann auch Minuten nach der Aufnahme geschehen (gemessen: Oppo Find X, ueber 37 s). Wer ein Foto bearbeitet, aendert die Aenderungszeit: Dann gilt die Einstellung der Regel.
+     * Was nur schon auf dem Server lag ([prevAlready]), stammt nicht von diesem Hochladen und wird nicht ersetzt.
+     */
+    fun cameraReplaced(prevSize: Long, prevModified: Long, prevAlready: Boolean, prevRemote: String?, size: Long, modified: Long): Boolean =
+        modified > 0 && prevModified == modified && prevSize != size && !prevAlready && !prevRemote.isNullOrEmpty()
+
     /** Wartezeit vor dem naechsten Versuch: 30 s, 1 min, 2 min … hoechstens 6 h. */
     fun backoffMs(attempts: Int): Long {
         val n = attempts.coerceIn(1, 20) - 1

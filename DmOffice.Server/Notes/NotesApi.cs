@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using DmOffice.Chat;
 using DmOffice.Core;
 using DmOffice.Pim;
 using Notizi.Sync;
@@ -14,33 +15,87 @@ namespace DmOffice.Notes;
 /// </summary>
 public static class NotesApi
 {
-    public record Meta(string? CustomTitle, string? Color, bool? Important, string? Folder, bool ClearCustomTitle = false);
+    public record Meta(string? CustomTitle, string? Color, bool? Important, string? Folder, bool ClearCustomTitle = false, List<string>? Tags = null);
     public record NewNote(string? Folder);
     public record TaskSet(long Note, int Block, int N, string Text, bool Done);
     public record FolderBody(string Name, string? Parent);
     public record FolderMove(string? Parent);
     public record DatabaseBody(string Folder);
-    public record ShareBody(List<string> Members, List<string>? ReadOnly);
+    public record ShareBody(List<string> Members, List<string>? ReadOnly, List<string>? ShowOnly = null);
     public record RecipeIds(List<string> Ids);
+    public record RecipeLink(string Url, string? Folder);
+    public record RecipeScanSettings(bool Ai);
 
     public static void Map(WebApplication app)
     {
         var api = app.MapGroup("/api/notes").RequireAuthorization();
+        MapOpen(api);
+        MapNotes(api);
+        // Eine notizi-Datenbank im Tresor (Tresor auf diesem Gerät offen): dieselben Wege für Notizen und Ordner, ohne
+        // Freigaben, Rezepte und Aufgaben - Suche, Pukki und Widgets lesen sie nie
+        MapNotes(app.MapGroup("/api/notes/vault/{vault}").RequireAuthorization());
+    }
 
-        api.MapGet("/status", (HttpContext http) => NotesSync.Status(http.Space()));
-
-        api.MapPost("/sync", async (HttpContext http, NotesSync sync, CancellationToken ct) =>
-        {
-            await sync.RunAsync(http.Space(), ct);
-            return NotesSync.Status(http.Space());
-        });
-
-        // Datenbanken unter der Wurzel - wie die Auswahl "Datenbank" in notizi
+    /// <summary>Nur im offenen Bereich: Datenbanken wählen und in den Tresor verschieben, Freigaben, Aufgaben, Rezepte.</summary>
+    private static void MapOpen(RouteGroupBuilder api)
+    {
+        // Datenbanken unter der Wurzel - wie die Auswahl "Datenbank" in notizi; dazu die im Tresor (Name nur bei offenem Tresor)
         api.MapGet("/databases", async (HttpContext http, CancellationToken ct) =>
         {
             var space = http.Space();
             var n = space.Settings.Notizi;
-            return new { current = n.DbFolder, list = string.IsNullOrEmpty(n.E2eePassword) ? null : await NotesSync.ScanAsync(space, ct) };
+            var open = Tresor.IsOpen(http, touch: false);
+            var tresor = new List<object>();
+            foreach (var f in TresorNotizi.Folders(space))
+                tresor.Add(new { folder = f, name = open ? await NotesSync.TresorNameAsync(space, f, ct) : null });
+            return new
+            {
+                current = n.DbFolder, list = string.IsNullOrEmpty(n.E2eePassword) ? null : await NotesSync.ScanAsync(space, ct),
+                tresor, tresorOpen = open, tresorExists = Tresor.Exists(space.User.Id)
+            };
+        });
+
+        // In den Tresor verschieben (Tresor auf diesem Gerät offen): die gewählte Datenbank vorher vollständig abgleichen,
+        // danach ihre Notizen hier überschrieben löschen - sie stehen dann nur noch im Tresor
+        api.MapPost("/databases/{folder}/tresor", async (string folder, HttpContext http, NotesSync sync, CancellationToken ct) =>
+        {
+            var space = http.Space();
+            _ = Tresor.Db(http);
+            folder = Notizi.Sync.SyncCatalog.FolderName(folder);
+            var current = space.Settings.Notizi.DbFolder == folder;
+            if (current)
+            {
+                await sync.RunAsync(space, ct);
+                if (NotesDb.Of(space).PendingCount() > 0)
+                    return Results.BadRequest(new { error = "Nicht alles ist abgeglichen - erst den Fehler beim Abgleich beheben, sonst ginge etwas verloren." });
+            }
+            TresorNotizi.MoveIn(space, folder);
+            if (current)
+            {
+                NotesDb.Of(space).Clear(secure: true);
+                space.UpdateSettings(s => { s.Notizi.DbFolder = null; s.Notizi.SwitchDb(); });
+                NotesSync.StateOf(space).Store = null;
+            }
+            SecurityNotice.Own(http.RequestServices, space.User.Id, "Tresor: notizi-Datenbank in den Tresor verschoben");
+            await sync.RunTresorAsync(space, folder, ct);
+            return Results.Ok();
+        });
+
+        // Aus dem Tresor holen (Tresor auf diesem Gerät offen): wieder im offenen Bereich, zum Wählen wie jede andere
+        api.MapPost("/databases/{folder}/out", async (string folder, HttpContext http, NotesSync sync, CancellationToken ct) =>
+        {
+            var space = http.Space();
+            _ = Tresor.Db(http);
+            if (TresorNotes.Of(space, folder) is { } db)
+            {
+                await sync.RunTresorAsync(space, folder, ct);
+                if (db.PendingCount() > 0)
+                    return Results.BadRequest(new { error = "Nicht alles ist abgeglichen - erst den Fehler beim Abgleich beheben, sonst ginge etwas verloren." });
+                NotesSync.StateOf(space, folder).Store = null;
+            }
+            TresorNotizi.MoveOut(space, folder);
+            SecurityNotice.Own(http.RequestServices, space.User.Id, "Tresor: notizi-Datenbank aus dem Tresor geholt");
+            return Results.Ok();
         });
 
         // Wechseln: erst die bisherige abgleichen (nichts geht verloren), dann die neue laden. Hier liegt nur
@@ -72,14 +127,6 @@ public static class NotesApi
             return Results.Ok(NotesSync.Status(space));
         });
 
-        api.MapGet("/folders", (HttpContext http, ShareStore shares, UserStore users) =>
-        {
-            var space = http.Space();
-            return space.Db.Query("SELECT sync_id, parent, name, sort_order FROM note_folders ORDER BY sort_order, name",
-                r => new NoteFolder { SyncId = r.GetString(0), Parent = r.IsDBNull(1) ? null : r.GetString(1), Name = r.GetString(2), SortOrder = r.GetDouble(3) })
-                .Select(f => new { f.SyncId, f.Parent, f.Name, f.SortOrder, sharedWith = shares.OfFolder(space.User.Id, f.SyncId) is { } sh ? Members(sh, users) : null });
-        });
-
         // Mit mir geteilte Ordner: je Freigabe der oberste Ordner und alle darunter (der oberste ohne Eltern)
         api.MapGet("/shared", (HttpContext http, ShareStore shares, UserStore users) =>
             SharedNotes.WithMe(http).Select(sc =>
@@ -88,7 +135,7 @@ public static class NotesApi
                 var all = sc.Db.AllFolders().Where(f => sc.Tree!.Contains(f.SyncId)).ToList();
                 return new
                 {
-                    share = sc.Share.Id, root, owner = sc.OwnerName, name = all.First(f => f.SyncId == root).Name, canWrite = sc.CanWrite,
+                    share = sc.Share.Id, root, owner = sc.OwnerName, name = all.First(f => f.SyncId == root).Name, canWrite = sc.CanWrite, showOnly = sc.ShowOnly,
                     sharedWith = Members(sc.Share, users, http.Space().User.Id),
                     folders = all.Select(f => new { f.SyncId, Parent = f.SyncId == root ? null : f.Parent, f.Name })
                 };
@@ -100,7 +147,7 @@ public static class NotesApi
         {
             var space = http.Space();
             _ = NotesDb.Of(space).GetFolder(folder) ?? throw new KeyNotFoundException();
-            shares.SetFolder(space.User.Id, folder, body.Members.Where(m => m != space.User.Id && users.ById(m) != null).ToList(), body.ReadOnly);
+            shares.SetFolder(space.User.Id, folder, body.Members.Where(m => m != space.User.Id && users.ById(m) != null).ToList(), body.ReadOnly, body.ShowOnly);
             return Results.Ok();
         });
 
@@ -108,52 +155,6 @@ public static class NotesApi
         api.MapPost("/shares/{id:int}/leave", (int id, HttpContext http, ShareStore shares) =>
         {
             shares.Leave(id, http.Space().User.Id);
-            return Results.Ok();
-        });
-
-        api.MapPost("/folders", (FolderBody body, HttpContext http, NotesSync sync) =>
-        {
-            // Unterordner in einem geteilten Ordner (mit Bearbeitungsrecht): in der Datenbank des Besitzers
-            var scope = SharedNotes.ForFolder(http, body.Parent);
-            if (scope.IsShared) scope.Writable();
-            var space = scope.Space;
-            var id = Guid.NewGuid().ToString("N");
-            var now = DateTime.UtcNow.ToString("o");
-            space.Db.Exec("INSERT INTO note_folders(sync_id,sync_rev,parent,name,sort_order,created,modified) VALUES($s,1,$p,$n,(SELECT COALESCE(MAX(sort_order),0)+1 FROM note_folders),$m,$m)",
-                ("$s", id), ("$p", body.Parent), ("$n", body.Name.Trim().Length > 0 ? body.Name.Trim() : "Neuer Ordner"), ("$m", now));
-            sync.Kick(space.User.Id, TimeSpan.FromSeconds(5));
-            return Results.Ok(new { id });
-        });
-
-        api.MapPut("/folders/{id}", (string id, FolderBody body, HttpContext http, NotesSync sync) =>
-        {
-            var space = http.Space();
-            space.Db.Exec("UPDATE note_folders SET name=$n, modified=$m, sync_rev=sync_rev+1 WHERE sync_id=$s",
-                ("$n", body.Name.Trim()), ("$m", DateTime.UtcNow.ToString("o")), ("$s", id));
-            sync.Kick(space.User.Id, TimeSpan.FromSeconds(5));
-            return Results.Ok();
-        });
-
-        // Ordner verschieben (Ziehen im Ordnerbereich, "Verschieben nach"); Parent leer: oberste Ebene
-        api.MapPost("/folders/{id}/move", (string id, FolderMove body, HttpContext http, NotesSync sync) =>
-        {
-            var space = http.Space();
-            NotesDb.Of(space).MoveFolder(id, string.IsNullOrEmpty(body.Parent) ? null : body.Parent);
-            sync.Kick(space.User.Id, TimeSpan.FromSeconds(5));
-            return Results.Ok();
-        });
-
-        api.MapDelete("/folders/{id}", (string id, HttpContext http, NotesSync sync) =>
-        {
-            var space = http.Space();
-            var db = space.Db;
-            if (Convert.ToInt32(db.Scalar("SELECT COUNT(*) FROM notes WHERE folder=$f AND deleted IS NULL", ("$f", id))) > 0
-                || Convert.ToInt32(db.Scalar("SELECT COUNT(*) FROM note_folders WHERE parent=$f", ("$f", id))) > 0)
-                return Results.BadRequest(new { error = "Der Ordner ist nicht leer." });
-            db.Exec("DELETE FROM note_folders WHERE sync_id=$s", ("$s", id));
-            db.Exec("INSERT OR REPLACE INTO note_tombstones(sync_id, kind) VALUES($s, 'folder')", ("$s", id));
-            http.RequestServices.GetRequiredService<ShareStore>().ForgetFolder(space.User.Id, id);
-            sync.Kick(space.User.Id, TimeSpan.FromSeconds(5));
             return Results.Ok();
         });
 
@@ -169,7 +170,74 @@ public static class NotesApi
             return Results.Ok();
         });
 
-        api.MapGet("/", (string? folder, string? view, string? q, HttpContext http) =>
+        MapRecipes(api);
+    }
+
+    /// <summary>Notizen und Ordner - der eigenen Datenbank, geteilter Ordner und (unter /vault/{vault}) einer Datenbank im Tresor.</summary>
+    private static void MapNotes(RouteGroupBuilder api)
+    {
+        api.MapGet("/status", (HttpContext http) => NotesSync.Status(http.Space(), SharedNotes.Own(http).Vault));
+
+        api.MapPost("/sync", async (HttpContext http, NotesSync sync, CancellationToken ct) =>
+        {
+            var scope = SharedNotes.Own(http);
+            if (scope.Vault != null) await sync.RunTresorAsync(scope.Space, scope.Vault, ct);
+            else await sync.RunAsync(scope.Space, ct);
+            return NotesSync.Status(scope.Space, scope.Vault);
+        });
+
+        api.MapGet("/folders", (HttpContext http, ShareStore shares, UserStore users) =>
+        {
+            var scope = SharedNotes.Own(http);
+            return scope.Db.AllFolders().Select(f => new
+            {
+                f.SyncId, f.Parent, f.Name, f.SortOrder,
+                sharedWith = scope.Vault == null && shares.OfFolder(scope.Space.User.Id, f.SyncId) is { } sh ? Members(sh, users) : null
+            });
+        });
+
+        api.MapPost("/folders", (FolderBody body, HttpContext http, NotesSync sync) =>
+        {
+            // Unterordner in einem geteilten Ordner (mit Bearbeitungsrecht): in der Datenbank des Besitzers
+            var scope = SharedNotes.ForFolder(http, body.Parent);
+            if (scope.IsShared) scope.Writable();
+            var id = scope.Db.CreateFolder(body.Name, body.Parent);
+            sync.Kick(scope.Space.User.Id, TimeSpan.FromSeconds(5));
+            return Results.Ok(new { id });
+        });
+
+        api.MapPut("/folders/{id}", (string id, FolderBody body, HttpContext http, NotesSync sync) =>
+        {
+            var scope = SharedNotes.Own(http);
+            scope.Db.RenameFolder(id, body.Name);
+            sync.Kick(scope.Space.User.Id, TimeSpan.FromSeconds(5));
+            return Results.Ok();
+        });
+
+        // Ordner verschieben (Ziehen im Ordnerbereich, "Verschieben nach"); Parent leer: oberste Ebene
+        api.MapPost("/folders/{id}/move", (string id, FolderMove body, HttpContext http, NotesSync sync) =>
+        {
+            var scope = SharedNotes.Own(http);
+            scope.Db.MoveFolder(id, string.IsNullOrEmpty(body.Parent) ? null : body.Parent);
+            sync.Kick(scope.Space.User.Id, TimeSpan.FromSeconds(5));
+            return Results.Ok();
+        });
+
+        api.MapDelete("/folders/{id}", (string id, HttpContext http, NotesSync sync) =>
+        {
+            var scope = SharedNotes.Own(http);
+            if (!scope.Db.DeleteFolder(id)) return Results.BadRequest(new { error = "Der Ordner ist nicht leer." });
+            if (scope.Vault == null) http.RequestServices.GetRequiredService<ShareStore>().ForgetFolder(scope.Space.User.Id, id);
+            sync.Kick(scope.Space.User.Id, TimeSpan.FromSeconds(5));
+            return Results.Ok();
+        });
+
+        // Alle Schlagwoerter der eigenen Notizen mit Anzahl - fuer die Seitenleiste und die Vorschlaege beim Eintippen
+        api.MapGet("/tags", (HttpContext http) => SharedNotes.Own(http).Db.GetAllActive()
+            .SelectMany(n => n.Tags ?? []).GroupBy(t => t, StringComparer.OrdinalIgnoreCase)
+            .Select(g => new { tag = g.First(), count = g.Count() }).OrderBy(x => x.tag, StringComparer.CurrentCultureIgnoreCase).ToList());
+
+        api.MapGet("/", (string? folder, string? view, string? q, string? tag, HttpContext http) =>
         {
             // Ein mit mir geteilter Ordner: Notizen aus der Datenbank des Besitzers
             if (string.IsNullOrWhiteSpace(q) && view == null && !string.IsNullOrEmpty(folder) && SharedNotes.TryForFolder(http, folder) is { IsShared: true } sc)
@@ -178,7 +246,8 @@ public static class NotesApi
                     archived = 0, trashed = 0,
                     items = sc.Db.GetNotes(folder).Select(n => Item(n, sc)).ToList()
                 };
-            var db = NotesDb.Of(http.Space());
+            var own = SharedNotes.Own(http);
+            var db = own.Db;
             List<NoteRow> notes = !string.IsNullOrWhiteSpace(q) ? db.Search(q)
                 : view switch
                 {
@@ -186,10 +255,10 @@ public static class NotesApi
                     "trash" => db.GetTrashed(),
                     "all" => db.GetAllActive(),
                     "important" => db.GetAllActive().Where(n => n.Important).ToList(),
+                    "tag" => db.GetAllActive().Where(n => n.Tags?.Contains(tag ?? "", StringComparer.OrdinalIgnoreCase) == true).ToList(),
                     _ => db.GetNotes(string.IsNullOrEmpty(folder) ? null : folder)
                 };
             var counts = db.CountArchiveAndTrash();
-            var own = SharedNotes.Own(http);
             var items = notes.Select(n => Item(n, own)).ToList();
             // Die Suche geht auch durch die mit mir geteilten Ordner
             if (!string.IsNullOrWhiteSpace(q))
@@ -198,6 +267,11 @@ public static class NotesApi
             return new { archived = counts.Archived, trashed = counts.Trashed, items = items.OrderByDescending(i => i.modified).ToList() };
         });
 
+        MapNoteItems(api);
+    }
+
+    private static void MapRecipes(RouteGroupBuilder api)
+    {
         // Rezepte (Notizen in Rezeptgestalt) - fuer den Essensplan
         api.MapGet("/recipes", async (string? q, HttpContext http, CancellationToken ct) =>
         {
@@ -210,6 +284,142 @@ public static class NotesApi
             return all.OrderBy(e => e.Title, StringComparer.CurrentCultureIgnoreCase).ToList();
         });
 
+        // Rezepte im Internet suchen (DuckDuckGo, auf Wunsch zusätzlich die KI mit Websuche) - Treffer mit Rezept, Bild und Nährwerten
+        api.MapGet("/recipes/search/state", (HttpContext http, ServerConfig config, UserStore users) =>
+            new { ai = PukkiAi.CanSearch(config) && PukkiAi.Allowed(config, users.ById(http.Space().User.Id)) });
+        api.MapGet("/recipes/search", async (string q, bool? ai, HttpContext http, ServerConfig config, UserStore users, DmOffice.Coach.CoachFoods foods,
+            ILoggerFactory logs, CancellationToken ct) =>
+        {
+            var space = http.Space();
+            var allowed = ai == true && PukkiAi.Allowed(config, users.ById(space.User.Id));
+            var (hits, usedAi) = await RecipeSearch.SearchAsync(space, foods, config, allowed, q, logs.CreateLogger("RecipeSearch"), ct);
+            return new { hits, ai = usedAi };
+        });
+        api.MapGet("/recipes/search/image", async (string u, HttpContext http, CancellationToken ct) =>
+        {
+            var data = await RecipeSearch.ImageAsync(u, ct);
+            if (data == null) return Results.NotFound();
+            http.Response.Headers.CacheControl = "private, max-age=3600";
+            return Results.File(data, "image/webp");
+        });
+
+        // Rezept per Link: schema.org-Rezept der Seite als Notiz in der Gestalt der notizi-Vorlage (Coach Stufe 2)
+        api.MapPost("/recipes/import", async (RecipeLink body, HttpContext http, NotesSync sync, CancellationToken ct) =>
+        {
+            var folder = string.IsNullOrEmpty(body.Folder) ? null : body.Folder;
+            var scope = SharedNotes.ForFolder(http, folder);
+            if (scope.IsShared) scope.Writable();
+            try
+            {
+                var id = await RecipeImport.ImportAsync(scope.Space, scope.Db, body.Url, folder, ct);
+                sync.Kick(scope.Space.User.Id, TimeSpan.FromSeconds(10));
+                return Results.Ok(new { id = scope.Wire(id) });
+            }
+            catch (Exception e) when (e is ArgumentException or InvalidOperationException or HttpRequestException or TaskCanceledException)
+            {
+                return Results.BadRequest(new { error = e is HttpRequestException ? "Die Seite ist nicht erreichbar." : e is TaskCanceledException ? "Die Seite antwortet nicht." : e.Message });
+            }
+        });
+
+        // Rezept-Scan: Kochbuchseiten erkennen (Entwurf fuer die Pruefansicht), dann als Rezept-Notiz anlegen (docs/rezept-scan-konzept.md)
+        api.MapGet("/recipes/scan/state", (HttpContext http, ServerConfig config, UserStore users) =>
+        {
+            var space = http.Space();
+            var aiAllowed = PukkiAi.Allowed(config, users.ById(space.User.Id));
+            return new { ocr = DmOffice.Search.Ocr.Available, reason = DmOffice.Search.Ocr.Current.Reason, aiAllowed, ai = aiAllowed && space.Settings.RecipeScanAi };
+        });
+        api.MapPut("/recipes/scan/settings", (RecipeScanSettings body, HttpContext http) =>
+        {
+            http.Space().UpdateSettings(s => s.RecipeScanAi = body.Ai);
+            return Results.Ok();
+        });
+        api.MapPost("/recipes/scan", async (HttpRequest request, HttpContext http, ServerConfig config, UserStore users, ILoggerFactory logs, CancellationToken ct) =>
+        {
+            var space = http.Space();
+            if (!DmOffice.Search.Ocr.Available) return Results.BadRequest(new { error = DmOffice.Search.Ocr.Current.Reason ?? "Keine Texterkennung." });
+            if (http.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } limit)
+                limit.MaxRequestBodySize = RecipeScan.MaxPages * RecipeScan.MaxPageBytes;
+            var form = await request.ReadFormAsync(ct);
+            var files = new List<(string, byte[])>();
+            foreach (var f in form.Files.Take(RecipeScan.MaxPages))
+            {
+                if (f.Length > RecipeScan.MaxPageBytes) return Results.BadRequest(new { error = $"„{f.FileName}“ ist größer als 15 MB." });
+                using var ms = new MemoryStream();
+                await f.CopyToAsync(ms, ct);
+                files.Add((f.FileName, ms.ToArray()));
+            }
+            if (files.Count == 0) return Results.BadRequest(new { error = "Keine Seite übergeben." });
+            try
+            {
+                var result = await RecipeScan.ScanAsync(files, ct);
+                var aiAllowed = PukkiAi.Allowed(config, users.ById(space.User.Id));
+                var usedAi = false;
+                // Regeln haben Titel, Zutaten oder Schritte nicht gefunden: die KI liest die Seiten (Bild und Text), wenn eingeschaltet
+                var missing = result.Drafts.Any(d => d.Title.Length == 0 || d.Ingredients.Length == 0 || d.Steps.Length == 0);
+                if (missing && aiAllowed && space.Settings.RecipeScanAi
+                    && await RecipeScan.AiAsync(config, result.Text, result.Images, logs.CreateLogger("RecipeScan"), ct) is { } byAi)
+                {
+                    result = result with { Drafts = byAi, Hints = result.Hints.Where(h => h.StartsWith("Seite") || h.StartsWith("Mehr als")).ToList() };
+                    usedAi = true;
+                }
+                return Results.Ok(new { drafts = result.Drafts, text = result.Text, hints = result.Hints, ai = usedAi, aiAllowed });
+            }
+            catch (Exception e) when (e is InvalidOperationException or NotSupportedException or TimeoutException)
+            {
+                return Results.BadRequest(new { error = e.Message });
+            }
+        }).DisableAntiforgery();
+        // Knopf „Mit KI erkennen“: Formular mit text (schon erkannt) und page (die Seitenbilder)
+        api.MapPost("/recipes/scan/ai", async (HttpRequest request, HttpContext http, ServerConfig config, UserStore users, ILoggerFactory logs, CancellationToken ct) =>
+        {
+            if (!PukkiAi.Allowed(config, users.ById(http.Space().User.Id))) return Results.BadRequest(new { error = "KI ist für dieses Konto nicht freigegeben." });
+            if (http.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } limit)
+                limit.MaxRequestBodySize = RecipeScan.MaxPages * RecipeScan.MaxPageBytes;
+            var form = await request.ReadFormAsync(ct);
+            var images = new List<byte[]>();
+            foreach (var f in form.Files.GetFiles("page").Take(RecipeScan.MaxPages))
+            {
+                if (f.Length is 0 or > RecipeScan.MaxPageBytes) continue;
+                using var ms = new MemoryStream();
+                await f.CopyToAsync(ms, ct);
+                // PDF-Seiten gehen nur als Text an die KI
+                if (RecipeScan.Jpeg(ms.ToArray(), 1600, 80) is { } jpg) images.Add(jpg);
+            }
+            var drafts = await RecipeScan.AiAsync(config, form["text"].ToString(), images, logs.CreateLogger("RecipeScan"), ct);
+            return drafts == null ? Results.BadRequest(new { error = "Die KI hat kein Rezept geliefert." }) : Results.Ok(new { drafts });
+        }).DisableAntiforgery();
+        // Anlegen: Formular mit draft (JSON), folder und image (Titelbild); je Rezept ein Aufruf
+        api.MapPost("/recipes/scan/save", async (HttpRequest request, HttpContext http, NotesSync sync, CancellationToken ct) =>
+        {
+            if (http.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } limit)
+                limit.MaxRequestBodySize = RecipeScan.MaxPageBytes + 1024 * 1024;
+            var form = await request.ReadFormAsync(ct);
+            RecipeScan.Draft? draft;
+            try { draft = JsonSerializer.Deserialize<RecipeScan.Draft>(form["draft"].ToString(), JsonSerializerOptions.Web); }
+            catch (JsonException) { draft = null; }
+            if (draft == null) return Results.BadRequest(new { error = "Kein Rezept übergeben." });
+            // Fehlende Felder im JSON kommen als null an
+            draft = draft with
+            {
+                Title = draft.Title ?? "", Yield = draft.Yield ?? "", PrepTime = draft.PrepTime ?? "", CookTime = draft.CookTime ?? "", TotalTime = draft.TotalTime ?? "",
+                Description = draft.Description ?? "", Ingredients = draft.Ingredients ?? "", Steps = draft.Steps ?? "", Tip = draft.Tip ?? "", Source = draft.Source ?? "",
+            };
+            var folder = form["folder"].ToString() is { Length: > 0 } fo ? fo : null;
+            var scope = SharedNotes.ForFolder(http, folder);
+            if (scope.IsShared) scope.Writable();
+            async Task<byte[]> Read(IFormFile f)
+            {
+                using var ms = new MemoryStream();
+                await f.CopyToAsync(ms, ct);
+                return ms.ToArray();
+            }
+            byte[]? image = form.Files.GetFile("image") is { Length: > 0 and <= RecipeScan.MaxPageBytes } img ? await Read(img) : null;
+            if (image != null) VirusScan.CheckBytes(image, scope.Space.User.Id, "Notizen/Rezept-Scan");
+            var id = await RecipeScan.SaveAsync(scope.Space, scope.Db, scope.Vault, draft, folder, image, ct);
+            sync.Kick(scope.Space.User.Id, TimeSpan.FromSeconds(10));
+            return Results.Ok(new { id = scope.Wire(id) });
+        }).DisableAntiforgery();
+
         // Zutaten der gewaehlten Rezepte (sync_id) - fuer "Zutaten auf die Einkaufsliste"
         api.MapPost("/recipes/ingredients", async (RecipeIds body, HttpContext http, CancellationToken ct) =>
         {
@@ -217,13 +427,19 @@ public static class NotesApi
             var wanted = body.Ids.ToHashSet();
             var found = NotesDb.Of(space).GetAllActive().Where(n => wanted.Contains(n.SyncId))
                 .Select(n => new { syncId = n.SyncId, title = n.DisplayTitle, items = Recipes.Ingredients(n) }).ToList();
+            // Basisrezepte von Coach (stehen im Essensplan wie Rezept-Notizen)
+            found.AddRange(wanted.Select(DmOffice.Coach.BaseRecipes.ById).OfType<DmOffice.Coach.BaseRecipes.Recipe>()
+                .Select(b => new { syncId = b.Id, title = b.Title, items = b.Lines }));
             // Was hier nicht liegt, steht vielleicht in einer anderen Datenbank
             var missing = wanted.Where(id => found.All(f => f.syncId != id)).ToHashSet();
             if (missing.Count == 0) return found;
             found.AddRange((await RemoteRecipes.IngredientsAsync(space, missing, ct)).Select(r => new { syncId = r.SyncId, title = r.Title, items = r.Items }));
             return found;
         });
+    }
 
+    private static void MapNoteItems(RouteGroupBuilder api)
+    {
         api.MapGet("/{id:long}", (long id, HttpContext http) =>
         {
             var (scope, nid) = SharedNotes.ForNote(http, id);
@@ -237,12 +453,15 @@ public static class NotesApi
             var blocks = raw.Select(Clean).ToList();
             return new
             {
-                Id = scope.Wire(note.Id), note.SyncId, note.Folder, note.CustomTitle, title = note.DisplayTitle, note.Color, note.Important,
+                Id = scope.Wire(note.Id), note.SyncId, note.Folder, note.CustomTitle, title = note.DisplayTitle, note.Color, note.Important, tags = note.Tags ?? [],
                 note.Modified, note.Created, note.Archived, note.Deleted,
                 blocks, @protected = flags, readOnly = split == null || !scope.CanWrite,
                 attachments = note.Attachments.Select(a => new { a.Name, a.Mime, a.Size, a.Blob }),
                 pending = !scope.IsShared && db.IsPending(note.Id),
-                owner = scope.IsShared ? scope.OwnerName : null, canWrite = scope.CanWrite,
+                owner = scope.IsShared ? scope.OwnerName : null, canWrite = scope.CanWrite, showOnly = scope.ShowOnly,
+                // Eigene Notiz: mit wem einzeln geteilt (Version 2); bei geteilten: einzeln oder im Ordner
+                sharedWith = scope.IsShared || scope.Vault != null ? null : http.RequestServices.GetRequiredService<NoteShareStore>().Of(scope.Space.User.Id, note.SyncId)?.Members.Count,
+                single = scope.Only != null,
                 version = Version(note.Html)
             };
         });
@@ -320,6 +539,8 @@ public static class NotesApi
                 sync.Kick(scope.Space.User.Id, TimeSpan.FromSeconds(5));
                 return Results.Ok(new { id = moved });
             }
+            // Einzeln geteilte Notiz (Version 2): in einen Ordner legt sie nur der Besitzer
+            if (scope.Only != null && body.Folder != null) throw new UnauthorizedAccessException("In einen anderen Ordner legen darf nur der Besitzer der Notiz.");
             var space = scope.Space;
             var db = scope.Db;
             if (scope.IsShared) scope.Writable();
@@ -336,18 +557,18 @@ public static class NotesApi
             else if (body.CustomTitle != null) db.SetCustomTitle(id, body.CustomTitle);
             if (body.Color != null) db.SetColor(id, body.Color);
             if (body.Important is bool imp) db.SetImportant(id, imp);
-            if (body.Folder != null)
-                space.Db.Exec("UPDATE notes SET folder=$f, modified=$m, sync_rev=sync_rev+1 WHERE id=$id",
-                    ("$f", body.Folder.Length == 0 ? null : body.Folder), ("$m", DateTime.UtcNow.ToString("o")), ("$id", id));
+            if (body.Tags != null) db.SetTags(id, body.Tags);
+            if (body.Folder != null) db.SetFolder(id, body.Folder.Length == 0 ? null : body.Folder);
             sync.Kick(space.User.Id, TimeSpan.FromSeconds(10));
             return Results.Ok();
         });
 
         api.MapPost("/{wire:long}/{action}", (long wire, string action, HttpContext http, NotesSync sync) =>
         {
-            // Wiederherstellen/Archivieren: Gaeste sehen archivierte und geloeschte Notizen nicht - nur der Besitzer
+            // Wiederherstellen/Archivieren: nur der Besitzer
             if (wire < 0 && action != "trash") throw new UnauthorizedAccessException("Das darf nur der Besitzer des Ordners.");
             var (scope, id) = SharedNotes.ForNote(http, wire);
+            if (scope.Only != null) throw new UnauthorizedAccessException("Das darf nur der Besitzer der Notiz.");
             if (scope.IsShared) scope.Writable();
             var space = scope.Space;
             var db = scope.Db;
@@ -365,15 +586,17 @@ public static class NotesApi
         api.MapDelete("/{id:long}", (long id, HttpContext http, NotesSync sync) =>
         {
             if (id < 0) throw new UnauthorizedAccessException("Endgültig löschen darf nur der Besitzer des Ordners.");
-            var space = http.Space();
-            NotesDb.Of(space).DeleteNote(id);
+            var scope = SharedNotes.Own(http);
+            var space = scope.Space;
+            scope.Db.DeleteNote(id);
             sync.Kick(space.User.Id, TimeSpan.FromSeconds(5));
             return Results.Ok();
         });
 
         api.MapGet("/blob/{name}", (string name, bool? download, string? file, int? thumb, HttpContext http) =>
         {
-            var data = SharedNotes.Blob(http, name) ?? throw new KeyNotFoundException();
+            var (data, showOnly) = SharedNotes.Blob(http, name) ?? throw new KeyNotFoundException();
+            if (showOnly && download == true) throw new UnauthorizedAccessException("Nur gezeigt – herunterladen ist nicht erlaubt.");
             // Vorschau fuer die Notizliste: klein, vom Browser zwischenspeicherbar (der Name haengt am Inhalt)
             if (thumb is > 0 && download != true && DmOffice.Dav.Thumbs.FromBytes(data, Math.Min(thumb.Value, 512)) is { } small)
             {
@@ -382,6 +605,8 @@ public static class NotesApi
             }
             if (download == true) return Results.File(data, "application/octet-stream", file ?? name);
             var mime = Sniff(data);
+            // Nur gezeigt: Bilder in der Notiz ja, andere Anhaenge nicht (sie kaemen als Datei an)
+            if (showOnly && !mime.StartsWith("image/")) throw new UnauthorizedAccessException("Nur gezeigt – herunterladen ist nicht erlaubt.");
             return Results.File(data, mime.StartsWith("image/") ? mime : "application/octet-stream");
         });
 
@@ -396,7 +621,8 @@ public static class NotesApi
                 using var ms = new MemoryStream();
                 await file.CopyToAsync(ms, ct);
                 var data = ms.ToArray();
-                scope.Db.AddAttachment(id, file.FileName, file.ContentType, data, await NotesSync.BlobNameAsync(space, data, ct));
+                VirusScan.CheckBytes(data, space.User.Id, "Notizen/" + file.FileName);
+                scope.Db.AddAttachment(id, file.FileName, file.ContentType, data, await NotesSync.BlobNameAsync(space, data, ct, scope.Vault));
             }
             sync.Kick(space.User.Id, TimeSpan.FromSeconds(5));
             return Results.Ok();
@@ -423,23 +649,24 @@ public static class NotesApi
             using var ms = new MemoryStream();
             await file.CopyToAsync(ms, ct);
             var data = ms.ToArray();
-            var name = await NotesSync.BlobNameAsync(space, data, ct);
+            VirusScan.CheckBytes(data, space.User.Id, "Notizen/" + file.FileName);
+            var name = await NotesSync.BlobNameAsync(space, data, ct, scope.Vault);
             scope.Db.PutBlob(name, data);
             return Results.Ok(new { name });
         }).DisableAntiforgery();
     }
 
     private static object Members(Share sh, UserStore users, string? except = null) =>
-        sh.Members.Where(m => m != except).Select(m => new { id = m, name = users.ById(m)?.DisplayName, readOnly = sh.ReadOnly.Contains(m) })
+        sh.Members.Where(m => m != except).Select(m => new { id = m, name = users.ById(m)?.DisplayName, readOnly = sh.ReadOnly.Contains(m), level = sh.LevelOf(m) })
             .Where(m => m.name != null).ToList();
 
     /// <summary>Eine Notiz in der Liste. Geteilte tragen die Kennung der Freigabe und den Namen des Besitzers.</summary>
     private static NoteItemDto Item(NoteRow n, NoteScope scope) => new(
         scope.Wire(n.Id), n.SyncId, n.Folder, n.DisplayTitle, n.Snippet, n.Color, n.Modified, n.Created, n.Important,
-        n.Attachments.Count, n.Archived, n.Deleted, n.Match, FirstImage(n), scope.IsShared ? scope.OwnerName : null);
+        n.Attachments.Count, n.Archived, n.Deleted, n.Match, FirstImage(n), scope.IsShared ? scope.OwnerName : null, n.Tags);
 
     public record NoteItemDto(long id, string syncId, string? folder, string title, string snippet, string color, DateTime modified, DateTime created,
-        bool important, int attachments, DateTime? archived, DateTime? deleted, DmOffice.Search.AttachmentMatch? match, string? image, string? owner);
+        bool important, int attachments, DateTime? archived, DateTime? deleted, DmOffice.Search.AttachmentMatch? match, string? image, string? owner, List<string>? tags = null);
 
     /// <summary>
     /// Ein Block als Nummer, mit dem, was der Editor an ihm geaendert hat (wie notizi am Handy):

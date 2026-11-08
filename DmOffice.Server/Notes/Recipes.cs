@@ -31,6 +31,21 @@ public static class Recipes
         return plain.Contains("Arbeitszeit", StringComparison.Ordinal) && plain.Contains("Koch-/Backzeit", StringComparison.Ordinal);
     }
 
+    // „520 kcal je Portion“ (so schreibt es die Vorlage), „Pro Portion ca. 2180 kJ / 520 kcal, 24 g E“, „Kalorien je Portion: 520“, „520 calories per serving“
+    private static readonly System.Text.RegularExpressions.Regex KcalPer = new(
+        @"(?<n>\d{1,4})\s*(?:kcal|kalorien|calories|cal)\b[^\n]{0,20}?\b(?:je|pro|per|/)\s*(?:portion|person|stück|stk\.?|serving)"
+        + @"|\b(?:je|pro|per)\s+(?:portion|person|stück|serving)\b[^\n\d]{0,30}?(?:\d{2,5}\s*kj\s*[/|,;]?\s*)?(?:ca\.|etwa|rund)?\s*(?<n>\d{1,4})\s*(?:kcal|kalorien|calories|cal)\b"
+        + @"|\b(?:kalorien|kcal|calories|energie|brennwert)\s+(?:je|pro|per)\s+(?:portion|person|stück|serving)\s*:?\s*(?:ca\.|etwa|rund)?\s*(?<n>\d{1,4})\b",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    /// <summary>Angabe „Kalorien je Portion“ in einem Text (Eckdatenzeile der Vorlage, Nährwertzeile im Kochbuch); sonst null.</summary>
+    public static int? Kcal(string text)
+    {
+        foreach (var line in text.Split('\n'))
+            if (KcalPer.Match(line) is { Success: true } m && int.TryParse(m.Groups["n"].Value, out var n) && n is > 0 and <= 5000) return n;
+        return null;
+    }
+
     /// <summary>Namen der Ordner von der Wurzel bis zum Ordner, mit " / " verbunden.</summary>
     public static Dictionary<string, string> FolderPaths(IEnumerable<NoteFolder> folders)
     {

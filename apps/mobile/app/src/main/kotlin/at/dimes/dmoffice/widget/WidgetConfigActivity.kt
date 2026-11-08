@@ -144,8 +144,13 @@ private fun ConfigScreen(initial: WidgetConfig, kind: String, taskLists: List<Ca
             Picker(stringResource(R.string.max_items), c.maxItems, listOf(5, 10, 20, 50, 100), { it.toString() }, { c = c.copy(maxItems = it) })
             if (isTasks || c.content != Content.Events) {
                 ToggleRow(stringResource(R.string.tasks_with_due_only), c.dueOnly) { c = c.copy(dueOnly = it) }
-                ToggleRow(stringResource(R.string.show_completed), c.showCompleted) { c = c.copy(showCompleted = it) }
+                if (!c.tapToComplete) ToggleRow(stringResource(R.string.show_completed), c.showCompleted) { c = c.copy(showCompleted = it) }
             }
+            // Einkaufs-/Checkliste: wohin Abgehakte im Widget kommen - eigene Wahl oder wie in der Liste
+            if (isTasks && c.tapToComplete)
+                Picker(stringResource(R.string.done_mode), c.doneMode, listOf("", "place", "bottom", "hide"),
+                    { ctx.getString(when (it) { "place" -> R.string.done_place; "bottom" -> R.string.done_bottom; "hide" -> R.string.done_hide; else -> R.string.done_like_list }) },
+                    { c = c.copy(doneMode = it) })
             // Einkaufs-/Checkliste zeigt genau eine Liste: beim Einschalten die erste gewaehlte (oder die erste ueberhaupt)
             if (isTasks) ToggleRow(stringResource(R.string.tap_to_complete), c.tapToComplete) { on ->
                 val one = (c.lists?.let { sel -> taskLists.firstOrNull { it.href in sel } } ?: taskLists.firstOrNull())?.href

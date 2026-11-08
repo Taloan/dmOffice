@@ -1,9 +1,9 @@
 import { Button, MessageBar, MessageBarBody, Spinner, Switch, Text, makeStyles, tokens } from '@fluentui/react-components'
-import { ArrowClockwise20Regular } from '@fluentui/react-icons'
+import { ArrowClockwise20Regular, ChevronDown16Regular, ChevronUp16Regular } from '@fluentui/react-icons'
 import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { useApp } from '../App'
-import { t } from '../i18n'
+import { t, tError } from '../i18n'
 import { fmtDay, fmtTime } from '../shell/hooks'
 import { Hint, Section } from './parts'
 
@@ -27,6 +27,8 @@ export function TextIndexSection() {
   const { fail } = useApp()
   const [st, setSt] = useState<Status | null>(null)
   const [busy, setBusy] = useState(false)
+  // Liste der nicht lesbaren Inhalte: anfangs zugeklappt
+  const [showErrors, setShowErrors] = useState(false)
 
   const load = () => api.get<Status>('/api/settings/textindex').then(setSt).catch(fail)
   useEffect(() => { load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
@@ -57,13 +59,14 @@ export function TextIndexSection() {
         <Switch label={t('Auch Texterkennung (OCR) für Bilder und gescannte PDFs')} checked={st.ocr && st.ocrAvailable}
           disabled={busy || !st.enabled || !st.ocrAvailable} onChange={(_, d) => save(true, d.checked)} />
         {!st.ocrAvailable
-          ? <Hint>{t('Auf diesem Server nicht verfügbar: {reason} Im Docker-Image von dmOffice ist Tesseract enthalten.', { reason: st.ocrReason ?? '' })}</Hint>
+          ? <Hint>{t('Auf diesem Server nicht verfügbar: {reason} Im Docker-Image von dmOffice ist Tesseract enthalten.', { reason: tError(st.ocrReason ?? '') })}</Hint>
           : <Hint>{t('Erkennt Text in Fotos und Scans (Deutsch und Englisch). Braucht deutlich mehr Rechenzeit als das Lesen von Textdateien – läuft im Hintergrund mit niedriger Priorität.')}</Hint>}
       </div>
       {st.enabled && <>
         <div className={s.stats}>
           <div className={s.stat}><span className={s.num}>{st.done}</span><Text size={200}>{t('erledigt')}</Text></div>
           <div className={s.stat}><span className={s.num}>{st.withText}</span><Text size={200}>{t('mit Text')}{st.byOcr > 0 ? ` (${t('{n} per OCR', { n: st.byOcr })})` : ''}</Text></div>
+          <div className={s.stat} title={t('Gelesen, aber nicht im Index: Dateityp ohne Text oder zu groß')}><span className={s.num}>{st.skipped}</span><Text size={200}>{t('übersprungen')}</Text></div>
           <div className={s.stat}><span className={s.num}>{st.pending}</span><Text size={200}>{t('offen')}</Text></div>
           <div className={s.stat}><span className={s.num}>{st.errors}</span><Text size={200}>{t('Fehler')}</Text></div>
         </div>
@@ -73,10 +76,14 @@ export function TextIndexSection() {
         </Hint>
         {st.recentErrors.length > 0 && (
           <MessageBar intent="warning"><MessageBarBody>
-            {t('Diese Inhalte ließen sich nicht lesen:')}
-            <ul className={s.errors}>
-              {st.recentErrors.map((e, i) => <li key={i}>{e.path ?? e.name}{e.note ? ` – ${e.note}` : ''}</li>)}
-            </ul>
+            {st.recentErrors.length === 1 ? t('Ein Inhalt ließ sich nicht lesen.') : t('{n} Inhalte ließen sich nicht lesen.', { n: st.recentErrors.length })}{' '}
+            <Button size="small" appearance="transparent" icon={showErrors ? <ChevronUp16Regular /> : <ChevronDown16Regular />} iconPosition="after"
+              aria-expanded={showErrors} onClick={() => setShowErrors(x => !x)}>{showErrors ? t('Ausblenden') : t('Anzeigen')}</Button>
+            {showErrors && (
+              <ul className={s.errors}>
+                {st.recentErrors.map((e, i) => <li key={i}>{e.path ?? e.name}{e.note ? ` – ${e.note}` : ''}</li>)}
+              </ul>
+            )}
           </MessageBarBody></MessageBar>
         )}
         <div>

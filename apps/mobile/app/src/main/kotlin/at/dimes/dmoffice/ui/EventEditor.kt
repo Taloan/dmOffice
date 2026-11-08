@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
@@ -57,6 +58,8 @@ fun ItemRouter(href: String, onClose: () -> Unit) {
     val app = App.get(LocalContext.current)
     var item by remember { mutableStateOf<ItemEntity?>(null) }
     var missing by remember { mutableStateOf(false) }
+    // Gezeigter Termin (Version 2): nur ansehen
+    if (at.dimes.dmoffice.data.ShownCalendars.isShown(href)) { ShownEventScreen(href, onClose); return }
     LaunchedEffect(href) { item = app.repo.item(href); if (item == null) missing = true }
     LaunchedEffect(missing) { if (missing) onClose() }
     item?.let { if (it.kind == KIND_TASK) TaskEditor(href, onClose) else EventEditor(href, 0L, onClose) }
@@ -81,6 +84,9 @@ fun EventEditor(href: String?, startMs: Long, onClose: () -> Unit) {
 
     var loaded by remember { mutableStateOf(href == null) }
     var existing by remember { mutableStateOf<ItemEntity?>(null) }
+    // „Im Chat …“ (Version 2)
+    var sendChat by remember { mutableStateOf<List<at.dimes.dmoffice.chat.ChatOutRef>?>(null) }
+    sendChat?.let { refs -> SendToChatDialog(refs, onDismiss = { sendChat = null }) { err -> sendChat = null; android.widget.Toast.makeText(ctx, err ?: ctx.getString(R.string.chat_sent_done), android.widget.Toast.LENGTH_SHORT).show() } }
     var calendars by remember { mutableStateOf<List<CalendarEntity>>(emptyList()) }
     var calendar by remember { mutableStateOf<CalendarEntity?>(null) }
     var title by remember { mutableStateOf("") }
@@ -164,6 +170,10 @@ fun EventEditor(href: String?, startMs: Long, onClose: () -> Unit) {
             title = { Text(stringResource(if (existing == null) R.string.new_event else R.string.edit_event)) },
             navigationIcon = { IconButton(onClick = onClose) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.close)) } },
             actions = {
+                existing?.let { ex -> IconButton(onClick = { scope.launch {
+                    val r = try { app.chat.itemRef("event", ex.calendarHref, ex.href) } catch (_: Exception) { null }
+                    if (r == null) android.widget.Toast.makeText(ctx, ctx.getString(R.string.chat_only_own), android.widget.Toast.LENGTH_LONG).show() else sendChat = listOf(r)
+                } }) { Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = stringResource(R.string.chat_in_chat)) } }
                 if (existing != null) IconButton(onClick = { confirmDelete = true }) { Icon(Icons.Default.Delete, contentDescription = stringResource(R.string.delete)) }
                 TextButton(onClick = { save() }, enabled = loaded) { Text(stringResource(R.string.save)) }
             }

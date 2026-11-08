@@ -1,11 +1,12 @@
 // Gemeinsames der Dateiablage: Eintraege, Pfade, Arten, Adressen, Symbole, Vorschaubilder.
 // Wird auch von der oeffentlichen Seite (PublicShare) benutzt - dort mit eigenen Adressen.
 import { useEffect, useRef, useState } from 'react'
+import { tokens } from '@fluentui/react-components'
 import {
   Folder20Filled, Document20Regular, Image20Regular, DocumentPdf20Regular, Video20Regular, MusicNote220Regular, FolderZip20Regular,
   DocumentText20Regular, Table20Regular, SlideText20Regular, DocumentCopy20Regular,
   Folder48Filled, Document48Regular, Image48Regular, DocumentPdf32Regular, Video48Regular, MusicNote224Regular, FolderZip24Regular,
-  DocumentText48Regular, Table48Regular, SlideText48Regular,
+  DocumentText48Regular, Table48Regular, SlideText48Regular, ShieldLock20Filled, ShieldLock48Filled,
 } from '@fluentui/react-icons'
 import { q } from '../api'
 import { t } from '../i18n'
@@ -15,9 +16,49 @@ export interface Item {
   created?: string; fileId?: number; etag?: string; favorite?: boolean; shared?: boolean
   /** Mit Personen geteilt (eigener Ordner) */
   sharedWith?: boolean
+  /** Ordner für WebDAV und Nextcloud ausgeblendet */
+  davHidden?: boolean | null
   /** Nur bei einem mit mir geteilten Ordner in "Mit mir geteilt": wem er gehoert, und ob ich darin schreiben darf */
-  owner?: string | null; canWrite?: boolean | null
+  owner?: string | null; canWrite?: boolean | null; showOnly?: boolean | null
+  /** Suche: im Inhalt gefunden (Volltextsuche), Ausschnitt mit U+E000/U+E001 um die Treffer */
+  snippet?: string | null
+  /** Galerie: weitere Dateien desselben Stapels (RAW zum JPG); das Item selbst ist das JPG */
+  stack?: Item[]
+  /** Ordner ist ein eigener Cryptomator-Tresor (vault.cryptomator darin) */
+  vault?: boolean
+  /** Eigener Cryptomator-Tresor, gerade offen */
+  vaultOpen?: boolean
 }
+
+const RAW_EXT = new Set(['.arw', '.cr2', '.cr3', '.nef', '.nrw', '.orf', '.rw2', '.raf', '.pef', '.dng', '.srw', '.3fr', '.erf'])
+const LEAD_EXT = ['.jpg', '.jpeg', '.heic', '.heif']
+/**
+ * JPG und RAW gleichen Namens im selben Ordner zu einem Stapel: das JPG steht vorn (Bild, Teilen, Chat), die RAW-Dateien
+ * hängen daran (Verschieben, Kopieren, Löschen, Herunterladen nehmen sie mit). Reihenfolge bleibt die der Liste.
+ */
+export function stackPhotos<T extends Item>(list: T[]): T[] {
+  const key = (i: Item) => i.path.slice(0, i.path.length - extOf(i.name).length).toLowerCase()
+  const byKey = new Map<string, T[]>()
+  // Nur, wo der Pfad auf den Namen endet - Album-Einträge („alb:…/Besitzer|Verweis“) nicht, sonst fielen fremde Fotos zusammen
+  for (const i of list) if (!i.isDir && i.path.endsWith(i.name)) { const k = key(i); byKey.set(k, [...(byKey.get(k) ?? []), i]) }
+  const lead = new Map<string, T>()
+  for (const [k, g] of byKey) {
+    if (g.length < 2 || !g.some(i => RAW_EXT.has(extOf(i.name)))) continue
+    const head = LEAD_EXT.map(e => g.find(i => extOf(i.name) === e)).find(Boolean)
+    if (head) lead.set(k, head)
+  }
+  if (!lead.size) return list
+  const out: T[] = []
+  for (const i of list) {
+    const h = i.isDir ? undefined : lead.get(key(i))
+    if (!h) out.push(i)
+    else if (h === i) out.push({ ...i, stack: byKey.get(key(i))!.filter(x => x !== i) })
+  }
+  return out
+}
+/** Stapel auflösen: das Item und seine RAW-Dateien. */
+export const unstack = <T extends Item>(list: T[]): Item[] => list.flatMap(i => [i, ...(i.stack ?? [])])
+
 
 /** Name des virtuellen Ordners in der Wurzel, solange andere etwas mit mir teilen. */
 export const WITH_ME = 'Mit mir geteilt'
@@ -35,7 +76,7 @@ export type Kind = 'folder' | 'image' | 'pdf' | 'doc' | 'sheet' | 'slides' | 'au
 
 const EXT: Record<string, Kind> = {}
 const add = (k: Kind, list: string) => list.split(' ').forEach(e => { EXT['.' + e] = k })
-add('image', 'jpg jpeg png gif webp bmp svg heic heif tif tiff ico jfif avif')
+add('image', 'jpg jpeg png gif webp bmp svg heic heif tif tiff ico jfif avif arw cr2 cr3 nef nrw orf rw2 raf pef dng srw 3fr erf')
 add('pdf', 'pdf')
 add('doc', 'doc docx odt rtf pages')
 add('sheet', 'xls xlsx ods csv numbers')
@@ -56,7 +97,7 @@ export function kindOf(i: { name: string; isDir: boolean; mime?: string | null }
 
 export const kindLabel = (k: Kind | string): string => ({
   folder: t('Ordner'), image: t('Bild'), pdf: 'PDF', doc: t('Dokument'), sheet: t('Tabelle'), slides: t('Präsentation'),
-  audio: t('Audio'), video: t('Video'), archive: t('Archiv'), text: t('Text'), other: t('Datei'),
+  audio: t('Audio'), video: t('Video'), archive: t('Archiv'), text: t('Textdatei'), other: t('Datei'),
 } as Record<string, string>)[k] ?? t('Datei')
 
 /** Filter in Liste und Suche. */
@@ -64,7 +105,9 @@ export const FILTERS: Kind[] = ['folder', 'image', 'pdf', 'doc', 'sheet', 'slide
 
 const FOLDER = '#E8A33D'
 
-export function KindIcon({ item, large }: { item: { name: string; isDir: boolean; mime?: string | null }; large?: boolean }) {
+export function KindIcon({ item, large }: { item: { name: string; isDir: boolean; mime?: string | null; vault?: boolean; vaultOpen?: boolean }; large?: boolean }) {
+  // Eigener Cryptomator-Tresor: Ordner mit Schloss, offen grün (wie der Tresor in der Seitenleiste)
+  if (item.vault) { const c = item.vaultOpen ? tokens.colorPaletteGreenForeground1 : FOLDER; return large ? <ShieldLock48Filled color={c} /> : <ShieldLock20Filled color={c} /> }
   const k = kindOf(item)
   const style = large ? { width: 48, height: 48 } : undefined
   if (large) switch (k) {
@@ -164,13 +207,39 @@ function videoFrame(url: string): Promise<Blob | null> {
   })
 }
 
-/** Vorschaubild mit Symbol als Ersatz; laedt erst, wenn es sichtbar wird. */
+/** Vorschauen, die in dieser Sitzung schon geladen wurden (liegen im Browser-Cache): sofort zeigen, ohne zu warten. */
+const thumbSeen = new Set<string>()
+
+/** Zuletzt gescrollt (irgendwo auf der Seite) - während schnellem Scrollen bleiben neue Vorschauen kurz Platzhalter. */
+let lastScroll = 0
+if (typeof window !== 'undefined') window.addEventListener('scroll', () => { lastScroll = Date.now() }, { capture: true, passive: true })
+
+/**
+ * Erst laden, wenn gerade nicht gescrollt wird (wie Immich: beim schnellen Scrollen Platzhalter). Welche Bilder überhaupt
+ * geladen werden, entscheidet der Browser selbst (loading="lazy": nur was in der Nähe des Sichtbaren liegt).
+ * Nicht mit IntersectionObserver: der meldete in manchen Browsern nichts - dann blieben alle Kacheln leer.
+ */
+function useScrollIdle(skip: boolean, ms = 150) {
+  const [go, setGo] = useState(skip)
+  useEffect(() => {
+    if (go) return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const tick = () => { if (Date.now() - lastScroll >= ms) setGo(true); else timer = setTimeout(tick, ms) }
+    tick()
+    return () => clearTimeout(timer)
+  }, [go]) // eslint-disable-line react-hooks/exhaustive-deps
+  return go
+}
+
+/** Vorschaubild mit Symbol als Ersatz; laedt erst, wenn es sichtbar wird und kurz stehen bleibt. */
 export function Thumb({ item, source, size = 256, className, fallbackLarge, fit = 'cover' }: {
   item: Item; source: Source; size?: number; className?: string; fallbackLarge?: boolean; fit?: 'cover' | 'contain'
 }) {
   const [state, setState] = useState<'load' | 'ok' | 'none'>(hasThumb(item) ? 'load' : 'none')
   const [n, setN] = useState(0)
   const ref = useRef<HTMLImageElement>(null)
+  const url = source.thumb(item, size) + (n ? `&n=${n}` : '')
+  const go = useScrollIdle(thumbSeen.has(url))
   // Nur bei einer anderen Datei zuruecksetzen - nicht beim ersten Zeichnen: Aus dem Browser-Cache kommt das Bild oft
   // schon vor diesem Effekt an (onLoad gelaufen), ein Zuruecksetzen danach liesse fuer immer nur das Symbol stehen.
   const shown = useRef(item.path + '|' + item.etag)
@@ -198,9 +267,9 @@ export function Thumb({ item, source, size = 256, className, fallbackLarge, fit 
   return (
     <>
       {state === 'load' && <KindIcon item={item} large={fallbackLarge} />}
-      <img ref={ref} className={className} loading="lazy" alt="" draggable={false}
+      {go && <img ref={ref} className={className} loading="lazy" alt="" draggable={false}
         style={state === 'ok' ? { objectFit: fit } : { objectFit: fit, position: 'absolute', width: 1, height: 1, opacity: 0.01 }}
-        src={source.thumb(item, size) + (n ? `&n=${n}` : '')} onLoad={() => setState('ok')} onError={failed} />
+        src={url} onLoad={() => { thumbSeen.add(url); setState('ok') }} onError={failed} />}
     </>
   )
 }

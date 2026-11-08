@@ -54,6 +54,33 @@ public class SharedFilesTests : IClassFixture<SharedCalendarFixture>
     private UserDb DbOf(string login) => _fx.Factory.Services.GetRequiredService<Spaces>().Get(_fx.Users[login].Id).Db;
 
     [Fact]
+    public async Task Einzelne_Datei_teilen()
+    {
+        var f = Unique("Akten");
+        await Mkdir("anna", f);
+        Assert.Equal(HttpStatusCode.OK, (await Upload("anna", f, "bericht.txt", "Inhalt")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await Upload("anna", f, "geheim.txt", "nein")).StatusCode);
+        var body = new { path = f + "/bericht.txt", members = new[] { _fx.Users["ben"].Id }, readOnly = new[] { _fx.Users["ben"].Id } };
+        Assert.Equal(HttpStatusCode.OK, (await _fx.As("anna").PutAsJsonAsync("/api/files/shares", body)).StatusCode);
+
+        // Bei Ben unter „Mit mir geteilt“ als Datei, die Endung bleibt hinten; der Rest des Ordners bleibt verborgen
+        var path = $"{Mit}/bericht (von Anna).txt";
+        var top = await Items("ben", Mit);
+        var entry = top.EnumerateArray().Single(x => x.GetProperty("path").GetString() == path);
+        Assert.False(entry.GetProperty("isDir").GetBoolean());
+        Assert.Equal("Inhalt", await (await _fx.As("ben").GetAsync($"/api/files/download?path={Q(path)}")).Content.ReadAsStringAsync());
+        Assert.DoesNotContain(top.EnumerateArray(), x => x.GetProperty("name").GetString()!.StartsWith("geheim"));
+        Assert.Contains((await Json(await _fx.As("ben").GetAsync("/api/files/search?q=bericht"))).GetProperty("items").EnumerateArray(), x => x.GetProperty("path").GetString() == path);
+        // Nur lesen: nicht überschreiben, nicht löschen
+        Assert.Equal(HttpStatusCode.Forbidden, (await _fx.As("ben").PostAsJsonAsync("/api/files/save", new { path, text = "neu", create = false })).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await _fx.As("ben").PostAsJsonAsync("/api/files/delete", new { paths = new[] { path } })).StatusCode);
+
+        // Widerruf: weg
+        Assert.Equal(HttpStatusCode.OK, (await _fx.As("anna").PutAsJsonAsync("/api/files/shares", new { path = f + "/bericht.txt", members = Array.Empty<string>() })).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, await Get("ben", $"/api/files/download?path={Q(path)}"));
+    }
+
+    [Fact]
     public async Task Lesen_und_Bearbeiten_mit_Unterordnern_und_Widerruf()
     {
         var f = Unique("Fotos");
@@ -149,18 +176,14 @@ public class SharedFilesTests : IClassFixture<SharedCalendarFixture>
     }
 
     [Fact]
-    public async Task Nur_Ordner_und_nicht_notizi()
+    public async Task Nicht_notizi()
     {
-        var f = Unique("Doku");
-        await Mkdir("anna", f);
-        await Upload("anna", f, "a.txt", "a");
-        // Einzelne Dateien teilt man per Link
-        Assert.Equal(HttpStatusCode.BadRequest, (await _fx.As("anna").PutAsJsonAsync("/api/files/shares", new { path = f + "/a.txt", members = new[] { _fx.Users["ben"].Id }, readOnly = Array.Empty<string>() })).StatusCode);
         // Der Abgleichordner von notizi und alles darin ist tabu - auch ein Ordner darüber, der ihn enthält
         var space = _fx.Factory.Services.GetRequiredService<Spaces>().Get(_fx.Users["anna"].Id);
         var root = FileStore.Normalize(space.Settings.Notizi.Root);
         FileStore.EnsureDir(space.Db, root + "/Unter");
-        foreach (var p in new[] { root, root + "/Unter" })
+        FileStore.PutAsync(space.Db, root + "/n.md", new MemoryStream("x"u8.ToArray()), "text/markdown").GetAwaiter().GetResult();
+        foreach (var p in new[] { root, root + "/Unter", root + "/n.md" })
         {
             var r = await _fx.As("anna").PutAsJsonAsync("/api/files/shares", new { path = p, members = new[] { _fx.Users["ben"].Id }, readOnly = Array.Empty<string>() });
             Assert.True(r.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.BadRequest, $"{p}: {r.StatusCode}");

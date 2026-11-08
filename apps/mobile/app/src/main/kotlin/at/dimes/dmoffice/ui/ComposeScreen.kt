@@ -6,6 +6,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.activity.result.PickVisualMediaRequest
@@ -45,6 +46,7 @@ import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.PhoneAndroid
+import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Checkbox
@@ -100,6 +102,8 @@ data class ComposeInit(
     val inReplyTo: String? = null, val references: List<String> = emptyList(),
     val replyFolder: String? = null, val replyUid: Long? = null,
     val forwardFolder: String? = null, val forwardUid: Long? = null, val forwardAttachments: List<Int> = emptyList(),
+    /** Antwort auf eine Mail an diesen Catchall-Alias, der als Absender erlaubt ist (Mail/CatchallAliases.cs). */
+    val alias: String? = null,
 ) {
     fun encode(): String = java.net.URLEncoder.encode(Json.encodeToString(this), "UTF-8")
 
@@ -112,11 +116,12 @@ data class ComposeInit(
         fun reply(ctx: Context, account: String, m: Message, all: Boolean): ComposeInit {
             val me = App.get(ctx).prefs.account.value?.login ?: ""
             val replyTo = (m.replyTo.ifEmpty { listOfNotNull(m.from) }).map { it.full }
-            val others = if (all) (m.to + m.cc).filter { !it.address.equals(me, true) && replyTo.none { r -> r.contains(it.address, true) } }.map { it.full } else emptyList()
+            val others = if (all) (m.to + m.cc).filter { !it.address.equals(me, true) && !it.address.equals(m.alias, true) && replyTo.none { r -> r.contains(it.address, true) } }.map { it.full } else emptyList()
             val refs = (m.references + listOfNotNull(m.messageId)).distinct()
             return ComposeInit(account, to = replyTo.joinToString(", "), cc = others.joinToString(", "),
                 subject = if (m.subject.startsWith("Re:", true)) m.subject else "Re: " + m.subject,
-                body = quote(ctx, m), inReplyTo = m.messageId, references = refs, replyFolder = m.folder, replyUid = m.uid)
+                body = quote(ctx, m), inReplyTo = m.messageId, references = refs, replyFolder = m.folder, replyUid = m.uid,
+                alias = m.alias?.takeIf { m.aliasReply })
         }
 
         fun forward(ctx: Context, account: String, m: Message): ComposeInit = ComposeInit(
@@ -165,9 +170,12 @@ fun ComposeScreen(init: ComposeInit, onClose: () -> Unit) {
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var from by remember { mutableStateOf<String?>(null) }
+    var fromAlias by remember { mutableStateOf(init.alias != null) }
     var attachMenu by remember { mutableStateOf(false) }
     var pickFiles by remember { mutableStateOf(false) }
+    var pickGallery by remember { mutableStateOf(false) }
     var pickNote by remember { mutableStateOf(false) }
+    val pgp = rememberPgpSign(init.account)
 
     LaunchedEffect(init.account) {
         from = try { app.mail.accounts().firstOrNull { it.id == init.account }?.let { it.email.ifBlank { it.name } } } catch (_: Exception) { null }
@@ -189,26 +197,38 @@ fun ComposeScreen(init: ComposeInit, onClose: () -> Unit) {
         if (to.isBlank() && cc.isBlank() && bcc.isBlank()) { error = ctx.getString(R.string.no_recipient); return }
         busy = true; error = null
         scope.launch {
+            val html = "<div style=\"font-family:sans-serif;font-size:14px\">" + android.text.Html.escapeHtml(body).replace("\n", "<br>") + "</div>"
+            // Namen im Formular eindeutig machen - der Server erkennt Links an ihnen
+            val used = mutableSetOf<String>()
+            val local = attachments.filterIsInstance<Attachment.Local>().map { a ->
+                val base = a.name.substringBeforeLast('.')
+                val ext = if ('.' in a.name) "." + a.name.substringAfterLast('.') else ""
+                var n = a.name; var k = 2
+                while (!used.add(n)) { n = "$base ($k)$ext"; k++ }
+                a to n
+            }
+            val stored = attachments.filterIsInstance<Attachment.Stored>()
+            val draft = Draft(to, cc, bcc, subject, html, init.inReplyTo, init.references, init.replyFolder, init.replyUid,
+                init.forwardFolder, init.forwardUid, init.forwardAttachments,
+                filePaths = stored.filter { !it.asLink }.map { it.path }, linkPaths = stored.filter { it.asLink }.map { it.path },
+                linkUploads = local.filter { it.first.asLink }.map { it.second }, from = init.alias?.takeIf { fromAlias },
+                sign = if (pgp.available) pgp.sign else null)
+            val files = local.map { (a, n) -> Triple(n, a.mime, a.bytes) }
             try {
-                val html = "<div style=\"font-family:sans-serif;font-size:14px\">" + android.text.Html.escapeHtml(body).replace("\n", "<br>") + "</div>"
-                // Namen im Formular eindeutig machen - der Server erkennt Links an ihnen
-                val used = mutableSetOf<String>()
-                val local = attachments.filterIsInstance<Attachment.Local>().map { a ->
-                    val base = a.name.substringBeforeLast('.')
-                    val ext = if ('.' in a.name) "." + a.name.substringAfterLast('.') else ""
-                    var n = a.name; var k = 2
-                    while (!used.add(n)) { n = "$base ($k)$ext"; k++ }
-                    a to n
-                }
-                val stored = attachments.filterIsInstance<Attachment.Stored>()
-                val warning = app.mail.send(init.account, Draft(to, cc, bcc, subject, html, init.inReplyTo, init.references, init.replyFolder, init.replyUid,
-                    init.forwardFolder, init.forwardUid, init.forwardAttachments,
-                    filePaths = stored.filter { !it.asLink }.map { it.path }, linkPaths = stored.filter { it.asLink }.map { it.path },
-                    linkUploads = local.filter { it.first.asLink }.map { it.second }),
-                    local.map { (a, n) -> Triple(n, a.mime, a.bytes) })
+                val warning = app.mail.send(init.account, draft, files)
                 android.widget.Toast.makeText(ctx, if (warning == null) ctx.getString(R.string.sent_ok) else ctx.getString(R.string.sent_warning, warning), android.widget.Toast.LENGTH_LONG).show()
                 onClose()
-            } catch (e: Exception) { error = e.message } finally { busy = false }
+            } catch (e: Exception) {
+                // Version 2: ohne Netz in den Postausgang - die Mail geht raus, sobald der Server erreichbar ist
+                if (at.dimes.dmoffice.sync.Outbox.offline(e)) {
+                    try {
+                        val kept = files.map { (name, mime, bytes) -> at.dimes.dmoffice.sync.OutFile(at.dimes.dmoffice.sync.Outbox.keep(ctx, name, bytes).path, name, mime) }
+                        at.dimes.dmoffice.sync.Outbox.addMail(ctx, init.account, app.mail.draftJson(draft), subject, kept)
+                        android.widget.Toast.makeText(ctx, ctx.getString(R.string.mail_queued), android.widget.Toast.LENGTH_LONG).show()
+                        onClose()
+                    } catch (e2: Exception) { error = e2.message }
+                } else error = e.message
+            } finally { busy = false }
         }
     }
 
@@ -224,12 +244,15 @@ fun ComposeScreen(init: ComposeInit, onClose: () -> Unit) {
                             onClick = { attachMenu = false; media.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) })
                         DropdownMenuItem(text = { Text(stringResource(R.string.attach_from_device)) }, leadingIcon = { Icon(Icons.Outlined.PhoneAndroid, null) },
                             onClick = { attachMenu = false; documents.launch(arrayOf("*/*")) })
+                        DropdownMenuItem(text = { Text(stringResource(R.string.attach_from_gallery)) }, leadingIcon = { Icon(Icons.Outlined.PhotoLibrary, null) },
+                            onClick = { attachMenu = false; pickGallery = true })
                         DropdownMenuItem(text = { Text(stringResource(R.string.attach_from_files)) }, leadingIcon = { Icon(Icons.Outlined.Cloud, null) },
                             onClick = { attachMenu = false; pickFiles = true })
                         DropdownMenuItem(text = { Text(stringResource(R.string.attach_note)) }, leadingIcon = { Icon(Icons.AutoMirrored.Outlined.StickyNote2, null) },
                             onClick = { attachMenu = false; pickNote = true })
                     }
                 }
+                PgpSignButton(pgp)
                 IconButton(onClick = { send() }, enabled = !busy) {
                     if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                     else Icon(Icons.AutoMirrored.Filled.Send, contentDescription = stringResource(R.string.send), tint = MaterialTheme.colorScheme.primary)
@@ -238,7 +261,11 @@ fun ComposeScreen(init: ComposeInit, onClose: () -> Unit) {
         )
     }) { pad ->
         Column(Modifier.padding(pad).fillMaxSize().verticalScroll(rememberScrollState())) {
-            from?.let { HeaderRow(stringResource(R.string.from_label)) { Text(it, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(vertical = 14.dp)) } }
+            from?.let { HeaderRow(stringResource(R.string.from_label)) { Text(if (fromAlias && init.alias != null) init.alias else it, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(vertical = 14.dp)) } }
+            init.alias?.let { a -> HeaderRow("") {
+                Text(stringResource(R.string.alias_send_as, a), Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                androidx.compose.material3.Switch(checked = fromAlias, onCheckedChange = { fromAlias = it }, modifier = Modifier.padding(end = 8.dp))
+            } }
             HeaderRow(stringResource(R.string.to)) {
                 PlainField(to, { to = it }, Modifier.weight(1f), KeyboardType.Email)
                 IconButton(onClick = { showCc = !showCc }) {
@@ -263,6 +290,8 @@ fun ComposeScreen(init: ComposeInit, onClose: () -> Unit) {
                             DropdownMenuItem(text = { Text(stringResource(R.string.attach_as_file)) }, leadingIcon = { Icon(Icons.Default.AttachFile, null) },
                                 trailingIcon = { if (!a.asLink) Icon(Icons.Default.Check, null) },
                                 onClick = { menu = false; attachments = attachments.mapIndexed { j, x -> if (j == i) x.linked(false) else x } })
+                            // Fotos aus Galerie-Ordnern (externe Ordner) liegen nicht in der Ablage - kein Freigabelink
+                            if (!(a is Attachment.Stored && a.path.startsWith("ext:")))
                             DropdownMenuItem(text = { Text(stringResource(R.string.attach_as_link)) }, leadingIcon = { Icon(Icons.Default.Link, null) },
                                 trailingIcon = { if (a.asLink) Icon(Icons.Default.Check, null) },
                                 onClick = { menu = false; attachments = attachments.mapIndexed { j, x -> if (j == i) x.linked(true) else x } })
@@ -282,6 +311,12 @@ fun ComposeScreen(init: ComposeInit, onClose: () -> Unit) {
     if (pickFiles) StoredFilePicker(onDismiss = { pickFiles = false }, onPick = { picked ->
         pickFiles = false
         attachments = attachments + picked.filter { p -> attachments.none { it is Attachment.Stored && it.path == p.path } }.map { Attachment.Stored(it.path, it.name, it.size, asLink = it.size >= LINK_FROM) }
+    })
+    // Fotos aus der Galerie von dmOffice: der Server hängt sie an (auch aus Galerie-Ordnern, „ext:“ - die gehen nicht als Link)
+    if (pickGallery) GalleryPhotoPicker(onDismiss = { pickGallery = false }, onPick = { picked ->
+        pickGallery = false
+        attachments = attachments + picked.filter { p -> attachments.none { it is Attachment.Stored && it.path == p.path } }
+            .map { Attachment.Stored(it.path, it.name, it.size, asLink = !it.path.startsWith("ext:") && it.size >= LINK_FROM) }
     })
     if (pickNote) NotePicker(onDismiss = { pickNote = false }, onPick = { id ->
         pickNote = false
@@ -320,10 +355,13 @@ private fun PlainField(value: String, onChange: (String) -> Unit, modifier: Modi
         ))
 }
 
-/** Dateien aus der eigenen Dateiablage waehlen - ganzer Bildschirm, mit Vorschaubildern; Ordner oeffnen, Dateien ankreuzen. */
+/**
+ * Dateien aus der eigenen Dateiablage waehlen - ganzer Bildschirm, mit Vorschaubildern; Ordner oeffnen, Dateien ankreuzen.
+ * attached: schon angehaengt (Tagebuch) - steht ausgegraut da und laesst sich nicht noch einmal waehlen.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun StoredFilePicker(onDismiss: () -> Unit, onPick: (List<FileItem>) -> Unit) {
+internal fun StoredFilePicker(onDismiss: () -> Unit, attached: (FileItem) -> Boolean = { false }, onPick: (List<FileItem>) -> Unit) {
     val ctx = LocalContext.current
     val app = App.get(ctx)
     var path by remember { mutableStateOf("") }
@@ -335,7 +373,7 @@ private fun StoredFilePicker(onDismiss: () -> Unit, onPick: (List<FileItem>) -> 
         try { items = withContext(Dispatchers.IO) { app.files.list(path).items } } catch (e: Exception) { error = e.message; items = emptyList() }
     }
     val up = { if (path.isEmpty()) onDismiss() else path = path.substringBeforeLast('/', "") }
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         BackHandler { up() }
         Scaffold(topBar = {
             TopAppBar(
@@ -350,16 +388,18 @@ private fun StoredFilePicker(onDismiss: () -> Unit, onPick: (List<FileItem>) -> 
                 else LazyColumn(Modifier.fillMaxSize()) {
                     items(list, key = { it.path }) { f ->
                         val checked = picked.any { it.path == f.path }
-                        Row(Modifier.fillMaxWidth().clickable {
+                        val already = !f.isDir && attached(f)
+                        Row(Modifier.fillMaxWidth().clickable(enabled = !already) {
                             if (f.isDir) path = f.path else if (checked) picked.removeAll { it.path == f.path } else picked.add(f)
-                        }.padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        }.padding(horizontal = 16.dp, vertical = 8.dp).then(if (already) Modifier.alpha(0.45f) else Modifier), verticalAlignment = Alignment.CenterVertically) {
                             ThumbOrIcon(f, Modifier.size(48.dp).clip(RoundedCornerShape(6.dp)), 28.dp)
                             Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
                                 Text(f.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                val sub = listOfNotNull(if (f.isDir) null else Formatter.formatShortFileSize(ctx, f.size), f.modifiedMs.takeIf { it > 0 }?.let { Fmt.date(it) })
+                                val sub = listOfNotNull(if (already) stringResource(R.string.journal_already_attached) else null,
+                                    if (f.isDir) null else Formatter.formatShortFileSize(ctx, f.size), f.modifiedMs.takeIf { it > 0 }?.let { Fmt.date(it) })
                                 if (sub.isNotEmpty()) Text(sub.joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
-                            if (!f.isDir) Checkbox(checked = checked, onCheckedChange = { if (it) picked.add(f) else picked.removeAll { p -> p.path == f.path } })
+                            if (!f.isDir) Checkbox(checked = checked || already, enabled = !already, onCheckedChange = { if (it) picked.add(f) else picked.removeAll { p -> p.path == f.path } })
                         }
                     }
                 }
@@ -375,7 +415,7 @@ private fun NotePicker(onDismiss: () -> Unit, onPick: (Long) -> Unit) {
     val app = App.get(LocalContext.current)
     var q by remember { mutableStateOf("") }
     val notes by remember(q) { app.notes.search(q) }.collectAsState(initial = emptyList())
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         Scaffold(topBar = {
             TopAppBar(
                 title = { Text(stringResource(R.string.attach_note)) },

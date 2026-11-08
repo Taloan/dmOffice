@@ -49,6 +49,63 @@ public class ApiHardeningTests : IClassFixture<FilesServerFixture>
     }
 
     [Fact]
+    public async Task Anmeldung_aus_neuem_Browser_wird_gemeldet()
+    {
+        int Notices() => DmOffice.Core.SecurityNotice.Of(_fx.Db).Count(e => e.What.Contains("neuer Browser"));
+        _fx.Db.Set("auth.known-browsers", null);
+        var before = Notices();
+        // Erste Anmeldung nach Einführung: still als bekannt
+        var first = await SignedIn();
+        Assert.Equal(before, Notices());
+        // Derselbe Browser noch einmal: nichts
+        var again = await first.PostAsJsonAsync("/api/auth/login", new { login = L, password = Password });
+        Assert.True(again.IsSuccessStatusCode);
+        Assert.Equal(before, Notices());
+        // Ein anderer Browser: gemeldet
+        await SignedIn();
+        Assert.Equal(before + 1, Notices());
+        Assert.Equal("Firefox unter Windows", Auth.BrowserName("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0"));
+    }
+
+    [Fact]
+    public async Task Sitzungsliste_zeigt_Browser_und_meldet_einzelne_ab()
+    {
+        var a = await SignedIn();
+        var b = await SignedIn();
+        var list = await a.GetFromJsonAsync<System.Text.Json.JsonElement>("/api/auth/sessions");
+        var mine = list.EnumerateArray().Single(x => x.GetProperty("current").GetBoolean());
+        var other = (await b.GetFromJsonAsync<System.Text.Json.JsonElement>("/api/auth/sessions")).EnumerateArray().Single(x => x.GetProperty("current").GetBoolean());
+        Assert.NotEqual(mine.GetProperty("id").GetString(), other.GetProperty("id").GetString());
+        Assert.Contains(list.EnumerateArray(), x => x.GetProperty("id").GetString() == other.GetProperty("id").GetString());
+
+        // Browser b aus der Liste abmelden: sein Cookie gilt nicht mehr, a bleibt angemeldet
+        Assert.Equal(HttpStatusCode.OK, (await a.DeleteAsync("/api/auth/sessions/" + other.GetProperty("id").GetString())).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await b.GetAsync("/api/auth/sessions")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await a.GetAsync("/api/auth/sessions")).StatusCode);
+
+        // Abmelden nimmt den eigenen Eintrag heraus
+        var c = await SignedIn();
+        var cId = (await c.GetFromJsonAsync<System.Text.Json.JsonElement>("/api/auth/sessions")).EnumerateArray().Single(x => x.GetProperty("current").GetBoolean()).GetProperty("id").GetString();
+        await c.PostAsync("/api/auth/logout", null);
+        Assert.DoesNotContain((await a.GetFromJsonAsync<System.Text.Json.JsonElement>("/api/auth/sessions")).EnumerateArray(), x => x.GetProperty("id").GetString() == cId);
+    }
+
+    [Fact]
+    public async Task Login_Flow_warnt_bei_Anmeldung_aus_anderem_Netz()
+    {
+        // Jemand beginnt die Anmeldung woanders und schickt den Link (Phishing per Zustimmung)
+        var foreign = DmOffice.Dav.NextcloudApi.Flows.Start("Nextcloud Desktop", v1: false, "203.0.113.7");
+        var page = await (await _fx.Client(signedIn: false).GetAsync("/index.php/login/v2/flow/" + foreign.LoginToken)).Content.ReadAsStringAsync();
+        Assert.Contains("anderen Netz", page);
+        Assert.Contains("nicht geprüft", page);
+        // Aus demselben Netz: keine Warnung
+        var anon = _fx.Client(signedIn: false);
+        var start = await (await anon.PostAsync("/index.php/login/v2", null)).Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+        var own = new Uri(start.GetProperty("login").GetString()!).PathAndQuery;
+        Assert.DoesNotContain("anderen Netz", await (await anon.GetAsync(own)).Content.ReadAsStringAsync());
+    }
+
+    [Fact]
     public async Task Login_Flow_verlangt_auch_angemeldet_das_Passwort()
     {
         var anon = _fx.Client(signedIn: false);
@@ -100,6 +157,33 @@ public class ApiHardeningTests : IClassFixture<FilesServerFixture>
     }
 
     [Fact]
+    public async Task Bekannter_Browser_hat_eigenen_Zaehler_fuer_Fehlversuche()
+    {
+        var services = _fx.Factory.Services;
+        var login = "bekannt" + Guid.NewGuid().ToString("N")[..6];
+        Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService<DmOffice.Core.UserStore>(services)
+            .Create(login, "Bekannt", "geheim-123456", isAdmin: false);
+        // Die richtige Person hat sich in diesem Browser schon einmal angemeldet
+        var browser = _fx.Client(signedIn: false, cookies: true);
+        Assert.Equal(HttpStatusCode.OK, (await browser.PostAsJsonAsync("/api/auth/login", new { login, password = "geheim-123456" })).StatusCode);
+        await browser.PostAsync("/api/auth/logout", null);
+
+        // Fehlversuche von einer anderen Adresse
+        var attacker = _fx.Client(signedIn: false);
+        for (int i = 0; i < 6; i++) await attacker.PostAsJsonAsync("/api/auth/login", new { login, password = "falsch" + i });
+        // Neuer Browser: wie bisher gesperrt
+        Assert.Equal((HttpStatusCode)429, (await _fx.Client(signedIn: false).PostAsJsonAsync("/api/auth/login", new { login, password = "geheim-123456" })).StatusCode);
+        // Bekannter Browser: kommt hinein
+        Assert.Equal(HttpStatusCode.OK, (await browser.PostAsJsonAsync("/api/auth/login", new { login, password = "geheim-123456" })).StatusCode);
+        // ... der Zähler des Namens bleibt dabei stehen
+        Assert.Equal((HttpStatusCode)429, (await _fx.Client(signedIn: false).PostAsJsonAsync("/api/auth/login", new { login, password = "geheim-123456" })).StatusCode);
+        // Falsche Passwörter im bekannten Browser bremsen nur ihn selbst
+        await browser.PostAsync("/api/auth/logout", null);
+        for (int i = 0; i < 5; i++) await browser.PostAsJsonAsync("/api/auth/login", new { login, password = "vertippt" + i });
+        Assert.Equal((HttpStatusCode)429, (await browser.PostAsJsonAsync("/api/auth/login", new { login, password = "geheim-123456" })).StatusCode);
+    }
+
+    [Fact]
     public async Task Gespeichertes_Mailpasswort_geht_nicht_an_einen_neuen_Server()
     {
         var c = await SignedIn();
@@ -146,5 +230,30 @@ public class ApiHardeningTests : IClassFixture<FilesServerFixture>
             account.smtpHost, account.smtpPort, account.smtpUser, account.smtpPassword,
         });
         Assert.Equal(HttpStatusCode.BadRequest, local.StatusCode);
+    }
+
+    [Fact]
+    public async Task Browser_Umschlag_gilt_nur_mit_gueltiger_Anmeldung()
+    {
+        var c = await SignedIn();
+        using var mine = System.Security.Cryptography.ECDiffieHellman.Create(System.Security.Cryptography.ECCurve.NamedCurves.nistP256);
+        var reg = await c.PostAsJsonAsync("/api/e2e/register", new { pubKey = E2e.ExportPublic(mine) });
+        Assert.True(reg.IsSuccessStatusCode, await reg.Content.ReadAsStringAsync());
+        var r = System.Text.Json.JsonDocument.Parse(await reg.Content.ReadAsStringAsync()).RootElement;
+        var url = $"/api/e2e/{r.GetProperty("userId").GetString()}/{r.GetProperty("deviceId").GetString()}";
+        HttpRequestMessage Envelope()
+        {
+            var req = new HttpRequestMessage(HttpMethod.Post, url) { Content = new ByteArrayContent(new byte[40]) };
+            req.Headers.Add(E2e.CounterHeader, "1");
+            return req;
+        }
+
+        // Mit Anmeldung: der Umschlag wird geprüft (hier unecht: 400); ohne Cookie gilt das Gerät nicht (401)
+        Assert.Equal(HttpStatusCode.BadRequest, (await c.SendAsync(Envelope())).StatusCode);
+        var stranger = _fx.Client(signedIn: false, cookies: false);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await stranger.SendAsync(Envelope())).StatusCode);
+        // Nach dem Abmelden auch nicht mehr
+        await c.PostAsync("/api/auth/logout", null);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await c.SendAsync(Envelope())).StatusCode);
     }
 }

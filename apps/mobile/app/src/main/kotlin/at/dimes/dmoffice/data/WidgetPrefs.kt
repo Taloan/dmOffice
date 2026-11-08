@@ -54,6 +54,8 @@ data class WidgetConfig(
     val lists: Set<String>? = null,
     /** Aufgaben-Widget als Einkaufs-/Checkliste: kein Kaestchen, Tippen auf die Zeile hakt ab. */
     val tapToComplete: Boolean = false,
+    /** Einkaufs-/Checkliste: Abgehakte "place", "bottom", "hide"; leer = wie in der Liste eingestellt. */
+    val doneMode: String = "",
 ) {
     companion object {
         val DAY_OPTIONS = listOf(1, 2, 3, 7, 14, 30, 60)
@@ -88,6 +90,7 @@ class WidgetPrefs(context: Context) {
             showDayList = sp.getBoolean(k + "dayList", defaults.showDayList),
             lists = sp.getStringSet(k + "lists", null)?.toSet()?.takeIf { it.isNotEmpty() },
             tapToComplete = sp.getBoolean(k + "tapDone", defaults.tapToComplete),
+            doneMode = sp.getString(k + "doneMode", null) ?: defaults.doneMode,
         )
     }
 
@@ -99,7 +102,7 @@ class WidgetPrefs(context: Context) {
             .putInt(k + "max", c.maxItems)
             .putString(k + "layout", c.rowLayout.name).putString(k + "mark", c.colorMark.name).putString(k + "timePos", c.timePos.name)
             .putString(k + "dayHeader", c.dayHeader.name).putBoolean(k + "grid", c.showMonthGrid).putString(k + "monthMark", c.monthMark.name)
-            .putBoolean(k + "dayList", c.showDayList).putBoolean(k + "tapDone", c.tapToComplete)
+            .putBoolean(k + "dayList", c.showDayList).putBoolean(k + "tapDone", c.tapToComplete).putString(k + "doneMode", c.doneMode)
             .apply { if (c.lists.isNullOrEmpty()) remove(k + "lists") else putStringSet(k + "lists", c.lists) }.apply()
     }
 

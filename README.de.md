@@ -4,15 +4,15 @@
 
 **Webseite: [dmoffice.de](https://dmoffice.de)** (deutsch) – Funktionen, Anleitungen und Neuigkeiten · **Quellcode und Fehlermeldungen:** hier auf GitHub
 
-> ## 🎉 Neu in 1.5
-> - **Dateien:** eigene Dateiablage mit Teilen (Personen und Links), früheren Versionen, Papierkorb, Volltextsuche mit Texterkennung, **Fotos** als Zeitleiste – und **Office-Bearbeitung im Browser** (Collabora / ONLYOFFICE)
-> - **Einladungen** an Personen in und außerhalb von dmOffice, **geteilte Kalender, Aufgaben- und Einkaufslisten, Notizordner**
-> - **Essensplan:** Frühstück, Mittag und Abend je Woche, Rezepte aus den Notizen, Zutaten direkt auf die Einkaufsliste
-> - **Mail:** Anhänge aus der Dateiablage oder als Freigabelink, Phishing-Warnung, sortierbare Mailliste
-> - **Android-App:** Dateiablage und automatisches Hochladen von Fotos, Essensplan, Termine per Ziehen verschieben, **Checklisten auch offline abhaken**
-> - **Kontingent je Benutzer**, Update-Sicherheit (Sicherung vor Datenänderungen), Sicherheitsaudit
+> ## 🎉 Neu in 2.0
+> - **Chat** mit Unterhaltungen, Gruppen, Sprachnachrichten und Push – dazu **Pukki**, der Assistent: Termine, Aufgaben, Einkaufsliste, Essensplan, Erinnerungen und Timer aus freien Sätzen
+> - **Galerie:** Zeitleiste, Filter, RAW, Serverordner, Karte, Alben und Links, Sterne und Farben, **Foto-Bearbeitung**
+> - **Audiothek:** eigene Musikordner mit Covern, Suche und Playlists
+> - **Tresor:** ein eigens verschlüsselter Bereich je Person (eigenes Passwort oder Passkey) für Dateien und Notizen
+> - **DMS**, Startseite **Übersicht**, **externe Ordner**, **Core-Backup** nach S3/WebDAV, **Datenexport**, besserer **Spamfilter**, **Microsoft-Konten**
+> - Sicherheitsaudit durchgeführt
 >
-> [Release-Notes](https://github.com/Taloan/dmOffice/releases/tag/v1.5.0) · [Android-App herunterladen](https://github.com/Taloan/dmOffice/releases/latest/download/dmOffice.apk)
+> **Erst den Server aktualisieren, dann die App.** [Release-Notes](https://github.com/Taloan/dmOffice/releases/tag/v2.0.0) · [Android-App herunterladen](https://github.com/Taloan/dmOffice/releases/latest/download/dmOffice.apk)
 
 Ein selbst gehostetes Büro im Browser: E-Mail, Kalender, Kontakte, Aufgaben, Notizen und Dateien – mit einem eigenen Server dazu. Alles läuft in einem Container, mit einer verschlüsselten Datenbank je Benutzer.
 
@@ -24,6 +24,11 @@ Ein selbst gehostetes Büro im Browser: E-Mail, Kalender, Kontakte, Aufgaben, No
 | **Aufgaben** | Mein Tag, Wichtig, Geplant, Listen – als VTODO, also auch in jeder Aufgaben-App am Handy. Listen lassen sich mit anderen Benutzern teilen |
 | **Notizen** | Die Notizen aus **notizi**, über dessen Ende-zu-Ende-verschlüsselten Abgleichordner. dmOffice ist ein weiteres Gerät wie das Handy. Notizordner lassen sich mit anderen Benutzern teilen |
 | **Dateien** | Eigene Dateiablage im Browser und per WebDAV: Vorschau, Volltextsuche (mit Texterkennung für Scans und Fotos), Papierkorb, frühere Versionen, Ordner für andere Benutzer teilen, Freigabelinks (ansehen, Einwurf-Ordner, Passwort, Ablaufdatum). Word-, Excel- und PowerPoint-Dateien lassen sich im Browser bearbeiten, mit einem eigenen Office-Server (Collabora Online oder ONLYOFFICE) |
+| **Chat** | Unterhaltungen und Gruppen, Sprachnachrichten, Standort, Verweise auf Dateien, Notizen und Termine, Push. **Pukki**, der Assistent, macht aus freien Sätzen Termine, Aufgaben, Einkaufsartikel und Essenspläne, schickt einen Morgenüberblick, Erinnerungen und Timer; ein KI-Dienst ist möglich |
+| **Galerie** | Zeitleiste der eigenen Fotos und von Serverordnern, Filter, RAW-Dateien, Karte, Alben und Links, Sterne, Markierungen und Farben; Foto-Bearbeitung, ohne das Original zu ändern |
+| **Audiothek** | Eigene Musikordner: abspielen, Cover, Suche, Playlists – im Browser und in der App |
+| **Tresor** | Ein eigens verschlüsselter Bereich je Person, mit eigenem Passwort oder Passkey, für Dateien und Notiz-Datenbanken |
+| **DMS** | Erfassung über Eingänge, Texterkennung, Dokumentarten, Korrespondenten, Rollen und Versionen |
 | **Android-App** | Kalender (mit Essensplan und Verschieben per Ziehen), Aufgaben und Einkaufslisten, Mail, Kontakte, Notizen und Dateien auf dem Handy, mit Widgets, Offline-Dateien, Checklisten zum Abhaken ohne Verbindung, automatischem Hochladen von Fotos und „Speicherplatz freigeben“ |
 | **Server** | Eigener **CalDAV**-, **CardDAV**- und **WebDAV**-Dienst mit **App-Passwörtern** – ein zusätzlicher Cloud-Server ist nicht nötig. Kompatibel mit DAVx⁵, Thunderbird, Apple Kalender/Kontakte, dem Windows-Explorer und den Nextcloud-Clients |
 | **Sicherheit** | Mehrere Benutzer, je Benutzer eine **verschlüsselte Datenbank** (SQLCipher), jede gespeicherte Datei einzeln verschlüsselt, Zwei-Faktor-Anmeldung (TOTP) mit Wiederherstellungscodes |
@@ -87,7 +92,7 @@ Der Container hört auf Port **8080** (`ASPNETCORE_URLS`) und legt seine Daten i
 /data/*.json            Servereinstellungen, Freigaben, Freigabelinks
 ```
 
-Jede Benutzerdatenbank hat einen eigenen Zufallsschlüssel. Diese Schlüssel sind mit dem **Hauptschlüssel** eingepackt. Der kommt aus der Umgebungsvariable `DMOFFICE_MASTER_KEY`, in Unraid steht er maskiert in der Vorlage auf dem USB-Stick, nicht in `appdata`. Wer `appdata` kopiert, kann damit nichts lesen. Fehlt die Variable, legt dmOffice `master.key` im Datenverzeichnis an und warnt in der Verwaltung. Wird die Variable später gesetzt, packt der nächste Start alle Schlüssel um und löscht die Datei.
+Jede Benutzerdatenbank hat einen eigenen Zufallsschlüssel. Diese Schlüssel sind mit dem **Hauptschlüssel** eingepackt. Der kommt aus der Umgebungsvariable `DMOFFICE_MASTER_KEY`, in Unraid steht er maskiert in der Vorlage auf dem USB-Stick, nicht in `appdata`. Wer `appdata` kopiert, kann damit nichts lesen. Fehlt die Variable, legt dmOffice `master.key` im Datenverzeichnis an und warnt in der Verwaltung. Wird die Variable später gesetzt, packt der nächste Start alle Schlüssel um. Die alte Datei bleibt liegen: Sie wird nur gebraucht, um eine Sicherung von vor dem Umstieg zurückzuspielen. Die Verwaltung bietet sie zum Herunterladen an und entfernt sie danach.
 
 Ältere Installationen hatten die Dateiinhalte in der Datenbank. Nach dem Update lagert dmOffice sie im Hintergrund in `blobs/` aus (unterbrechbar, ein Neustart macht weiter). Der Platz in der Datenbank wird erst frei mit *Einstellungen* → *Speicher & Statistik* → *Datenbank verdichten* – das startet niemand von selbst. Vor jeder Datenänderung prüft dmOffice den freien Platz und sichert die Datenbanken selbst (`pre-update/`); reicht der Platz nicht, ändert es nichts und sagt in der Verwaltung, wie viel fehlt. Einzelheiten und der Weg zurück: [Aktualisieren](docs/updating.de.md). Ein Abbild des ganzen Datenverzeichnisses bleibt trotzdem die beste Versicherung.
 
@@ -163,9 +168,13 @@ Die Nextcloud-Clients für Desktop und Handy arbeiten gegen `/remote.php/dav/` u
 | Notizordner teilen | [docs/geteilte-notizen.de.md](docs/geteilte-notizen.de.md) | [docs/geteilte-notizen.md](docs/geteilte-notizen.md) |
 | Dateiordner teilen | [docs/geteilte-ordner.de.md](docs/geteilte-ordner.de.md) | [docs/geteilte-ordner.md](docs/geteilte-ordner.md) |
 | Prüfsummen und Duplikate | [docs/duplikate.de.md](docs/duplikate.de.md) | [docs/duplikate.md](docs/duplikate.md) |
+| Catchall-Aliase | [docs/catchall-aliase.de.md](docs/catchall-aliase.de.md) | [docs/catchall-aliase.md](docs/catchall-aliase.md) |
 | Nextcloud-Clients | [docs/nextcloud-clients.de.md](docs/nextcloud-clients.de.md) | [docs/nextcloud-clients.md](docs/nextcloud-clients.md) |
 | notizi verbinden | [docs/notizi-verbinden.de.md](docs/notizi-verbinden.de.md) | [docs/notizi-verbinden.md](docs/notizi-verbinden.md) |
 | Web-Push | [docs/web-push.de.md](docs/web-push.de.md) | [docs/web-push.md](docs/web-push.md) |
+| Fotos: Angaben, Ort, Personen, Bearbeiten | [docs/galerie-fotos.de.md](docs/galerie-fotos.de.md) | [docs/galerie-fotos.md](docs/galerie-fotos.md) |
+| Audiothek | [docs/audiothek.de.md](docs/audiothek.de.md) | [docs/audiothek.md](docs/audiothek.md) |
+| Wiederherstellen und Werkzeug restore-tool | [docs/wiederherstellen.de.md](docs/wiederherstellen.de.md) | [docs/wiederherstellen.md](docs/wiederherstellen.md) |
 | Android-App | [apps/mobile/README.de.md](apps/mobile/README.de.md) | [apps/mobile/README.md](apps/mobile/README.md) |
 
 ## Entwickeln

@@ -102,6 +102,39 @@ class Prefs(context: Context) : at.dimes.dmoffice.api.E2e.Counters {
         if (secure.getString("deviceId", null) == deviceId) secure.edit().putLong("counter", counterValue).apply()
     }
 
+    /** Darstellung: "system" (Vorgabe), "light" oder "dark" - wie im Web. */
+    val themeMode = kotlinx.coroutines.flow.MutableStateFlow(plain.getString("themeMode", "system") ?: "system")
+    fun setThemeMode(v: String) { plain.edit().putString("themeMode", v).apply(); themeMode.value = v }
+
+    /** Audiothek: Reiter als Kacheln (true) oder Liste - je Reiter gemerkt; ohne Wahl gilt [default]. */
+    fun audioTiles(tab: String, default: Boolean): Boolean = plain.getBoolean("audioTiles-$tab", default)
+    fun setAudioTiles(tab: String, v: Boolean) { plain.edit().putBoolean("audioTiles-$tab", v).apply() }
+
+    /** DMS: Dokumente als Kacheln (Vorschau der ersten Seite) statt als Liste. */
+    var dmsTiles: Boolean
+        get() = plain.getBoolean("dmsTiles", false)
+        set(v) { plain.edit().putBoolean("dmsTiles", v).apply() }
+
+    /** Galerie: aelteste zuerst (Vorgabe: neueste zuerst). */
+    var photoOldest: Boolean
+        get() = plain.getBoolean("photoOldest", false)
+        set(v) { plain.edit().putBoolean("photoOldest", v).apply() }
+
+    /** Galerie: Kacheln eingepasst (ganzes Bild) statt ausgefüllt (zugeschnitten). */
+    var photoFit: Boolean
+        get() = plain.getBoolean("photoFit", false)
+        set(v) { plain.edit().putBoolean("photoFit", v).apply() }
+
+    /** Galerie: gruppieren nach "year", "month" (Vorgabe) oder "day". */
+    var photoGroup: String
+        get() = plain.getString("photoGroup", "month") ?: "month"
+        set(v) { plain.edit().putString("photoGroup", v).apply() }
+
+    /** Bilder verkleinert teilen (wie Immich: Original oder kleine Fassung). */
+    var shareSmall: Boolean
+        get() = plain.getBoolean("shareSmall", false)
+        set(v) { plain.edit().putBoolean("shareSmall", v).apply() }
+
     /** Zuletzt beim Server angemeldetes Push-Token (Geraet|Token), damit nicht bei jedem Start neu. */
     var pushRegistered: String?
         get() = plain.getString("pushRegistered", null)
@@ -121,6 +154,8 @@ class Prefs(context: Context) : at.dimes.dmoffice.api.E2e.Counters {
             }
         }.apply()
         _account.value = a
+        // Neue Zugangsdaten: die Meldung „App-Passwort abgelehnt“ gilt nicht mehr
+        at.dimes.dmoffice.api.AuthLost.clear()
     }
 
     data class Settings(

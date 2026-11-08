@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Kategorien und Tags der Dateien (docs/datei-kategorien-konzept.md) -->
+<resources>
+    <string name="files_area_categories">Kategorien</string>
+    <string name="cats_tags">Tags</string>
+    <string name="cats_empty">Noch keine Kategorien. Kategorien ordnen Dateien unabhängig vom Ordner. Was du von Hand zuordnest, lernen sie – und ordnen neue Dateien dann selbst ein.</string>
+    <string name="cats_suggest">Vorschlag übernehmen</string>
+    <string name="cats_suggest_hint">Finanzen (Bank, Rechnungen, Steuer, Versicherungen), Verträge, Wohnen, Fahrzeug, Gesundheit, Arbeit, Behörden &amp; Ausweise, Schule &amp; Ausbildung</string>
+    <string name="cats_new">Neue Kategorie</string>
+    <string name="cats_new_sub">Unterkategorie anlegen</string>
+    <string name="cats_rename">Umbenennen</string>
+    <string name="cats_learn">Lernt aus Zuweisungen</string>
+    <string name="cats_auto">Neue Dateien automatisch einordnen</string>
+    <string name="cats_delete_ask">Kategorie „%1$s“ löschen? Die Dateien bleiben, Unterkategorien rücken eine Ebene hoch. Was die Kategorie gelernt hat, geht verloren.</string>
+    <string name="cats_name">Name</string>
+    <string name="cats_labels">Kategorien und Tags</string>
+    <string name="cats_labels_n">Kategorien und Tags für %1$d Dateien</string>
+    <string name="cats_add_tag">Tag hinzufügen</string>
+    <string name="cats_auto_mark">automatisch eingeordnet</string>
+    <string name="cats_auto_hint">Automatisch eingeordnet: Speichern bestätigt es, Abhaken entfernt es.</string>
+    <string name="cats_unconfirmed">%1$d automatisch eingeordnet, noch nicht bestätigt</string>
+    <string name="cats_confirm_all">Alle bestätigen</string>
+    <string name="cats_only_auto">Nur diese zeigen</string>
+    <string name="cats_show_all">Alle zeigen</string>
+    <string name="cats_files_empty">Noch keine Dateien in dieser Kategorie. Lange auf eine Datei tippen, dann im Menü „Kategorien und Tags“.</string>
+    <string name="cats_tag_empty">Keine Dateien mit diesem Tag.</string>
+    <string name="cats_own_only">Kategorien und Tags gibt es nur für eigene Dateien, nicht für Ordner.</string>
+</resources>

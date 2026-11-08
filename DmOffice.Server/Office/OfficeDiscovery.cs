@@ -126,6 +126,10 @@ public sealed class OfficeDiscovery(ServerConfig config, IHttpClientFactory http
 
     public bool Configured => !string.IsNullOrWhiteSpace(config.Current.OfficeUrl);
 
+    /// <summary>Muss die Seite Skripte des Office-Servers laden (api.js der Docs-API)? Bei WOPI nicht - dann laeuft der Editor
+    /// nur im eigenen Rahmen. Noch unbekannt (gerade gestartet): ja, damit die Docs-API nicht bis zum Neuladen fehlt.</summary>
+    public bool NeedsScript => _cache is not { } c || c.Url != config.Current.OfficeUrl?.Trim() || c.Value is not { } v || v.Native;
+
     /// <summary>Die Discovery, oder null, wenn kein Office-Server eingestellt oder er gerade nicht erreichbar ist.</summary>
     public async Task<Discovery?> Get(CancellationToken ct = default)
     {

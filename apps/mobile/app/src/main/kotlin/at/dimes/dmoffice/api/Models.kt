@@ -24,15 +24,24 @@ import kotlinx.serialization.Serializable
     val preview: String = "", val spam: Double? = null, val cached: Boolean = false, val keywords: List<String> = emptyList(),
     /** Prio-Posteingang: true Relevant, false Sonstige, null noch nicht eingeordnet (zaehlt als Relevant). */
     val focus: Boolean? = null,
+    /** An diesen Catchall-Alias gegangen (Mail/CatchallAliases.cs); aliasState: open, blocked oder unknown. */
+    val alias: String? = null, val aliasState: String? = null,
 )
 
 /** Prio-Posteingang: eingeschaltet? Ungelesene je Reiter. */
 @Serializable data class FocusInfo(val enabled: Boolean = false, val focused: Int = 0, val other: Int = 0)
 
 /** Kategorie einer Mail (IMAP-Schlagwort) mit Name und Farbe aus den Einstellungen. */
-@Serializable data class MailCategory(val key: String = "", val name: String = "", val color: String = "#0F6CBD")
+/** quiet: neue Mails dieser Kategorie melden nicht, wenn alle ihre Kategorien so stehen (Einstellungen im Web). */
+@Serializable data class MailCategory(val key: String = "", val name: String = "", val color: String = "#0F6CBD", val quiet: Boolean = false)
 
 /** E-Mail-Nachverfolgung: gekennzeichnete Mail mit Faelligkeit (yyyy-MM-dd) oder ohne. */
+/** Entfernen nach Zeit: kind "trash" (in den Papierkorb) oder "destroy" (vernichten), at in UTC. */
+@Serializable data class MailExpiry(
+    val account: String = "", val folder: String = "", val uid: Long = 0, val messageId: String? = null,
+    val at: String = "", val kind: String = "trash", val subject: String = "",
+)
+
 @Serializable data class FollowUp(val mail: MailItem = MailItem(), val due: String? = null)
 
 @Serializable data class MessagesPage(val total: Int = 0, val page: Int = 0, val size: Int = 0, val items: List<MailItem> = emptyList())
@@ -52,7 +61,33 @@ import kotlinx.serialization.Serializable
     val unsubscribe: Unsub? = null,
     /** Phishing-Merkmale vom Server (Mail/PhishCheck.cs): Warnbalken wie im Web. */
     val phish: List<PhishFinding>? = null,
+    /** OpenPGP: "mime"/"inline" signiert, "key" Schlüssel dabei - dann holt die Karte /signature (ui/OpenPgp.kt). */
+    val pgp: String? = null,
+    /** An diesen Catchall-Alias gegangen; aliasReply: die Antwort darf ihn als Absender nehmen; aliasState: open, blocked, unknown. */
+    val alias: String? = null, val aliasReply: Boolean = false, val aliasState: String? = null,
 )
+
+/** Catchall-Aliase (Mail/CatchallAliases.cs): Einstellungen, eine Adresse (blocked: null offen, sonst junk/delete), Absender. */
+@Serializable data class AliasConfig(val domains: List<String> = emptyList(), val account: String? = null, val unknown: String = "accept",
+    val blockAs: String = "junk", val replyAs: Boolean = false)
+@Serializable data class AliasItem(val address: String = "", val note: String = "", val created: String = "", val blocked: String? = null,
+    val auto: Boolean = false, val count: Int = 0, val last: String? = null, val folder: String? = null, val moved: Int? = null,
+    /** Entfernen nach Zeit für neue Mails: trash oder destroy nach expireDays Tagen. */
+    val expireKind: String? = null, val expireDays: Int? = null)
+/** domains: je Domain ihr IMAP-Ordner (Mails an unbekannte Adressen); unknown: Adressen der Domain mit Post, die kein Alias sind. */
+@Serializable data class AliasDomain(val domain: String = "", val folder: String? = null)
+@Serializable data class AliasUnknown(val address: String = "", val count: Int = 0, val last: String = "")
+@Serializable data class AliasState(val config: AliasConfig = AliasConfig(), val items: List<AliasItem> = emptyList(),
+    val domains: List<AliasDomain> = emptyList(), val unknown: List<AliasUnknown> = emptyList()) {
+    /** Ordner der Catchall-Aliase (Domain-Ordner und darunter) - die zeigt nur ihr eigener Abschnitt in der Ordnerleiste. */
+    fun owns(account: String, path: String): Boolean = config.account == account &&
+        domains.any { d -> d.folder != null && (path == d.folder || path.startsWith(d.folder + "/") || path.startsWith(d.folder + ".")) }
+}
+@Serializable data class AliasSender(val address: String = "", val name: String? = null, val count: Int = 0)
+@Serializable data class AliasDetails(val alias: AliasItem = AliasItem(), val senders: List<AliasSender> = emptyList())
+@Serializable data class AliasCreate(val name: String? = null, val domain: String? = null, val note: String? = null)
+@Serializable data class AliasUpdate(val address: String, val note: String? = null, val block: Boolean? = null, val blockAs: String? = null,
+    val expireKind: String? = null, val expireDays: Int? = null)
 
 /** kind: auth (domain, detail dmarc|spf), link (shown, target), lookalike (domain, like, detail sender|link|mixed),
  *  newsender (domain = Absenderadresse, target). strong: allein schon Grund zur Warnung. */
@@ -79,6 +114,10 @@ import kotlinx.serialization.Serializable
     val forwardAsAttachment: Boolean = false, val draftUid: Long? = null, val highPriority: Boolean = false, val readReceipt: Boolean = false,
     /** Aus der Dateiablage anhaengen (Pfade); als Freigabelink: Pfade bzw. Namen der hochgeladenen Dateien. */
     val filePaths: List<String> = emptyList(), val linkPaths: List<String> = emptyList(), val linkUploads: List<String> = emptyList(),
+    /** OpenPGP-signieren; null: Vorgabe des Kontos. */
+    val sign: Boolean? = null,
+    /** Absender: Catchall-Alias statt der Adresse des Kontos (nur bei Antworten, wenn erlaubt). */
+    val from: String? = null,
 )
 
 // ---------------- Kontakte ----------------
@@ -123,6 +162,8 @@ import kotlinx.serialization.Serializable
     val archived: String? = null, val deleted: String? = null, val blocks: List<String> = emptyList(),
     val protected: List<Boolean> = emptyList(), val readOnly: Boolean = false, val attachments: List<NoteAttachment> = emptyList(),
     val pending: Boolean = false, val version: String = "",
+    /** Version 2: mit mir geteilt (Besitzer), nur gezeigt, einzeln geteilt; eigene: mit wie vielen einzeln geteilt */
+    val owner: String? = null, val canWrite: Boolean = true, val showOnly: Boolean = false, val single: Boolean = false, val sharedWith: Int? = null,
 )
 @Serializable data class NoteSaveResult(val saved: Boolean = false, val version: String = "")
 @Serializable data class NoteMeta(val customTitle: String? = null, val clearCustomTitle: Boolean = false, val color: String? = null, val important: Boolean? = null, val folder: String? = null)

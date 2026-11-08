@@ -6,6 +6,15 @@ import { makeStyles, tokens } from '@fluentui/react-components'
 // 32 px hohe Kontrollkaestchen) - daher die grossen Zeilenabstaende.
 const MOBILE = '@media (max-width: 767px)'
 
+/** Zeile, die wie ein Knopf wirkt: per Tab erreichbar, Enter und Leertaste loesen sie aus. */
+export const pressable = (run: () => void) => ({
+  tabIndex: 0,
+  role: 'button',
+  onKeyDown: (e: { key: string; target: EventTarget | null; currentTarget: EventTarget | null; preventDefault: () => void }) => {
+    if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); run() }
+  },
+})
+
 export const useNavStyles = makeStyles({
   pane: {
     padding: '8px 6px', display: 'flex', flexDirection: 'column', gap: 0, overflowY: 'auto',
@@ -20,6 +29,7 @@ export const useNavStyles = makeStyles({
     '& .dm-more': { visibility: 'hidden' },
     ':hover .dm-more': { visibility: 'visible' },
     ':focus-within .dm-more': { visibility: 'visible' },
+    ':focus-visible': { outline: `2px solid ${tokens.colorStrokeFocus2}`, outlineOffset: '-2px' },
     [MOBILE]: { minHeight: '40px', '& .dm-more': { visibility: 'visible' } },
   },
   active: { backgroundColor: tokens.colorBrandBackground2, fontWeight: 600, ':hover': { backgroundColor: tokens.colorBrandBackground2Hover } },

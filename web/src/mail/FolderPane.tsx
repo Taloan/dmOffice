@@ -5,7 +5,7 @@ import {
 import {
   ChevronDown16Regular, ChevronRight16Regular, Mail20Regular, Send20Regular, Drafts20Regular, Delete20Regular, ShieldError20Regular,
   Archive20Regular, Folder20Regular, FolderAdd20Regular, Warning16Filled, Star20Regular, StarOff20Regular,
-  Rename20Regular, Color20Regular, NumberSymbol20Regular, Broom20Regular, MailRead20Regular, ArrowUp20Regular, ArrowDown20Regular,
+  Rename20Regular, Color20Regular, NumberSymbol20Regular, Broom20Regular, MailRead20Regular, ArrowSync20Regular, ArrowUp20Regular, ArrowDown20Regular,
   Open20Regular, DataBarVertical20Regular, Flag20Regular, Clock20Regular, CalendarClock20Regular,
 } from '@fluentui/react-icons'
 import { useRef, useState } from 'react'
@@ -16,6 +16,8 @@ import { usePrefs } from '../prefs'
 import type { Selection } from './MailView'
 import { locale, t, lang } from '../i18n'
 import { VirtualFolders } from './VirtualFolders'
+import { CatchallSection, isCatchallFolder, useCatchall } from './CatchallFolders'
+import { askConfirm } from '../shell/context'
 
 const useStyles = makeStyles({
   root: { flex: 1, overflowY: 'auto', padding: '8px 6px' },
@@ -109,9 +111,10 @@ interface Props {
   onSelect: (s: Selection) => void
   onDrop: (account: string, target: string, ids: number[]) => void
   onChanged: () => void
+  onCategoryDrop?: (key: string, ids: number[]) => void
 }
 
-export function FolderPane({ accounts, folders, selection, status, onSelect, onDrop, onChanged }: Props) {
+export function FolderPane({ accounts, folders, selection, status, onSelect, onDrop, onChanged, onCategoryDrop }: Props) {
   const s = useStyles()
   const { fail, notify } = useApp()
   const { prefs, update } = usePrefs()
@@ -124,7 +127,9 @@ export function FolderPane({ accounts, folders, selection, status, onSelect, onD
 
   const favorites = prefs.favorites ?? []
   const custom = (prefs.sortFolders ?? 'custom') === 'custom'
-  const trees = Object.fromEntries(accounts.map(a => [a.id, tree(a.id, folders[a.id] || [], prefs.folderOrder, custom)]))
+  // Ordner der Catchall-Aliase zeigt nur ihr eigener Abschnitt - in der Ordnerliste des Postfachs nicht noch einmal
+  const catchall = useCatchall(status)
+  const trees = Object.fromEntries(accounts.map(a => [a.id, tree(a.id, (folders[a.id] || []).filter(f => !isCatchallFolder(catchall, a.id, f)), prefs.folderOrder, custom)]))
 
   const toggle = (key: string) => {
     const next = { ...closed, [key]: !closed[key] }
@@ -145,10 +150,17 @@ export function FolderPane({ accounts, folders, selection, status, onSelect, onD
   const markRead = async (account: string, f: Folder) => {
     try { await api.post(`/api/mail/${account}/folders/read`, { path: f.path }); onChanged() } catch (e) { fail(e) }
   }
+  // Mails, die schon vor dem Anlegen des Kontos da waren, wie neue einordnen (Junk, Relevant/Sonstige, Kategorien)
+  const reclassify = async (account: string, f: Folder) => {
+    try {
+      const r = await api.post<{ count: number }>(`/api/mail/${account}/reclassify`, { folder: f.path })
+      notify(t('Wird neu eingeordnet'), t('{n} Mails – Junk-Erkennung, Relevant/Sonstige und Kategorien. Den Fortschritt siehst du unter „Aktivität“.', { n: r.count }))
+    } catch (e) { fail(e) }
+  }
   const empty = async (account: string, f: Folder) => {
     const permanent = f.special === 'trash' || f.special === 'junk'
     const vars = { n: f.total, folder: folderLabel(f) }
-    if (!confirm(permanent
+    if (!await askConfirm('', permanent
       ? (f.total === 1 ? t('1 Element in „{folder}“ endgültig löschen?', vars) : t('Alle {n} Elemente in „{folder}“ endgültig löschen?', vars))
       : (f.total === 1 ? t('1 Element aus „{folder}“ in die gelöschten Elemente verschieben?', vars)
         : t('Alle {n} Elemente aus „{folder}“ in die gelöschten Elemente verschieben?', vars)))) return
@@ -175,7 +187,7 @@ export function FolderPane({ accounts, folders, selection, status, onSelect, onD
     } catch (e) { fail(e) }
   }
   const remove = async (account: string, f: Folder) => {
-    if (!confirm(t('Ordner „{name}“ samt Inhalt auf dem Server löschen?', { name: f.name }))) return
+    if (!await askConfirm('', t('Ordner „{name}“ samt Inhalt auf dem Server löschen?', { name: f.name }))) return
     try { await api.post(`/api/mail/${account}/folders/delete`, { path: f.path }); setTimeout(onChanged, 1500) } catch (e) { fail(e) }
   }
 
@@ -384,7 +396,8 @@ export function FolderPane({ accounts, folders, selection, status, onSelect, onD
           </div>
         )
       })}
-      <VirtualFolders accounts={accounts} folders={folders} selection={selection} onSelect={onSelect} refresh={status} />
+      <CatchallSection st={catchall} folders={folders} selection={selection} onSelect={onSelect} />
+      <VirtualFolders accounts={accounts} folders={folders} selection={selection} onSelect={onSelect} refresh={status} onCategoryDrop={onCategoryDrop} />
       {!(prefs.pinFavorites ?? true) && favSection}
 
       {menu && (
@@ -438,6 +451,8 @@ export function FolderPane({ accounts, folders, selection, status, onSelect, onD
                   )}
                   <MenuDivider />
                   <MenuItem icon={<MailRead20Regular />} disabled={virtual || !mf.selectable || mf.unread === 0} onClick={() => markRead(menu.account, mf)}>{t('Alle als gelesen markieren')}</MenuItem>
+                  {mf.special === 'inbox' && !virtual &&
+                    <MenuItem icon={<ArrowSync20Regular />} onClick={() => { reclassify(menu.account, mf); setMenu(null) }}>{t('Posteingang neu einordnen')}</MenuItem>}
                   <MenuDivider />
                   {menu.fav && <MenuItem icon={<ArrowUp20Regular />} disabled={favorites.indexOf(mk) <= 0} onClick={() => shiftFavorite(mk, -1)}>{t('In Favoriten nach oben')}</MenuItem>}
                   {menu.fav && <MenuItem icon={<ArrowDown20Regular />} disabled={favorites.indexOf(mk) >= favorites.length - 1} onClick={() => shiftFavorite(mk, 1)}>{t('In Favoriten nach unten')}</MenuItem>}

@@ -110,4 +110,13 @@ class UpdateLogicTest {
         assertTrue(UpdateLogic.signaturesMatch(setOf(a), setOf(b), setOf(a, b)))
         assertFalse(UpdateLogic.signaturesMatch(setOf(a), setOf(b), setOf(b)))
     }
+
+    @Test fun appVomEigenenServer() {
+        val r = UpdateLogic.parseServerInfo("""{"available":true,"version":"2.0.431","versionCode":20431,"size":31000000,"sha":"a2311c2","matches":true}""", "https://office.example.org/")
+        assertNotNull(r)
+        assertEquals(20431, r!!.versionCode)
+        assertEquals("https://office.example.org/app/dmoffice.apk", r.apkUrl)
+        assertNull(UpdateLogic.parseServerInfo("""{"available":false}""", "https://office.example.org"))
+        assertNull(UpdateLogic.parseServerInfo("""{"available":true,"version":"2.0.1"}""", "https://office.example.org"))
+    }
 }

@@ -30,7 +30,7 @@ public class FileHashTests
     public void Schema_18_Spalte_und_Index()
     {
         var db = NewDb();
-        Assert.Equal(18L, db.Scalar("PRAGMA user_version"));
+        Assert.Equal((long)UserDb.LatestVersion, db.Scalar("PRAGMA user_version"));
         foreach (var t in UserDb.HashTables)
             Assert.Equal(1L, db.Scalar($"SELECT COUNT(*) FROM pragma_table_info('{t}') WHERE name='sha256'"));
         Assert.Equal(1L, db.Scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='files_sha256'"));

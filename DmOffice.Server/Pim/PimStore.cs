@@ -27,12 +27,20 @@ public static class PimStore
     public static void EnsureDefaults(UserDb db)
     {
         if (db.Get("pim.defaults") != null) return;
-        if (Collections(db, Calendar).Count == 0)
-            CreateCollection(db, Calendar, "personal", "Persönlich", "#0F6CBD", "VEVENT,VTODO");
-        if (Collections(db, AddressBook).Count == 0)
-            CreateCollection(db, AddressBook, "contacts", "Kontakte", null, "");
-        db.Set("pim.defaults", "1");
+        // Die ersten Anfragen eines neuen Kontos kommen oft zugleich: nur eine legt an
+        lock (DefaultsGate)
+        {
+            if (db.Get("pim.defaults") != null) return;
+            // Nur Termine zählen: Tagebuch und Listen sind auch Kalender. Entstanden sie zuerst, fehlte dem Konto sonst dauerhaft ein Terminkalender
+            if (!Collections(db, Calendar).Any(c => c.Components.Contains("VEVENT")))
+                CreateCollection(db, Calendar, "personal", "Persönlich", "#0F6CBD", "VEVENT,VTODO");
+            if (Collections(db, AddressBook).Count == 0)
+                CreateCollection(db, AddressBook, "contacts", "Kontakte", null, "");
+            db.Set("pim.defaults", "1");
+        }
     }
+
+    private static readonly object DefaultsGate = new();
 
     // ---------------- Sammlungen ----------------
 
@@ -172,6 +180,7 @@ public static class PimStore
             ("$c", coll.Id), ("$u", uri), ("$uid", info.Uid), ("$comp", info.Component), ("$e", etag), ("$d", data),
             ("$fs", info.FirstStart), ("$le", info.LastEnd), ("$m", DateTime.UtcNow.ToString("R"))).First();
         Bump(conn, coll.Id, uri, false);
+        Queue(conn, coll.Id, uri, "put");
 
         if (coll.Kind == AddressBook)
         {
@@ -200,7 +209,34 @@ public static class PimStore
         UserDb.Exec(conn, "DELETE FROM contacts_fts WHERE rowid=$i", ("$i", existing.Item1));
         UserDb.Exec(conn, "DELETE FROM objects WHERE id=$i", ("$i", existing.Item1));
         Bump(conn, coll.Id, uri, true);
+        Queue(conn, coll.Id, uri, "delete");
         return true;
+    }
+
+    // ---------------- Abgleich mit Microsoft ----------------
+
+    private static readonly AsyncLocal<bool> FromRemote = new();
+
+    /// <summary>Schreibt der Abgleich mit Microsoft selbst (Pim/GraphSync.cs)? Solange der Rueckgabewert lebt, kommt nichts
+    /// in die Warteschlange - sonst ginge jede abgeholte Aenderung gleich wieder zurueck.</summary>
+    public static IDisposable Remote()
+    {
+        var before = FromRemote.Value;
+        FromRemote.Value = true;
+        return new Restore(() => FromRemote.Value = before);
+    }
+
+    private sealed class Restore(Action undo) : IDisposable { public void Dispose() => undo(); }
+
+    /// <summary>Jede lokale Aenderung an einer mit Microsoft verbundenen Sammlung (Web, App, CalDAV/CardDAV, Pukki) kommt hier
+    /// in die Warteschlange graph_outbox - in derselben Transaktion; die letzte Aenderung je Objekt gilt.</summary>
+    private static void Queue(SqliteConnection conn, long coll, string uri, string op)
+    {
+        if (FromRemote.Value) return;
+        UserDb.Exec(conn, @"INSERT INTO graph_outbox(collection,uri,op,at) SELECT $c,$u,$o,$a
+                WHERE EXISTS (SELECT 1 FROM kv, json_each(kv.value) j WHERE kv.key='" + Graph.Key + @"' AND json_extract(j.value,'$.collection')=$c)
+                ON CONFLICT(collection,uri) DO UPDATE SET op=$o, at=$a, tries=0, error=NULL",
+            ("$c", coll), ("$u", uri), ("$o", op), ("$a", DateTime.UtcNow.ToString("O")));
     }
 
     private static void Bump(SqliteConnection conn, long coll, string uri, bool deleted)

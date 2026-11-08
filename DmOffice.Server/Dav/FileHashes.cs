@@ -135,7 +135,8 @@ public sealed class FileHashJob(Spaces spaces, ILogger<FileHashJob> log) : Backg
                 foreach (var space in spaces.All())
                 {
                     if (ct.IsCancellationRequested) return;
-                    try { Run(space, ct); }
+                    // Verdraengte Inhalte (Zwischenspeicher) nicht aus S3 holen - die bekommen ihre Pruefsumme, wenn sie wieder hier sind
+                    try { using (BlobStore.WithoutFetch()) Run(space, ct); }
                     catch (OperationCanceledException) { return; }
                     catch (Exception ex) { Activity.Start(space.User.Id, Activity.FilesHashes).Fail(ex.Message); log.LogWarning("Prüfsummen {User}: {Error}", space.User.Login, ex.Message); }
                 }

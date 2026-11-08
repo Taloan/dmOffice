@@ -12,7 +12,10 @@ namespace Notizi.Sync
     /// <param name="Name">Name aus name.nz; null, wenn er sich nicht lesen
     /// laesst.</param>
     /// <param name="PasswordFits">Das E2EE-Passwort oeffnet sie.</param>
-    public sealed record CatalogEntry(string Folder, string? Name, bool PasswordFits)
+    /// <param name="Locked">Der Server gibt den Ordner gerade nicht zum Lesen
+    /// frei (HTTP 423, etwa dmOffice bei geschlossenem Tresor). Name und
+    /// Passwort sind dann unbekannt.</param>
+    public sealed record CatalogEntry(string Folder, string? Name, bool PasswordFits, bool Locked = false)
     {
         public string Title => Name ?? Folder;
     }
@@ -40,6 +43,12 @@ namespace Notizi.Sync
                     var store = await Task.Run(() => SyncStore.OpenAsync(transportFor(folder), password, ct), ct).ConfigureAwait(false);
                     var name = store == null ? null : await store.ReadNameAsync(ct).ConfigureAwait(false);
                     return new CatalogEntry(folder, name, store != null);
+                }
+                catch (SyncLockedException)
+                {
+                    // Gesperrt ist kein Fehler: Der Ordner ist da, nur gerade
+                    // nicht zu lesen.
+                    return new CatalogEntry(folder, null, false, true);
                 }
                 catch
                 {

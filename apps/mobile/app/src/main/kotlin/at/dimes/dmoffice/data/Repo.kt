@@ -23,12 +23,14 @@ class Repo(private val context: Context, private val db: AppDb) {
 
     /** Termine und faellige Aufgaben im Bereich, nur sichtbare Kalender, zeitlich sortiert. */
     fun occurrences(from: Long, to: Long): Flow<List<Occurrence>> =
-        combine(db.items().eventsInRange(from, to), db.items().dueTasks(to), calendars) { events, due, cals ->
+        combine(db.items().eventsInRange(from, to), db.items().dueTasks(to), db.items().doneTasks(), calendars, ShownCalendars.occurrences(context, from, to)) { events, due, done, cals, shown ->
             val visible = cals.filter { it.visible }.map { it.href }.toSet()
             val colors = cals.associate { it.href to it.color }
             val ev = Items.expandEvents(events.filter { it.calendarHref in visible }, colors, zone, from, to)
-            val td = Items.taskOccurrences(due.filter { it.calendarHref in visible }, colors, zone, from, to)
-            (ev + td).sortedWith(compareBy({ it.start }, { !it.allDay }, { it.item.summary }))
+            val td = Items.taskOccurrences(due.filter { it.calendarHref in visible }, colors, zone, from, to) +
+                Items.doneOccurrences(done.filter { it.calendarHref in visible }, colors, zone, from, to)
+            // Version 2: gezeigte Kalender nur hier in der App (ueber die API, nicht im Android-Kalender)
+            (ev + td + shown).sortedWith(compareBy({ it.start }, { !it.allDay }, { it.item.summary })).map(Arts::withIcon)
         }
 
     suspend fun occurrencesNow(from: Long, to: Long): List<Occurrence> {
@@ -36,7 +38,8 @@ class Repo(private val context: Context, private val db: AppDb) {
         val visible = cals.filter { it.visible }.map { it.href }.toSet()
         val colors = cals.associate { it.href to it.color }
         val ev = Items.expandEvents(db.items().eventsInRangeNow(from, to).filter { it.calendarHref in visible }, colors, zone, from, to)
-        val td = Items.taskOccurrences(db.items().dueTasksNow(to).filter { it.calendarHref in visible }, colors, zone, from, to)
+        val td = Items.taskOccurrences(db.items().dueTasksNow(to).filter { it.calendarHref in visible }, colors, zone, from, to) +
+            Items.doneOccurrences(db.items().doneTasksNow().filter { it.calendarHref in visible }, colors, zone, from, to)
         return (ev + td).sortedWith(compareBy({ it.start }, { !it.allDay }, { it.item.summary }))
     }
 

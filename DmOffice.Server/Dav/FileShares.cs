@@ -5,7 +5,7 @@ using DmOffice.Core;
 
 namespace DmOffice.Dav;
 
-/// <summary>Ein Ordner der Dateiablage, den sein Besitzer mit anderen Benutzern dieses Servers teilt.</summary>
+/// <summary>Ein Ordner oder eine einzelne Datei der Dateiablage, den bzw. die sein Besitzer mit anderen Benutzern dieses Servers teilt.</summary>
 public sealed class FolderShare
 {
     public int Id { get; set; }
@@ -15,6 +15,10 @@ public sealed class FolderShare
     public List<string> Members { get; set; } = new();
     /// <summary>Teilmenge von Members, die nur lesen darf.</summary>
     public List<string> ReadOnly { get; set; } = new();
+    /// <summary>Teilmenge von ReadOnly, die nur zeigen darf (Version 2): ansehen in dmOffice, kein Herunterladen, kein Kopieren, kein Abgleich.</summary>
+    public List<string> ShowOnly { get; set; } = new();
+
+    public string LevelOf(string member) => ShowOnly.Contains(member) ? "show" : ReadOnly.Contains(member) ? "send" : "share";
 }
 
 /// <summary>
@@ -41,16 +45,18 @@ public sealed class FolderShareStore
     public FolderShare? Of(string owner, long folder) { lock (_lock) return _shares.FirstOrDefault(s => s.Owner == owner && s.Folder == folder) is { } s ? Copy(s) : null; }
 
     /// <summary>Mitglieder setzen; leer hebt die Freigabe auf. readOnly: wer davon nur lesen darf.</summary>
-    public void Set(string owner, long folder, IEnumerable<string> members, IEnumerable<string>? readOnly = null)
+    public void Set(string owner, long folder, IEnumerable<string> members, IEnumerable<string>? readOnly = null, IEnumerable<string>? showOnly = null)
     {
         var list = members.Where(m => m != owner).Distinct().ToList();
-        var ro = (readOnly ?? Array.Empty<string>()).Where(list.Contains).Distinct().ToList();
+        // Zeigen ist eine Teilmenge von nur lesen - so greifen alle Schreibsperren weiter
+        var show = (showOnly ?? Array.Empty<string>()).Where(list.Contains).Distinct().ToList();
+        var ro = (readOnly ?? Array.Empty<string>()).Concat(show).Where(list.Contains).Distinct().ToList();
         lock (_lock)
         {
             var s = _shares.FirstOrDefault(x => x.Owner == owner && x.Folder == folder);
             if (list.Count == 0) { if (s != null) _shares.Remove(s); }
-            else if (s == null) _shares.Add(new FolderShare { Id = _shares.Count == 0 ? 1 : _shares.Max(x => x.Id) + 1, Owner = owner, Folder = folder, Members = list, ReadOnly = ro });
-            else { s.Members = list; s.ReadOnly = ro; }
+            else if (s == null) _shares.Add(new FolderShare { Id = _shares.Count == 0 ? 1 : _shares.Max(x => x.Id) + 1, Owner = owner, Folder = folder, Members = list, ReadOnly = ro, ShowOnly = show });
+            else { s.Members = list; s.ReadOnly = ro; s.ShowOnly = show; }
             Save();
         }
     }
@@ -63,6 +69,7 @@ public sealed class FolderShareStore
             var s = _shares.FirstOrDefault(x => x.Id == id);
             if (s == null || !s.Members.Remove(member)) return;
             s.ReadOnly.Remove(member);
+            s.ShowOnly.Remove(member);
             if (s.Members.Count == 0) _shares.Remove(s);
             Save();
         }
@@ -74,7 +81,7 @@ public sealed class FolderShareStore
         lock (_lock)
         {
             int n = _shares.RemoveAll(s => s.Owner == user);
-            foreach (var s in _shares) { n += s.Members.Remove(user) ? 1 : 0; s.ReadOnly.Remove(user); }
+            foreach (var s in _shares) { n += s.Members.Remove(user) ? 1 : 0; s.ReadOnly.Remove(user); s.ShowOnly.Remove(user); }
             n += _shares.RemoveAll(s => s.Members.Count == 0);
             if (n > 0) Save();
         }
@@ -87,11 +94,12 @@ public sealed class FolderShareStore
         File.Move(tmp, _path, overwrite: true);
     }
 
-    private static FolderShare Copy(FolderShare s) => new() { Id = s.Id, Owner = s.Owner, Folder = s.Folder, Members = s.Members.ToList(), ReadOnly = s.ReadOnly.ToList() };
+    private static FolderShare Copy(FolderShare s) => new() { Id = s.Id, Owner = s.Owner, Folder = s.Folder, Members = s.Members.ToList(), ReadOnly = s.ReadOnly.ToList(), ShowOnly = s.ShowOnly.ToList() };
 }
 
 /// <summary>Ein mit mir geteilter Ordner, wie er unter „Mit mir geteilt“ haengt. Dir: der Ordner beim Besitzer (echter Pfad).</summary>
-public sealed record FileMount(FolderShare Share, UserSpace Owner, FileEntry Dir, string Name, bool CanWrite)
+/// <param name="ShowOnly">nur gezeigt (Version 2): ansehen in dmOffice, kein Herunterladen, kein Kopieren, nicht im Abgleich.</param>
+public sealed record FileMount(FolderShare Share, UserSpace Owner, FileEntry Dir, string Name, bool CanWrite, bool ShowOnly = false)
 {
     /// <summary>Pfad beim Mitglied: "Mit mir geteilt/Fotos (von Anna)".</summary>
     public string Path => SharedFiles.Folder + "/" + Name;
@@ -112,6 +120,10 @@ public sealed record FileLoc(UserSpace Space, string Path, FileMount? Mount, boo
     public UserDb Db => Space.Db;
     public bool Shared => Mount != null;
     public bool CanWrite => !Virtual && (Mount?.CanWrite ?? true);
+    /// <summary>In einem nur gezeigten Ordner (Version 2): ansehen ja, herunterladen und kopieren nein.</summary>
+    public bool ShowOnly => Mount?.ShowOnly == true;
+
+    public FileLoc NotShowOnly(string what = "herunterladen") => ShowOnly ? throw new UnauthorizedAccessException($"Nur gezeigt – {what} ist nicht erlaubt.") : this;
     /// <summary>Der geteilte Ordner selbst: umbenennen, verschieben und loeschen kann nur der Besitzer.</summary>
     public bool IsMountRoot => Mount != null && Path == Mount.Dir.Path;
 
@@ -139,8 +151,8 @@ public sealed record FileLoc(UserSpace Space, string Path, FileMount? Mount, boo
     /// <summary>Pfad darunter (rel ohne fuehrenden Schraegstrich).</summary>
     public string Child(string rel) => rel.Length == 0 ? Path : Path.Length == 0 ? rel : Path + "/" + rel;
 
-    /// <summary>Der geschuetzte notizi-Ordner dessen, dem die Ablage gehoert.</summary>
-    public bool Protected(string path) => FileStore.InRoot(path, Space.Settings.Notizi.Root);
+    /// <summary>Der geschuetzte notizi-Ordner dessen, dem die Ablage gehoert, und der Systemordner des Tagebuchs.</summary>
+    public bool Protected(string path) => FileStore.InRoot(path, Space.Settings.Notizi.Root) || FileStore.InRoot(path, DmOffice.Journal.JournalMediaStore.Root) || FileStore.InRoot(path, FileStore.SystemVault);
 }
 
 /// <summary>
@@ -149,6 +161,9 @@ public sealed record FileLoc(UserSpace Space, string Path, FileMount? Mount, boo
 /// </summary>
 public static class SharedFiles
 {
+    /// <summary>Merker je Anfrage: sie kommt vom Abgleich eines Geraets (WebDAV, Nextcloud) - dann fehlen gezeigte Ordner.</summary>
+    public const string DeviceSync = "dm:devicesync";
+
     public const string Folder = "Mit mir geteilt";
 
     /// <summary>fileid beim Mitglied = Freigabe · 2^40 + fileid beim Besitzer (bleibt unter 2^53, sicher in JavaScript).</summary>
@@ -164,11 +179,17 @@ public static class SharedFiles
         return f.IsDir && f.Path.Length > 0 && !FileStore.InRoot(f.Path, root) && !FileStore.Contains(f.Path, root);
     }
 
+    /// <summary>Darf dieser Eintrag mit Personen geteilt werden? Ordner wie <see cref="Shareable"/>, Dateien ausserhalb des notizi-Ordners.</summary>
+    public static bool ShareableEntry(UserDb db, FileEntry f) =>
+        f.IsDir ? Shareable(db, f) : f.Path.Length > 0 && !FileStore.InRoot(f.Path, FileStore.ProtectedRoot(db));
+
     /// <summary>Die mit mir geteilten Ordner, die es gerade gibt - je Anfrage einmal berechnet.</summary>
+    /// Beim Abgleich mit Geraeten (WebDAV, Nextcloud-Clients) fehlen nur gezeigte Ordner - Abgleich waere eine Kopie.
     public static List<FileMount> Mounts(HttpContext http)
     {
         if (http.Items.TryGetValue(typeof(FileMount), out var cached) && cached is List<FileMount> list) return list;
         list = Mounts(http.RequestServices, http.Space().User.Id);
+        if (http.Items.ContainsKey(SharedFiles.DeviceSync)) list = list.Where(m => !m.ShowOnly).ToList();
         http.Items[typeof(FileMount)] = list;
         return list;
     }
@@ -184,11 +205,13 @@ public static class SharedFiles
             try { owner = spaces.Get(s.Owner); } catch (KeyNotFoundException) { continue; }
             if (FileStore.FilesOff(owner.Db)) continue;
             // Im Papierkorb des Besitzers oder weg: ruht (kommt der Ordner zurueck, ist er wieder da)
-            if (FileStore.ById(owner.Db, s.Folder) is not { } dir || !Shareable(owner.Db, dir)) continue;
-            var first = $"{dir.Name} (von {owner.User.DisplayName.Replace('/', '-').Replace('\\', '-')})";
-            var name = first;
-            for (int n = 2; !names.Add(name); n++) name = $"{first} ({n})";
-            result.Add(new FileMount(s, owner, dir, name, !s.ReadOnly.Contains(userId)));
+            if (FileStore.ById(owner.Db, s.Folder) is not { } dir || !ShareableEntry(owner.Db, dir)) continue;
+            // Dateien behalten ihre Endung hinten: „Bericht (von Anna).pdf“
+            var ext = dir.IsDir ? "" : System.IO.Path.GetExtension(dir.Name);
+            var first = $"{dir.Name[..(dir.Name.Length - ext.Length)]} (von {owner.User.DisplayName.Replace('/', '-').Replace('\\', '-')})";
+            var name = first + ext;
+            for (int n = 2; !names.Add(name); n++) name = $"{first} ({n}){ext}";
+            result.Add(new FileMount(s, owner, dir, name, !s.ReadOnly.Contains(userId), s.ShowOnly.Contains(userId)));
         }
         return result;
     }

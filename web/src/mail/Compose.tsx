@@ -1,8 +1,9 @@
 import {
   Button, Dropdown, Option, Text, Tooltip, makeStyles, tokens, Checkbox, Spinner, Link, Menu, MenuItem, MenuList, MenuPopover, MenuTrigger,
 } from '@fluentui/react-components'
-import { Send20Regular, Attach20Regular, Dismiss20Regular, Save20Regular, Dismiss16Regular, Important20Regular, WindowNew20Regular, ChevronDown20Regular, Link16Regular, Attach16Regular, Cloud20Regular, Desktop20Regular } from '@fluentui/react-icons'
+import { Send20Regular, Attach20Regular, Dismiss20Regular, Save20Regular, Dismiss16Regular, Important20Regular, WindowNew20Regular, ChevronDown20Regular, Link16Regular, Attach16Regular, Cloud20Regular, Desktop20Regular, ImageMultiple20Regular } from '@fluentui/react-icons'
 import { StoredFilesDialog } from './StoredFilesDialog'
+import { PickPhotoDialog } from '../files/PickPhotoDialog'
 import { SendLaterMenu } from './Outbox'
 import { fmtLong } from '../shell/hooks'
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
@@ -12,6 +13,8 @@ import { usePrefs } from '../prefs'
 import { RichEditor, RichEditorHandle } from '../shell/RichEditor'
 import { AddressInput } from './AddressInput'
 import { t } from '../i18n'
+import { askConfirm } from '../shell/context'
+import { PgpSignButton, usePgpSign } from './Pgp'
 
 export interface ComposeInit {
   account: string
@@ -34,8 +37,15 @@ export interface ComposeInit {
   files?: File[]
   important?: boolean
   receipt?: boolean
+  /** OpenPGP-signieren; leer: Vorgabe des Kontos */
+  sign?: boolean
   draftAccount?: string
   dirty?: boolean
+  /** Antwort auf eine Mail an diesen Catchall-Alias (Mail/CatchallAliases.cs): darf sie als Absender nehmen; fromAlias: tut es gerade */
+  alias?: string
+  fromAlias?: boolean
+  /** Antwortadresse (Reply-To), etwa aus den Einstellungen von Finanzen */
+  replyTo?: string
 }
 
 /** Von aussen: beim Wegklicken als Entwurf sichern, beim Auskoppeln den Stand mitgeben. */
@@ -88,8 +98,9 @@ export function replyOf(m: Message, account: Account, all: boolean): ComposeInit
   const me = account.email.toLowerCase()
   const base = m.replyTo.length ? m.replyTo : m.from ? [m.from] : []
   const to = base.map(fmt)
-  const cc = all ? [...m.to, ...m.cc].filter(a => a.address.toLowerCase() !== me && !base.some(b => b.address === a.address)).map(fmt) : []
+  const cc = all ? [...m.to, ...m.cc].filter(a => a.address.toLowerCase() !== me && a.address.toLowerCase() !== m.alias && !base.some(b => b.address === a.address)).map(fmt) : []
   return {
+    ...(m.alias && m.aliasReply ? { alias: m.alias, fromAlias: true } : {}),
     account: account.id, to, cc, bcc: [],
     subject: prefixed(m.subject, false, account),
     html: '<div><br></div>' + sig(account) + quote(m, account),
@@ -161,10 +172,15 @@ export const Compose = forwardRef<ComposeHandle, {
   // Aus der eigenen Dateiablage: der Server haengt sie an oder legt den Link an
   const [stored, setStored] = useState<{ path: string; name: string; size: number; link: boolean }[]>([])
   const [pickStored, setPickStored] = useState(false)
+  const [pickGallery, setPickGallery] = useState(false)
   const [fwd, setFwd] = useState<Attachment[]>(init.forwardAttachments ?? [])
   const [asAttachment, setAsAttachment] = useState(init.forwardAsAttachment)
   const [important, setImportant] = useState(init.important ?? false)
   const [receipt, setReceipt] = useState(init.receipt ?? false)
+  const pgp = usePgpSign(account, init.sign)
+  const [fromAlias, setFromAlias] = useState(init.fromAlias ?? false)
+  // Als Alias nur aus dem Postfach, in dem die Mail ankam
+  const aliasSender = init.alias && fromAlias && account === init.account ? init.alias : undefined
   const [busy, setBusy] = useState(false)
   const [draftUid, setDraftUid] = useState(init.draftUid)
   // Konto, in dem der Entwurf draftUid gerade liegt
@@ -200,11 +216,12 @@ export const Compose = forwardRef<ComposeHandle, {
       // Standardschrift mitschicken - sonst sieht der Empfaenger die Schrift seines Programms
       html: `<div style="font-family:${font.fontFamily.replace(/"/g, "'")};font-size:${font.fontSize}">${editor.current?.html() ?? ''}</div>`,
       inReplyTo: init.inReplyTo, references: init.references ?? [],
+      replyTo: init.replyTo,
       replyFolder: moved ? undefined : init.replyFolder, replyUid: moved ? undefined : init.replyUid,
       forwardFolder: moved ? undefined : init.forwardFolder, forwardUid: moved ? undefined : init.forwardUid,
       forwardAttachments: moved ? [] : fwd.map(a => a.index),
       forwardAsAttachment: !moved && !!asAttachment,
-      draftUid, highPriority: important, readReceipt: receipt,
+      draftUid, highPriority: important, readReceipt: receipt, from: aliasSender, sign: pgp.available ? pgp.sign : undefined,
       sendAt: when?.sendAt, delaySeconds: when?.delaySeconds,
       filePaths: stored.filter(x => !x.link).map(x => x.path), linkPaths: stored.filter(x => x.link).map(x => x.path),
       linkUploads: names.filter((_, i) => linked.includes(files[i])),
@@ -217,16 +234,16 @@ export const Compose = forwardRef<ComposeHandle, {
     // Sperre gegen mehrfaches Senden (Strg+Enter, Doppelklick)
     if (sending.current) return
     if (!to.length && !cc.length && !bcc.length) { notify(t('Kein Empfänger'), undefined, 'warning'); return }
-    if (!subject.trim() && !confirm(t('Ohne Betreff senden?'))) return
+    if (!subject.trim() && !await askConfirm('', t('Ohne Betreff senden?'))) return
     const text = editor.current?.text() ?? ''
     if (/anhang|angehängt|anbei|attach|enclosed/i.test(text.split(/Von:|From:/)[0]) && files.length + fwd.length === 0
-        && !confirm(t('Im Text ist von einem Anhang die Rede, es ist aber keiner dabei. Trotzdem senden?'))) return
+        && !await askConfirm('', t('Im Text ist von einem Anhang die Rede, es ist aber keiner dabei. Trotzdem senden?'))) return
     sending.current = true
     setBusy(true)
     try {
       const snapshot: ComposeInit = {
         ...init, account, to, cc, bcc, subject, html: editor.current?.html() ?? '',
-        forwardAttachments: fwd, forwardAsAttachment: asAttachment, files, important, receipt, draftUid, draftAccount, dirty: true,
+        forwardAttachments: fwd, forwardAsAttachment: asAttachment, files, important, receipt, sign: pgp.choice, draftUid, draftAccount, dirty: true,
       }
       const delay = at ? undefined : Math.max(0, Math.min(30, prefs.sendDelay ?? 10))
       const r = await api.form(`/api/mail/${account}/send`, form({ sendAt: at?.toISOString(), delaySeconds: delay }))
@@ -273,12 +290,12 @@ export const Compose = forwardRef<ComposeHandle, {
     },
     snapshot: () => ({
       ...init, account, to, cc, bcc, subject, html: editor.current?.html() ?? '',
-      forwardAttachments: fwd, forwardAsAttachment: asAttachment, files, important, receipt, draftUid, draftAccount, dirty,
+      forwardAttachments: fwd, forwardAsAttachment: asAttachment, files, important, receipt, sign: pgp.choice, draftUid, draftAccount, dirty, fromAlias,
     }),
   }))
 
-  const close = () => {
-    if (dirty && !confirm(t('Verwerfen? Ungesicherte Änderungen gehen verloren.'))) return
+  const close = async () => {
+    if (dirty && !await askConfirm('', t('Verwerfen? Ungesicherte Änderungen gehen verloren.'))) return
     onClose(false)
   }
 
@@ -319,6 +336,7 @@ export const Compose = forwardRef<ComposeHandle, {
           <MenuPopover>
             <MenuList>
               <MenuItem icon={<Desktop20Regular />} onClick={() => fileInput.current?.click()}>{t('Vom Computer')}</MenuItem>
+              <MenuItem icon={<ImageMultiple20Regular />} onClick={() => setPickGallery(true)}>{t('Aus der dmOffice-Galerie')}</MenuItem>
               <MenuItem icon={<Cloud20Regular />} onClick={() => setPickStored(true)}>{t('Aus den dmOffice-Dateien')}</MenuItem>
             </MenuList>
           </MenuPopover>
@@ -328,6 +346,7 @@ export const Compose = forwardRef<ComposeHandle, {
           <Button appearance={important ? 'primary' : 'subtle'} icon={<Important20Regular />} onClick={() => setImportant(v => !v)} />
         </Tooltip>
         <Checkbox label={t('Lesebestätigung')} checked={receipt} onChange={(_, d) => setReceipt(!!d.checked)} />
+        {pgp.available && <PgpSignButton sign={pgp.sign} onChange={pgp.setSign} />}
         <div className={s.spacer} />
         <Text size={200} className={s.desktopOnly} style={{ color: tokens.colorNeutralForeground3 }}>{t('Strg+Enter sendet')}</Text>
         {onPopOut && (
@@ -345,6 +364,13 @@ export const Compose = forwardRef<ComposeHandle, {
             selectedOptions={[account]} onOptionSelect={(_, d) => { if (d.optionValue && d.optionValue !== account) { setAccount(d.optionValue); setDirty(true) } }} appearance="underline" style={{ minWidth: 'min(320px, 60vw)' }}>
             {accounts.map(a => <Option key={a.id} value={a.id}>{`${a.displayName || a.name} <${a.email}>`}</Option>)}
           </Dropdown>
+        </div>
+      )}
+      {init.alias && account === init.account && (
+        <div className={s.field}>
+          <span className={s.label} />
+          <Checkbox checked={fromAlias} onChange={(_, d) => { setFromAlias(!!d.checked); setDirty(true) }}
+            label={t('Als {a} senden', { a: init.alias })} />
         </div>
       )}
       <div className={s.field}>
@@ -381,7 +407,7 @@ export const Compose = forwardRef<ComposeHandle, {
           ))}
           {stored.map(x => (
             <span key={'s' + x.path} className={s.att}>☁ {x.name} <Text size={200}>({fmtSize(x.size)})</Text>
-              {linkToggle(x.link, () => { setStored(l => l.map(y => y.path === x.path ? { ...y, link: !y.link } : y)); setDirty(true) })}
+              {!x.path.startsWith('ext:') && linkToggle(x.link, () => { setStored(l => l.map(y => y.path === x.path ? { ...y, link: !y.link } : y)); setDirty(true) })}
               <Button size="small" appearance="transparent" icon={<Dismiss16Regular />} onClick={() => setStored(l => l.filter(y => y.path !== x.path))} />
             </span>
           ))}
@@ -395,6 +421,12 @@ export const Compose = forwardRef<ComposeHandle, {
       {pickStored && <StoredFilesDialog onClose={() => setPickStored(false)} onPick={items => {
         setPickStored(false)
         setStored(l => [...l, ...items.filter(i => !l.some(x => x.path === i.path)).map(i => ({ path: i.path, name: i.name, size: i.size, link: i.size >= LINK_FROM }))])
+        setDirty(true)
+      }} />}
+      {/* Fotos aus der Galerie: hängt der Server an, auch aus Galerie-Ordnern („ext:“ - die nie als Link, sie liegen nicht in der Ablage) */}
+      {pickGallery && <PickPhotoDialog title={t('Aus der dmOffice-Galerie')} onClose={() => setPickGallery(false)} onPickMany={items => {
+        setPickGallery(false)
+        setStored(l => [...l, ...items.filter(i => !l.some(x => x.path === i.path)).map(i => ({ path: i.path, name: i.name, size: i.size, link: !i.path.startsWith('ext:') && i.size >= LINK_FROM }))])
         setDirty(true)
       }} />}
       <RichEditor ref={editor} initial={initialHtml.current} onChange={() => setDirty(true)} areaStyle={font}

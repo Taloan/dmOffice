@@ -6,6 +6,8 @@ using SkiaSharp;
 namespace DmOffice.Tests;
 
 /// <summary>Papierkorb, Versionen, Suche, Vorschaubilder und der Schutz des notizi-Ordners direkt am FileStore.</summary>
+// Nicht parallel zu Tests, die den Storage Extender (FileStore.CacheRoom, gemeinsam fuer alle) einschalten
+[Collection("server")]
 public class FileStoreFeatureTests
 {
     private static UserDb NewDb(string? root = null)
@@ -256,19 +258,25 @@ public class FileStoreFeatureTests
         FileStore.Put(db, "c.bin", new byte[mb], null);
         FileStore.Delete(db, "b.bin");
         FileStore.Delete(db, "c.bin");
-        With(db, s => s with { VersionsMb = 1, TrashMb = 1, TrashDays = 0 });
-        FileRetention.Apply(db, DateTime.UtcNow);
-        Assert.Equal(newest, Assert.Single(FileStore.Versions(db, id)).Id);
-        Assert.Equal("c.bin", Assert.Single(FileStore.Trash(db)).Path);
-        Assert.Equal(0, FileRetention.Load(db).TrashDays);
+        // Ohne Höchstwerte des Admins (sonst ersetzt dessen Grenze das „unbegrenzt“)
+        var before = FileRetention.LimitsOf;
+        FileRetention.LimitsOf = () => new FileLimits { VersionsDays = 0, VersionsMb = 0, TrashDays = 0, TrashMb = 0, LinkDays = 0 };
+        try
+        {
+            With(db, s => s with { VersionsMb = 1, TrashMb = 1, TrashDays = 0 });
+            FileRetention.Apply(db, DateTime.UtcNow);
+            Assert.Equal(newest, Assert.Single(FileStore.Versions(db, id)).Id);
+            Assert.Equal("c.bin", Assert.Single(FileStore.Trash(db)).Path);
+            Assert.Equal(0, FileRetention.Load(db).TrashDays);
+        }
+        finally { FileRetention.LimitsOf = before; }
     }
 
     [Fact]
     public void Volle_Grenze_raeumt_erst_Versionen_dann_den_Papierkorb()
     {
         var db = NewDb();
-        var before = FileStore.QuotaOf;
-        FileStore.QuotaOf = u => u == db.UserId ? UserStorage.Database(db) + 1000 : before?.Invoke(u) ?? 0;
+        FileStore.QuotaFor[db.UserId] = () => UserStorage.Database(db) + 1000;
         try
         {
             FileStore.Put(db, "a.bin", new byte[400], null);
@@ -284,7 +292,7 @@ public class FileStoreFeatureTests
             Assert.True(FileStore.UsageTotal(db) <= 1000);
             Assert.Throws<QuotaExceededException>(() => FileStore.Put(db, "e.bin", new byte[100], null));
         }
-        finally { FileStore.QuotaOf = before; }
+        finally { FileStore.QuotaFor.TryRemove(db.UserId, out _); }
     }
 
     [Fact]
@@ -313,6 +321,17 @@ public class FileStoreFeatureTests
         for (var i = 0; i < 3; i++) FileStore.Put(db, $"foto{i}.jpg", B("x"), null);
         var hits = FileStore.Search(db, "", "", 5, f => FileKinds.Of(f) == "image");
         Assert.Equal(3, hits.Count);
+    }
+
+    [Fact]
+    public void Suche_findet_Umlaute_auch_ausgeschrieben()
+    {
+        var db = NewDb();
+        FileStore.Put(db, "Müller Grüße.txt", B("x"), null);
+        Assert.Single(FileStore.Search(db, "", "Mueller"));
+        Assert.Single(FileStore.Search(db, "", "gruesse"));
+        Assert.Single(FileStore.Search(db, "", "Muller"));
+        Assert.Empty(FileStore.Search(db, "", "Maller"));
     }
 
     [Fact]
@@ -360,6 +379,20 @@ public class FileStoreFeatureTests
     }
 
     [Fact]
+    public async Task Mittlere_Vorschau_fuer_skalierte_Bildschirme()
+    {
+        var db = NewDb();
+        FileStore.Put(db, "gross.png", Png(3000, 1500), "image/png");
+        var f = FileStore.Get(db, "gross.png")!;
+        // 300 bis 512 Pixel: die mittlere Größe (aus der großen Vorschau, wenn es sie gibt)
+        await Thumbs.Get(db, f, Thumbs.Large, default);
+        using var mid = DecodeWebp((await Thumbs.Get(db, f, 400, default))!);
+        Assert.Equal((512, 256), (mid.Width, mid.Height));
+        using var big = DecodeWebp((await Thumbs.Get(db, f, 1600, default))!);
+        Assert.Equal(2048, big.Width);
+    }
+
+    [Fact]
     public async Task Vorschaubild_fuer_Bild_verkleinert_und_gecacht()
     {
         var db = NewDb();
@@ -391,6 +424,48 @@ public class FileStoreFeatureTests
         // Einmal je Datenbank werden solche leeren Eintraege weggeraeumt - danach entsteht das Bild
         using var bmp = DecodeWebp((await Thumbs.Get(db, f, 256, default))!);
         Assert.Equal(256, bmp.Width);
+    }
+
+    [Fact]
+    public async Task RAW_mit_Vorschaubild_gilt_als_verarbeitet()
+    {
+        // RAW-Vorschaubilder tragen einen Zusatz am Etag - galten deshalb fuer immer als unverarbeitet und wurden nie bereinigt
+        var db = NewDb();
+        FileStore.Put(db, "foto.arw", B("kein raw"), "image/x-sony-arw");
+        db.Exec("UPDATE files SET sha256 = 'x' WHERE path = 'foto.arw'");
+        var blob = db.Query("SELECT blob FROM files WHERE path = 'foto.arw'", r => r.GetString(0)).Single();
+        Assert.Contains(blob, DmOffice.Core.S3Mirror.Unprocessed(db, false));
+        await Thumbs.Get(db, FileStore.Get(db, "foto.arw")!, Thumbs.Small, default);
+        Assert.Contains("~raw2", db.Query("SELECT etag FROM file_thumbs WHERE size = " + Thumbs.Small, r => r.GetString(0)).Single());
+        Assert.DoesNotContain(blob, DmOffice.Core.S3Mirror.Unprocessed(db, false));
+    }
+
+    [Fact]
+    public void Vorschaubilder_vorab_erreichen_auch_aeltere_Fotos()
+    {
+        // Neuere Dateien ohne Vorschaubild (Text, Video ...) bleiben immer in der Abfrage und duerfen aeltere Fotos nicht verdraengen
+        var db = NewDb();
+        FileStore.Put(db, "alt.jpg", B("foto"), "image/jpeg");
+        for (var i = 0; i < 5; i++) FileStore.Put(db, $"neu-{i}.txt", B("text " + i), "text/plain");
+        db.Exec("UPDATE files SET modified = CASE path WHEN 'alt.jpg' THEN 1 ELSE 1000 END");
+        Assert.Equal("alt.jpg", DmOffice.Core.ThumbAhead.Todo(db, 3).Single().Path);
+    }
+
+    [Fact]
+    public void Unverarbeitetes_nennt_den_Grund()
+    {
+        var db = NewDb();
+        FileStore.Put(db, "ohne-pruefsumme.txt", B("a"), "text/plain");
+        FileStore.Put(db, "offen.pdf", B("b"), "application/pdf");
+        FileStore.Put(db, "bearbeitet.jpg", B("c"), "image/jpeg");
+        db.Exec("UPDATE files SET sha256 = CASE path WHEN 'ohne-pruefsumme.txt' THEN NULL ELSE 'x' END");
+        DmOffice.Dav.PhotoEdits.Ensure(db);
+        db.Exec("INSERT INTO photo_edits(key, edit, modified) SELECT 'f:' || fileid, '{}', 0 FROM files WHERE path = 'bearbeitet.jpg'");
+        string Blob(string p) => db.Query("SELECT blob FROM files WHERE path = $p", r => r.GetString(0), ("$p", p)).Single();
+        var why = DmOffice.Core.S3Mirror.UnprocessedWhy(db, false);
+        Assert.Equal("hash", why[Blob("ohne-pruefsumme.txt")].Reason);
+        Assert.Equal(("thumb", ".pdf"), why[Blob("offen.pdf")]);
+        Assert.Equal(("edited", ".jpg"), why[Blob("bearbeitet.jpg")]);
     }
 
     /// <summary>JPEG mit EXIF-Ausrichtung 6 (Handy hochkant): Vorschau muss hochkant sein.</summary>

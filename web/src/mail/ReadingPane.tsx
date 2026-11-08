@@ -1,5 +1,6 @@
+import { DmsAttachmentButton, DmsFiledHint } from '../dms/MailToDms'
 import {
-  Avatar, Button, Link, MessageBar, MessageBarActions, MessageBarBody, Spinner, Text, Tooltip, makeStyles, tokens,
+  Avatar, Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Link, MessageBar, MessageBarActions, MessageBarBody, Spinner, Text, Tooltip, makeStyles, tokens,
   Menu, MenuItem, MenuList, MenuPopover, MenuTrigger,
 } from '@fluentui/react-components'
 import {
@@ -11,13 +12,21 @@ import { addrFull, api, fmtSize, MailItem, Message, q } from '../api'
 import { peek, remember } from './messageCache'
 import { useApp } from '../App'
 import { CategoryChips } from './Categories'
+import { AliasHint } from './CatchallFolders'
 import { InviteCard } from './InviteCard'
-import { PhishBar } from './PhishBar'
+import { PhishBar, phishWarns } from './PhishBar'
+import { PgpBar } from './Pgp'
+import { SpamWhy } from './SpamWhy'
 import { SmartCard } from './SmartCard'
 import { fmtLong } from '../shell/hooks'
 import { useIsDark } from '../theme'
 import { usePrefs } from '../prefs'
 import { t } from '../i18n'
+import { Viewer } from '../files/Viewer'
+import { Item, Source, viewKind } from '../files/common'
+import { OfficeEditor, officeMode, useOffice } from '../files/Office'
+import { askConfirm } from '../shell/context'
+import { cancelExpiry, ExpiryIcon, ExpiryMenuItems, expiryOf, expiryText, useExpiries } from './ExpiryMenu'
 
 const useStyles = makeStyles({
   root: { flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', backgroundColor: tokens.colorNeutralBackground2 },
@@ -54,17 +63,27 @@ interface Props {
   onReply: (all: boolean) => void
   onForward: () => void
   onAct: (what: any) => void
+  /** Klick auf einen Kategorie-Badge nimmt die Kategorie von der Mail (wie in der Liste). */
+  onRemoveCategory?: (key: string) => void
 }
 
-export function ReadingPane({ item, onLoaded, onReply, onForward, onAct }: Props) {
+export function ReadingPane({ item, onLoaded, onReply, onForward, onAct, onRemoveCategory }: Props) {
   const s = useStyles()
   const { fail, notify } = useApp()
+  const expiry = expiryOf(useExpiries(), item)
   const [unsubDone, setUnsubDone] = useState(false)
+  // Anhänge in dmOffice ansehen: Bilder, PDF, Audio, Video, Text im Betrachter, Office-Dateien im Office-Server
+  const [viewing, setViewing] = useState<{ items: Item[]; index: number } | null>(null)
+  // PDFs können Schadcode enthalten: erst nach Rückfrage ansehen
+  const [askPdf, setAskPdf] = useState<{ index: number; name: string } | null>(null)
+  const [spamWhy, setSpamWhy] = useState(false)
+  const [officeAtt, setOfficeAtt] = useState<{ index: number; name: string } | null>(null)
+  const office = useOffice()
   // Newsletter abmelden: One-Click oder Mail erledigt der Server, sonst den Link im Browser oeffnen
   const unsubscribe = async () => {
     if (!message) return
     // Nicht still abmelden: ein Klick kann eine Mail vom eigenen Konto ausloesen. Erst nachfragen.
-    if (!window.confirm(t('Vom Newsletter abmelden? Dabei wird ggf. eine Abmeldung an den Absender gesendet.'))) return
+    if (!await askConfirm('', t('Vom Newsletter abmelden? Dabei wird ggf. eine Abmeldung an den Absender gesendet.'))) return
     try {
       const r = await api.post(`/api/mail/${encodeURIComponent(message.account)}/unsubscribe`, { folder: message.folder, uid: message.uid })
       if (r.done) { setUnsubDone(true); notify(t('Vom Newsletter abgemeldet'), r.how === 'mail' ? t('Die Abmelde-Mail ist verschickt.') : undefined) }
@@ -135,12 +154,35 @@ img[data-remote-src]{display:inline-block;min-width:16px;min-height:16px;backgro
   // Der Kalenderteil einer Einladung steckt in der Karte - nicht noch einmal als "Teil 1" zeigen; echte .ics-Dateien bleiben
   const shownAttachments = message.attachments.filter(a => !(/calendar/i.test(a.mime) && !/\.ics$/i.test(a.name)))
   const attUrl = (i: number, download = true) => `/api/mail/${item.account}/part?` + q({ folder: item.folder, uid: item.uid, index: i, download })
+  // Für den Betrachter der Dateien: Anhänge als Einträge, Inhalt über die Anhang-Adresse
+  type Att = (typeof shownAttachments)[number]
+  const attItem = (a: Att): Item => ({ path: 'att:' + a.index, name: a.name, isDir: false, size: a.size, mime: a.mime, modified: '' })
+  // Zum Blättern im Betrachter: alles Ansehbare außer PDFs (die nur einzeln nach Rückfrage)
+  const viewable = shownAttachments.filter(a => { const k = viewKind(attItem(a)); return k != null && k !== 'pdf' })
+  const attSource: Source = {
+    download: (i, inline) => attUrl(Number(i.path.slice(4)), !inline),
+    thumb: i => attUrl(Number(i.path.slice(4)), false),
+  }
+  const download = (a: { index: number; name: string }) => {
+    const link = document.createElement('a')
+    link.href = attUrl(a.index); link.download = a.name
+    document.body.appendChild(link); link.click(); link.remove()
+    // Die installierte App (PWA) zeigt keine Download-Leiste - darum ein Hinweis
+    notify(t('„{name}“ ist im Download-Ordner gespeichert.', { name: a.name }))
+  }
+  const openAtt = (a: Att) => {
+    const it = attItem(a)
+    if (viewKind(it) === 'pdf') setAskPdf({ index: a.index, name: a.name })
+    else if (viewKind(it)) setViewing({ items: viewable.map(attItem), index: viewable.findIndex(v => v.index === a.index) })
+    else if (officeMode(it, office)) setOfficeAtt({ index: a.index, name: a.name })
+    else download(a)
+  }
 
   return (
-    <div className={s.root}>
+    <div className={s.root} style={{ zoom: prefs.textSize === 'small' ? 0.92 : prefs.textSize === 'large' ? 1.12 : 1 }}>
       <div className={s.head}>
         <div className={s.subject}>{message.subject || t('(ohne Betreff)')}</div>
-        {item.keywords?.length > 0 && <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}><CategoryChips keywords={item.keywords} /></div>}
+        {item.keywords?.length > 0 && <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}><CategoryChips keywords={item.keywords} onRemove={onRemoveCategory} /></div>}
         <div className={s.sender}>
           <Avatar name={message.from?.name || message.from?.address} size={40} color="colorful" />
           <div className={s.meta}>
@@ -149,6 +191,7 @@ img[data-remote-src]{display:inline-block;min-width:16px;min-height:16px;backgro
               {t('An: {recipients}', { recipients: (showAllTo ? recipients : recipients.slice(0, 4)).map(addrFull).join('; ') })}
               {!showAllTo && recipients.length > 4 && <> <Link inline onClick={() => setShowAllTo(true)}>{t('+{n} weitere', { n: recipients.length - 4 })}</Link></>}
             </span>
+            {message.alias && <AliasHint className={s.small} address={message.alias} state={message.aliasState} sender={message.from?.name} />}
             <span className={s.small}>{fmtLong(message.date)}</span>
           </div>
           <div className={s.actions}>
@@ -164,6 +207,8 @@ img[data-remote-src]{display:inline-block;min-width:16px;min-height:16px;backgro
               <MenuPopover>
                 <MenuList>
                   <MenuItem icon={<Delete20Regular />} onClick={() => onAct('delete')}>{t('Löschen')}</MenuItem>
+                  <ExpiryMenuItems targets={[item]} onError={fail}
+                    onDone={w => notify(w === 'set' ? t('Entfernen nach Zeit eingeplant') : t('Entfernen nach Zeit zurückgenommen'))} />
                   <MenuItem icon={<Print20Regular />} onClick={() => frame.current?.contentWindow?.print()}>{t('Drucken')}</MenuItem>
                   <MenuItem icon={<Code20Regular />} onClick={() => window.open(`/api/mail/${item.account}/source?` + q({ folder: item.folder, uid: item.uid }))}>{t('Quelltext (.eml)')}</MenuItem>
                   {dark && <MenuItem icon={<WeatherMoon16Regular />} onClick={() => setInvert(v => !v)}>{invert ? t('Original-Farben') : t('Dunkel darstellen')}</MenuItem>}
@@ -174,7 +219,16 @@ img[data-remote-src]{display:inline-block;min-width:16px;min-height:16px;backgro
         </div>
       </div>
 
+      {expiry && (
+        <MessageBar intent={expiry.kind === 'destroy' ? 'warning' : 'info'} className={s.bar} layout="singleline" icon={<ExpiryIcon />}>
+          <MessageBarBody>{expiryText(expiry)}</MessageBarBody>
+          <MessageBarActions>
+            <Button size="small" onClick={() => cancelExpiry([item]).then(() => notify(t('Entfernen nach Zeit zurückgenommen'))).catch(fail)}>{t('mail|Zurücknehmen')}</Button>
+          </MessageBarActions>
+        </MessageBar>
+      )}
       {/* Phishing-Verdacht: Absenderpruefung, Linktext gegen Linkziel, aehnliche Domains, erstmaliger Absender */}
+      {message.pgp && <PgpBar message={message} className={s.bar} />}
       {message.phish && <PhishBar found={message.phish} className={s.bar} onJunk={message.junk ? undefined : () => onAct('junk')} />}
       {message.junk && (
         // Wie Outlook: in Junk keine Bilder und keine Links - erst "Kein Junk" gibt die Mail frei
@@ -187,7 +241,7 @@ img[data-remote-src]{display:inline-block;min-width:16px;min-height:16px;backgro
       )}
       {!message.junk && message.spam != null && message.spam >= 0.2 && message.spam < 0.9 && (
         <MessageBar intent="warning" className={s.bar} layout="multiline">
-          <MessageBarBody><ShieldError16Regular /> {t('Der Spamfilter ist unsicher ({p} %).', { p: Math.round(message.spam * 100) })}</MessageBarBody>
+          <MessageBarBody><ShieldError16Regular /> {t('Der Spamfilter ist unsicher ({p} %).', { p: Math.round(message.spam * 100) })}{' '}<Link onClick={() => setSpamWhy(true)}>{t('Warum?')}</Link></MessageBarBody>
           <MessageBarActions>
             <Button size="small" onClick={() => onAct('junk')}>{t('Junk')}</Button>
             <Button size="small" onClick={() => { onAct('notjunk'); setMessage(m => m && { ...m, spam: 0 }) }}>{t('Kein Junk')}</Button>
@@ -232,21 +286,54 @@ img[data-remote-src]{display:inline-block;min-width:16px;min-height:16px;backgro
       <SmartCard item={item} />
       {/* Einladung (text/calendar): Zusagen / Mit Vorbehalt / Absagen */}
       {message.attachments.some(a => /calendar|ics/i.test(a.mime) || /\.ics$/i.test(a.name)) && <InviteCard item={item} />}
+      <DmsFiledHint account={item.account} messageId={message.messageId} />
       {shownAttachments.length > 0 && (
         <div className={s.atts}>
-          {shownAttachments.map(a => (
-            <a key={a.index} className={s.att} href={attUrl(a.index)} title={t('{name} – herunterladen', { name: a.name })}>
-              <Attach16Regular />
-              <div style={{ minWidth: 0 }}>
-                <div className={s.attName}>{a.name}</div>
-                <div className={s.small}>{fmtSize(a.size)}</div>
+          {shownAttachments.map(a => {
+            const it = attItem(a)
+            const how = viewKind(it) ? 'view' : officeMode(it, office) ? 'office' : 'download'
+            return (
+              <div key={a.index} className={s.att} role="button" tabIndex={0} onClick={() => openAtt(a)} onKeyDown={e => { if (e.key === 'Enter') openAtt(a) }}
+                title={how === 'download' ? t('{name} – herunterladen', { name: a.name }) : t('{name} – ansehen', { name: a.name })}>
+                <Attach16Regular />
+                <div style={{ minWidth: 0 }}>
+                  <div className={s.attName}>{a.name}</div>
+                  <div className={s.small}>{fmtSize(a.size)}</div>
+                </div>
+                <a href={attUrl(a.index)} download={a.name} onClick={e => { e.stopPropagation(); notify(t('„{name}“ ist im Download-Ordner gespeichert.', { name: a.name })) }}
+                  title={t('Herunterladen')} aria-label={t('{name} – herunterladen', { name: a.name })} style={{ display: 'inline-flex', color: 'inherit' }}>
+                  <ArrowDownload16Regular />
+                </a>
+                <DmsAttachmentButton mail={item} index={a.index} name={a.name} />
               </div>
-              <ArrowDownload16Regular />
-            </a>
-          ))}
+            )
+          })}
         </div>
       )}
 
+      {viewing && viewing.items[viewing.index] && <Viewer items={viewing.items} index={viewing.index} source={attSource} onIndex={i => setViewing({ ...viewing, index: i })}
+        onClose={() => setViewing(null)} onDownload={i => download({ index: Number(i.path.slice(4)), name: i.name })} />}
+      {spamWhy && <SpamWhy item={item} onClose={() => setSpamWhy(false)} />}
+      {askPdf && <Dialog open onOpenChange={(_, d) => { if (!d.open) setAskPdf(null) }}>
+        <DialogSurface style={{ maxWidth: 460 }}>
+          <DialogBody>
+            <DialogTitle>{t('PDF aus einer Mail öffnen?')}</DialogTitle>
+            <DialogContent>
+              {((message.phish && phishWarns(message.phish)) || (message.spam != null && message.spam >= 0.2)) && <MessageBar intent="error" style={{ marginBottom: 8 }}><MessageBarBody>
+                {t('Diese Mail ist verdächtig. Öffne den Anhang besser nicht.')}</MessageBarBody></MessageBar>}
+              {t('PDFs können Schadcode enthalten. Öffne „{name}“ nur, wenn du den Absender kennst und den Anhang erwartet hast.', { name: askPdf.name })}
+            </DialogContent>
+            <DialogActions>
+              <Button appearance="primary" onClick={() => { const a = askPdf; setAskPdf(null); setViewing({ items: [attItem({ ...shownAttachments.find(x => x.index === a.index)! })], index: 0 }) }}>{t('Ansehen')}</Button>
+              <Button onClick={() => { const a = askPdf; setAskPdf(null); download(a) }}>{t('Herunterladen')}</Button>
+              <Button appearance="subtle" onClick={() => setAskPdf(null)}>{t('Abbrechen')}</Button>
+            </DialogActions>
+          </DialogBody>
+        </DialogSurface>
+      </Dialog>}
+      {officeAtt && <OfficeEditor name={officeAtt.name} onClose={() => setOfficeAtt(null)}
+        open={() => api.post<{ path: string }>(`/api/mail/${item.account}/part/office`, { folder: item.folder, uid: item.uid, index: officeAtt.index })
+          .then(r => api.post('/api/office/open', { path: r.path, view: true }))} />}
       <div className={s.frameWrap}>
         <iframe ref={frame} className={s.frame} title={t('Inhalt')} srcDoc={doc} onLoad={() => { fit(); setTimeout(fit, 300); setTimeout(fit, 1500) }}
           sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-modals" />

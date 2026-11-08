@@ -69,20 +69,24 @@ dmOffice prüft das vorher und zeigt, was fehlt, statt mittendrin zu scheitern. 
 - Die Sicherungen enthalten dieselben Geheimnisse wie der Datenordner (die Datenbanken sind verschlüsselt, aber `users.json`
   und – ohne `DMOFFICE_MASTER_KEY` – `master.key` liegen dabei). Schütze sie wie den Datenordner.
 
-## Zurückgehen
+## Zurückgehen auf eine frühere Version
 
-1. Container stoppen und die Image-Version festnageln, die die Sicherung angelegt hat (etwa `ghcr.io/taloan/dmoffice:1.1.0`
-   statt `latest`).
-2. `pre-update/<Sicherung>/users/*.db` nach `<data>/users/` kopieren (die gleichnamigen `*.db-wal`- und `*.db-shm`-Dateien vorher löschen).
-3. `users.json`, `server.json`, `shares.json` (und `master.key`, `keys/`) aus der Sicherung in den Datenordner zurückkopieren.
-4. Container starten. Änderungen seit der Sicherung gehen verloren. Blob-Dateien müssen nicht zurück; überzählige werden aufgeräumt.
+1. dmOffice stoppen und die Image-Version einstellen, die zur Sicherung passt, z. B. `ghcr.io/taloan/dmoffice:1.1.0` statt `latest`.
+2. Benutzerdatenbanken wiederherstellen: Alle Dateien `pre-update/<Sicherung>/users/*.db` nach `<data>/users/` kopieren. Zuvor die
+   zugehörigen Dateien mit den Endungen `-wal` und `-shm` im Zielordner löschen.
+3. Einstellungen und Schlüssel wiederherstellen: Die Dateien `users.json`, `server.json` und `shares.json` sowie, falls vorhanden,
+   `master.key` und den Ordner `keys/` aus der Sicherung nach `<data>` zurückkopieren.
+4. dmOffice wieder starten. Der Server befindet sich nun auf dem Stand der Sicherung.
+
+Wichtig: Alle Änderungen seit der Sicherung gehen verloren. Die Blob-Dateien müssen nicht zurückkopiert werden. Nicht mehr benötigte
+Dateien bereinigt dmOffice automatisch.
 
 ## Was sich in welcher Version geändert hat
 
 | Release | Schema | Datenänderung | Aufwand |
 |---|---|---|---|
 | 1.0 | 9 | Prio-Posteingang | – |
-| 1.1 | 10 | Speichermodus „Schlank“ für Mail | klein |
+| 1.1 | 10 | Slim Mode für Mail | klein |
 | nächste | 11 | Feste Dateinummern für Nextcloud-Clients | schreibt jede Dateizeile samt Inhalt neu, solange der noch in der Datenbank liegt: braucht etwa die Größe der Dateiinhalte an zusätzlichem Platz, bei GB Minuten |
 | nächste | 12–15 | Bereich der App-Passwörter, Papierkorb und Versionen der Dateiablage, Volltextsuche, Abrufgrenze der Links | klein |
 | nächste | 16 | Dateiinhalte als eigene verschlüsselte Dateien | Schemaschritt klein; das Auslagern danach braucht die Größe der Dateiinhalte am Blob-Ort; die Datenbank schrumpft erst mit *Verdichten* |
@@ -94,6 +98,10 @@ Datenbanken ab, die der echte Code von 1.0 und 1.1 angelegt hat.
 
 ## Hinweise für besondere Aufbauten
 
+- Container ohne root: dmOffice läuft als UID/GID 1654. Beim ersten Start nach der Umstellung wird `/data` einmalig diesem Benutzer
+  übergeben (das kann bei vielen Dateien dauern). `DMOFFICE_UID` und `DMOFFICE_GID` wählen einen anderen Benutzer, etwa 99/100 auf
+  Unraid. Andere eingebundene Ordner (externe Ordner, Musik, Fotos) bleiben unverändert: Sie brauchen selbst passende Rechte.
+  `DMOFFICE_RUN_AS_ROOT=1` lässt für Einbindungen, die nur root beschreiben darf, alles beim Alten; nicht empfohlen.
 - `DMOFFICE_BLOBS` (eigenes Volume für Dateiinhalte): Die Platzprüfung fürs Auslagern schaut auf dieses Volume, die für den
   Datenbankumbau und die Sicherung auf den Datenordner.
 - Netzwerk-Dateisysteme melden manchmal falschen freien Platz. `DMOFFICE_ASSUME_FREE_MB` ersetzt die Messung durch eine feste

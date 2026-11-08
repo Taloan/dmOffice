@@ -135,6 +135,13 @@ interface ItemDao {
     @Query("SELECT * FROM items WHERE kind = 1 AND deleted = 0 AND completed = 0 AND due IS NOT NULL AND due < :to")
     suspend fun dueTasksNow(to: Long): List<ItemEntity>
 
+    /** Erledigte Aufgaben mit Fälligkeit - der Kalender zeigt sie am Tag, an dem sie erledigt wurden. */
+    @Query("SELECT * FROM items WHERE kind = 1 AND deleted = 0 AND completed = 1 AND due IS NOT NULL")
+    fun doneTasks(): Flow<List<ItemEntity>>
+
+    @Query("SELECT * FROM items WHERE kind = 1 AND deleted = 0 AND completed = 1 AND due IS NOT NULL")
+    suspend fun doneTasksNow(): List<ItemEntity>
+
     @Query("SELECT * FROM items WHERE dirty = 1 OR deleted = 1")
     suspend fun pending(): List<ItemEntity>
 

@@ -117,6 +117,21 @@ public class TicketTests : IClassFixture<FilesServerFixture>
     }
 
     [Fact]
+    public async Task Hochladen_in_Stuecken_mit_Tickets()
+    {
+        // Version 2: Sitzung im Umschlag anlegen, jedes Teil und das Abschliessen mit eigenem Ticket
+        var start = await _fx.Client().PostAsJsonAsync("/api/files/uploads", new { name = "gross.bin", size = 5, mime = "application/octet-stream" });
+        var id = JsonDocument.Parse(await start.Content.ReadAsStringAsync()).RootElement.GetProperty("id").GetString();
+        var put = $"/api/files/uploads/{id}?offset=0";
+        var r = await WithTicket(await Ticket("PUT", put)).PutAsync(put, new ByteArrayContent([1, 2, 3, 4, 5]));
+        Assert.True(r.IsSuccessStatusCode, await r.Content.ReadAsStringAsync());
+        var finish = $"/api/files/uploads/{id}/finish?path=tk";
+        r = await WithTicket(await Ticket("POST", finish)).PostAsync(finish, null);
+        Assert.True(r.IsSuccessStatusCode, await r.Content.ReadAsStringAsync());
+        Assert.Equal("tk/gross.bin", JsonDocument.Parse(await r.Content.ReadAsStringAsync()).RootElement.GetProperty("files")[0].GetProperty("path").GetString());
+    }
+
+    [Fact]
     public async Task Widerrufenes_App_Passwort_beendet_das_Ticket()
     {
         await Put("tk", "widerruf.txt", "x");

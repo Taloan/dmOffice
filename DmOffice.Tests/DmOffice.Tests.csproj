@@ -22,6 +22,8 @@
   <ItemGroup>
     <!-- Echte Antworten von Office-Servern (Adressen ersetzt) -->
     <None Include="Fixtures\**" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Pukkis Sprachkorpus (PukkiCorpusTests) -->
+    <None Include="Pukki\**" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

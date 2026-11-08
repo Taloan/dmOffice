@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+    <!-- Ecken wie im Sucher, dazwischen Striche eines Barcodes -->
+    <path android:fillColor="#FFFFFF" android:pathData="M2,2h6v2H4v4H2V2zM16,2h6v6h-2V4h-4V2zM2,16h2v4h4v2H2v-6zM20,16h2v6h-6v-2h4v-4z"/>
+    <path android:fillColor="#FFFFFF" android:pathData="M6,7h1.5v10H6zM8.5,7h0.8v10H8.5zM10.3,7h1.8v10h-1.8zM13,7h0.8v10H13zM14.8,7h1.4v10h-1.4zM17.2,7h0.8v10h-0.8z"/>
+</vector>

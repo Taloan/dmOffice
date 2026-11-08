@@ -24,6 +24,12 @@ public sealed class MailAccount
     /// bekommen soll. Wird nicht gespeichert.</summary>
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public string? OAuthFlow { get; set; }
+    /// <summary>Bei Auth = Microsoft: Refresh-Token fuer Microsoft Graph (Kalender, Kontakte, Aufgaben). Nie an die Oberflaeche.</summary>
+    public string? GraphRefreshToken { get; set; }
+    /// <summary>Welche Bereiche mit Microsoft abgeglichen werden (Pim/Graph.cs).</summary>
+    public bool GraphCalendars { get; set; }
+    public bool GraphContacts { get; set; }
+    public bool GraphTasks { get; set; }
 
     public string SmtpHost { get; set; } = "";
     public int SmtpPort { get; set; } = 465;
@@ -40,6 +46,13 @@ public sealed class MailAccount
     public string Signature { get; set; } = "";
     /// <summary>Selbstsignierte Zertifikate annehmen (Server im eigenen Netz).</summary>
     public bool AcceptAnyCertificate { get; set; }
+    /// <summary>
+    /// Selbst festgelegte Sonderordner (Art → Ordnerpfad beim Anbieter): sent, drafts, junk, trash, archive. Fehlt eine Art,
+    /// erkennt dmOffice den Ordner selbst (Kennzeichnung des Servers, sonst der Name); leerer Pfad: keiner.
+    /// </summary>
+    public Dictionary<string, string>? FolderMap { get; set; }
+    public static readonly string[] MappableFolders = ["sent", "drafts", "junk", "trash", "archive"];
+
     /// <summary>Gesendetes in "Gesendet" ablegen. Aus bei Anbietern, die das
     /// selbst tun (Gmail) - sonst liegt jede Mail doppelt da.</summary>
     public bool SaveSentCopy { get; set; } = true;
@@ -67,7 +80,8 @@ public sealed class MailAccount
     public int TrashDays { get; set; }
     public int JunkDays { get; set; }
 
-    /// <summary>Prio-Posteingang (Relevant/Sonstige) fuer dieses Konto.</summary>
+    /// <summary>Smart Inbox fuer dieses Konto (Einstellungen → Smart Inbox, „Gilt für“): Relevant/Sonstige, Termine aus Mails,
+    /// Kategorien. Heisst aus Zeiten, als es nur den Prio-Posteingang gab, noch so.</summary>
     public bool FocusedInbox { get; set; } = true;
 }
 
@@ -82,9 +96,9 @@ public sealed class RuleCondition
 
 public sealed class RuleAction
 {
-    /// <summary>move | copy | markRead | flag | delete | forward | stop</summary>
+    /// <summary>move | copy | markRead | flag | category | delete | forward | trashAfter | destroyAfter | stop</summary>
     public string Type { get; set; } = "move";
-    /// <summary>Ordner bei move/copy, Adressen bei forward.</summary>
+    /// <summary>Ordner bei move/copy, Adressen bei forward, Tage bei trashAfter/destroyAfter.</summary>
     public string Value { get; set; } = "";
 }
 
@@ -108,6 +122,12 @@ public sealed class MailCategory
     public string Key { get; set; } = "";
     public string Name { get; set; } = "";
     public string Color { get; set; } = "#0F6CBD";
+    /// <summary>Lernt: dmOffice setzt diese Kategorie bei neu eingehenden Mails selbst und lernt aus Setzen/Entfernen (Mail/SmartInbox.cs).</summary>
+    public bool Smart { get; set; }
+    /// <summary>Mitgelieferte Kategorie: Voreinstellung (SmartInbox.Rules), solange nichts gelernt ist - "orders", "travel" ...</summary>
+    public string? Preset { get; set; }
+    /// <summary>Ohne Benachrichtigung: Eine neue Mail, deren Kategorien alle so stehen, meldet dmOffice nicht (Web, Push, App).</summary>
+    public bool Quiet { get; set; }
 }
 
 /// <summary>Wonach ein Suchordner sucht - alles optional, mehrere Angaben gelten zusammen (UND).</summary>
@@ -155,6 +175,16 @@ public sealed class SpamSettings
     public bool TrustKnown { get; set; } = true;
     /// <summary>Ihre neuen Mails als gut lernen.</summary>
     public bool LearnKnown { get; set; } = true;
+    /// <summary>Globale Spamlisten (Mail/Blocklists.cs), Kennungen wie "zen", "dbl".</summary>
+    public List<string> Lists { get; set; } = new();
+    /// <summary>Spamlisten, deren Treffer die Mail gleich in Junk schieben.</summary>
+    public List<string> ListsJunk { get; set; } = new();
+    /// <summary>Alle wie viele Stunden aus dem Junk-Ordner des Mailanbieters lernen (0 = nie, 6, 24): was dort nach drei Tagen noch liegt, als Junk (JunkLearn).</summary>
+    public int JunkFolderHours { get; set; } = 24;
+    /// <summary>Archivieren lernt die Mail als „Kein Junk“ und nimmt die Markierung „unsicher“ weg.</summary>
+    public bool LearnArchive { get; set; } = true;
+    /// <summary>Beim gemeinsamen Junk-Wissen mitmachen (JunkPrints) - nur, wenn der Admin es eingeschaltet hat.</summary>
+    public bool ShareJunk { get; set; } = true;
 }
 
 public sealed class NotiziSettings
@@ -190,6 +220,8 @@ public sealed class UserSettings
     /// <summary>Prio-Posteingang: neue Mails im Posteingang nach Relevant/Sonstige einordnen (Mail/Focus.cs).</summary>
     public bool FocusedInbox { get; set; } = true;
     public NotiziSettings Notizi { get; set; } = new();
+    /// <summary>Rezept-Scan: Seiten, die die Regeln nicht verstehen, liest die KI (nur der erkannte Text geht an sie).</summary>
+    public bool RecipeScanAi { get; set; }
     /// <summary>system | light | dark</summary>
     public string Theme { get; set; } = "system";
     /// <summary>IANA-Zone fuer Termine.</summary>
@@ -198,11 +230,32 @@ public sealed class UserSettings
     public int MarkReadDelay { get; set; } = 2;
     /// <summary>Beim Oeffnen eines Mailordners: none | first (neueste) | last (zuletzt gewaehlte, sonst neueste).</summary>
     public string OpenOnFolder { get; set; } = "last";
+    /// <summary>Ansicht Fotos (Web und App): Bilder in diesen Ordnern und darunter nicht zeigen (Pfade wie in der Dateiablage).</summary>
+    public List<string> PhotoExcludes { get; set; } = new();
+    /// <summary>Personen in der Galerie (Gesichtererkennung über die Photo-Engine, Gallery/GalleryFaces.cs); aus = keine Gesichtsdaten.</summary>
+    public bool Faces { get; set; }
+    /// <summary>Galerie: Sterne, Titel, Beschreibung, Stichwörter, Markierung, Farbe in die Fotos schreiben (XMP im JPEG, Sidecar bei RAW).
+    /// Aus (Vorgabe): nur in der eigenen Datenbank (Gallery/PhotoMarks.cs), Dateien bleiben unverändert.</summary>
+    public bool PhotoWriteXmp { get; set; }
     /// <summary>Absender (adresse@x.de) oder Domains (@x.de), deren Bilder aus dem Netz immer geladen werden.</summary>
     public List<string> TrustedImageSenders { get; set; } = new();
     public List<SearchFolder> SearchFolders { get; set; } = new();
     /// <summary>Pakete, Fluege, Hotels, Reservierungen aus Mails in den Kalender "E-Mail-Ankündigungen".</summary>
     public bool SmartCalendar { get; set; } = true;
+    /// <summary>Smart Inbox (Mail/SmartInbox.cs): Hauptschalter fuer Prio-Posteingang, Termine aus Mails und Kategorien.</summary>
+    public bool SmartInbox { get; set; } = true;
+    /// <summary>Neue Mails bekommen lernende Kategorien automatisch (Mail/SmartInbox.cs).</summary>
+    public bool SmartCategories { get; set; } = true;
+    /// <summary>Alte Smart Inbox (vor den lernenden Kategorien) - nur noch für die Übernahme gelesen.</summary>
+    public List<string> SmartHidden { get; set; } = new();
+    public List<DmOffice.Mail.SmartCategory> SmartCustom { get; set; } = new();
+    /// <summary>Die alten Smart-Kategorien sind in die Kategorien übernommen (SmartInbox.Migrate).</summary>
+    public bool CategoriesMigrated { get; set; }
+
+    /// <summary>Was die Smart Inbox fuer ein Konto tut: Hauptschalter, die Funktion selbst und „Gilt für“ beim Konto.</summary>
+    public bool FocusOn(MailAccount a) => SmartInbox && FocusedInbox && a.FocusedInbox;
+    public bool CalendarOn(MailAccount a) => SmartInbox && SmartCalendar && a.FocusedInbox;
+    public bool CategoriesOn(MailAccount a) => SmartInbox && SmartCategories && a.FocusedInbox;
     /// <summary>Kalender fuer angenommene Einladungen. Null: der erste Kalender fuer Termine.</summary>
     public long? InviteCalendar { get; set; }
     /// <summary>Volltextsuche in Anhaengen und Dateien, auf Wunsch mit OCR (Search/TextIndex.cs). Standard aus.</summary>

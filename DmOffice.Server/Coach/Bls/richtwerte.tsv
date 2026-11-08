@@ -1,0 +1,465 @@
+# Richtwerte: übliche Portionen mit Nährwerten je 100 g (Schätzwerte, typischer Durchschnitt) und typischen Allergenen (EU-14).
+# Spalten: Kategorie, Lebensmittel, Portion, Gramm, kcal, Eiweiß, Fett, Kohlenhydrate (je 100 g), typische Allergene (Schlüssel wie Open Food Facts)
+Fast Food	Pommes klein	kleine Portion	100	313	3.4	15	41	
+Fast Food	Pommes normal	normale Portion	150	313	3.4	15	41	
+Fast Food	Pommes groß	große Portion	250	313	3.4	15	41	
+Fast Food	Currywurst ohne Sauce	1 Portion	150	285	12	25	3	
+Fast Food	Currywurst mit Sauce	1 Portion	200	260	10	20	10	
+Fast Food	Bratwurst	1 Portion	120	285	13	25	2	
+Fast Food	Thüringer Rostbratwurst	1 Portion	100	275	16	23	1	
+Fast Food	Krakauer	1 Portion	150	293	15	25	2	
+Fast Food	Bockwurst	1 Portion	120	263	12	23	2	
+Fast Food	Hotdog	1 Portion	180	279	11	15	25	gluten
+Fast Food	Hamburger	1 Portion	150	264	13	12	26	gluten
+Fast Food	Cheeseburger	1 Portion	180	278	14	14	24	gluten
+Fast Food	Doppelburger	1 Portion	300	297	16	17	20	gluten
+Fast Food	Chickenburger	1 Portion	180	269	13	13	25	gluten
+Fast Food	Döner im Brot	1 Portion	450	214	11	10	20	gluten
+Fast Food	Dürüm Döner	1 Portion	400	222	11	10	22	gluten
+Fast Food	Dönerbox mit Pommes	1 Portion	400	270	12	14	24	
+Fast Food	Lahmacun pur	1 Portion	180	237	9	9	30	gluten
+Fast Food	Lahmacun mit Dönerfleisch	1 Portion	400	244	12	12	22	gluten
+Fast Food	Falafel Stück	1 Portion	25	309	13	17	26	
+Fast Food	Falafel-Tasche	1 Portion	350	256	10	12	27	gluten
+Fast Food	Gyros mit Tzatziki	1 Portion	300	219	17	15	4	milk
+Fast Food	Gyrosteller mit Beilagen	1 Portion	550	237	11	13	19	
+Fast Food	Chicken Nugget Stück	1 Portion	20	267	15	15	18	
+Fast Food	Chicken Nuggets 6 Stück	1 Portion	120	267	15	15	18	
+Fast Food	Chicken Wings 6 Stück mit Knochen	1 Portion	250	214	17	14	5	
+Fast Food	Frühlingsrolle groß	1 Portion	100	210	6	10	24	gluten
+Fast Food	Frühlingsrolle mini	1 Portion	20	210	6	10	24	gluten
+Fast Food	Burrito	1 Portion	400	222	10	10	23	
+Fast Food	Taco gefüllt	1 Portion	120	228	10	12	20	
+Fast Food	Nachos mit Käse	1 Portion	250	370	8	22	35	milk
+Fast Food	Sandwich belegt	1 Portion	220	251	11	11	27	gluten
+Fast Food	Panini belegt	1 Portion	220	267	12	11	30	gluten
+Fast Food	Wrap gefüllt	1 Portion	250	235	11	11	23	gluten
+Fleischgerichte	Schweinshaxe ganz mit Knochen	1 Portion	900	299	23	23	0	
+Fleischgerichte	Schweinshaxe essbarer Anteil	1 Portion	400	299	23	23	0	
+Fleischgerichte	Kalbshaxe Scheibe mit Knochen	1 Portion	350	199	24	11	1	
+Fleischgerichte	Schweineschnitzel paniert	1 Portion	200	261	20	13	16	gluten
+Fleischgerichte	Wiener Schnitzel	1 Portion	180	270	21	14	15	
+Fleischgerichte	Jägerschnitzel mit Sauce	1 Portion	280	233	16	13	13	
+Fleischgerichte	Cordon bleu	1 Portion	250	276	19	16	14	milk
+Fleischgerichte	Schweinebraten	1 Portion	180	221	25	13	1	
+Fleischgerichte	Sauerbraten mit Sauce	1 Portion	250	201	23	9	7	
+Fleischgerichte	Rinderroulade	1 Portion	200	221	22	13	4	
+Fleischgerichte	Rindergulasch	1 Portion	250	190	20	10	5	
+Fleischgerichte	Schweinegulasch	1 Portion	250	204	19	12	5	
+Fleischgerichte	Rindersteak gegart	1 Portion	200	216	27	12	0	
+Fleischgerichte	Rumpsteak gegart	1 Portion	250	225	27	13	0	
+Fleischgerichte	Filetsteak gegart	1 Portion	180	184	28	8	0	
+Fleischgerichte	Frikadelle	1 Portion	120	267	16	19	8	
+Fleischgerichte	Hackbraten	1 Portion	150	240	17	16	7	
+Fleischgerichte	Leberkäse	1 Portion	150	285	12	25	3	milk
+Fleischgerichte	Kasseler	1 Portion	150	163	24	7	1	
+Fleischgerichte	Schweinerippchen mit Knochen	1 Portion	450	303	22	23	2	
+Fleischgerichte	Pulled Pork	1 Portion	180	225	22	13	5	
+Fleischgerichte	Hähnchenbrust gegart	1 Portion	160	160	31	4	0	
+Fleischgerichte	Hähnchenschenkel mit Knochen	1 Portion	250	208	25	12	0	
+Fleischgerichte	Halbes Brathähnchen mit Knochen	1 Portion	500	212	26	12	0	
+Fleischgerichte	Halbes Brathähnchen essbarer Anteil	1 Portion	260	212	26	12	0	
+Fleischgerichte	Entenbrust gegart	1 Portion	200	249	24	17	0	
+Fleischgerichte	Entenkeule mit Knochen	1 Portion	300	272	23	20	0	
+Fleischgerichte	Gänsekeule mit Knochen	1 Portion	450	298	25	22	0	
+Fleischgerichte	Lammkotelett mit Knochen	1 Portion	100	271	25	19	0	
+Fleischgerichte	Lammkeule Fleischportion	1 Portion	200	225	27	13	0	
+Fleischgerichte	Königsberger Klopse mit Sauce	1 Portion	300	184	11	12	8	
+Fleischgerichte	Chili con Carne	1 Portion	350	151	11	7	11	
+Italienisch	Pizza Margherita	1 Portion	400	250	11	10	29	gluten
+Italienisch	Pizza Salami	1 Portion	450	273	12	13	27	gluten
+Italienisch	Pizza Schinken	1 Portion	450	259	12	11	28	gluten
+Italienisch	Pizza Funghi	1 Portion	420	246	11	10	28	gluten
+Italienisch	Pizza Quattro Formaggi	1 Portion	480	296	14	16	24	gluten
+Italienisch	Pizza Tonno	1 Portion	450	263	14	11	27	gluten
+Italienisch	Pizza Viertel	1 Portion	110	255	11	11	28	gluten
+Italienisch	Pizza Blechstück	1 Portion	180	259	11	11	29	gluten
+Italienisch	Calzone	1 Portion	450	264	12	12	27	gluten
+Italienisch	Spaghetti gekocht ohne Sauce	1 Portion	200	151	5.8	0.9	30	gluten
+Italienisch	Spaghetti Bolognese	1 Portion	400	187	9	7	22	gluten
+Italienisch	Spaghetti Carbonara	1 Portion	400	259	11	15	20	gluten,eggs,milk
+Italienisch	Pasta Tomatensauce	1 Portion	350	160	6	4	25	gluten
+Italienisch	Pasta Sahnesauce	1 Portion	400	241	8	13	23	gluten,milk
+Italienisch	Lasagne	1 Portion	350	194	10	10	16	gluten
+Italienisch	Cannelloni	1 Portion	350	189	10	9	17	gluten
+Italienisch	Tortellini gekocht	1 Portion	250	214	10	6	30	gluten,eggs
+Italienisch	Ravioli gekocht	1 Portion	250	197	9	5	29	gluten
+Italienisch	Gnocchi gekocht	1 Portion	250	153	4	1	32	
+Italienisch	Risotto	1 Portion	300	179	5	7	24	
+Italienisch	Antipasti	1 Portion	200	160	4	12	9	
+Italienisch	Bruschetta Stück	1 Portion	80	191	5	7	27	gluten
+Italienisch	Tiramisu	1 Portion	150	307	6	19	28	gluten,eggs,milk
+Italienisch	Panna cotta	1 Portion	130	259	4	19	18	milk
+Beilagen	Salzkartoffeln	1 Portion	200	77	2	0.1	17	
+Beilagen	Pellkartoffeln	1 Portion	250	77	2	0.1	17	
+Beilagen	Kartoffelpüree	1 Portion	200	104	2	4	15	
+Beilagen	Bratkartoffeln	1 Portion	200	181	3	9	22	
+Beilagen	Kartoffelgratin	1 Portion	220	170	4	10	16	milk
+Beilagen	Kartoffelsalat	1 Portion	200	140	2	8	15	
+Beilagen	Rösti Stück	1 Portion	100	202	3	10	25	gluten
+Beilagen	Kartoffelpuffer Stück	1 Portion	80	224	4	12	25	
+Beilagen	Kartoffelknödel Stück	1 Portion	100	141	3	1	30	gluten
+Beilagen	Semmelknödel Stück	1 Portion	90	168	6	4	27	gluten
+Beilagen	Krokette Stück	1 Portion	25	226	4	10	30	gluten
+Beilagen	Kroketten Portion	1 Portion	150	226	4	10	30	gluten
+Beilagen	Reis gekocht	1 Portion	180	126	2.7	0.3	28	
+Beilagen	Reis trocken	1 Portion	70	347	7	0.8	78	
+Beilagen	Nudeln trocken	1 Portion	100	350	12	1.5	72	gluten
+Beilagen	Nudeln gekocht	1 Portion	250	151	5.8	0.9	30	gluten
+Beilagen	Couscous gekocht	1 Portion	180	109	3.8	0.2	23	gluten
+Beilagen	Bulgur gekocht	1 Portion	180	90	3	0.2	19	gluten
+Beilagen	Quinoa gekocht	1 Portion	180	119	4.4	1.9	21	
+Beilagen	Polenta gekocht	1 Portion	200	81	2	1	16	
+Beilagen	Spätzle gekocht	1 Portion	220	158	6	2	29	gluten
+Beilagen	Käsespätzle	1 Portion	350	257	11	13	24	gluten,milk
+Beilagen	Schupfnudeln	1 Portion	250	193	4	5	33	gluten
+Beilagen	Pommes duchesse	1 Portion	150	201	4	9	26	
+Beilagen	Baguette Beilage	1 Portion	60	270	9	1.5	55	gluten
+Brot & Gebäck	Mischbrot Scheibe	1 Stück/Scheibe	50	234	8	1.5	47	gluten
+Brot & Gebäck	Roggenbrot Scheibe	1 Stück/Scheibe	55	222	7	1.5	45	gluten
+Brot & Gebäck	Vollkornbrot Scheibe	1 Stück/Scheibe	50	223	9	3	40	gluten
+Brot & Gebäck	Weißbrot Scheibe	1 Stück/Scheibe	35	254	9	2	50	gluten
+Brot & Gebäck	Toastbrot Scheibe	1 Stück/Scheibe	25	264	8	4	49	gluten
+Brot & Gebäck	Knäckebrot Scheibe	1 Stück/Scheibe	12	318	10	2	65	gluten
+Brot & Gebäck	Pumpernickel Scheibe	1 Stück/Scheibe	40	189	5	1	40	
+Brot & Gebäck	Baguette ganz	1 Stück/Scheibe	250	270	9	1.5	55	gluten
+Brot & Gebäck	Baguette Scheibe	1 Stück/Scheibe	20	270	9	1.5	55	gluten
+Brot & Gebäck	Weizenbrötchen	1 Stück/Scheibe	60	270	9	2	54	gluten
+Brot & Gebäck	Körnerbrötchen	1 Stück/Scheibe	80	284	11	8	42	gluten
+Brot & Gebäck	Laugenbrötchen	1 Stück/Scheibe	80	267	9	3	51	gluten
+Brot & Gebäck	Laugenbrezel	1 Stück/Scheibe	85	275	9	3	53	gluten
+Brot & Gebäck	Laugenstange	1 Stück/Scheibe	90	275	9	3	53	gluten
+Brot & Gebäck	Croissant	1 Stück/Scheibe	65	402	8	22	43	gluten
+Brot & Gebäck	Buttercroissant groß	1 Stück/Scheibe	80	411	8	23	43	gluten,milk
+Brot & Gebäck	Schokocroissant	1 Stück/Scheibe	90	437	8	25	45	gluten,milk
+Brot & Gebäck	Rosinenbrötchen	1 Stück/Scheibe	80	285	9	5	51	gluten
+Brot & Gebäck	Milchbrötchen	1 Stück/Scheibe	45	317	9	9	50	gluten,milk
+Brot & Gebäck	Bagel	1 Stück/Scheibe	100	270	10	2	53	
+Brot & Gebäck	Ciabatta-Brötchen	1 Stück/Scheibe	100	271	9	3	52	gluten
+Brot & Gebäck	Fladenbrot	1 Stück/Scheibe	100	262	9	2	52	gluten
+Brot & Gebäck	Pita-Brot	1 Stück/Scheibe	70	270	9	2	54	gluten
+Brot & Gebäck	Tortilla-Wrap Fladen	1 Stück/Scheibe	60	291	8	7	49	gluten
+Brot & Gebäck	Hefezopf Scheibe	1 Stück/Scheibe	60	318	8	10	49	gluten
+Brot & Gebäck	Brioche	1 Stück/Scheibe	70	356	9	16	44	gluten
+Kuchen & Süßgebäck	Bienenstich	1 Stück/Portion	130	348	5	20	37	gluten,eggs
+Kuchen & Süßgebäck	Schwarzwälder Kirschtorte	1 Stück/Portion	150	315	5	19	31	gluten,eggs
+Kuchen & Süßgebäck	Käsekuchen	1 Stück/Portion	140	297	7	17	29	gluten,eggs,milk
+Kuchen & Süßgebäck	Apfelkuchen gedeckt	1 Stück/Portion	140	284	3	12	41	gluten,eggs
+Kuchen & Süßgebäck	Apfelstreuselkuchen	1 Stück/Portion	150	319	4	15	42	gluten,eggs
+Kuchen & Süßgebäck	Obstkuchen	1 Stück/Portion	130	237	4	9	35	gluten,eggs
+Kuchen & Süßgebäck	Erdbeertorte	1 Stück/Portion	150	271	4	15	30	gluten,eggs
+Kuchen & Süßgebäck	Sahnetorte	1 Stück/Portion	160	348	4	24	29	gluten,eggs,milk
+Kuchen & Süßgebäck	Schokoladentorte	1 Stück/Portion	150	383	5	23	39	gluten,eggs,milk
+Kuchen & Süßgebäck	Sachertorte	1 Stück/Portion	120	402	6	22	45	gluten,eggs
+Kuchen & Süßgebäck	Nusskuchen	1 Stück/Portion	100	403	7	23	42	gluten,eggs,nuts
+Kuchen & Süßgebäck	Marmorkuchen	1 Stück/Portion	90	396	6	20	48	gluten,eggs
+Kuchen & Süßgebäck	Zitronenkuchen	1 Stück/Portion	90	382	5	18	50	gluten,eggs
+Kuchen & Süßgebäck	Gugelhupf	1 Stück/Portion	100	369	6	17	48	gluten,eggs
+Kuchen & Süßgebäck	Donauwelle	1 Stück/Portion	130	370	5	22	38	
+Kuchen & Süßgebäck	Biskuitrolle	1 Stück/Portion	100	297	5	13	40	gluten,eggs
+Kuchen & Süßgebäck	Butterkuchen	1 Stück/Portion	100	353	6	17	44	gluten,eggs,milk
+Kuchen & Süßgebäck	Streuselkuchen	1 Stück/Portion	120	362	5	18	45	gluten,eggs
+Kuchen & Süßgebäck	Berliner Krapfen	1 Stück/Portion	75	339	6	15	45	gluten,eggs
+Kuchen & Süßgebäck	Donut	1 Stück/Portion	65	415	5	23	47	gluten,eggs
+Kuchen & Süßgebäck	Muffin	1 Stück/Portion	100	392	5	20	48	gluten,eggs
+Kuchen & Süßgebäck	Cupcake	1 Stück/Portion	110	428	4	24	49	gluten,eggs
+Kuchen & Süßgebäck	Brownie	1 Stück/Portion	80	441	5	25	49	gluten,eggs
+Kuchen & Süßgebäck	Zimtschnecke	1 Stück/Portion	120	374	6	18	47	gluten,eggs
+Kuchen & Süßgebäck	Franzbrötchen	1 Stück/Portion	110	396	6	20	48	gluten,eggs
+Kuchen & Süßgebäck	Plunderteilchen	1 Stück/Portion	110	398	5	22	45	gluten,eggs
+Kuchen & Süßgebäck	Apfeltasche	1 Stück/Portion	110	362	4	18	46	gluten,eggs
+Kuchen & Süßgebäck	Nussschnecke	1 Stück/Portion	120	402	7	22	44	gluten,eggs,nuts
+Kuchen & Süßgebäck	Quarktasche	1 Stück/Portion	110	332	7	16	40	gluten,eggs,milk
+Kuchen & Süßgebäck	Windbeutel Sahne	1 Stück/Portion	120	306	5	22	22	gluten,eggs,milk
+Kuchen & Süßgebäck	Eclair	1 Stück/Portion	90	336	5	20	34	gluten,eggs
+Kuchen & Süßgebäck	Waffel einfach	1 Stück/Portion	100	323	7	15	40	gluten,eggs
+Kuchen & Süßgebäck	Crêpe ohne Belag	1 Stück/Portion	100	208	7	8	27	gluten,eggs
+Kuchen & Süßgebäck	Pfannkuchen	1 Stück/Portion	120	229	7	9	30	gluten,eggs
+Kuchen & Süßgebäck	Kaiserschmarrn	1 Stück/Portion	300	259	8	11	32	gluten,eggs
+Kuchen & Süßgebäck	Germknödel	1 Stück/Portion	250	241	6	5	43	gluten,eggs
+Frühstück & Milchprodukte	Haferflocken trocken	1 Portion	50	355	13	7	60	gluten
+Frühstück & Milchprodukte	Cornflakes	1 Portion	40	373	7	1	84	gluten
+Frühstück & Milchprodukte	Knuspermüsli	1 Portion	60	428	9	16	62	gluten
+Frühstück & Milchprodukte	Bircher Müsli	1 Portion	200	150	5	6	19	gluten
+Frühstück & Milchprodukte	Porridge zubereitet	1 Portion	250	107	4	3	16	gluten
+Frühstück & Milchprodukte	Naturjoghurt	1 Portion	150	68	4	3.5	5	milk
+Frühstück & Milchprodukte	Fruchtjoghurt	1 Portion	150	101	3.5	3	15	milk
+Frühstück & Milchprodukte	Griechischer Joghurt	1 Portion	150	130	6	10	4	milk
+Frühstück & Milchprodukte	Skyr	1 Portion	150	62	11	0.2	4	milk
+Frühstück & Milchprodukte	Quark	1 Portion	200	68	12	0.5	4	milk
+Frühstück & Milchprodukte	Kräuterquark	1 Portion	100	97	9	5	4	milk
+Frühstück & Milchprodukte	Hüttenkäse	1 Portion	100	96	12	4	3	milk
+Frühstück & Milchprodukte	Milch	1 Portion	200	64	3.4	3.5	4.8	milk
+Frühstück & Milchprodukte	Milch Schuss	1 Portion	30	64	3.4	3.5	4.8	milk
+Frühstück & Milchprodukte	Sahne Schuss	1 Portion	20	292	2.5	30	3	milk
+Frühstück & Milchprodukte	Butter Brotaufstrich	1 Portion	10	744	0.7	82	0.7	gluten,milk
+Frühstück & Milchprodukte	Butter Portionspäckchen	1 Portion	10	744	0.7	82	0.7	milk
+Frühstück & Milchprodukte	Marmelade	1 Portion	20	242	0.4	0.1	60	
+Frühstück & Milchprodukte	Honig Teelöffel	1 Portion	7	329	0.3	0	82	
+Frühstück & Milchprodukte	Nuss-Nougat-Creme	1 Portion	20	531	6	31	57	milk,nuts
+Frühstück & Milchprodukte	Erdnussbutter	1 Portion	20	630	25	50	20	peanuts,milk
+Frühstück & Milchprodukte	Ei gekocht ohne Schale	1 Portion	55	155	13	11	1	eggs
+Frühstück & Milchprodukte	Spiegelei	1 Portion	55	155	13	11	1	eggs
+Frühstück & Milchprodukte	Rührei aus 2 Eiern	1 Portion	130	164	12	12	2	eggs
+Frühstück & Milchprodukte	Omelett aus 3 Eiern	1 Portion	190	173	12	13	2	eggs
+Käse & Aufschnitt	Gouda Scheibe	1 Stück/Portion	25	343	25	27	0	milk
+Käse & Aufschnitt	Emmentaler Scheibe	1 Stück/Portion	25	386	29	30	0	milk
+Käse & Aufschnitt	Edamer Scheibe	1 Stück/Portion	25	316	25	24	0	milk
+Käse & Aufschnitt	Butterkäse Scheibe	1 Stück/Portion	25	340	22	28	0	milk
+Käse & Aufschnitt	Cheddar Scheibe	1 Stück/Portion	25	401	25	33	1	milk
+Käse & Aufschnitt	Camembert	1 Stück/Portion	40	300	20	24	1	milk
+Käse & Aufschnitt	Brie	1 Stück/Portion	40	340	21	28	1	milk
+Käse & Aufschnitt	Mozzarella Kugel	1 Stück/Portion	125	251	18	19	2	milk
+Käse & Aufschnitt	Feta	1 Stück/Portion	80	261	16	21	2	milk
+Käse & Aufschnitt	Parmesan Portion	1 Stück/Portion	15	392	35	28	0	milk
+Käse & Aufschnitt	Frischkäse	1 Stück/Portion	25	256	6	24	4	milk
+Käse & Aufschnitt	Ziegenkäse	1 Stück/Portion	50	296	19	24	1	milk
+Käse & Aufschnitt	Kochschinken Scheibe	1 Stück/Portion	25	120	20	4	1	
+Käse & Aufschnitt	Schwarzwälder Schinken Scheibe	1 Stück/Portion	15	216	26	12	1	
+Käse & Aufschnitt	Salami Scheibe	1 Stück/Portion	10	389	22	33	1	
+Käse & Aufschnitt	Lyoner Scheibe	1 Stück/Portion	25	272	12	24	2	
+Käse & Aufschnitt	Mortadella Scheibe	1 Stück/Portion	25	298	14	26	2	
+Käse & Aufschnitt	Putenbrustaufschnitt Scheibe	1 Stück/Portion	20	110	21	2	2	
+Käse & Aufschnitt	Leberwurst Aufstrich	1 Stück/Portion	30	308	12	28	2	
+Käse & Aufschnitt	Teewurst Aufstrich	1 Stück/Portion	25	343	15	31	1	
+Käse & Aufschnitt	Fleischsalat Aufstrich	1 Stück/Portion	50	277	8	25	5	
+Käse & Aufschnitt	Eiersalat Aufstrich	1 Stück/Portion	50	264	8	24	4	eggs
+Fisch & Meeresfrüchte	Lachsfilet gegart	1 Stück/Portion	170	209	23	13	0	fish
+Fisch & Meeresfrüchte	Kabeljaufilet gegart	1 Stück/Portion	170	101	23	1	0	fish
+Fisch & Meeresfrüchte	Seelachsfilet gegart	1 Stück/Portion	170	97	22	1	0	fish
+Fisch & Meeresfrüchte	Forelle ganz mit Gräten	1 Stück/Portion	300	142	22	6	0	fish
+Fisch & Meeresfrüchte	Forelle essbarer Anteil	1 Stück/Portion	160	142	22	6	0	fish
+Fisch & Meeresfrüchte	Dorade ganz	1 Stück/Portion	400	129	21	5	0	fish
+Fisch & Meeresfrüchte	Dorade essbarer Anteil	1 Stück/Portion	190	129	21	5	0	fish
+Fisch & Meeresfrüchte	Fischstäbchen Stück	1 Stück/Portion	30	205	12	9	19	gluten,fish
+Fisch & Meeresfrüchte	Fischstäbchen 5 Stück	1 Stück/Portion	150	205	12	9	19	gluten,fish
+Fisch & Meeresfrüchte	Backfisch	1 Stück/Portion	180	236	13	12	19	gluten,fish
+Fisch & Meeresfrüchte	Matjesfilet	1 Stück/Portion	80	231	15	19	0	fish
+Fisch & Meeresfrüchte	Räucherlachs	1 Stück/Portion	70	169	22	9	0	fish
+Fisch & Meeresfrüchte	Thunfisch Dose abgetropft	1 Stück/Portion	130	109	25	1	0	fish
+Fisch & Meeresfrüchte	Garnelen geschält	1 Stück/Portion	150	93	21	1	0	crustaceans
+Fisch & Meeresfrüchte	Calamari fritti	1 Stück/Portion	200	257	13	13	22	molluscs
+Fisch & Meeresfrüchte	Heringssalat	1 Stück/Portion	180	203	9	15	8	fish
+Fisch & Meeresfrüchte	Fischbrötchen	1 Stück/Portion	200	242	11	10	27	gluten,fish
+Fisch & Meeresfrüchte	Sushi Nigiri Stück	1 Stück/Portion	35	154	7	2	27	fish
+Fisch & Meeresfrüchte	Sushi Maki Stück	1 Stück/Portion	20	149	5	1	30	fish
+Fisch & Meeresfrüchte	Sushi gemischt	1 Stück/Portion	250	167	7	3	28	fish
+Fisch & Meeresfrüchte	Paella Meeresfrüchte	1 Stück/Portion	400	182	9	6	23	crustaceans,molluscs
+Gemüse & Vegetarisch	Gemischter Beilagensalat Dressing	1 Portion	150	86	2	6	6	
+Gemüse & Vegetarisch	Großer gemischter Salat	1 Portion	300	77	2	5	6	
+Gemüse & Vegetarisch	Caesar Salad Hähnchen	1 Portion	400	193	11	13	8	eggs,milk
+Gemüse & Vegetarisch	Griechischer Salat	1 Portion	300	130	5	10	5	milk
+Gemüse & Vegetarisch	Tomaten Mozzarella Salat	1 Portion	250	164	10	12	4	milk
+Gemüse & Vegetarisch	Gurkensalat	1 Portion	150	56	1	4	4	
+Gemüse & Vegetarisch	Krautsalat	1 Portion	150	85	1	5	9	
+Gemüse & Vegetarisch	Coleslaw	1 Portion	150	178	1	14	12	
+Gemüse & Vegetarisch	Blattsalat ohne Dressing	1 Portion	80	16	1.5	0.2	2	
+Gemüse & Vegetarisch	Gemüsebeilage gekocht	1 Portion	180	45	2	1	7	
+Gemüse & Vegetarisch	Brokkoli gekocht	1 Portion	180	32	3	0.4	4	
+Gemüse & Vegetarisch	Blumenkohl gekocht	1 Portion	180	27	2	0.3	4	
+Gemüse & Vegetarisch	Spinat gekocht	1 Portion	180	24	3	0.5	2	
+Gemüse & Vegetarisch	Rahmspinat	1 Portion	200	82	3	6	4	milk
+Gemüse & Vegetarisch	Rotkohl gekocht	1 Portion	180	62	1	2	10	
+Gemüse & Vegetarisch	Sauerkraut gekocht	1 Portion	180	29	1	1	4	
+Gemüse & Vegetarisch	Ratatouille	1 Portion	250	85	2	5	8	
+Gemüse & Vegetarisch	Grillgemüse	1 Portion	200	94	2	6	8	
+Gemüse & Vegetarisch	Gemüsepfanne	1 Portion	350	102	3	6	9	
+Gemüse & Vegetarisch	Gefüllte Paprika	1 Portion	300	148	8	8	11	
+Gemüse & Vegetarisch	Gemüseauflauf	1 Portion	350	166	7	10	12	
+Gemüse & Vegetarisch	Auberginenauflauf	1 Portion	350	167	7	11	10	
+Gemüse & Vegetarisch	Tofu gebraten	1 Portion	150	175	16	11	3	soy
+Gemüse & Vegetarisch	Veggie-Burger	1 Portion	220	247	11	11	26	gluten
+Gemüse & Vegetarisch	Linsenbratling	1 Portion	100	200	10	8	22	
+Gemüse & Vegetarisch	Hummus	1 Portion	60	223	7	15	15	sesame
+Suppen & Eintöpfe	Klare Brühe	1 Portion	200	12	1	0.5	1	
+Suppen & Eintöpfe	Gemüsebrühe	1 Portion	300	16	1	0.5	2	
+Suppen & Eintöpfe	Tomatensuppe	1 Portion	300	67	2	3	8	
+Suppen & Eintöpfe	Kürbiscremesuppe	1 Portion	300	89	2	5	9	
+Suppen & Eintöpfe	Kartoffelsuppe	1 Portion	350	101	3	5	11	
+Suppen & Eintöpfe	Gulaschsuppe	1 Portion	350	105	8	5	7	
+Suppen & Eintöpfe	Linsensuppe	1 Portion	400	107	6	3	14	
+Suppen & Eintöpfe	Erbsensuppe	1 Portion	400	112	6	4	13	
+Suppen & Eintöpfe	Bohneneintopf	1 Portion	400	112	6	4	13	
+Suppen & Eintöpfe	Erbseneintopf mit Wurst	1 Portion	450	143	7	7	13	
+Suppen & Eintöpfe	Chili sin Carne	1 Portion	350	124	7	4	15	
+Suppen & Eintöpfe	Hühnersuppe	1 Portion	350	67	5	3	5	
+Suppen & Eintöpfe	Ramen	1 Portion	600	117	6	5	12	
+Suppen & Eintöpfe	Pho	1 Portion	600	78	5	2	10	
+Suppen & Eintöpfe	Minestrone	1 Portion	350	70	3	2	10	
+Suppen & Eintöpfe	Zwiebelsuppe	1 Portion	300	93	3	5	9	
+Suppen & Eintöpfe	Kelle Suppe	1 Portion	100	50	2	2	6	
+Obst	Apfel	1 Stück/Portion	150	51	0.3	0.2	12	
+Obst	Banane ohne Schale	1 Stück/Portion	120	87	1.1	0.3	20	
+Obst	Birne	1 Stück/Portion	160	54	0.4	0.1	13	
+Obst	Orange ohne Schale	1 Stück/Portion	150	42	1	0.2	9	
+Obst	Mandarine	1 Stück/Portion	75	45	0.7	0.2	10	
+Obst	Clementine	1 Stück/Portion	70	45	0.8	0.2	10	
+Obst	Kiwi	1 Stück/Portion	75	52	1	0.5	11	
+Obst	Pfirsich	1 Stück/Portion	130	40	0.9	0.1	9	
+Obst	Nektarine	1 Stück/Portion	130	47	1	0.3	10	
+Obst	Aprikose	1 Stück/Portion	40	45	1.4	0.4	9	
+Obst	Pflaume	1 Stück/Portion	50	50	0.7	0.3	11	
+Obst	Kirsche ohne Stein	1 Stück/Portion	5	58	1	0.2	13	
+Obst	Erdbeere Stück	1 Stück/Portion	15	31	0.8	0.4	6	
+Obst	Erdbeeren Schale	1 Stück/Portion	250	31	0.8	0.4	6	
+Obst	Himbeeren Handvoll	1 Stück/Portion	50	31	1.2	0.7	5	
+Obst	Heidelbeeren Handvoll	1 Stück/Portion	50	54	0.7	0.3	12	
+Obst	Weintrauben	1 Stück/Portion	100	69	0.7	0.2	16	
+Obst	Ananas Scheibe	1 Stück/Portion	100	51	0.5	0.1	12	
+Obst	Wassermelone	1 Stück/Portion	250	32	0.6	0.2	7	
+Obst	Honigmelone	1 Stück/Portion	200	37	0.7	0.2	8	
+Obst	Mango Fruchtfleisch	1 Stück/Portion	200	63	0.8	0.4	14	
+Obst	Avocado Fruchtfleisch	1 Stück/Portion	150	151	2	15	2	
+Obst	Grapefruit	1 Stück/Portion	230	36	0.8	0.1	8	
+Obst	Feige frisch	1 Stück/Portion	50	70	0.8	0.3	16	
+Obst	Dattel getrocknet	1 Stück/Portion	10	276	2	0.4	66	
+Obst	Rosinen Handvoll	1 Stück/Portion	30	292	3	0.5	69	
+Obst	Obstsalat	1 Stück/Portion	200	53	0.7	0.2	12	
+Snacks & Süßigkeiten	Schokolade Tafel	1 Stück/Portion	100	531	6	31	57	milk
+Snacks & Süßigkeiten	Schokolade Rippe	1 Stück/Portion	20	531	6	31	57	milk
+Snacks & Süßigkeiten	Praline	1 Stück/Portion	12	512	6	32	50	milk
+Snacks & Süßigkeiten	Schokoriegel	1 Stück/Portion	50	481	6	25	58	milk
+Snacks & Süßigkeiten	Müsliriegel	1 Stück/Portion	35	405	7	13	65	gluten
+Snacks & Süßigkeiten	Proteinriegel	1 Stück/Portion	55	395	30	15	35	gluten
+Snacks & Süßigkeiten	Butterkeks	1 Stück/Portion	8	424	7	12	72	gluten,milk
+Snacks & Süßigkeiten	Doppelkeks	1 Stück/Portion	15	473	6	21	65	gluten
+Snacks & Süßigkeiten	Cookie groß	1 Stück/Portion	60	471	6	23	60	gluten
+Snacks & Süßigkeiten	Gummibärchen Handvoll	1 Stück/Portion	30	332	6	0	77	
+Snacks & Süßigkeiten	Fruchtgummi Tüte	1 Stück/Portion	100	332	6	0	77	
+Snacks & Süßigkeiten	Lakritz	1 Stück/Portion	40	325	4	1	75	
+Snacks & Süßigkeiten	Bonbon	1 Stück/Portion	5	384	0	0	96	
+Snacks & Süßigkeiten	Karamellbonbon	1 Stück/Portion	7	400	2	8	80	
+Snacks & Süßigkeiten	Chips Schüssel	1 Stück/Portion	40	521	6	33	50	
+Snacks & Süßigkeiten	Chips kleine Tüte	1 Stück/Portion	50	521	6	33	50	
+Snacks & Süßigkeiten	Tortillachips	1 Stück/Portion	50	484	7	24	60	gluten
+Snacks & Süßigkeiten	Salzstangen	1 Stück/Portion	30	376	10	4	75	gluten
+Snacks & Süßigkeiten	Erdnussflips	1 Stück/Portion	40	536	12	32	50	gluten
+Snacks & Süßigkeiten	Popcorn kleine Kinotüte	1 Stück/Portion	80	418	8	14	65	
+Snacks & Süßigkeiten	Popcorn große Kinotüte	1 Stück/Portion	180	418	8	14	65	
+Snacks & Süßigkeiten	Erdnüsse	1 Stück/Portion	30	581	26	49	9	peanuts
+Snacks & Süßigkeiten	Mandeln	1 Stück/Portion	30	606	21	54	9	nuts
+Snacks & Süßigkeiten	Cashews	1 Stück/Portion	30	576	18	44	27	nuts
+Snacks & Süßigkeiten	Walnüsse	1 Stück/Portion	30	673	15	65	7	nuts
+Snacks & Süßigkeiten	Studentenfutter	1 Stück/Portion	40	523	14	35	38	nuts
+Snacks & Süßigkeiten	Reiswaffel	1 Stück/Portion	8	375	8	3	79	gluten,eggs
+Eis & Desserts	Speiseeis Kugel	1 Portion	60	211	4	11	24	milk
+Eis & Desserts	Speiseeis 2 Kugeln	1 Portion	120	211	4	11	24	milk
+Eis & Desserts	Softeis	1 Portion	120	184	4	8	24	milk
+Eis & Desserts	Eisbecher Sahne Sauce	1 Portion	300	267	4	15	29	milk
+Eis & Desserts	Spaghettieis	1 Portion	250	240	4	12	29	gluten,milk
+Eis & Desserts	Fruchteis am Stiel	1 Portion	65	92	0	0	23	
+Eis & Desserts	Milcheis am Stiel	1 Portion	90	280	4	16	30	milk
+Eis & Desserts	Milchreis	1 Portion	200	123	4	3	20	milk
+Eis & Desserts	Grießbrei	1 Portion	250	128	4	4	19	gluten,milk
+Eis & Desserts	Schokopudding	1 Portion	150	115	3	3	19	milk
+Eis & Desserts	Vanillepudding	1 Portion	150	111	3	3	18	milk
+Eis & Desserts	Mousse au Chocolat	1 Portion	120	335	5	23	27	eggs,milk
+Eis & Desserts	Crème brûlée	1 Portion	130	274	4	18	24	eggs,milk
+Eis & Desserts	Obstkompott	1 Portion	150	76	0.5	0.2	18	
+Eis & Desserts	Apfelmus	1 Portion	100	62	0.2	0.1	15	
+Eis & Desserts	Rote Grütze Vanillesauce	1 Portion	200	115	2	3	20	
+Eis & Desserts	Dampfnudel	1 Portion	180	250	7	6	42	gluten,eggs
+Eis & Desserts	Marillenknödel	1 Portion	120	248	5	8	39	gluten
+Saucen & Zutaten	Ketchup	1 Portion	20	102	1	0.2	24	
+Saucen & Zutaten	Mayonnaise	1 Portion	25	683	1	75	1	eggs
+Saucen & Zutaten	Senf	1 Portion	15	89	5	5	6	mustard
+Saucen & Zutaten	BBQ-Sauce	1 Portion	30	165	1	1	38	
+Saucen & Zutaten	Currysauce	1 Portion	60	143	1	7	19	
+Saucen & Zutaten	Bratensauce	1 Portion	100	72	2	4	7	
+Saucen & Zutaten	Rahmsauce	1 Portion	100	180	3	16	6	milk
+Saucen & Zutaten	Sauce Hollandaise	1 Portion	80	492	3	52	3	eggs,milk
+Saucen & Zutaten	Tzatziki	1 Portion	70	104	4	8	4	milk
+Saucen & Zutaten	Aioli	1 Portion	30	597	1	65	2	
+Saucen & Zutaten	Kräuterbutter	1 Portion	20	674	1	74	1	milk
+Saucen & Zutaten	Pesto	1 Portion	35	449	5	45	6	nuts
+Saucen & Zutaten	Salatdressing	1 Portion	35	269	1	25	10	
+Saucen & Zutaten	Olivenöl Teelöffel	1 Portion	5	900	0	100	0	
+Saucen & Zutaten	Olivenöl Esslöffel	1 Portion	14	900	0	100	0	
+Saucen & Zutaten	Zucker Teelöffel	1 Portion	4	400	0	0	100	
+Saucen & Zutaten	Zucker Esslöffel	1 Portion	12	400	0	0	100	
+Saucen & Zutaten	Ahornsirup Esslöffel	1 Portion	20	268	0	0	67	
+Saucen & Zutaten	Sojasauce Esslöffel	1 Portion	15	52	8	0	5	gluten,soy
+Saucen & Zutaten	Balsamico Esslöffel	1 Portion	15	68	0	0	17	
+Saucen & Zutaten	Parmesan Esslöffel gerieben	1 Portion	5	392	35	28	0	milk
+Getränke	Wasser kleines Glas	1 Glas/Portion	200	0	0	0	0	
+Getränke	Wasser großes Glas	1 Glas/Portion	300	0	0	0	0	
+Getränke	Mineralwasser Flasche	1 Glas/Portion	500	0	0	0	0	
+Getränke	Cola	1 Glas/Portion	300	42	0	0	10.6	
+Getränke	Orangensaft	1 Glas/Portion	200	45	0.7	0.2	10	
+Getränke	Apfelsaft	1 Glas/Portion	200	45	0.1	0.1	11	
+Getränke	Apfelschorle	1 Glas/Portion	300	22	0.1	0	5.5	
+Getränke	Smoothie	1 Glas/Portion	250	54	0.7	0.3	12	
+Getränke	Espresso einfach	1 Glas/Portion	30	0	0.1	0	0	
+Getränke	Espresso doppelt	1 Glas/Portion	60	0	0.1	0	0	
+Getränke	Kaffee schwarz	1 Glas/Portion	200	0	0.1	0	0	
+Getränke	Cappuccino	1 Glas/Portion	180	42	2.2	2.3	3.2	
+Getränke	Latte macchiato	1 Glas/Portion	300	46	2.5	2.5	3.5	
+Getränke	Milchkaffee	1 Glas/Portion	250	38	2	2	3	milk
+Getränke	Flat White	1 Glas/Portion	170	49	2.6	2.7	3.5	
+Getränke	Heiße Schokolade	1 Glas/Portion	250	100	3	4	13	milk
+Getränke	Tee ungesüßt	1 Glas/Portion	250	0	0	0	0	
+Getränke	Eistee gesüßt	1 Glas/Portion	300	28	0	0	7	
+Getränke	Bier klein	1 Glas/Portion	300	16	0.5	0	3.5	gluten
+Getränke	Bier groß	1 Glas/Portion	500	16	0.5	0	3.5	gluten
+Getränke	Weißwein	1 Glas/Portion	150	8	0	0	2	
+Getränke	Rotwein	1 Glas/Portion	150	10	0	0	2.5	
+Getränke	Sekt	1 Glas/Portion	100	8	0	0	2	
+Getränke	Spirituose Shot	1 Glas/Portion	20	0	0	0	0	
+Getränke	Cocktail	1 Glas/Portion	250	53	0.2	0	13	
+Komplette Mahlzeiten	Schnitzel Pommes Salat	1 Teller	550	249	12	13	21	
+Komplette Mahlzeiten	Schweinebraten Knödel Rotkohl	1 Teller	600	197	10	9	19	gluten
+Komplette Mahlzeiten	Schweinshaxe Knödel Kraut essbar	1 Teller	800	259	13	15	18	gluten
+Komplette Mahlzeiten	Rinderroulade Kartoffeln Rotkohl	1 Teller	600	192	11	8	19	
+Komplette Mahlzeiten	Sauerbraten Spätzle	1 Teller	550	217	12	9	22	gluten
+Komplette Mahlzeiten	Gulasch Nudeln	1 Teller	550	213	11	9	22	gluten
+Komplette Mahlzeiten	Bratwurst Sauerkraut Püree	1 Teller	500	217	9	13	16	gluten
+Komplette Mahlzeiten	Currywurst Pommes	1 Teller	400	306	8	18	28	
+Komplette Mahlzeiten	Fischfilet Kartoffeln Gemüse	1 Teller	500	157	12	5	16	fish
+Komplette Mahlzeiten	Lachs Reis Gemüse	1 Teller	500	201	13	9	17	fish
+Komplette Mahlzeiten	Hähnchen Reis Gemüse	1 Teller	500	177	15	5	18	
+Komplette Mahlzeiten	Entenbrust Rotkohl Knödel	1 Teller	600	245	12	13	20	gluten
+Komplette Mahlzeiten	Burger Pommes	1 Teller	500	296	10	16	28	gluten
+Komplette Mahlzeiten	Steak Ofenkartoffel	1 Teller	500	214	14	10	17	
+Komplette Mahlzeiten	Käsespätzle Röstzwiebeln	1 Teller	400	270	11	14	25	gluten,milk
+Komplette Mahlzeiten	Maultaschen geschmälzt	1 Teller	350	227	10	11	22	gluten,eggs
+Komplette Mahlzeiten	Maultaschen Brühe	1 Teller	450	117	6	5	12	gluten,eggs
+Komplette Mahlzeiten	Flammkuchen ganz	1 Teller	350	270	9	14	27	gluten,eggs
+Komplette Mahlzeiten	Spargel Kartoffeln Hollandaise	1 Teller	500	199	3	15	13	eggs,milk
+Komplette Mahlzeiten	Gebratene Nudeln Gemüse Fleisch	1 Teller	450	217	10	9	24	gluten
+Komplette Mahlzeiten	Gebratener Reis Ei Gemüse	1 Teller	400	208	7	8	27	eggs
+Komplette Mahlzeiten	Thai-Curry Reis	1 Teller	550	198	7	10	20	
+Komplette Mahlzeiten	Butter Chicken Reis	1 Teller	550	228	11	12	19	milk
+Komplette Mahlzeiten	Biryani	1 Teller	450	217	10	9	24	
+Komplette Mahlzeiten	Pad Thai	1 Teller	450	235	10	11	24	
+Grundnahrungsmittel	Tomate roh	1 Stück/Portion	120	18	1	0.2	3	
+Grundnahrungsmittel	Gurke roh	1 Stück/Portion	150	12	0.6	0.2	2	
+Grundnahrungsmittel	Karotte roh	1 Stück/Portion	80	34	1	0.2	7	
+Grundnahrungsmittel	Paprika roh	1 Stück/Portion	150	27	1	0.3	5	
+Grundnahrungsmittel	Zwiebel roh	1 Stück/Portion	80	34	1.2	0.1	7	
+Grundnahrungsmittel	Knoblauch Zehe	1 Stück/Portion	4	140	6	0.5	28	
+Grundnahrungsmittel	Kartoffel roh	1 Stück/Portion	150	77	2	0.1	17	
+Grundnahrungsmittel	Brokkoli roh	1 Stück/Portion	200	36	3	0.4	5	
+Grundnahrungsmittel	Blumenkohl roh	1 Stück/Portion	200	31	2	0.3	5	
+Grundnahrungsmittel	Champignons roh	1 Stück/Portion	150	23	3	0.3	2	
+Grundnahrungsmittel	Zucchini roh	1 Stück/Portion	200	20	1.2	0.3	3	
+Grundnahrungsmittel	Aubergine roh	1 Stück/Portion	200	22	1	0.2	4	
+Grundnahrungsmittel	Mais Konserve abgetropft	1 Stück/Portion	100	94	3	1.5	17	
+Grundnahrungsmittel	Erbsen gekocht	1 Stück/Portion	150	72	5	0.4	12	
+Grundnahrungsmittel	Linsen gekocht	1 Stück/Portion	180	120	9	0.4	20	
+Grundnahrungsmittel	Kichererbsen gekocht	1 Stück/Portion	180	151	9	3	22	
+Grundnahrungsmittel	Kidneybohnen gekocht	1 Stück/Portion	180	104	8	0.5	17	
+Grundnahrungsmittel	Tofu natur	1 Stück/Portion	150	136	14	8	2	soy
+Grundnahrungsmittel	Tempeh	1 Stück/Portion	150	207	19	11	8	soy
+Grundnahrungsmittel	Seitan	1 Stück/Portion	150	138	25	2	5	gluten
+Grundnahrungsmittel	Haferdrink ungesüßt	1 Stück/Portion	200	46	1	1.5	7	gluten
+Grundnahrungsmittel	Sojadrink ungesüßt	1 Stück/Portion	200	32	3.3	1.8	0.7	soy
+Grundnahrungsmittel	Mandeldrink ungesüßt	1 Stück/Portion	200	13	0.5	1.1	0.3	nuts
+Grundnahrungsmittel	Oliven entsteint	1 Stück/Portion	40	151	1	15	3	
+Grundnahrungsmittel	Dunkle Schokolade	1 Stück/Portion	25	543	8	43	31	milk
+Grundnahrungsmittel	Vollkornreis gekocht	1 Stück/Portion	180	110	2.6	0.9	23	
+Grundnahrungsmittel	Vollkornnudeln gekocht	1 Stück/Portion	250	140	6	1.3	26	gluten
+Grundnahrungsmittel	Haferflocken Esslöffel	1 Stück/Portion	10	355	13	7	60	gluten
+Grundnahrungsmittel	Chiasamen Esslöffel	1 Stück/Portion	12	379	17	31	8	
+Grundnahrungsmittel	Leinsamen Esslöffel	1 Stück/Portion	10	458	18	42	2	
+Grundnahrungsmittel	Sonnenblumenkerne Handvoll	1 Stück/Portion	30	591	21	51	12	
+Grundnahrungsmittel	Kürbiskerne Handvoll	1 Stück/Portion	30	605	30	49	11	

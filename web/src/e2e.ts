@@ -95,10 +95,12 @@ async function ensure(): Promise<boolean> {
 function aad(counter: number, response: boolean) { return utf8(`${VERSION}|${state!.deviceId}|${counter}${response ? '|resp' : ''}`) }
 
 /** Ersatz fuer fetch: alles unter /api im Umschlag, sonst direkt. */
-export async function e2eFetch(input: string, init: RequestInit = {}): Promise<Response> {
+const canGunzip = typeof DecompressionStream === 'function'
+
+export async function e2eFetch(input: string, init: RequestInit = {}, again = false): Promise<Response> {
   const url = typeof input === 'string' ? input : String(input)
-  // /api/auth: Anmelden, Abmelden, 2FA, Status - setzen Cookies (geht aus dem Umschlag nicht) und laufen vor dem Login
-  if (!url.startsWith('/api/') || url.startsWith('/api/e2e/') || url.startsWith('/api/auth/') || !(await ensure())) return fetch(url, { credentials: 'same-origin', ...init })
+  // /api/auth: Anmelden, Abmelden, 2FA, Status - setzen Cookies (geht aus dem Umschlag nicht) und laufen vor dem Login.
+  if (!url.startsWith('/api/') || url.startsWith('/api/e2e/') || url.startsWith('/api/auth/') || url === '/api/tresor/setup' || url === '/api/tresor/open' || !(await ensure())) return fetch(url, { credentials: 'same-origin', ...init })
   const method = (init.method || 'GET').toUpperCase()
   const headers: Record<string, string> = {}
   new Headers(init.headers || {}).forEach((v, k) => { headers[k] = v })
@@ -118,21 +120,29 @@ export async function e2eFetch(input: string, init: RequestInit = {}): Promise<R
   const cipher = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce, additionalData: aad(counter, false) }, aesKey!, inner)
   const sealed = new Uint8Array(12 + cipher.byteLength); sealed.set(nonce); sealed.set(new Uint8Array(cipher), 12)
   const res = await fetch(`/api/e2e/${state!.userId}/${state!.deviceId}`, {
-    method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/octet-stream', 'X-DM-Counter': String(counter) }, body: sealed,
+    method: 'POST', credentials: 'same-origin', body: sealed, keepalive: init.keepalive,
+    // Gepackt antworten, wenn der Browser entpacken kann (große Listen: wenige MB statt dutzende)
+    headers: { 'Content-Type': 'application/octet-stream', 'X-DM-Counter': String(counter), ...(canGunzip ? { 'X-DM-Zip': 'gzip' } : {}) },
   })
-  if (res.status === 404) {
-    // Geraet unbekannt (abgemeldet, Passwort geaendert, anderer Benutzer): neu anmelden und einmal wiederholen
+  // 404: Geraet unbekannt (abgemeldet, Passwort geaendert, anderer Benutzer). 409: Zaehler schon verbraucht - nach einem
+  // Neustart des Servers gilt nur, was ueber dem gespeicherten Stand liegt; ein zweiter Reiter mit derselben Anmeldung zaehlt
+  // getrennt. Beides: neu aushandeln und einmal wiederholen (sonst blieb der Reiter bis zum Neuladen bei „Fehler 409“)
+  // 401: das Gerät gilt nur mit gültiger Anmeldung derselben Person - neu aushandeln; ohne Anmeldung antwortet dann der normale Weg
+  if ((res.status === 404 || res.status === 409 || res.status === 401) && !again) {
     state = null; aesKey = null; ready = null; save()
-    if (await ensure()) return e2eFetch(input, init)
+    if (await ensure()) return e2eFetch(input, init, true)
     return fetch(url, { credentials: 'same-origin', ...init })
   }
+  // Umschlag gebremst (zu viele unechte Umschläge von dieser Adresse): ohne Umschlag weiter, angemeldet ist der Browser ja
+  if (res.status === 429) return fetch(url, { credentials: 'same-origin', ...init })
   if (!res.ok) return res
   const data = new Uint8Array(await res.arrayBuffer())
   const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: data.subarray(0, 12), additionalData: aad(counter, true) }, aesKey!, data.subarray(12))
-  const outer = JSON.parse(new TextDecoder().decode(plain)) as { status: number; headers: Record<string, string>; body: string | null }
+  const outer = JSON.parse(new TextDecoder().decode(plain)) as { status: number; headers: Record<string, string>; body: string | null; zip?: string | null }
   const h = new Headers()
   for (const [k, v] of Object.entries(outer.headers || {})) if (!/^content-length$/i.test(k)) h.set(k, v)
-  const bytes = outer.body ? unb64(outer.body) : null
+  let bytes: Uint8Array<ArrayBuffer> | null = outer.body ? unb64(outer.body) : null
+  if (bytes && outer.zip === 'gzip') bytes = new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer())
   return new Response(outer.status === 204 || outer.status === 304 ? null : bytes, { status: outer.status, headers: h })
 }
 

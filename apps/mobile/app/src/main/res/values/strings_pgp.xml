@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- OpenPGP (ui/OpenPgp.kt) -->
+<resources>
+    <string name="pgp_title">OpenPGP</string>
+    <string name="pgp_entry_sub">Sign emails, verify signatures, keys</string>
+    <string name="pgp_valid">Signed by %1$s – verified.</string>
+    <string name="pgp_unconfirmed">Signed by %1$s. The signature is valid, but the key only arrived by email and has not been confirmed yet.</string>
+    <string name="pgp_mismatch">The signature is valid, but the key belongs to %1$s, not to the sender %2$s.</string>
+    <string name="pgp_bad">Caution: the signature is invalid. The content was changed after signing, or the signature is forged.</string>
+    <string name="pgp_expired">Signed by %1$s with an expired key.</string>
+    <string name="pgp_revoked">Signed by %1$s with a revoked key – no longer trustworthy.</string>
+    <string name="pgp_unknown">Signed with an unknown key (%1$s).</string>
+    <string name="pgp_unknown_wkd">Signed with an unknown key (%1$s). The sender\'s email provider does not publish one.</string>
+    <string name="pgp_error">The email is signed, but the signature cannot be read.</string>
+    <string name="pgp_partial">Only part of the email is signed.</string>
+    <string name="pgp_key_saved">The sender\'s OpenPGP key has been saved (not confirmed yet).</string>
+    <string name="pgp_confirm">Confirm key</string>
+    <string name="pgp_confirm_short">Confirm</string>
+    <string name="pgp_confirm_text">Compare the fingerprint with the sender, e.g. by phone: %1$s. Does it match?</string>
+    <string name="pgp_matches">It matches</string>
+    <string name="pgp_lookup">Look up at provider</string>
+    <string name="pgp_signing_on">Will be signed with OpenPGP – tap to not sign</string>
+    <string name="pgp_signing_off">Sign with OpenPGP</string>
+    <string name="pgp_own_keys">Your keys</string>
+    <string name="pgp_own_hint">With your own key you sign your emails. Recipients can then see that they really come from you and were not changed on the way. The private key is stored encrypted on your dmOffice server.</string>
+    <string name="pgp_generate">Create key</string>
+    <string name="pgp_generate_hint">Creates an Ed25519 key (with Curve25519 for encryption).</string>
+    <string name="pgp_import">Import key</string>
+    <string name="pgp_import_short">Import</string>
+    <string name="pgp_import_public">Import public key</string>
+    <string name="pgp_import_own_hint">Paste the private key, e.g. from “gpg --export-secret-keys --armor”. dmOffice stores it without the password, protected by the encryption of your data on the server.</string>
+    <string name="pgp_key_text">Key</string>
+    <string name="pgp_passphrase">Key password (if set)</string>
+    <string name="pgp_not_matching">The account\'s address is not in this key – recipients will not see the signature as matching.</string>
+    <string name="pgp_sign_default">Sign new emails by default</string>
+    <string name="pgp_attach_key">Attach public key to signed emails</string>
+    <string name="pgp_autocrypt">Add an “Autocrypt” header</string>
+    <string name="pgp_export">Share public key</string>
+    <string name="pgp_remove_title">Remove key?</string>
+    <string name="pgp_remove_text">This account will no longer be able to sign. Anyone who already has your public key can still verify old emails. Without a backup, the private key cannot be restored.</string>
+    <string name="pgp_publish_hint">To verify your signature, others need your public key – as an attachment, via Autocrypt or from a directory. Upload it to keys.openpgp.org and confirm your address there, or publish it in the Web Key Directory (WKD) of your domain.</string>
+    <string name="pgp_others">Keys of others</string>
+    <string name="pgp_others_hint">dmOffice takes senders\' public keys from attached keys and Autocrypt headers. Keys from an email only count as verified once you confirm the fingerprint.</string>
+    <string name="pgp_wkd">Look up at the email provider (WKD)</string>
+    <string name="pgp_wkd_hint">Only for signed emails with an unknown key, never for junk, at most once a day per sender. The sender\'s provider learns that the email was opened.</string>
+    <string name="pgp_confirmed">confirmed</string>
+    <string name="pgp_unconfirmed_short">not confirmed</string>
+</resources>

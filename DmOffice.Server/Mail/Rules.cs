@@ -9,6 +9,8 @@ public sealed class RuleOutcome
 {
     public bool MarkRead, Flag, Delete;
     public string? MoveTo;
+    /// <summary>Entfernen nach Zeit (MailExpiry): Tage ab Eingang; bei mehreren Regeln gilt die kuerzeste Frist.</summary>
+    public int? TrashAfterDays, DestroyAfterDays;
     public List<string> CopyTo { get; } = new();
     public List<string> ForwardTo { get; } = new();
     public List<string> Categories { get; } = new();
@@ -36,6 +38,8 @@ public static class Rules
                     case "flag": outcome.Flag = true; break;
                     case "category": if (a.Value.Length > 0) outcome.Categories.Add(a.Value); break;
                     case "delete": outcome.Delete = true; break;
+                    case "trashAfter": if (Days(a.Value) is int td) outcome.TrashAfterDays = Math.Min(td, outcome.TrashAfterDays ?? td); break;
+                    case "destroyAfter": if (Days(a.Value) is int dd) outcome.DestroyAfterDays = Math.Min(dd, outcome.DestroyAfterDays ?? dd); break;
                     case "forward":
                         // Weitergeleitetes nicht noch einmal weiterleiten (zwei Postfaecher, die sich gegenseitig beliefern)
                         if (m.Headers["X-dmOffice-Forwarded"] == null)
@@ -48,6 +52,9 @@ public static class Rules
         }
         return outcome;
     }
+
+    /// <summary>Tage fuer trashAfter/destroyAfter: 1 bis 3650.</summary>
+    private static int? Days(string value) => int.TryParse(value, out var d) && d is >= 1 and <= 3650 ? d : null;
 
     public static bool Matches(MailRule rule, MimeMessage m)
     {

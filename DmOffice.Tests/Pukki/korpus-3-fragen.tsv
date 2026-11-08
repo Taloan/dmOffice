@@ -1,0 +1,176 @@
+# Pukkis Sprachkorpus 3: Fragen - nachschauen, nie anlegen (Art „frage“ heißt automatisch @nichts)
+# Überblick über einen Tag
+	frage	was steht morgen an	+Zahnarzt Kontrolle ;; +Zahnreinigung
+	frage	Was steht morgen an?	+Zahnarzt Kontrolle
+	frage	was steht heute an?	+Steuer machen ;; +Rechnung bezahlen
+	frage	Was steht heute an	+Fällig
+	frage	was ist morgen	+Zahnarzt Kontrolle
+	frage	was ist morgen los?	+Zahnarzt Kontrolle
+	frage	was hab ich morgen	+Zahnarzt Kontrolle
+	frage	hab ich morgen termine?	+Zahnarzt Kontrolle
+	frage	habe ich morgen was vor?	+Zahnarzt Kontrolle
+	frage	hab ich heute termine	+Steuer machen
+	frage	morgen?	+Zahnarzt Kontrolle
+	frage	morgen	+Zahnarzt Kontrolle
+	frage	heute	+Steuer machen
+	frage	übermorgen	~nichts eingetragen|Übermorgen
+	frage	was steht übermorgen an?	~nichts eingetragen|Übermorgen
+	frage	termine morgen	+Zahnarzt Kontrolle
+	frage	meine termine	+Steuer machen
+	frage	überblick	+Steuer machen
+	frage	übersicht bitte	+Steuer machen
+	frage	wie sieht mein tag aus?	+Steuer machen
+	frage	wie sieht es morgen aus	+Zahnarzt Kontrolle
+	frage	wie schaut's morgen aus?	+Zahnarzt Kontrolle
+	frage	was liegt heute an	+Steuer machen
+	frage	was mache ich morgen	+Zahnarzt Kontrolle
+	frage	bin ich morgen frei?	+Zahnarzt Kontrolle
+	frage	hab ich morgen zeit	+Zahnarzt Kontrolle
+	frage	what's on tomorrow	+Zahnarzt Kontrolle
+	frage	kannst du mir sagen, was morgen ansteht?	+Zahnarzt Kontrolle
+	frage	sag mir was heute ansteht	+Steuer machen
+	frage	was steht diese woche an	+Zahnarzt Kontrolle ;; +Friseur ;; +Beethoven-Konzert
+	frage	welche termine hab ich diese woche?	+Friseur
+	frage	die nächsten tage?	+Friseur
+	frage	was steht nächste woche an	!Soll ich
+	frage	was ist am wochenende?	!Soll ich
+	frage	hab ich am wochenende was vor	!Soll ich
+	frage	was ist am freitag	!Soll ich
+	frage	ist morgen zahnarzt?	+Ja, morgen ;; +Zahnarzt
+	frage	muss ich morgen zum zahnarzt?	+Zahnarzt
+	frage	hab ich morgen um 15 uhr zeit?	+Zahnarzt Kontrolle
+	frage	gehen wir am samstag ins kino?	~steht nichts|Dazu finde ich ;; !Soll ich
+	frage	war gestern was?	~nichts eingetragen|Gestern
+# Ein bestimmter Termin
+	frage	wann ist der friseur	+Friseur ;; +10:00 Uhr
+	frage	wann muss ich zum friseur?	+Friseur
+	frage	wann hab ich friseur	+Friseur
+	frage	wann ist das konzert	+Beethoven-Konzert ;; +19:30 Uhr ;; +Stadthalle ;; +Anna ;; +noch keine Erinnerung ;; @knopf:1 Tag vorher
+	frage	wann ist nochmal das Konzert?	+Beethoven-Konzert
+	frage	wann ist das konzert?	+Kalender „Persönlich“
+	frage	wo ist das konzert?	+Stadthalle
+	frage	wer kommt noch mit zum konzert?	+Anna ;; +Ben
+	frage	wann ist elternabend	+Elternabend
+	frage	wann ist der zahnarzttermin	+Zahnreinigung ;; +geteilter Kalender
+	frage	wann ist mein Zahnarzttermin?	+Kalender „Familie“ ;; @knopf:Meiner ;; @knopf:Nicht meiner
+	frage	wann ist der nächste termin	+Zahnreinigung
+	frage	was ist mein nächster termin	+Dein nächster Termin
+	frage	nächster termin?	+Dein nächster Termin
+	frage	was kommt als nächstes	+Dein nächster Termin
+	frage	wann ist der tierarzt	+finde ich keinen Termin
+	frage	wann ist die hochzeit von tom	+finde ich keinen Termin
+	frage	Zahnarzt?	+Zahnarzt
+	frage	weißt du wann der friseur ist	+Friseur
+# Einkaufsliste
+	frage	ist milch in der einkaufsliste?	+Ja, Milch steht auf der Einkaufsliste „Einkaufen“
+	frage	ist milch auf der liste	+Ja ;; +Milch
+	frage	Ist Milch auf der Liste?	+Ja ;; +Milch
+	frage	steht milch auf der einkaufsliste?	+Ja ;; +Milch
+	frage	stehen eier auf der liste	+Ja ;; +Eier
+	frage	sind eier auf der liste?	+Ja ;; +Eier
+	frage	ist brot schon aufgeschrieben?	+Ja ;; +Brot
+	frage	hab ich eier schon aufgeschrieben	+Ja ;; +Eier
+	frage	steht butter auf der liste	+Nein ;; +Butter ;; @knopf:Ja ;; @knopf:Nein
+	frage	ist käse auf der einkaufsliste	+Nein ;; +Käse ;; +aufschreiben
+	frage	ist käse in der einkaufsliste?	+Nein ;; +Käse
+	frage	sind tomaten auf dem einkaufszettel?	+Nein ;; +Tomaten
+	frage	ist grillkohle auf der liste	+Nein ;; +Grillkohle
+	frage	brauchen wir noch milch?	+Ja ;; +Milch steht
+	frage	brauchen wir butter?	+Nein ;; +Butter
+	frage	müssen wir noch brot kaufen?	+Ja ;; +Brot
+	frage	Milch?	+Ja ;; +Milch
+	frage	steht milch und butter auf der liste?	+Milch ;; +Butter
+	frage	kannst du mir sagen ob milch auf der liste steht	+Ja ;; +Milch
+	frage	is milk on the list	+Milk
+	frage	was steht auf der einkaufsliste	+Milch ;; +Brot ;; +6 Eier
+	frage	Was steht auf der Einkaufsliste?	+Milch
+	frage	was ist auf der liste	+Milch
+	frage	was muss ich einkaufen	+Milch
+	frage	was brauchen wir	+Milch
+	frage	was brauchen wir noch?	+Milch
+	frage	zeig mir die einkaufsliste	+Milch
+	frage	einkaufsliste anzeigen	+Milch
+	frage	was fehlt noch	+Milch
+	frage	was soll ich mitbringen?	+Milch
+	frage	was soll ich einkaufen?	+Milch
+	frage	einkaufszettel	+Milch
+	frage	shopping list	+Milch
+	frage	what's on the shopping list	+Milch
+	frage	haben wir noch milch?	+Das weiß ich leider nicht
+	frage	haben wir noch butter	+Das weiß ich leider nicht
+	frage	ist noch käse da?	+Das weiß ich leider nicht
+	frage	haben wir genug eier	+Das weiß ich leider nicht
+	frage	ist die milch alle?	+Das weiß ich leider nicht
+	frage	gibt es noch kaffee?	+Das weiß ich leider nicht
+	frage	hab ich noch klopapier	+Das weiß ich leider nicht
+# Aufgaben
+	frage	welche aufgaben sind offen	+Fahrrad reparieren ;; +Steuer machen ;; +Rechnung bezahlen
+	frage	Welche Aufgaben sind offen?	+Offene Aufgaben
+	frage	was muss ich heute erledigen	+Steuer machen ;; +Rechnung bezahlen
+	frage	was muss ich noch machen	+Steuer machen
+	frage	meine aufgaben	+Fahrrad reparieren
+	frage	aufgaben	+Fahrrad reparieren
+	frage	aufgaben?	+Fahrrad reparieren
+	frage	zeig meine aufgaben	+Fahrrad reparieren
+	frage	was ist zu tun	+Fahrrad reparieren
+	frage	todos	+Fahrrad reparieren
+	frage	to-do-liste	+Fahrrad reparieren
+	frage	was steht auf meiner to-do-liste	+Fahrrad reparieren
+	frage	was ist überfällig	+Rechnung bezahlen ;; -Fahrrad
+	frage	hab ich was vergessen?	+Rechnung bezahlen
+	frage	was muss ich morgen erledigen	+keine Aufgabe fällig
+	frage	welche aufgaben habe ich heute	+Steuer machen
+	frage	was soll ich heute tun?	+Steuer machen
+	frage	gibt es offene aufgaben?	+Offene Aufgaben
+# Geburtstage, Kontakte, Notizen
+	frage	wer hat geburtstag	+Hilde Berger ;; +wird 80
+	frage	wer hat bald geburtstag?	+Hilde Berger
+	frage	hat jemand bald geburtstag	+Hilde Berger
+	frage	welche geburtstage stehen an	+Hilde Berger ;; -Geburtstag Oma
+	frage	wer hat heute geburtstag	+niemand
+	frage	wann hat oma geburtstag	+Hilde Berger ;; +wird 80
+	frage	wann hat Hilde Geburtstag?	+Hilde Berger
+	frage	wann ist omas geburtstag	+Hilde Berger
+	frage	wie ist die nummer von oma	+030 123456
+	frage	telefonnummer von dr. weiß	+030 987654
+	frage	hast du die nummer vom zahnarzt?	+030 987654 ;; +praxis@zahnarzt-weiss.de
+	frage	wie erreiche ich oma	+030 123456
+	frage	omas nummer	+030 123456
+	frage	e-mail von dr. weiß	+praxis@zahnarzt-weiss.de
+	frage	wo wohnt oma?	+keine Adresse
+	frage	nummer von tante erna	+finde ich keinen Kontakt
+	frage	welche notizen hab ich	+Ideen für den Urlaub
+	frage	zeig meine notizen	+Ideen für den Urlaub
+	frage	meine notizen	+Ideen für den Urlaub
+	frage	was hab ich notiert?	+Ideen für den Urlaub
+	frage	was hatten wir zum zahnarzt	+habe ich gefunden
+	frage	was haben wir zum urlaub	+Ideen für den Urlaub
+	frage	such fahrrad	+Fahrrad reparieren
+	frage	finde lasagne	+Lasagne
+	frage	wo ist der mietvertrag	+finde ich nichts
+	frage	Such Quantenphysik	+finde ich nichts
+# Essen
+	frage	was gibt es heute zu essen	+Linsensuppe
+	frage	Was gibt es heute zu essen?	+Linsensuppe
+	frage	was gibts heute zu essen	+Linsensuppe
+	frage	was essen wir heute?	+Linsensuppe
+	frage	was gibt es morgen zum abendessen	+Spaghetti
+	frage	was essen wir morgen	+Spaghetti
+	frage	was gibt es am samstag zu essen?	+Lasagne
+	frage	was gibt es übermorgen zu essen	+Pfannkuchen
+	frage	essensplan	+Linsensuppe
+	frage	essensplan diese woche	+Spaghetti ;; +Pfannkuchen
+	frage	was gibt es morgen zum frühstück	+Zum Frühstück steht morgen noch nichts
+	frage	sind alle zutaten für die lasagne auf der einkaufsliste?	+Lasagneplatten ;; +Hackfleisch ;; +Tomatensoße ;; -500 ml Milch ;; @knopf:Ja
+	frage	habe ich alles für die lasagne am samstag?	+Lasagneplatten
+	frage	was fehlt mir noch für samstag?	+Lasagneplatten
+	frage	was brauche ich für pfannkuchen?	+Alle Zutaten für „Pfannkuchen“
+	frage	sind alle zutaten für spaghetti da?	+keine Zutatenliste
+# Rezepte: erst in den eigenen Notizen nachschauen
+	frage	ich brauche ein Rezept für Lasagne	+Lasagne ;; +Notizen
+	frage	hast du ein Rezept für Pfannkuchen?	+Pfannkuchen
+	frage	wie backe ich Pfannkuchen?	+Pfannkuchen
+	frage	ich brauche ein Rezept für Pizzateig	+nicht helfen
+# Weltwissen mit Tag darin: kein Kalender-Überblick, keine Aufgabe
+	frage	wie viel ist morgen im Lotto Jackpot	-im Kalender
+	frage	na du wirst doch wissen oder recherchieren wie viel morgen im Lotto ist	-Notiert

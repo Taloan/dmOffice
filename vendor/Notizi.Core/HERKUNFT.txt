@@ -1,1 +1,1 @@
-﻿notizi 55972f8, geholt 2026-10-22
+﻿notizi 6130a35, geholt 2026-10-29 (Abgleich bei gesperrtem Lesen, HTTP 423)

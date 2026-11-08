@@ -81,7 +81,9 @@ object MailNotify {
         val cfg = config(context, account)
         if (last < 0 || cfg.mode == OFF) return
         val vips = if (cfg.mode == VIP) vipAddresses(context) else emptySet()
-        val fresh = MailNotifyRules.fresh(items, last, cfg.mode, vips)
+        // Kategorien ohne Benachrichtigung: Stand aus den Einstellungen, bei Bedarf frisch geholt
+        if (app.mail.categories.value.isEmpty()) app.mail.loadCategories()
+        val fresh = MailNotifyRules.fresh(items, last, cfg.mode, vips, categories = app.mail.categories.value)
         if (fresh.isEmpty()) return
         val label = MailNotifyPrefs.get(context).known().firstOrNull { it.id == account }?.label ?: account
         showAll(context, account, label, fresh, cfg)

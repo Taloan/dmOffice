@@ -126,6 +126,8 @@ fun CalendarScreen(day: LocalDate, onDay: (LocalDate) -> Unit, onOpen: (String) 
     })
     val toggle: (String, Boolean) -> Unit = { h, d -> scope.launch { app.repo.setCompleted(h, d) } }
     val openDay: (LocalDate) -> Unit = { onDay(it); CalendarPrefs.setMode(ctx, CalMode.Day) }
+    // Version 2 wie alle Reiter: Überschrift und Lupe
+    val search = rememberTabSearch()
     val move: (String, Long) -> Unit = { h, delta -> scope.launch {
         when (app.repo.moveEvent(h, delta)) {
             at.dimes.dmoffice.data.Repo.Moved.NotPossible -> android.widget.Toast.makeText(ctx, R.string.move_not_possible, android.widget.Toast.LENGTH_SHORT).show()
@@ -135,6 +137,8 @@ fun CalendarScreen(day: LocalDate, onDay: (LocalDate) -> Unit, onOpen: (String) 
     } }
 
     Column(Modifier.fillMaxSize()) {
+        TabTopBar(stringResource(R.string.calendar), search, searchHint = stringResource(R.string.calendar_search_hint), insets = androidx.compose.foundation.layout.WindowInsets(0))
+        if (search.open) { CalendarSearch(search.query, today, onOpen, toggle); return@Column }
         // Ansichten als Chips (sechs passen nicht in eine Segmentleiste)
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             for (m in CalMode.entries) FilterChip(selected = mode == m, onClick = { CalendarPrefs.setMode(ctx, m) }, label = { Text(stringResource(m.label)) })
@@ -170,6 +174,37 @@ fun CalendarScreen(day: LocalDate, onDay: (LocalDate) -> Unit, onOpen: (String) 
             CalMode.List -> MonthList(from, to, today, ::byDay, onOpen, toggle, onNewEvent)
             CalMode.MealPlan -> MealPlanScreen(onOpenNote)
         } }
+    }
+}
+
+/**
+ * Suche im Kalender (Version 2): Titel und Ort, von einem Jahr zurück bis zwei Jahre voraus (Serien eingeschlossen);
+ * kommende Termine zuerst, darunter die vergangenen.
+ */
+@Composable
+private fun CalendarSearch(query: String, today: LocalDate, onOpen: (String) -> Unit, onToggle: (String, Boolean) -> Unit) {
+    val app = App.get(LocalContext.current)
+    val zone = ZoneId.systemDefault()
+    val all by remember { app.repo.occurrences(today.minusYears(1).epochMillis(zone), today.plusYears(2).epochMillis(zone)) }.collectAsState(initial = emptyList())
+    val needle = query.trim()
+    if (needle.isEmpty()) return
+    val hits = all.filter { it.item.summary.contains(needle, true) || (it.item.location ?: "").contains(needle, true) }
+    val now = System.currentTimeMillis()
+    val upcoming = hits.filter { it.end >= now }.sortedBy { it.start }
+    val past = hits.filter { it.end < now }.sortedByDescending { it.start }
+    if (hits.isEmpty()) {
+        Text(stringResource(R.string.no_events), Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+        return
+    }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 88.dp)) {
+        for ((label, list) in listOf(R.string.calendar_search_upcoming to upcoming, R.string.calendar_search_past to past)) {
+            if (list.isEmpty()) continue
+            item(key = "h$label") { SectionHeader(stringResource(label)) }
+            items(list.size, key = { i -> "$label/${list[i].item.href}/${list[i].start}" }) { i ->
+                val o = list[i]
+                OccurrenceRow(o, onClick = { onOpen(o.item.href) }, onToggle = if (o.isTask) { x -> onToggle(o.item.href, x) } else null, showDate = true)
+            }
+        }
     }
 }
 

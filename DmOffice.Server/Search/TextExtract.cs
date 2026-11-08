@@ -85,6 +85,15 @@ public static class TextExtract
 
     public static bool IsImage(string name, string? mime) => ImageExt.Contains(Ext(name, mime));
 
+    /// <summary>Dateigruppe für die Suche in Server-Mounts, allein nach der Endung: text | docs | images | "" (kein Inhalt lesbar).</summary>
+    public static string GroupOf(string name)
+    {
+        var ext = Ext(name, null);
+        if (TextExt.Contains(ext) || HtmlExt.Contains(ext) || ext == ".eml") return "text";
+        if (ext is ".pdf" or ".docx" or ".docm" or ".xlsx" or ".xlsm" or ".pptx" or ".pptm") return "docs";
+        return ImageExt.Contains(ext) ? "images" : "";
+    }
+
     /// <summary>Endung nach den ersten Bytes (eingebettete Bilder in Notizen haben keinen Namen); "" wenn unbekannt.</summary>
     public static string SniffImage(byte[] d)
     {

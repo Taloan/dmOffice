@@ -185,6 +185,47 @@ namespace Notizi.Sync
             return report;
         }
 
+        /// <summary>
+        /// Nur hochladen, ohne etwas zu lesen - wenn der Server das Lesen
+        /// sperrt (SyncLockedException, HTTP 423), Schreiben aber annimmt:
+        /// dmOffice bei geschlossenem Tresor.
+        ///
+        /// Hoch geht, was hier seit dem letzten Abgleich geaendert, neu oder
+        /// geloescht ist - jeweils bedingt auf den Stand, den dieses Geraet
+        /// zuletzt dort gesehen hat. Hat ein anderes Geraet dasselbe
+        /// inzwischen geaendert, lehnt der Server ab, und der naechste volle
+        /// Durchgang fuehrt zusammen. Blobs gehen alle mit, die eine
+        /// geaenderte Notiz braucht: Welche schon dort liegen, laesst sich
+        /// nicht nachsehen, und gleicher Inhalt heisst gleicher Name.
+        ///
+        /// Nicht moeglich ist hier: herunterladen, zusammenfuehren, pruefen,
+        /// ob der Ordner inzwischen einen neuen Schluessel hat. Das holt der
+        /// naechste volle Durchgang nach.
+        /// </summary>
+        public async Task<SyncReport> PushAsync(CancellationToken ct = default)
+        {
+            var report = new SyncReport();
+            var states = _local.States();
+            var tombs = _local.Tombstones().ToDictionary(t => t.Id, t => t.Kind);
+
+            var uploads = new List<(string Id, string Kind, string Expected)>();
+            foreach (var here in _local.Entries())
+            {
+                if (!states.TryGetValue(here.Id, out var state))
+                    uploads.Add((here.Id, here.Kind, ""));            // neu hier - darf dort noch nicht sein
+                else if (here.Rev != state.BaseRev)
+                    uploads.Add((here.Id, here.Kind, state.RemoteTag));
+            }
+
+            var gone = tombs.Where(t => states.TryGetValue(t.Key, out var s) && s.Kind != SyncItem.GoneKind)
+                            .Select(t => (t.Key, t.Value, states[t.Key].RemoteTag))
+                            .ToList();
+
+            await UploadAsync(uploads, new HashSet<string>(), report, ct);
+            await WriteGoneAsync(gone, report, ct);
+            return report;
+        }
+
         // ==================================================================
         //  Zusammenfuehren
         // ==================================================================

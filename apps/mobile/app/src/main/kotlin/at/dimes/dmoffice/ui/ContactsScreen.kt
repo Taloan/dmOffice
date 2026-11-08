@@ -20,6 +20,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Call
@@ -30,6 +31,12 @@ import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Message
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalIconButton
@@ -62,48 +69,83 @@ import at.dimes.dmoffice.R
 import at.dimes.dmoffice.api.Contact
 import kotlinx.coroutines.launch
 
-/** Kontaktliste mit Suche, gruppiert nach Anfangsbuchstaben des Nachnamens. */
+/**
+ * Kontaktliste (Version 2 wie alle Reiter): Kopfzeile mit Lupe, unten „+“ für einen neuen Kontakt, gruppiert nach
+ * dem Anfangsbuchstaben des Nachnamens, rechts eine ABC-Leiste zum Springen (antippen oder darüberziehen).
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ContactsScreen(onOpen: (String) -> Unit, onClose: (() -> Unit)?) {
+fun ContactsScreen(onOpen: (String) -> Unit, onClose: (() -> Unit)?, onNew: () -> Unit = {}) {
     val ctx = LocalContext.current
     val app = App.get(ctx)
     val scope = rememberCoroutineScope()
-    var q by remember { mutableStateOf("") }
+    val search = rememberTabSearch()
+    val q = if (search.open) search.query else ""
     val list by remember(q) { app.contacts.search(q) }.collectAsState(initial = emptyList())
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
 
     LaunchedEffect(Unit) { loading = true; try { app.contacts.refresh() } catch (e: Exception) { error = e.message } finally { loading = false } }
+
+    // Buchstabe je Kontakt und wo seine Überschrift in der Liste steht (für die ABC-Leiste)
+    fun letterOf(c: Contact) = c.sortKey.firstOrNull()?.uppercaseChar()?.let { if (it.isLetter()) it.toString() else "#" } ?: "#"
+    val headers = remember(list) {
+        val m = LinkedHashMap<String, Int>()
+        var index = 0
+        var last = ""
+        for (c in list) { val l = letterOf(c); if (l != last) { m[l] = index; index++; last = l }; index++ }
+        m
+    }
 
     // Als Reiter (onClose == null): ohne Zurueck-Pfeil, Systemleisten beruecksichtigt schon der Hauptbildschirm
     val insets = if (onClose == null) androidx.compose.foundation.layout.WindowInsets(0) else null
     Scaffold(contentWindowInsets = insets ?: androidx.compose.material3.ScaffoldDefaults.contentWindowInsets, topBar = {
-        TopAppBar(title = { Text(stringResource(R.string.contacts)) }, windowInsets = insets ?: androidx.compose.material3.TopAppBarDefaults.windowInsets,
+        TabTopBar(stringResource(R.string.contacts), search, insets = insets,
             navigationIcon = { if (onClose != null) IconButton(onClick = onClose) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.close)) } },
             actions = { IconButton(onClick = { scope.launch { loading = true; try { app.contacts.refresh() } catch (e: Exception) { error = e.message } finally { loading = false } } }) { Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.refresh)) } })
-    }) { pad ->
+    }, floatingActionButton = { AddButton(stringResource(R.string.contact_new), onClick = onNew) }) { pad ->
         Column(Modifier.padding(pad).fillMaxSize()) {
-            OutlinedTextField(value = q, onValueChange = { q = it }, placeholder = { Text(stringResource(R.string.search)) }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp))
             error?.let { Text(stringResource(R.string.error_generic, it), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp)) }
             if (loading && list.isEmpty()) CircularProgressIndicator(Modifier.padding(24.dp))
             if (list.isEmpty() && !loading) Text(stringResource(R.string.no_contacts), modifier = Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
-            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
-                var last = ""
-                for (c in list) {
-                    val letter = c.sortKey.firstOrNull()?.uppercaseChar()?.toString() ?: "#"
-                    if (letter != last) { last = letter; item(key = "L$letter") { SectionHeader(letter, highlight = true) } }
-                    item(key = c.id) {
-                        ListItem(
-                            headlineContent = { Text(c.name, fontWeight = FontWeight.Medium) },
-                            supportingContent = { Text(listOfNotNull(c.org.ifBlank { null }, c.phones.firstOrNull()?.value, c.emails.firstOrNull()?.value).joinToString(" · ")) },
-                            leadingContent = { Avatar(c, 40.dp) },
-                            modifier = Modifier.clickable { onOpen(c.id) }
-                        )
+            Row(Modifier.fillMaxSize()) {
+                LazyColumn(Modifier.weight(1f).fillMaxSize(), state = listState, contentPadding = PaddingValues(bottom = 88.dp)) {
+                    var last = ""
+                    for (c in list) {
+                        val letter = letterOf(c)
+                        if (letter != last) { last = letter; item(key = "L$letter") { SectionHeader(letter, highlight = true) } }
+                        item(key = c.id) {
+                            ListItem(
+                                headlineContent = { Text(c.name, fontWeight = FontWeight.Medium) },
+                                supportingContent = { Text(listOfNotNull(c.org.ifBlank { null }, c.phones.firstOrNull()?.value, c.emails.firstOrNull()?.value).joinToString(" · ")) },
+                                leadingContent = { Avatar(c, 40.dp) },
+                                modifier = Modifier.clickable { onOpen(c.id) }
+                            )
+                        }
                     }
                 }
+                if (headers.size > 1 && !search.active) AlphabetBar(headers.keys.toList()) { l -> headers[l]?.let { scope.launch { listState.scrollToItem(it) } } }
             }
         }
+    }
+}
+
+/** ABC-Leiste am rechten Rand: nur die Buchstaben, die vorkommen; antippen oder mit dem Finger darüberfahren. */
+@Composable
+private fun AlphabetBar(letters: List<String>, onLetter: (String) -> Unit) {
+    var height by remember { mutableStateOf(1) }
+    fun at(y: Float) = letters[(y / height * letters.size).toInt().coerceIn(0, letters.size - 1)]
+    Column(
+        Modifier.fillMaxHeight().width(28.dp).padding(vertical = 4.dp)
+            .onSizeChanged { height = it.height.coerceAtLeast(1) }
+            .pointerInput(letters) {
+                detectVerticalDragGestures(onDragStart = { onLetter(at(it.y)) }) { change, _ -> onLetter(at(change.position.y)) }
+            }
+            .pointerInput(letters) { detectTapGestures { onLetter(at(it.y)) } },
+        verticalArrangement = Arrangement.SpaceEvenly, horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        for (l in letters) Text(l, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
     }
 }
 
@@ -121,17 +163,25 @@ fun Avatar(c: Contact, size: androidx.compose.ui.unit.Dp) {
 /** Kontaktkarte: Anrufen, Nachricht, Mail, Karte direkt ueber die Android-Apps. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ContactScreen(id: String, onClose: () -> Unit, onMail: (String) -> Unit) {
+fun ContactScreen(id: String, onClose: () -> Unit, onMail: (String) -> Unit, onEdit: ((String) -> Unit)? = null) {
     val ctx = LocalContext.current
     val app = App.get(ctx)
     var c by remember { mutableStateOf<Contact?>(null) }
     LaunchedEffect(id) { c = app.contacts.byId(id); if (c == null) onClose() }
     val k = c ?: return
+    // „Im Chat …“ (Version 2)
+    var sendChat by remember { mutableStateOf<List<at.dimes.dmoffice.chat.ChatOutRef>?>(null) }
+    sendChat?.let { refs -> SendToChatDialog(refs, onDismiss = { sendChat = null }) { err -> sendChat = null; android.widget.Toast.makeText(ctx, err ?: ctx.getString(R.string.chat_sent_done), android.widget.Toast.LENGTH_SHORT).show() } }
     fun open(i: Intent) { try { ctx.startActivity(i) } catch (_: Exception) { } }
 
     Scaffold(topBar = {
         TopAppBar(title = { Text(k.name) }, navigationIcon = { IconButton(onClick = onClose) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.close)) } },
             actions = {
+                // Bearbeiten (Version 2)
+                if (onEdit != null) IconButton(onClick = { onEdit(id) }) { Icon(Icons.Default.Edit, contentDescription = stringResource(R.string.contact_edit)) }
+                IconButton(onClick = { sendChat = listOf(at.dimes.dmoffice.chat.ChatOutRef("contact", collection = k.book, item = k.uri)) }) {
+                    Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = stringResource(R.string.chat_in_chat))
+                }
                 // VIP wie im Web: Benachrichtigungen "nur VIPs", Prio-Posteingang. Foto bleibt unveraendert (null).
                 val scope = androidx.compose.runtime.rememberCoroutineScope()
                 IconButton(onClick = { scope.launch {

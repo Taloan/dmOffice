@@ -516,6 +516,7 @@ fun UploadQueueScreen(onClose: () -> Unit) {
     val deletes by dao.deletePending().collectAsState(initial = emptyList())
     val rules by dao.rules().collectAsState(initial = emptyList())
     val progress by AutoUpload.progress.collectAsState()
+    val shared by at.dimes.dmoffice.upload.ShareUploadWorker.progress.collectAsState()
     val paused by AutoUpload.paused.collectAsState()
     val blocked by AutoUpload.blocked.collectAsState()
     var tab by rememberSaveable { mutableIntStateOf(0) }
@@ -560,6 +561,18 @@ fun UploadQueueScreen(onClose: () -> Unit) {
         Column(Modifier.padding(pad).fillMaxSize()) {
             if (paused) Notice(stringResource(R.string.au_paused), action = stringResource(R.string.au_resume)) { AutoUpload.setPaused(ctx, false) }
             blocked?.let { Notice(it, error = true) }
+            // Aus dem Teilen-Menü (z. B. ein Diarium-Export): eigener Auftrag, hier mit angezeigt
+            shared?.let { p ->
+                Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text(stringResource(R.string.au_shared_title) + if (p.count > 1) " · " + stringResource(R.string.share_progress, p.index, p.count) else "",
+                            style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                        Text(p.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        LinearProgressIndicator(progress = { if (p.size > 0) p.sent.toFloat() / p.size else 0f }, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp))
+                        Text(stringResource(R.string.au_bytes_of, sizeText(p.sent), sizeText(p.size)), style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
             if (deletes.isNotEmpty()) Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
                 Column(Modifier.padding(12.dp)) {
                     Text(pluralStringResource(R.plurals.au_notif_delete, deletes.size, deletes.size), style = MaterialTheme.typography.bodyMedium)

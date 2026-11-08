@@ -127,6 +127,100 @@ export function askText(title: string, initial = '', label = t('Name'), ok = t('
   })
 }
 
+/** Bestätigung mit dem Anmelde-Passwort (und bei Zwei-Faktor dem Code) für Heikles - null: abgebrochen. */
+export function askPassword(title: string, withCode: boolean, ok = t('Bestätigen')): Promise<{ password: string; code?: string } | null> {
+  return new Promise(resolve => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    const done = (r: { password: string; code?: string } | null) => { root.unmount(); host.remove(); resolve(r) }
+    const dark = storedTheme() === 'dark' || (storedTheme() === 'system' && matchMedia('(prefers-color-scheme: dark)').matches)
+    function Ask() {
+      const [password, setPassword] = useState('')
+      const [code, setCode] = useState('')
+      const ready = !!password && (!withCode || code.trim().length >= 6)
+      return (
+        <Dialog open onOpenChange={(_, x) => !x.open && done(null)}>
+          <DialogSurface style={{ maxWidth: 400 }}>
+            <form onSubmit={e => { e.preventDefault(); if (ready) done({ password, code: withCode ? code.trim() : undefined }) }}>
+              <DialogBody>
+                <DialogTitle>{title}</DialogTitle>
+                <DialogContent style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <Field label={t('Passwort')}>
+                    <Input type="password" value={password} onChange={(_, d) => setPassword(d.value)} autoFocus autoComplete="current-password" />
+                  </Field>
+                  {withCode && <Field label={t('Code aus der Authenticator-App oder Wiederherstellungscode')}>
+                    <Input value={code} onChange={(_, d) => setCode(d.value)} autoComplete="one-time-code" inputMode="text" />
+                  </Field>}
+                </DialogContent>
+                <DialogActions>
+                  <Button onClick={() => done(null)}>{t('Abbrechen')}</Button>
+                  <Button appearance="primary" type="submit" disabled={!ready}>{ok}</Button>
+                </DialogActions>
+              </DialogBody>
+            </form>
+          </DialogSurface>
+        </Dialog>
+      )
+    }
+    root.render(<FluentProvider theme={dark ? darkTheme : lightTheme}><Ask /></FluentProvider>)
+  })
+}
+
+/** Rueckfrage als eigener Dialog - statt confirm(), das der Browser stumm mit "Nein" beantwortet,
+ * sobald man dort "keine weiteren Dialoge" gewaehlt hat. Leerer Titel: nur der Fragetext. */
+export function askConfirm(title: string, text: string, ok = t('OK')): Promise<boolean> {
+  return new Promise(resolve => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    const done = (r: boolean) => { root.unmount(); host.remove(); resolve(r) }
+    const dark = storedTheme() === 'dark' || (storedTheme() === 'system' && matchMedia('(prefers-color-scheme: dark)').matches)
+    root.render(
+      <FluentProvider theme={dark ? darkTheme : lightTheme}>
+        <Dialog open onOpenChange={(_, x) => !x.open && done(false)}>
+          <DialogSurface style={{ maxWidth: 440 }}>
+            <DialogBody>
+              {title && <DialogTitle>{title}</DialogTitle>}
+              <DialogContent>{text}</DialogContent>
+              <DialogActions>
+                <Button onClick={() => done(false)}>{t('Abbrechen')}</Button>
+                <Button appearance="primary" onClick={() => done(true)} autoFocus>{ok}</Button>
+              </DialogActions>
+            </DialogBody>
+          </DialogSurface>
+        </Dialog>
+      </FluentProvider>)
+  })
+}
+
+/** Zwei Wege zur Wahl (dazu Abbrechen): liefert first oder second, null bei Abbrechen. */
+export function askChoice<T extends string>(title: string, text: string, first: { value: T; label: string }, second: { value: T; label: string }): Promise<T | null> {
+  return new Promise(resolve => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    const done = (r: T | null) => { root.unmount(); host.remove(); resolve(r) }
+    const dark = storedTheme() === 'dark' || (storedTheme() === 'system' && matchMedia('(prefers-color-scheme: dark)').matches)
+    root.render(
+      <FluentProvider theme={dark ? darkTheme : lightTheme}>
+        <Dialog open onOpenChange={(_, x) => !x.open && done(null)}>
+          <DialogSurface style={{ maxWidth: 480 }}>
+            <DialogBody>
+              {title && <DialogTitle>{title}</DialogTitle>}
+              <DialogContent>{text}</DialogContent>
+              <DialogActions>
+                <Button onClick={() => done(null)}>{t('Abbrechen')}</Button>
+                <Button onClick={() => done(second.value)}>{second.label}</Button>
+                <Button appearance="primary" onClick={() => done(first.value)} autoFocus>{first.label}</Button>
+              </DialogActions>
+            </DialogBody>
+          </DialogSurface>
+        </Dialog>
+      </FluentProvider>)
+  })
+}
+
 /** Tippt der Benutzer gerade (Feld, Editor)? Dann gelten die Tastenkuerzel der Liste nicht. */
 export function isTyping(e: { target: EventTarget | null }): boolean {
   const el = e.target as HTMLElement | null

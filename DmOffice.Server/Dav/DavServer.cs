@@ -20,7 +20,7 @@ namespace DmOffice.Dav;
 /// Die Dateiablage auch unter den Adressen von Nextcloud, fuer deren Sync-Clients
 /// (siehe NextcloudApi): /remote.php/dav/files/&lt;login&gt;/&lt;pfad&gt; und /remote.php/webdav/&lt;pfad&gt;.
 /// </summary>
-public static class DavServer
+public static partial class DavServer
 {
     private static readonly XNamespace D = "DAV:";
     private static readonly XNamespace C = "urn:ietf:params:xml:ns:caldav";
@@ -68,9 +68,12 @@ public static class DavServer
 
     public const string SharedPrefix = "shared-";
 
+    /// Nur gezeigte (Version 2) fehlen: Abgleich auf ein Geraet waere eine Kopie. Geteilte Tagebuecher ebenso: Mitglieder gehen
+    /// ueber /api/journal, das private Eintraege und fremde Medien aussen vor laesst.
     /// <summary>Die geteilten Kalender dieses Benutzers in der Form, wie sein Programm sie sieht.</summary>
     private static IEnumerable<(Collection Coll, Shared Sh)> SharedCalendars(HttpContext http, UserSpace space) =>
         SharedLists.For(http.RequestServices.GetRequiredService<ShareStore>(), http.RequestServices.GetRequiredService<Spaces>(), space.User.Id)
+            .Where(x => !x.Share.IsShowOnly(space.User.Id) && !Journal.JournalStore.IsJournal(x.Coll))
             .Select(x => (Present(x.Coll, x.Share, x.Owner), new Shared(x.Share, x.Owner, x.Share.ReadOnly.Contains(space.User.Id))));
 
     private static Collection Present(Collection c, Share share, UserSpace owner) =>
@@ -80,22 +83,31 @@ public static class DavServer
     {
         if (!uri.StartsWith(SharedPrefix, StringComparison.Ordinal) || !int.TryParse(uri[SharedPrefix.Length..], out var id)) return (null, null);
         var share = http.RequestServices.GetRequiredService<ShareStore>().ById(id);
-        if (share == null || !share.Members.Contains(space.User.Id)) return (null, null);
+        if (share == null || !share.Members.Contains(space.User.Id) || share.IsShowOnly(space.User.Id)) return (null, null);
         UserSpace owner;
         try { owner = http.RequestServices.GetRequiredService<Spaces>().Get(share.Owner); } catch { return (null, null); }
         var c = PimStore.Find(owner.Db, share.Collection);
-        return c == null ? (null, null) : (Present(c, share, owner), new Shared(share, owner, share.ReadOnly.Contains(space.User.Id)));
+        return c == null || Journal.JournalStore.IsJournal(c) ? (null, null) : (Present(c, share, owner), new Shared(share, owner, share.ReadOnly.Contains(space.User.Id)));
     }
 
     /// <summary>Unter welcher Adresse die Anfrage kam: /dav, /remote.php/dav oder /remote.php/webdav.</summary>
     private enum Flavor { Dav, RemoteDav, RemoteWebdav }
 
-    private static bool HiddenForNextcloud(UserSpace space, string path) => FileStore.InRoot(path, space.Settings.Notizi.Root);
+    private static bool HiddenForNextcloud(UserSpace space, string path) =>
+        FileStore.InRoot(path, space.Settings.Notizi.Root) || FileStore.InRoot(path, DmOffice.Journal.JournalMediaStore.Root) || VaultHidden(space, path)
+        || DavHidden.Covers(space.Db, path);
+
+    /// <summary>System-Tresor: über WebDAV und Nextcloud nur, wenn die Person ihn bereitstellt (Einstellungen → Tresor).</summary>
+    private static bool VaultHidden(UserSpace space, string path) => FileStore.InRoot(path, FileStore.SystemVault) && !Tresor.DavEnabled(space.User.Id);
 
     /// <summary>Abgleichordner von notizi fuer diesen Zugang ausblenden? Fuer Nextcloud-Clients immer; ueber /dav,
     /// sobald es einen eigenen notizi-Zugang gibt, fuer alle anderen App-Passwoerter.</summary>
     private static bool HiddenFor(HttpContext http, UserSpace space, string path, bool nextcloud) =>
-        FileStore.InRoot(path, space.Settings.Notizi.Root)
+        // Systemordner des Tagebuchs: für jeden WebDAV-Zugang unsichtbar
+        FileStore.InRoot(path, DmOffice.Journal.JournalMediaStore.Root) || VaultHidden(space, path)
+        // von der Person ausgeblendete Ordner (Kontextmenü der Dateiablage): für jeden WebDAV-Zugang
+        || DavHidden.Covers(space.Db, path)
+        || FileStore.InRoot(path, space.Settings.Notizi.Root)
         // jeder Zugang ausser dem notizi-Zugang selbst (auch App-Passwoerter mit Bereich "dav" aus dem Login-Flow)
         && (nextcloud || (Scope(http) != AppPasswords.ScopeNotizi && AppPasswords.HasNotiziScope(space.Db)));
 
@@ -224,6 +236,8 @@ public static class DavServer
 
     private static async Task HandleCore(HttpContext http)
     {
+        // Abgleich eines Geraets: nur gezeigte Ordner (Version 2) fehlen in den Listen der Ablage
+        http.Items[SharedFiles.DeviceSync] = true;
         var space = http.Space();
         PimStore.EnsureDefaults(space.Db);
         EnsureNotiziRoot(space);
@@ -234,6 +248,8 @@ public static class DavServer
         {
             // Im try: ein ungueltiger Pfad (FileStore.Normalize) gibt 400 statt 500
             var segments = Segments(http);
+            // Nextcloud: Hochladen in Stuecken (DavUploads.cs)
+            if (segments.Item1 == Flavor.RemoteDav && segments.Item2 is ["uploads", ..]) { await Uploads(http, space, segments.Item2, method); return; }
             var target = Resolve(http, space, segments);
             // notizi-Zugang: ausschliesslich der Abgleichordner von notizi
             if (Scope(http) == AppPasswords.ScopeNotizi && http.Request.Method != "OPTIONS"
@@ -248,6 +264,13 @@ public static class DavServer
             if (target == null)
             {
                 http.Response.StatusCode = segments.Item1 != Flavor.RemoteWebdav && segments.Item2 is { Count: >= 2 } s && s[1] != space.User.Login ? 403 : 404;
+                return;
+            }
+
+            // Abgleich-Ordner einer notizi-Datenbank im Tresor (Tresor Stufe 4): eigene Ablage, Lesen nur bei offenem Tresor
+            if (target.Kind == Kind.Files && DmOffice.Notes.TresorNotizi.Rel(space, target.FilePath) is { } vaultRel)
+            {
+                await TresorNotizi(http, space, target, vaultRel, method);
                 return;
             }
 
@@ -314,7 +337,9 @@ public static class DavServer
     {
         var root = FileStore.Normalize(space.Settings.Notizi.Root);
         if (root.Length > 0 && FileStore.Get(space.Db, root) == null)
-            try { FileStore.EnsureDir(space.Db, root); } catch (DavConflictException) { /* dort liegt eine Datei */ }
+            try { FileStore.EnsureDir(space.Db, root); }
+            catch (DavConflictException) { /* dort liegt eine Datei */ }
+            catch (InvalidOperationException) { /* eine gleichzeitige Anfrage hat ihn eben angelegt */ }
     }
 
     // ==================================================================
@@ -561,7 +586,9 @@ public static class DavServer
     /// <summary>Rechte wie bei Nextcloud: G lesen, D loeschen, N umbenennen, V verschieben, W schreiben, C/K Datei/Ordner anlegen.</summary>
     /// In einem mit mir geteilten Ordner (S): ohne Bearbeitungsrecht nur lesen, den geteilten Ordner selbst nicht loeschen, umbenennen, verschieben.
     private static string OcPermissions(FileEntry f, FileLoc loc) =>
-        !loc.Shared ? (f.IsDir ? "RGDNVCK" : "RGDNVW")
+        // Ordner und Kerndateien des System-Tresors: kein Löschen, Umbenennen, Verschieben (der Client stellt lokal Gelöschtes wieder her)
+        !loc.Shared && FileStore.IsSystemCore(f.Path) ? (f.IsDir ? "RGCK" : "RG")
+        : !loc.Shared ? (f.IsDir ? "RGDNVCK" : "RGDNVW")
         : !loc.CanWrite ? "SG"
         : loc.IsMountRoot ? "SGCK"
         : f.IsDir ? "SGDNVCK" : "SGDNVW";
@@ -612,6 +639,97 @@ public static class DavServer
             p[D + "quota-available-bytes"] = (quota > 0 ? Math.Max(0, quota - used) : -3).ToString();
         }
         return new Resource(FileHref(filesBase, f), p);
+    }
+
+    // ==================================================================
+    //  notizi-Datenbanken im Tresor
+    // ==================================================================
+
+    /// <summary>
+    /// Abgleich-Ordner im Tresor: PUT (bedingt), MKCOL und DELETE immer - bei geschlossenem Tresor über den öffentlichen
+    /// Schlüssel -, GET und PROPFIND nur, solange der Tresor auf einem Gerät der Person offen ist, sonst 423. notizi
+    /// wartet dann und lädt nur hoch (ab 84a334e).
+    /// </summary>
+    private static async Task TresorNotizi(HttpContext http, UserSpace space, Target t, string rel, string method)
+    {
+        switch (method)
+        {
+            case "OPTIONS":
+                http.Response.Headers.Allow = "OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, MKCOL";
+                http.Response.StatusCode = 200;
+                return;
+            case "PROPFIND":
+            {
+                if (!Tresor.OpenAnywhere(space.User.Id)) { await TresorLocked(http); return; }
+                var self = DmOffice.Notes.TresorNotizi.Get(space, rel);
+                if (self == null) { http.Response.StatusCode = 404; return; }
+                var req = ParseProps((await Body(http))?.Root);
+                var responses = new List<XElement> { Response(VaultResource(space, t, self), req) };
+                if (self.IsDir && http.Request.Headers["Depth"].ToString() != "0")
+                    foreach (var child in DmOffice.Notes.TresorNotizi.List(space, rel)) responses.Add(Response(VaultResource(space, t, child), req));
+                await Multistatus(http, responses);
+                return;
+            }
+            case "GET":
+            case "HEAD":
+            {
+                if (!Tresor.OpenAnywhere(space.User.Id)) { await TresorLocked(http); return; }
+                var e = DmOffice.Notes.TresorNotizi.Get(space, rel);
+                if (e is not { IsDir: false }) { http.Response.StatusCode = e == null ? 404 : 405; return; }
+                var data = DmOffice.Notes.TresorNotizi.Read(space, rel);
+                http.Response.Headers.ETag = e.Etag;
+                http.Response.ContentType = "application/octet-stream";
+                http.Response.ContentLength = data.Length;
+                if (method == "GET") await http.Response.Body.WriteAsync(data);
+                return;
+            }
+            case "PUT":
+            {
+                using var ms = new MemoryStream();
+                await http.Request.Body.CopyToAsync(ms, http.RequestAborted);
+                var (etag, created) = DmOffice.Notes.TresorNotizi.Put(space, rel, ms.ToArray(), Header(http, "If-Match"), Header(http, "If-None-Match"));
+                http.Response.Headers.ETag = etag;
+                http.Response.Headers["OC-ETag"] = etag;
+                http.Response.StatusCode = created ? 201 : 204;
+                return;
+            }
+            case "MKCOL":
+                http.Response.StatusCode = DmOffice.Notes.TresorNotizi.Mkcol(space, rel) ? 201 : 405;
+                return;
+            case "DELETE":
+                http.Response.StatusCode = DmOffice.Notes.TresorNotizi.Delete(space, rel, Header(http, "If-Match")) ? 204 : 404;
+                return;
+            default:
+                http.Response.StatusCode = 403;
+                return;
+        }
+    }
+
+    private static async Task TresorLocked(HttpContext http)
+    {
+        http.Response.StatusCode = StatusCodes.Status423Locked;
+        http.Response.ContentType = "text/plain; charset=utf-8";
+        await http.Response.WriteAsync("Der Tresor ist geschlossen. Gelesen wird, sobald er auf einem Gerät geöffnet ist.");
+    }
+
+    private static Resource VaultResource(UserSpace space, Target t, DmOffice.Notes.TresorNotizi.Entry e)
+    {
+        var path = FileStore.Normalize(space.Settings.Notizi.Root) + "/" + e.Path;
+        var p = new Dictionary<XName, object?>
+        {
+            [D + "displayname"] = e.Name,
+            [D + "resourcetype"] = e.IsDir ? new XElement(D + "resourcetype", new XElement(D + "collection")) : new XElement(D + "resourcetype"),
+            [D + "getetag"] = e.Etag,
+            [D + "getlastmodified"] = e.Modified.ToUniversalTime().ToString("R", CultureInfo.InvariantCulture),
+            [D + "current-user-principal"] = Href(PrincipalHref(space.User.Login)),
+            [D + "current-user-privilege-set"] = Privileges(true),
+        };
+        if (!e.IsDir)
+        {
+            p[D + "getcontentlength"] = e.Size.ToString(CultureInfo.InvariantCulture);
+            p[D + "getcontenttype"] = "application/octet-stream";
+        }
+        return new Resource(FileHref(t.FilesBase, new FileEntry(path, e.IsDir, e.Size, e.Etag, null, e.Modified, e.Modified)), p);
     }
 
     /// <summary>„Mit mir geteilt“ selbst: nur lesen, darin liegen die geteilten Ordner.</summary>
@@ -697,6 +815,11 @@ public static class DavServer
                         if (HiddenFor(http, space, f.Path, nextcloud) || SharedFiles.Hidden(http, f.Path)) continue;
                         if (!off || FileStore.InRoot(f.Path, space.Settings.Notizi.Root)) yield return DescribeFile(http, space, loc, f, t.FilesBase);
                     }
+                    // Datenbanken im Tresor stehen in der notizi-Wurzel als Ordner - notizi findet sie, liest sie aber erst bei offenem Tresor
+                    if (t.FilePath == FileStore.Normalize(space.Settings.Notizi.Root))
+                        foreach (var vault in DmOffice.Notes.TresorNotizi.Folders(space))
+                            if (DmOffice.Notes.TresorNotizi.Get(space, vault) is { } e)
+                                yield return VaultResource(space, t, e);
                     // „Mit mir geteilt“ in der Wurzel, solange jemand etwas mit mir teilt
                     if (t.FilePath.Length == 0 && !off && SharedFiles.Mounts(http).Count > 0) yield return DescribeShared(http, space, t.FilesBase);
                 }
@@ -934,6 +1057,8 @@ public static class DavServer
                     await http.Response.WriteAsync("Hochladen in Stücken wird noch nicht unterstützt.");
                     return;
                 }
+                // Ohne Groessengrenze je Datei (Version 2): WebDAV kennt nur ein Stueck, es zaehlt nur das Kontingent
+                NoBodyLimit(http);
                 // Nextcloud-Clients schicken die Aenderungszeit der Datei (Sekunden seit 1970) mit
                 DateTime? mtime = double.TryParse(Header(http, "X-OC-Mtime"), NumberStyles.Float, CultureInfo.InvariantCulture, out var secs) && secs > 0
                     ? DateTime.UnixEpoch.AddSeconds(Math.Floor(secs)) : null;
@@ -1048,6 +1173,9 @@ public static class DavServer
             var from = SharedFiles.Resolve(http, t.FilePath);
             var to = SharedFiles.Resolve(http, dest.FilePath).Creatable();
             if (from.Virtual) { http.Response.StatusCode = 403; return; }
+            // Der Etag bezieht sich auf die Quelle: hat sie sich inzwischen geändert, bleibt alles, wie es ist
+            if (Header(http, "If-Match") is { } fileMatch && (FileStore.Get(from.Db, from.Path) is not { } source || (fileMatch != "*" && fileMatch != source.Etag)))
+                throw new PreconditionFailedException();
             // Ziel wie die Anfrage-URL behandeln: den ausgeblendeten notizi-Ordner nicht beschreiben, und keinen Ordner
             // ueberschreiben, in dem er liegt (Ziele im notizi-Ordner landen nicht im Papierkorb)
             if (to.Db == space.Db && HiddenFor(http, space, to.Path, destSegs!.Value.Item1 != Flavor.Dav)
@@ -1084,6 +1212,7 @@ public static class DavServer
             var srcDb = DbOf(space, t);
             var destDb = DbOf(space, dest);
             var obj = PimStore.Object(srcDb, t.Coll!.Id, t.Name!) ?? throw new KeyNotFoundException();
+            if (Header(http, "If-Match") is { } objMatch && objMatch != "*" && objMatch != obj.Etag) throw new PreconditionFailedException();
             // In eine andere Datenbank (eigener <-> geteilter Kalender): schreiben, dann erst loeschen
             if (srcDb != destDb)
             {

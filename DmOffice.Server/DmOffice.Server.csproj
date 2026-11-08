@@ -9,12 +9,20 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Anthropic" Version="13.1.0" />
+    <PackageReference Include="AWSSDK.S3" Version="4.0.104.6" />
+    <PackageReference Include="Konscious.Security.Cryptography.Argon2" Version="1.3.1" />
+    <!-- Cryptomator-Format (Core/Cryptomator): scrypt, AES-Key-Wrap, CMAC und AES-CTR für AES-SIV -->
+    <PackageReference Include="BouncyCastle.Cryptography" Version="2.7.0" />
     <PackageReference Include="MailKit" Version="4.18.1" />
     <PackageReference Include="HtmlSanitizer" Version="9.2.1039" />
     <PackageReference Include="Ical.Net" Version="4.3.1" />
+    <!-- Tagebuch: Aufnahmedatum und Ort aus Fotos (EXIF, GPS), Apache-2.0 -->
+    <PackageReference Include="MetadataExtractor" Version="2.8.1" />
     <!-- Volltextsuche (Search/TextExtract.cs): Text aus PDF (Apache-2.0) und Office-Dateien (MIT) -->
     <PackageReference Include="PdfPig" Version="0.1.16" />
     <PackageReference Include="DocumentFormat.OpenXml" Version="3.5.1" />
+    <PackageReference Include="SharpCompress" Version="0.50.7" />
     <!-- von MimeKit mitgebracht; 10.0.0 hat bekannte Luecken -->
     <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.13" />
     <!-- SQLCipher: jede Benutzerdatenbank ist verschluesselt -->
@@ -25,6 +33,8 @@
     <PackageReference Include="SkiaSharp" Version="4.150.1" />
     <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="4.150.1" />
     <PackageReference Include="PDFtoImage" Version="5.4.0" />
+    <!-- Audiothek: Tags, Cover und Dauer aus MP3, M4A, FLAC, OGG/Opus (Audio/AudioFolders.cs), MIT -->
+    <PackageReference Include="z440.atl.core" Version="7.19.0" />
   </ItemGroup>
 
   <ItemGroup>
@@ -35,9 +45,33 @@
     <InternalsVisibleTo Include="DmOffice.Tests" />
   </ItemGroup>
 
+  <!-- Pukki (Version 2): Familien-Themen und Assoziationen aus Wikidata (CC0), eingebettet -->
+  <ItemGroup>
+    <EmbeddedResource Include="Chat\wissen\*.json" />
+    <!-- Coach: Bundeslebensmittelschluessel 4.0 (Max Rubner-Institut, CC BY 4.0), aufbereitet -->
+    <EmbeddedResource Include="Coach\Bls\bls40.tsv.gz" LogicalName="DmOffice.Coach.Data.bls40.tsv.gz" />
+    <EmbeddedResource Include="Coach\Bls\portionen.tsv" LogicalName="DmOffice.Coach.Data.portionen.tsv" />
+    <EmbeddedResource Include="Coach\Bls\richtwerte.tsv" LogicalName="DmOffice.Coach.Data.richtwerte.tsv" />
+    <EmbeddedResource Include="Coach\Bls\basisrezepte.json" LogicalName="DmOffice.Coach.Data.basisrezepte.json" />
+    <!-- Fotos der Basisrezepte: je Rezept-Kennung eine WebP-Datei (base-dge-lunch-3.webp) -->
+    <EmbeddedResource Include="Coach\Bls\bilder\*.webp" LogicalName="DmOffice.Coach.Bilder.%(Filename)%(Extension)" />
+    <!-- Gleiche Gerichte in mehreren Ernährungsformen: Kennung -> Kennung mit dem Foto -->
+    <EmbeddedResource Include="Coach\Bls\bilder\gleiche.json" LogicalName="DmOffice.Coach.Bilder.gleiche.json" />
+    <!-- Coach: Wissen für Pukki (Karten, Assoziationen) -->
+    <EmbeddedResource Include="Coach\Wissen\grundlagen.md" LogicalName="DmOffice.Coach.Wissen.grundlagen.md" />
+    <EmbeddedResource Include="Coach\Wissen\assoziationen.json" LogicalName="DmOffice.Coach.Wissen.assoziationen.json" />
+  </ItemGroup>
+
   <ItemGroup>
     <!-- Name der Version (1.5, 2.0 ...) fuer die Titelzeile; liegt neben der Assembly im Image -->
     <Content Include="release.txt" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Release-Liste: ab welcher Version welche Funktion gilt (Core/Features.cs) -->
+    <Content Update="features.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
+  <!-- Speicher: zerstückelten Speicher (große Blöcke von PDFs, Fotos) aktiv zusammenräumen statt mehr zu belegen - mit einer
+       Speichergrenze im Container und Auslagern (vServer) hingen sonst lange Aufräumläufe die ganze App für Sekunden auf -->
+  <ItemGroup>
+    <RuntimeHostConfigurationOption Include="System.GC.ConserveMemory" Value="7" />
+  </ItemGroup>
 </Project>

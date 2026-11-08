@@ -26,6 +26,16 @@ class MailNotifyRulesTest {
         assertEquals("all", MailNotifyRules.resolve(MailNotifyOverride(mode = "kaputt"), def).mode)
     }
 
+    @Test fun kategorien_ohne_benachrichtigung_melden_nicht() {
+        val cats = listOf(at.dimes.dmoffice.api.MailCategory("dm_newsletter", quiet = true), at.dimes.dmoffice.api.MailCategory("dm_wichtig"))
+        val items = listOf(
+            MailItem(uid = 2, keywords = listOf("dm_newsletter")),
+            MailItem(uid = 3, keywords = listOf("dm_newsletter", "dm_wichtig")),
+            MailItem(uid = 4),
+            MailItem(uid = 5, keywords = listOf("dm_unbekannt")))
+        assertEquals(listOf(3L, 4L, 5L), MailNotifyRules.fresh(items, 1, "all", emptySet(), categories = cats).map { it.uid })
+    }
+
     @Test fun nur_neue_ungelesene_aelteste_zuerst() {
         val items = listOf(mail(5), mail(9), mail(7, seen = true), mail(3), mail(8))
         assertEquals(listOf(5L, 8L, 9L), MailNotifyRules.fresh(items, 4, "all", emptySet()).map { it.uid })

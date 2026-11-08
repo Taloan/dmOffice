@@ -182,6 +182,7 @@ namespace Notizi.Sync
         private static void Ensure(HttpResponseMessage response, string method, string path)
         {
             if (response.IsSuccessStatusCode) return;
+            if ((int)response.StatusCode == 423) throw new SyncLockedException(path);
             var reason = response.StatusCode switch
             {
                 HttpStatusCode.Unauthorized => "Anmeldung abgelehnt - Benutzer oder App-Passwort stimmt nicht",

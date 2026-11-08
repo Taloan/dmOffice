@@ -21,7 +21,22 @@ export function phishText(f: PhishFinding): string {
       return f.detail === 'sender'
         ? t('Die Absenderadresse gehört zu {domain}. Das sieht aus wie {like}, ist es aber nicht.', { domain: f.domain ?? '', like: f.like ?? '' })
         : t('Ein Link führt zu {domain}. Das sieht aus wie {like}, ist es aber nicht.', { domain: f.domain ?? '', like: f.like ?? '' })
+    case 'virus':
+      return t('Der Virenscanner hat in dieser Mail Schadsoftware gefunden ({name}). Die Anhänge sind gesperrt.', { name: f.detail ?? '' })
+    case 'freemail-org':
+      return f.detail === 'not-to-me'
+        ? t('„{name}“ klingt nach einer Firma oder einem Dienst, schreibt aber von einem kostenlosen Postfach ({sender}). Die Mail ist dazu nicht an dich adressiert, sondern an jemand anderen – typisch für Massenversand.', { name: f.like ?? '', sender: f.domain ?? '' })
+        : t('„{name}“ klingt nach einer Firma oder einem Dienst, schreibt aber von einem kostenlosen Postfach ({sender}).', { name: f.like ?? '', sender: f.domain ?? '' })
+    case 'hosted':
+      return f.shown
+        ? t('Der Link „{shown}“ führt nicht auf die Website einer Firma, sondern zu gemietetem Speicherplatz bei einem Cloud-Anbieter ({target}). Dort legen Betrüger gern nachgemachte Anmeldeseiten ab.', { shown: f.shown, target: f.target ?? '' })
+        : t('Ein Link führt nicht auf die Website einer Firma, sondern zu gemietetem Speicherplatz bei einem Cloud-Anbieter ({target}). Dort legen Betrüger gern nachgemachte Anmeldeseiten ab.', { target: f.target ?? '' })
+    case 'myaddress':
+      return t('In einem Link ({target}) steckt deine Adresse {address}, unleserlich gemacht. So erfährt der Absender, wer klickt, und kann deine Adresse auf seiner Seite schon eintragen.', { target: f.target ?? '', address: f.domain ?? '' })
+    case 'pressure':
+      return t('Die Mail droht mit einer Sperre und setzt dafür eine Frist. Mit solchem Zeitdruck wollen Betrüger erreichen, dass man klickt, ohne lange nachzudenken.')
     case 'newsender':
+      if (f.detail) return t('Von {sender} (weitergeleitet über {service}) kam bisher keine Mail, und diese enthält einen Link zum Anmelden oder Bestätigen von Daten ({target}).', { sender: f.domain ?? '', service: f.detail, target: f.target ?? '' })
       return t('Von {sender} kam bisher keine Mail, und diese enthält einen Link zum Anmelden oder Bestätigen von Daten ({target}).', { sender: f.domain ?? '', target: f.target ?? '' })
   }
 }

@@ -850,8 +850,8 @@ if (need('f-kacheln', 'f-liste-gruppiert', 'f-betrachter', 'f-kontextmenue', 'f-
 
   // ---------- Was der Empfaenger sieht: eigenes, leeres Browserprofil ----------
   if (need('f-freigabe-empfaenger')) {
-    const guest = await browser.createBrowserContext()
-    const gp = await guest.newPage()
+    const visitor = await browser.createBrowserContext()
+    const gp = await visitor.newPage()
     await gp.setViewport({ width: 1100, height: 340, deviceScaleFactor: 1 })
     await gp.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'light' }])
     await gp.goto(base + '/s/' + link.token, { waitUntil: 'networkidle0' })
@@ -860,7 +860,7 @@ if (need('f-kacheln', 'f-liste-gruppiert', 'f-betrachter', 'f-kontextmenue', 'f-
     await pause(2500)
     await gp.mouse.move(5, 335)
     await shotHere('f-freigabe-empfaenger', gp)
-    await guest.close()
+    await visitor.close()
   }
 
   // ---------- Inhaltssuche: Treffer im Text eines PDFs ----------

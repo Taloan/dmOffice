@@ -76,10 +76,9 @@ function InviteCalendarSetting() {
   const { fail } = useApp()
   const [cals, setCals] = useState<Collection[]>([])
   const [value, setValue] = useState<number | null>(null)
-  const [smart, setSmart] = useState(true)
   useEffect(() => {
     api.get<Collection[]>('/api/pim/collections/calendars').then(l => setCals(l.filter(c => c.components.includes('VEVENT')))).catch(fail)
-    api.get('/api/settings').then(s => { setValue(s.inviteCalendar ?? null); setSmart(s.smartCalendar ?? true) }).catch(fail)
+    api.get('/api/settings').then(s => setValue(s.inviteCalendar ?? null)).catch(fail)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
   const current = cals.find(c => c.id === value) ?? cals[0]
   return (
@@ -96,9 +95,6 @@ function InviteCalendarSetting() {
           </Option>)}
         </Dropdown>
       </Field>
-      <Switch checked={smart} label={t('Termine aus E-Mails in den Kalender „E-Mail-Ankündigungen“ eintragen')}
-        onChange={async (_, d) => { setSmart(d.checked); try { await api.put('/api/settings/general', { smartCalendar: d.checked }) } catch (e) { fail(e) } }} />
-      <Hint>{t('Paketankündigungen (DHL, Amazon, Hermes, DPD, GLS, UPS) sowie Flüge, Bahn, Hotels und Reservierungen mit maschinenlesbaren Angaben kommen in den Kalender „E-Mail-Ankündigungen“. Ausgewertet wird nur auf deinem Server.')}</Hint>
     </Section>
   )
 }

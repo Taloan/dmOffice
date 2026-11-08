@@ -143,6 +143,10 @@ interface UploadDao {
     @Query("SELECT id, sourcePath, size, modified, status FROM uploads WHERE ruleId = :rule ORDER BY id")
     suspend fun known(rule: Long): List<KnownFile>
 
+    /** Zuletzt hochgeladener Stand derselben Datei (ohne den Eintrag selbst). */
+    @Query("SELECT * FROM uploads WHERE ruleId = :rule AND sourcePath = :path AND status = 2 AND id != :id ORDER BY id DESC LIMIT 1")
+    suspend fun lastDone(rule: Long, path: String, id: Long): UploadEntry?
+
     @Insert
     suspend fun insert(list: List<UploadEntry>)
 

@@ -24,6 +24,18 @@ namespace Notizi.Sync
             : base("Der Abgleichordner wurde neu eingerichtet (anderes Passwort). Neu verbinden.") { }
     }
 
+    /// <summary>
+    /// Der Server laesst gerade nicht lesen (HTTP 423 Locked) - dmOffice etwa,
+    /// solange der Tresor zu ist, in dem der Abgleichordner einer
+    /// verschluesselten Datenbank liegt. Kein Fehler: Hochladen geht weiter
+    /// (SyncEngine.PushAsync), gelesen wird, sobald er wieder offen ist.
+    /// </summary>
+    public sealed class SyncLockedException : Exception
+    {
+        public SyncLockedException(string path)
+            : base($"{path}: Der Server gibt den Abgleichordner gerade nicht zum Lesen frei (gesperrt).") { }
+    }
+
     public sealed class SyncPreconditionException : Exception
     {
         public SyncPreconditionException(string path)

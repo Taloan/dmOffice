@@ -14,14 +14,16 @@ namespace DmOffice.Office;
 /// </summary>
 public static class WopiApi
 {
-    public record OpenBody(string Path, bool? View);
+    /// <param name="Tresor">Id einer Datei im Tresor (dann gilt Path nicht)</param>
+    public record OpenBody(string Path, bool? View, long? Tresor = null);
     public record NewBody(string? Dir, string Kind, string Name);
     /// <param name="JwtSecret">null: bleibt wie es ist; leer: loeschen</param>
     public record AdminBody(string? Url, string? WopiBase, bool Force = false, string? JwtSecret = null, string? JwtHeader = null);
 
     // ---------------- Hilfen ----------------
 
-    private sealed record Target(WopiGrant Grant, string Token, UserSpace Space, FileEntry File)
+    /// <summary>File: bei Tresor-Dateien (Grant.T) der Stand beim Auflösen, null bei geschlossenem Tresor.</summary>
+    private sealed record Target(WopiGrant Grant, string Token, UserSpace Space, FileEntry? File)
     {
         public UserDb Db => Space.Db;
     }
@@ -38,13 +40,20 @@ public static class WopiApi
         var services = http.RequestServices;
         var token = http.Request.Query["access_token"].ToString();
         var grant = WopiTokens.Read(services, token);
-        if (grant == null || id != WopiTokens.FileId(grant.U, grant.F)) return (null, Status(401));
+        if (grant == null || id != WopiTokens.FileId(grant)) return (null, Status(401));
         var user = services.GetRequiredService<UserStore>().ById(grant.V ?? grant.U);
         if (user == null || user.Stamp != grant.S) return (null, Status(401));
         UserSpace space;
         try { space = services.GetRequiredService<Spaces>().Get(grant.U); }
         catch (KeyNotFoundException) { return (null, Status(401)); }
         if (FileStore.FilesOff(space.Db)) return (null, Status(404));
+        // Tresor: Sperren gehen immer, Lesen nur bei offenem Tresor, Speichern immer (TresorOffice)
+        if (grant.T)
+        {
+            if (!await ProofOk(http, grant, token)) return (null, Status(500, "Proof-Key-Prüfung fehlgeschlagen."));
+            http.Items[AnonThrottle.TrustedItem] = true;
+            return (new Target(grant, token, space, TresorOffice.Entry(grant.U, grant.F)), null);
+        }
         var file = FileStore.ById(space.Db, grant.F);
         if (file == null || file.IsDir || FileStore.InRoot(file.Path, FileStore.ProtectedRoot(space.Db))) return (null, Status(404));
         if (grant.L != null && !LinkAllows(space.Db, grant.L, file)) return (null, Status(401));
@@ -141,7 +150,7 @@ public static class WopiApi
         var ext = Ext(f.Name);
         var urlsrc = write ? d.Edit[ext] : d.View.GetValueOrDefault(ext) ?? d.Edit[ext];
         var (token, expires) = WopiTokens.Issue(http.RequestServices, grant, GuestLifetime(grant));
-        var src = grant.B + "/wopi/files/" + WopiTokens.FileId(grant.U, grant.F);
+        var src = grant.B + "/wopi/files/" + WopiTokens.FileId(grant);
         return new
         {
             url = Discovery.ActionUrl(urlsrc, src, LangOf(http)),
@@ -191,7 +200,7 @@ public static class WopiApi
         {
             var (t, error) = await Resolve(http, id);
             if (t == null) return error!;
-            var f = t.File;
+            if (t.File is not { } f) return Closed();
             var guest = t.Grant.L != null;
             return Results.Json(new Dictionary<string, object?>
             {
@@ -205,7 +214,8 @@ public static class WopiApi
                 ["LastModifiedTime"] = Time(f.Modified),
                 ["UserCanWrite"] = t.Grant.W,
                 ["ReadOnly"] = !t.Grant.W,
-                ["UserCanNotWriteRelative"] = !t.Grant.W,
+                // Tresor: kein „Speichern unter“ - neue Dateien im Tresor entstehen nur über dmOffice
+                ["UserCanNotWriteRelative"] = !t.Grant.W || t.Grant.T,
                 ["UserCanRename"] = false,
                 ["SupportsRename"] = false,
                 ["SupportsLocks"] = true,
@@ -214,8 +224,10 @@ public static class WopiApi
                 ["SupportsUpdate"] = true,
                 ["PostMessageOrigin"] = t.Grant.O,
                 ["EnableOwnerTermination"] = false,
-                ["DisablePrint"] = false,
-                ["HideExportOption"] = false,
+                ["DisablePrint"] = t.Grant.X,
+                ["HidePrintOption"] = t.Grant.X,
+                ["HideExportOption"] = t.Grant.X,
+                ["DisableExport"] = t.Grant.X,
                 ["EnableShare"] = false,
             }, Pascal);
         });
@@ -225,9 +237,10 @@ public static class WopiApi
         {
             var (t, error) = await Resolve(http, id);
             if (t == null) return error!;
-            http.Response.Headers["X-WOPI-ItemVersion"] = t.File.Etag.Trim('"');
+            if (t.File is not { } f) return Closed();
+            http.Response.Headers["X-WOPI-ItemVersion"] = f.Etag.Trim('"');
             http.Response.Headers.CacheControl = "no-store";
-            return Results.Stream(FileStore.OpenRead(t.Db, t.File.Path), "application/octet-stream");
+            return Results.Stream(t.Grant.T ? TresorOffice.OpenRead(t.Grant.U, t.Grant.F) : FileStore.OpenRead(t.Db, f.Path), "application/octet-stream");
         });
 
         // PutFile
@@ -237,14 +250,15 @@ public static class WopiApi
             if (t == null) return error!;
             if (!t.Grant.W) return Status(401);
             var lockId = http.Request.Headers["X-WOPI-Lock"].ToString();
-            var current = WopiLocks.Current(t.Grant.U, t.Grant.F);
+            var current = WopiLocks.Current(t.Grant.Owner, t.Grant.F);
             if (current != null && current != lockId) return LockConflict(http, current);
             // Konflikt erkennen: Collabora schickt mit, welchen Stand es geladen hat (LastModifiedTime aus CheckFileInfo).
             // Hat sich die Datei inzwischen anders geaendert (WebDAV, Handy, andere Sitzung), fragt Collabora den Benutzer.
             var stamp = http.Request.Headers["X-COOL-WOPI-Timestamp"].ToString() is { Length: > 0 } c ? c : http.Request.Headers["X-LOOL-WOPI-Timestamp"].ToString();
-            if (stamp.Length > 0 && (!DateTime.TryParse(stamp, null, System.Globalization.DateTimeStyles.AdjustToUniversal | System.Globalization.DateTimeStyles.AssumeUniversal, out var seen)
-                                     || seen != DateTime.SpecifyKind(t.File.Modified, DateTimeKind.Utc)))
+            if (t.File is { } loaded && stamp.Length > 0 && (!DateTime.TryParse(stamp, null, System.Globalization.DateTimeStyles.AdjustToUniversal | System.Globalization.DateTimeStyles.AssumeUniversal, out var seen)
+                                     || seen != DateTime.SpecifyKind(loaded.Modified, DateTimeKind.Utc)))
                 return Results.Json(new { COOLStatusCode = 1010, LOOLStatusCode = 1010 }, Pascal, statusCode: 409);
+            if (t.Grant.T) return await PutTresor(http, t, stamp);
             try { await FileStore.PutAsync(t.Db, t.File.Path, http.Request.Body, t.File.Mime ?? DavServer.Mime(t.File.Path), ct: http.RequestAborted); }
             catch (QuotaExceededException ex) { return Status(413, ex.Message); }
             var now = FileStore.Get(t.Db, t.File.Path)!;
@@ -260,7 +274,8 @@ public static class WopiApi
             if (t == null) return error!;
             var op = http.Request.Headers["X-WOPI-Override"].ToString().ToUpperInvariant();
             var lockId = http.Request.Headers["X-WOPI-Lock"].ToString();
-            var current = WopiLocks.Current(t.Grant.U, t.Grant.F);
+            var current = WopiLocks.Current(t.Grant.Owner, t.Grant.F);
+            var version = t.File?.Etag.Trim('"') ?? "";
             switch (op)
             {
                 case "GET_LOCK":
@@ -280,19 +295,21 @@ public static class WopiApi
                         if (current != old) return LockConflict(http, current);
                     }
                     else if (current != null && current != lockId) return LockConflict(http, current);
-                    WopiLocks.Set(t.Grant.U, t.Grant.F, lockId);
-                    http.Response.Headers["X-WOPI-ItemVersion"] = t.File.Etag.Trim('"');
+                    WopiLocks.Set(t.Grant.Owner, t.Grant.F, lockId);
+                    http.Response.Headers["X-WOPI-ItemVersion"] = version;
                     return Results.Ok();
                 }
                 case "REFRESH_LOCK":
                     if (current == null || current != lockId) return LockConflict(http, current);
-                    WopiLocks.Set(t.Grant.U, t.Grant.F, lockId);
+                    WopiLocks.Set(t.Grant.Owner, t.Grant.F, lockId);
                     return Results.Ok();
                 case "UNLOCK":
                     if (current == null || current != lockId) return LockConflict(http, current);
-                    WopiLocks.Remove(t.Grant.U, t.Grant.F);
-                    http.Response.Headers["X-WOPI-ItemVersion"] = t.File.Etag.Trim('"');
+                    WopiLocks.Remove(t.Grant.Owner, t.Grant.F);
+                    http.Response.Headers["X-WOPI-ItemVersion"] = version;
                     return Results.Ok();
+                case "PUT_RELATIVE" when t.Grant.T || t.File == null:
+                    return Status(501);
                 case "PUT_RELATIVE":
                     return await PutRelative(http, t);
                 default:
@@ -319,6 +336,11 @@ public static class WopiApi
         {
             var space = http.Space();
             if (FileStore.FilesOff(space.Db)) return Status(403, "Die Dateiablage ist für dieses Konto abgeschaltet.");
+            if (body.Tresor is long tid) return await OpenTresor(http, discovery, body, tid);
+            // Aus der Dateiansicht des Tresors: Pfad „tresor:/…“
+            if (TresorPaths.Is(body.Path))
+                return TresorPaths.IdOf(Tresor.Db(http).Files, TresorPaths.Rel(body.Path)) is { } pid and > 0
+                    ? await OpenTresor(http, discovery, body, pid) : Status(404, "Diese Datei gibt es im Tresor nicht.");
             var loc = SharedFiles.Resolve(http, FileStore.Normalize(body.Path));
             if (loc.Virtual || loc.Protected(loc.Path)) return Status(404, "Datei nicht gefunden.");
             var f = FileStore.Get(loc.Db, loc.Path);
@@ -326,11 +348,11 @@ public static class WopiApi
             var d = await discovery.Get(http.RequestAborted);
             if (d == null) return Status(503, discovery.Configured ? "Der Office-Server ist gerade nicht erreichbar." : "Kein Office-Server eingestellt.");
             var ext = Ext(f.Name);
-            if (!Discovery.OfficeExtensions.Contains(ext) || !d.View.ContainsKey(ext)) return Status(400, "Diese Dateiart kann der Office-Server nicht öffnen.");
-            var write = body.View != true && d.Edit.ContainsKey(ext) && loc.CanWrite;
+            if (!Viewable(ext, d)) return Status(400, "Diese Dateiart kann der Office-Server nicht öffnen.");
+            var write = body.View != true && Editable(ext, d) && loc.CanWrite;
             // In einem geteilten Ordner arbeitet der Office-Server in der Datei des Besitzers; V ist das Mitglied
             var grant = new WopiGrant(loc.Space.User.Id, f.FileId, write, BaseOf(http), OriginOf(http), space.User.Stamp, null, space.User.DisplayName,
-                V: loc.Shared ? space.User.Id : null);
+                V: loc.Shared ? space.User.Id : null, X: loc.ShowOnly);
             if (!loc.Shared) FileStore.Used(space.Db, f.FileId);
             return Results.Ok(Session(http, d, grant, loc.Show(f), write));
         });
@@ -406,6 +428,40 @@ public static class WopiApi
             discovery.Forget();
             return Results.Ok(new { ok = d != null, product = d?.Product, native = d?.Native == true, proof = d?.ProofKey != null, edit = d == null ? null : Extensions(d).Edit });
         });
+    }
+
+    /// <summary>Office-Dateien und PDF (nur ansehen) - wie in /config angeboten.</summary>
+    private static bool Viewable(string ext, Discovery d) => (Discovery.OfficeExtensions.Contains(ext) || ext == "pdf") && (d.View.ContainsKey(ext) || d.Edit.ContainsKey(ext));
+    private static bool Editable(string ext, Discovery d) => Discovery.OfficeExtensions.Contains(ext) && d.Edit.ContainsKey(ext);
+
+    private static IResult Closed() => Results.Json(new { error = "Der Tresor ist geschlossen.", locked = Tresor.Locked }, statusCode: 423);
+
+    /// <summary>Datei im Tresor im Editor öffnen: nur mit offenem Tresor auf diesem Gerät.</summary>
+    private static async Task<IResult> OpenTresor(HttpContext http, OfficeDiscovery discovery, OpenBody body, long id)
+    {
+        var space = http.Space();
+        var db = Tresor.Db(http);
+        if (db.Files.Find(id) is not { IsDir: false } e) return Status(404, "Diese Datei gibt es im Tresor nicht.");
+        var d = await discovery.Get(http.RequestAborted);
+        if (d == null) return Status(503, discovery.Configured ? "Der Office-Server ist gerade nicht erreichbar." : "Kein Office-Server eingestellt.");
+        var ext = Ext(e.Name);
+        if (!Viewable(ext, d)) return Status(400, "Diese Dateiart kann der Office-Server nicht öffnen.");
+        var write = body.View != true && Editable(ext, d);
+        var grant = new WopiGrant(space.User.Id, id, write, BaseOf(http), OriginOf(http), space.User.Stamp, null, space.User.DisplayName, T: true);
+        return Results.Ok(Session(http, d, grant, TresorOffice.Entry(e), write));
+    }
+
+    /// <summary>PutFile für eine Datei im Tresor: offen gleich hinein, sonst abgelegt und beim Öffnen übernommen.</summary>
+    private static async Task<IResult> PutTresor(HttpContext http, Target t, string stamp)
+    {
+        byte[] content;
+        try { content = await TresorOffice.ReadBody(http.Request.Body, http.RequestAborted); }
+        catch (InvalidOperationException ex) { return Status(413, ex.Message); }
+        // Stand, auf dem der Editor arbeitet: sein Zeitstempel, sonst der beim Auflösen gelesene
+        var basis = TresorOffice.StampOf(stamp) ?? (t.File is { } f ? long.Parse(f.Etag) : null);
+        var now = TresorOffice.Save(t.Grant.U, t.Grant.F, content, basis);
+        http.Response.Headers["X-WOPI-ItemVersion"] = now.ToString();
+        return Results.Json(new { LastModifiedTime = Time(DateTimeOffset.FromUnixTimeMilliseconds(now).UtcDateTime) }, Pascal);
     }
 
     private static IResult LockConflict(HttpContext http, string? current)

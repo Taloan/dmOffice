@@ -9,7 +9,13 @@ export async function copyText(text: string): Promise<boolean> {
       return true
     }
   } catch { /* weiter mit dem alten Weg */ }
-  // Ohne HTTPS: unsichtbares Textfeld markieren und kopieren
+  // Ohne HTTPS: Kopieren auslösen und den Text im copy-Ereignis selbst setzen - klappt auch, wenn ein Fokus-Rahmen
+  // (Dialog, Menü) das Markieren im Textfeld verhindert
+  let set = false
+  const onCopy = (e: ClipboardEvent) => { if (!e.clipboardData) return; e.clipboardData.setData('text/plain', text); e.preventDefault(); set = true }
+  document.addEventListener('copy', onCopy, true)
+  try { if (document.execCommand('copy') && set) return true } catch { /* weiter */ } finally { document.removeEventListener('copy', onCopy, true) }
+  // Sonst: unsichtbares Textfeld markieren und kopieren
   const area = document.createElement('textarea')
   area.value = text
   area.setAttribute('readonly', '')

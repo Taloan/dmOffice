@@ -29,6 +29,63 @@ public static class E2e
     public const string Version = "dmoffice-e2e-v1";
     public const string SessionHeader = "X-DM-E2E-Session";
     public const string CounterHeader = "X-DM-Counter";
+    /// <summary>Der Client kann gepackte Antworten entpacken („gzip“) - dann packt der Server große Texte vor dem Verschlüsseln.</summary>
+    public const string ZipHeader = "X-DM-Zip";
+
+    /// <summary>
+    /// Antwort des Innenteils für den Umschlag: Status, Kopfzeilen, Inhalt (base64). Kann der Client entpacken, werden Texte
+    /// ab 1 KB vorher mit gzip gepackt (Feld zip) - verschlüsselt lässt sich hinterher nichts mehr verkleinern, und die großen
+    /// Listen der Galerie wären sonst über 30 MB statt ein paar MB.
+    /// </summary>
+    public static byte[] Pack(int status, Dictionary<string, string> headers, byte[] body, bool clientZips)
+    {
+        var type = headers.TryGetValue("Content-Type", out var ct) ? ct : "";
+        var zip = clientZips && body.Length >= 1024 && !headers.ContainsKey("Content-Encoding")
+            && (type.Contains("json") || type.StartsWith("text/") || type.Contains("xml") || type.Contains("javascript"));
+        if (zip)
+        {
+            using var ms = new MemoryStream();
+            using (var gz = new System.IO.Compression.GZipStream(ms, System.IO.Compression.CompressionLevel.Fastest, leaveOpen: true)) gz.Write(body);
+            body = ms.ToArray();
+        }
+        // Base64 direkt ins UTF-8-JSON schreiben: ein Base64-Text als string (UTF-16) wäre fast das Dreifache des Inhalts
+        // und eine weitere Kopie - bei Fotos aus der Galerie (bis 50 MB) lief damit der Speicher voll
+        var outBuf = new MemoryStream(body.Length / 3 * 4 + 1024);
+        using (var w = new Utf8JsonWriter(outBuf))
+        {
+            w.WriteStartObject();
+            w.WriteNumber("status", status);
+            w.WriteStartObject("headers");
+            foreach (var (k, v) in headers) w.WriteString(k, v);
+            w.WriteEndObject();
+            w.WriteBase64String("body", body);
+            if (zip) w.WriteString("zip", "gzip"); else w.WriteNull("zip");
+            w.WriteEndObject();
+        }
+        return outBuf.Length == outBuf.Capacity ? outBuf.GetBuffer() : outBuf.ToArray();
+    }
+
+    /// <summary>
+    /// Große Antworten (Dateien über <see cref="BigBody"/>) gehen höchstens zwei zugleich durch den Umschlag: jede liegt dabei
+    /// mehrfach im Speicher (Inhalt, JSON, verschlüsselt).
+    /// </summary>
+    private static readonly SemaphoreSlim BigGate = new(2);
+    private const long BigBody = 4 * 1024 * 1024;
+
+    /// <summary>Inhalt der Antwort lesen - mit bekannter Länge gleich in passender Größe statt mit wachsendem Puffer.</summary>
+    private static async Task<byte[]> ReadBody(HttpContent content, CancellationToken ct)
+    {
+        await using var s = await content.ReadAsStreamAsync(ct);
+        if (content.Headers.ContentLength is long len and >= 0 and < int.MaxValue)
+        {
+            var buf = new byte[len];
+            var n = await s.ReadAtLeastAsync(buf, buf.Length, throwOnEndOfStream: false, ct);
+            return n == buf.Length ? buf : buf[..n];
+        }
+        var m = new MemoryStream();
+        await s.CopyToAsync(m, ct);
+        return m.ToArray();
+    }
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
     // ---------------- Kryptographie (rein, testbar) ----------------
@@ -189,6 +246,10 @@ public static class E2e
     public static void Unregister(UserDb db, string id) => db.Exec("DELETE FROM e2e_devices WHERE id=$i", ("$i", id));
 
     /// <summary>Mit dem App-Passwort fallen auch seine Geraeteschluessel.</summary>
+    /// <summary>Hat dieses App-Passwort ein Gerät mit Umschlag-Schlüssel?</summary>
+    public static bool HasDevice(UserDb db, string appPasswordId) =>
+        db.Scalar("SELECT 1 FROM e2e_devices WHERE app_password_id=$a LIMIT 1", ("$a", appPasswordId)) != null;
+
     public static void DeleteForAppPassword(UserDb db, string appPasswordId)
     {
         db.Exec("DELETE FROM e2e_devices WHERE app_password_id=$a", ("$a", appPasswordId));
@@ -213,7 +274,7 @@ public static class E2e
 
     // ---------------- Endpunkte ----------------
 
-    private sealed record RegisterBody(string PubKey);
+    private sealed record RegisterBody(string PubKey, string? Name = null);
     private sealed record Inner(string Method, string Path, Dictionary<string, string>? Headers, string? Body);
 
     public static void Map(WebApplication app)
@@ -231,6 +292,8 @@ public static class E2e
             string id;
             try { id = Register(space.Db, appPasswordId, appPasswordId == null ? space.User.Stamp : null, body.PubKey); }
             catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
+            // Gerätename der App statt des Datums im vorgegebenen Namen
+            if (appPasswordId != null) AppPasswords.NameDevice(space.Db, appPasswordId, body.Name);
             return Results.Ok(new { deviceId = id, userId = space.User.Id, serverKey = key.Public, version = Version });
         }).RequireAuthorization();
 
@@ -255,13 +318,19 @@ public static class E2e
             var user = users.ById(userId);
             var space = user == null ? null : spaces.Get(user.Id);
             var device = space == null ? null : FindDevice(space.Db, deviceId);
-            if (user == null || space == null || device == null) { Auth.Failed(ip, "Umschlag: Geraet unbekannt"); return Results.StatusCode(404); }
+            // Unbekanntes Gerät ist kein Rateversuch (die Kennung ist Zufall, die Echtheit prüft erst das Entschlüsseln): nach
+            // „Überall abmelden“ oder Passwortwechsel kommen viele Anfragen eines Browsers gleichzeitig mit dem alten Gerät -
+            // als Fehlversuche gezählt, sperrten sie ihn minutenlang aus (429). Der Browser meldet sich danach neu an.
+            if (user == null || space == null || device == null) return Results.StatusCode(404);
             // Browser-Geraet: nach Passwortwechsel (neuer Stempel) oder 30 Tagen ungueltig
             if (device.Browser && (device.Stamp != user.Stamp || device.Created < DateTime.UtcNow.AddDays(-30)))
             {
                 Unregister(space.Db, deviceId);
                 return Results.StatusCode(404);
             }
+            // Browser-Gerät nur zusammen mit gültiger Anmeldung derselben Person (Cookie): der Schlüssel allein - etwa aus dem
+            // sessionStorage gelesen - reicht nicht, und nach dem Abmelden gilt er nicht mehr
+            if (device.Browser && http.User.FindFirstValue(ClaimTypes.NameIdentifier) != user.Id) return Results.StatusCode(401);
             if (!long.TryParse(http.Request.Headers[CounterHeader].ToString(), out var counter)) return Results.StatusCode(400);
 
             var cacheKey = $"{userId}/{deviceId}/{device.AppPasswordId ?? "browser"}";
@@ -285,6 +354,8 @@ public static class E2e
             // (SQLite: nur ein Schreiber) - jeder Klick in der Oberflaeche dauerte dann Sekunden
             PersistCounter(space, deviceId, entry.Window);
             Auth.Succeeded(ip);
+            // App-Gerät: sein App-Passwort gilt als benutzt (Einstellungen → Geräte & Sync, „zuletzt benutzt“)
+            if (device.AppPasswordId != null) AppPasswords.Touch(space.Db, device.AppPasswordId);
 
             var inner = JsonSerializer.Deserialize<Inner>(plain, Json) ?? throw new ArgumentException("Leer.");
             if (!inner.Path.StartsWith("/") || inner.Path.Contains("://")) return Results.StatusCode(400);
@@ -334,17 +405,30 @@ public static class E2e
                         req.Headers.TryAddWithoutValidation(k, v);
                 }
             using var client = clients.CreateClient("e2e");
-            using var res = await client.SendAsync(req, HttpCompletionOption.ResponseContentRead, ct);
-            var resBody = await res.Content.ReadAsByteArrayAsync(ct);
-            var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var h in res.Headers.Concat(res.Content.Headers)) headers[h.Key] = string.Join(", ", h.Value);
-            headers.Remove("Transfer-Encoding");
-            // Kein Set-Cookie durch den Umschlag: ein Cookie des Innenteils (z. B. aus einer Neuausstellung)
-            // soll kein vollwertiges Anmelde-Cookie an das Geraet geben.
-            headers.Remove("Set-Cookie");
-            var outer = JsonSerializer.SerializeToUtf8Bytes(new { status = (int)res.StatusCode, headers, body = Convert.ToBase64String(resBody) }, Json);
-            var sealedOut = Seal(entry.Key, outer, Aad(deviceId, counter, true));
-            return Results.Bytes(sealedOut, "application/octet-stream");
+            using var res = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+            // Nur mit bekannter Länge: ohne Länge kommt JSON (klein), darunter das lange Warten auf Chat-Nachrichten - das darf nicht blockieren
+            var big = res.Content.Headers.ContentLength > BigBody;
+            if (big) await BigGate.WaitAsync(ct);
+            try
+            {
+                var resBody = await ReadBody(res.Content, ct);
+                var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var h in res.Headers.Concat(res.Content.Headers)) headers[h.Key] = string.Join(", ", h.Value);
+                headers.Remove("Transfer-Encoding");
+                // Kein Set-Cookie durch den Umschlag: ein Cookie des Innenteils (z. B. aus einer Neuausstellung)
+                // soll kein vollwertiges Anmelde-Cookie an das Geraet geben.
+                headers.Remove("Set-Cookie");
+                var outer = Pack((int)res.StatusCode, headers, resBody, http.Request.Headers[ZipHeader].ToString().Contains("gzip"));
+                resBody = null!;
+                var sealedOut = Seal(entry.Key, outer, Aad(deviceId, counter, true));
+                outer = null!;
+                // Gleich hier schreiben, solange die Stelle in BigGate belegt ist
+                http.Response.ContentType = "application/octet-stream";
+                http.Response.ContentLength = sealedOut.Length;
+                await http.Response.Body.WriteAsync(sealedOut, ct);
+                return Results.Empty;
+            }
+            finally { if (big) BigGate.Release(); }
         }).AllowAnonymous().DisableAntiforgery();
     }
 

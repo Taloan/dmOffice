@@ -231,8 +231,7 @@ public class BlobStorageTests
     public async Task Upload_ueber_der_Grenze_bricht_ab_und_hinterlaesst_nichts()
     {
         var db = NewDb();
-        var before = FileStore.QuotaOf;
-        FileStore.QuotaOf = u => u == db.UserId ? UserStorage.Database(db) + 1_000_000 : before?.Invoke(u) ?? 0;
+        FileStore.QuotaFor[db.UserId] = () => UserStorage.Database(db) + 1_000_000;
         try
         {
             FileStore.Put(db, "a.bin", new byte[400_000], null);
@@ -247,7 +246,7 @@ public class BlobStorageTests
             await FileStore.PutAsync(db, "a.bin", new Generated(900_000), null);
             Assert.Equal(900_000, FileStore.Usage(db));
         }
-        finally { FileStore.QuotaOf = before; }
+        finally { FileStore.QuotaFor.TryRemove(db.UserId, out _); }
     }
 
     [Fact]
@@ -356,7 +355,7 @@ public class BlobStorageTests
     public void Schema_16_mit_Triggern_und_Blob_Ordner_neben_der_Datenbank()
     {
         var db = NewDb();
-        Assert.Equal(18L, db.Scalar("PRAGMA user_version"));
+        Assert.Equal((long)UserDb.LatestVersion, db.Scalar("PRAGMA user_version"));
         foreach (var t in UserDb.BlobTables)
             Assert.Equal(1L, db.Scalar($"SELECT COUNT(*) FROM pragma_table_info('{t}') WHERE name='blob'"));
         // Eigener Ort (DMOFFICE_BLOBS): DataPaths

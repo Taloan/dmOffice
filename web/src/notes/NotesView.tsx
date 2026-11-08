@@ -10,26 +10,38 @@ import {
   TextAlignLeft20Regular, TextAlignCenter20Regular, TextAlignRight20Regular, TextIndentIncreaseLtr20Regular, TextIndentDecreaseLtr20Regular,
   CheckboxChecked20Regular, Code20Regular, CalendarAdd20Regular,
 } from '@fluentui/react-icons'
+import { sendToChat } from '../chat/SendToChat'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { e2eFetch } from '../e2e'
-import { api, Collection, fmtSize, q } from '../api'
+import { api, Collection, featureOn, fmtSize, q } from '../api'
+import { OPEN_COLOR, requestTresorOpen, useTresor } from '../tresor/tresor'
+import { LockClosed20Regular, LockOpen20Regular, LockOpen16Regular } from '@fluentui/react-icons'
 import { EventDialog, EventDraft, guessStart } from '../calendar/EventDialog'
 import { useApp } from '../App'
 import { useDebounced, fmtDate } from '../shell/hooks'
 import { useIsDark } from '../theme'
 import { cleanPaste, plainToHtml } from './cleanPaste'
+import { RecipeSearchDialog } from './RecipeSearchDialog'
+import { RecipeScanDialog } from './RecipeScanDialog'
 import { fixContrast } from './contrast'
-import { t } from '../i18n'
+import { t, tError } from '../i18n'
 import { Snippet } from '../shell/Snippet'
 import { MenuItemRadio, MenuDivider } from '@fluentui/react-components'
 import { NoteAdd20Regular, Database20Regular, PanelLeft20Regular, TextDescription20Regular, Settings20Regular, ArrowLeft20Regular,
-  Open20Regular, Rename20Regular, MoreHorizontal16Regular, ArrowSort20Regular, StarOff20Regular, ChevronDown16Regular, ChevronRight16Regular, People20Regular, People16Regular } from '@fluentui/react-icons'
-import { ColorMenu, ContextMenu, TargetMenu, askText, isTyping, useContextMenu, useMultiSelect } from '../shell/context'
-import { useNavStyles } from '../shell/nav'
+  Open20Regular, Rename20Regular, MoreHorizontal16Regular, ArrowSort20Regular, StarOff20Regular, ChevronDown16Regular, ChevronRight16Regular, People20Regular, People16Regular, Chat20Regular, PersonDelete20Regular } from '@fluentui/react-icons'
+import { ColorMenu, ContextMenu, TargetMenu, askConfirm, askText, isTyping, useContextMenu, useMultiSelect } from '../shell/context'
+import { pressable, useNavStyles } from '../shell/nav'
+import { NoteTags, tagLabel } from './NoteTags'
+import { Camera20Regular, Cloud20Regular, Desktop20Regular, ImageMultiple20Regular, Link20Regular, Search20Regular, Tag20Regular } from '@fluentui/react-icons'
+import { Item, Source, ownSource } from '../files/common'
+import { gallerySource } from '../files/GalleryFolders'
+import { PickPhotoDialog } from '../files/PickPhotoDialog'
+import { StoredFilesDialog } from '../mail/StoredFilesDialog'
 import { RibbonButton, RibbonDivider, RibbonHeader, useSidePane } from '../shell/Ribbon'
 import { SidePane, useBackClose, useIsMobile } from '../shell/mobile'
 import { usePrefs } from '../prefs'
 import { ShareDialog } from '../calendar/ShareDialog'
+import { usePaneWidth } from '../shell/Splitter'
 
 const useStyles = makeStyles({
   outer: { display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 },
@@ -53,6 +65,8 @@ const useStyles = makeStyles({
   // Erstes Bild der Notiz rechts in der Karte
   cardThumb: { position: 'absolute', right: '8px', top: '10px', bottom: '8px', width: '64px', height: 'calc(100% - 18px)', objectFit: 'cover', borderRadius: tokens.borderRadiusMedium, backgroundColor: tokens.colorNeutralBackground4 },
   cardSel: { outline: `2px solid ${tokens.colorBrandStroke1}`, backgroundColor: tokens.colorNeutralBackground2Selected },
+  // Fokus auf der Liste (per Tab oder Pfeil aus dem Suchfeld): sichtbarer Rahmen
+  cardsFocus: { ':focus-visible': { boxShadow: `inset 0 0 0 2px ${tokens.colorStrokeFocus2}` } },
   cardMulti: { backgroundColor: tokens.colorBrandBackground2, ':hover': { backgroundColor: tokens.colorBrandBackground2Hover } },
   cardTitle: { fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flexShrink: 0 },
   cardText: { fontSize: '12px', color: tokens.colorNeutralForeground3, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', marginTop: '2px', lineHeight: '16px' },
@@ -79,44 +93,108 @@ const noteColors = ['#FFF9A8', '#D9F2C4', '#FFD9E8', '#E6D9FF', '#CFE8FF', '#FFE
 const textColors = ['#000000', '#C00000', '#E8590C', '#2E7D32', '#0F6CBD', '#7B1FA2']
 const marks = ['#FFF176', '#A5D6A7', '#90CAF9', '#F48FB1', 'transparent']
 
+/** Grundpfad der Notizen: offener Bereich oder eine notizi-Datenbank im Tresor (/api/notes/vault/<Ordner>). Gilt für die ganze Ansicht samt Editor. */
+let NB = '/api/notes'
+
 
 interface NoteListItem { created?: string; image?: string | null; id: number; syncId: string; folder: string | null; title: string; snippet: string; color: string; modified: string; important: boolean; attachments: number; archived: string | null; deleted: string | null
   /** Mit mir geteilt: Name des Besitzers (die Id ist dann negativ) */
   owner?: string | null
   /** Nur in Suchergebnissen: gefunden in diesem Bild/Anhang (Volltextsuche) */
-  match?: { name: string; snippet: string } | null }
-interface NoteFolder { syncId: string; parent: string | null; name: string; sharedWith?: { id: string; name: string; readOnly?: boolean }[] | null }
+  match?: { name: string; snippet: string } | null
+  /** Schlagwoerter (Version 2) */
+  tags?: string[] | null }
+interface NoteFolder { syncId: string; parent: string | null; name: string; sharedWith?: { id: string; name: string; readOnly?: boolean; level?: string }[] | null }
 /** Ein mit mir geteilter Ordner samt Unterordnern (der oberste ohne Eltern) */
-interface SharedRoot { share: number; root: string; owner: string; name: string; canWrite: boolean; folders: NoteFolder[] }
+interface SharedRoot { share: number; root: string; owner: string; name: string; canWrite: boolean; showOnly?: boolean; folders: NoteFolder[] }
 interface NoteDetail {
-  id: number; folder: string | null; customTitle: string | null; title: string; color: string; important: boolean
+  id: number; folder: string | null; customTitle: string | null; title: string; color: string; important: boolean; tags?: string[]
   archived: string | null; deleted: string | null; blocks: string[]; protected: boolean[]; readOnly: boolean
   attachments: { name: string; mime: string | null; size: number; blob: string }[]; pending: boolean; modified: string
   /** Fingerabdruck des Inhalts - beim Speichern zurueck, sonst 409 */
   version: string
   /** Mit mir geteilt: Besitzer; canWrite false = nur lesen */
   owner?: string | null; canWrite?: boolean
+  /** Nur gezeigt (Version 2): Anhaenge nur mit Namen, kein Herunterladen */
+  showOnly?: boolean
+  /** Einzeln mit mir geteilt (Version 2): nicht verschieben, nicht in den Papierkorb */
+  single?: boolean
+  /** Eigene Notiz: mit wie vielen Personen einzeln geteilt */
+  sharedWith?: number | null
 }
 
-type View = { kind: 'folder'; id: string | null } | { kind: 'all' | 'important' | 'archive' | 'trash' }
+/** Wo die Schreibmarke steht (Block und Zeichen darin) - damit sie einen Neuaufbau des Editors uebersteht. */
+function caretOf(el: HTMLElement): { block: number; offset: number } | null {
+  const sel = window.getSelection()
+  if (!sel?.rangeCount || !el.contains(sel.anchorNode)) return null
+  const r = sel.getRangeAt(0)
+  let top: Node = r.startContainer
+  while (top !== el && top.parentNode !== el) top = top.parentNode!
+  if (top === el) return null
+  const before = document.createRange()
+  before.selectNodeContents(top)
+  before.setEnd(r.startContainer, r.startOffset)
+  return { block: Array.from(el.childNodes).indexOf(top as ChildNode), offset: before.toString().length }
+}
+function setCaret(el: HTMLElement, c: { block: number; offset: number }) {
+  const top = el.childNodes[Math.min(c.block, el.childNodes.length - 1)]
+  if (!top) return
+  const walker = document.createTreeWalker(top, NodeFilter.SHOW_TEXT)
+  let left = c.offset, node = walker.nextNode(), last: Node | null = null
+  while (node && left > (node.textContent?.length ?? 0)) { left -= node.textContent?.length ?? 0; last = node; node = walker.nextNode() }
+  const r = document.createRange()
+  if (node) r.setStart(node, left); else if (last) r.setStart(last, last.textContent?.length ?? 0); else r.setStart(top, 0)
+  r.collapse(true)
+  const sel = window.getSelection()
+  sel?.removeAllRanges(); sel?.addRange(r)
+}
+
+// single: einzeln mit mir geteilte Notizen (Version 2)
+type View = { kind: 'folder'; id: string | null } | { kind: 'tag'; tag: string } | { kind: 'all' | 'important' | 'archive' | 'trash' | 'single' }
+/** Eine einzeln mit mir geteilte Notiz (Version 2) */
+interface SingleShared { id: number; share: number; title: string; snippet: string; color: string; modified: string; owner: string; canWrite: boolean; showOnly: boolean; image: string | null; attachments: number }
 
 export default function NotesView() {
   const s = useStyles()
+  const listW = usePaneWidth('notes.list', 300, 220, 720)
   const { fail, notify } = useApp()
   const [status, setStatus] = useState<any>(null)
   const [config, setConfig] = useState<any>(null)
   const [folders, setFolders] = useState<NoteFolder[]>([])
+  // Schlagwoerter aller eigenen Notizen mit Anzahl (Seitenleiste, Vorschlaege)
+  const [allTags, setAllTags] = useState<{ tag: string; count: number }[]>([])
+  const loadTags = () => api.get<{ tag: string; count: number }[]>(NB + '/tags').then(setAllTags).catch(() => {})
   const [shared, setShared] = useState<SharedRoot[]>([])
   const [shareDialog, setShareDialog] = useState<NoteFolder | null>(null)
+  const [singles, setSingles] = useState<SingleShared[]>([])
+  const [shareNote, setShareNote] = useState<{ id: number; title: string } | null>(null)
   const [view, setView] = useState<View>({ kind: 'all' })
   const [notes, setNotes] = useState<{ items: NoteListItem[]; archived: number; trashed: number } | null>(null)
   const [search, setSearch] = useState('')
   const [selected, setSelected] = useState<number | null>(null)
+  // Nach Archivieren, Löschen, Verschieben: gleich die nächste Notiz der Liste öffnen (die letzte: die davor).
+  // Am Handy zurück zur Liste – dort sind Liste und Notiz getrennte Seiten.
+  const listRef = useRef<NoteListItem[]>([])
+  const mobileRef = useRef(false)
+  const nextOf = (cur: number | null, gone: number[]) => {
+    const list = listRef.current, i = list.findIndex(n => n.id === cur)
+    if (mobileRef.current || i < 0) return null
+    return list.slice(i + 1).find(n => !gone.includes(n.id))?.id ?? list.slice(0, i).reverse().find(n => !gone.includes(n.id))?.id ?? null
+  }
   // Datenbanken unter der Sync-Wurzel (wie die Auswahl "Datenbank" in notizi)
-  const [dbs, setDbs] = useState<{ current: string; list: { folder: string; title: string; passwordFits: boolean }[] | null } | null>(null)
+  const [dbs, setDbs] = useState<{ current: string; list: { folder: string; title: string; passwordFits: boolean }[] | null
+    tresor?: { folder: string; name: string | null }[]; tresorOpen?: boolean; tresorExists?: boolean } | null>(null)
+  // notizi-Datenbank im Tresor, die gerade gezeigt wird (Ordnername) - null: die gewählte im offenen Bereich
+  const [vault, setVault] = useState<string | null>(null)
+  NB = vault ? `/api/notes/vault/${encodeURIComponent(vault)}` : '/api/notes'
+  useEffect(() => () => { NB = '/api/notes' }, [])
+  const tresorSt = useTresor()
+  const vaultName = vault ? dbs?.tresor?.find(d => d.folder === vault)?.name ?? vault : null
   const [switching, setSwitching] = useState(false)
   const loadDbs = () => api.get('/api/notes/databases').then(setDbs).catch(() => {})
-  useEffect(() => { loadDbs() }, [])
+  useEffect(() => { loadDbs() }, [tresorSt?.open])
+  // Tresor geschlossen (auch auf einem anderen Weg): zurück in den offenen Bereich, nichts bleibt stehen
+  useEffect(() => { if (vault && tresorSt && !tresorSt.open) { setVault(null); setSelected(null) } }, [tresorSt, vault])
   // Direkt eine Notiz oeffnen: #/notes/<id> (aus "Notizi-Aufgaben")
   useEffect(() => {
     const open = () => {
@@ -132,6 +210,7 @@ export default function NotesView() {
     return () => window.removeEventListener('hashchange', open)
   }, [])
   const switchDb = async (folder: string) => {
+    if (vault) { NB = '/api/notes'; setVault(null) }
     if (folder === '__new') {
       const name = prompt(t('Name der neuen Datenbank (wird im Abgleichordner angelegt):'))
       if (!name?.trim()) return
@@ -152,8 +231,11 @@ export default function NotesView() {
   useBackClose(selected != null, () => setSelected(null))
 
   const loadFolders = () => Promise.all([
-    api.get<NoteFolder[]>('/api/notes/folders').then(setFolders).catch(() => {}),
-    api.get<SharedRoot[]>('/api/notes/shared').then(setShared).catch(() => {}),
+    api.get<NoteFolder[]>(NB + '/folders').then(setFolders).catch(() => {}),
+    // Im Tresor gibt es keine Freigaben
+    vault ? setShared([]) : api.get<SharedRoot[]>('/api/notes/shared').then(setShared).catch(() => {}),
+    vault ? setSingles([]) : api.get<SingleShared[]>('/api/notes/single-shared').then(setSingles).catch(() => {}),
+    loadTags(),
   ])
   /** Der mit mir geteilte Ordner, zu dem dieser Ordner gehoert. */
   const shareOf = (id: string | null | undefined) => (id ? shared.find(x => x.folders.some(f => f.syncId === id)) : undefined)
@@ -161,45 +243,109 @@ export default function NotesView() {
   const sharedTargets = () => shared.filter(x => x.canWrite).flatMap(sh => folderTargets([], sh.folders)
     .map(x => (x.id === sh.root ? { ...x, label: t('{name} (von {owner})', { name: x.label, owner: sh.owner }) } : x)))
   const loadNotes = useCallback(() => {
-    const params = query ? { q: query } : view.kind === 'folder' ? { folder: view.id ?? '' } : { view: view.kind }
-    return api.get('/api/notes?' + q(params as any)).then(setNotes).catch(fail)
-  }, [view, query, fail])
+    // Einzeln mit mir geteilte Notizen: eigene Liste, Zaehler fuer Archiv und Papierkorb bleiben stehen
+    if (!query && view.kind === 'single')
+      return api.get<SingleShared[]>('/api/notes/single-shared').then(list => {
+        setSingles(list)
+        setNotes(old => ({ archived: old?.archived ?? 0, trashed: old?.trashed ?? 0, items: list.map(x => ({
+          id: x.id, syncId: '', folder: null, title: x.title, snippet: x.snippet, color: x.color, modified: x.modified, created: x.modified,
+          important: false, attachments: x.attachments, archived: null, deleted: null, image: x.image, owner: x.owner })) }))
+      }).catch(fail)
+    const params = query ? { q: query } : view.kind === 'folder' ? { folder: view.id ?? '' } : view.kind === 'tag' ? { view: 'tag', tag: view.tag } : { view: view.kind }
+    return api.get(NB + '?' + q(params as any)).then(setNotes).catch(fail)
+  }, [view, query, fail, vault]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     api.get('/api/settings/notizi').then(setConfig).catch(() => setConfig({}))
-    api.get('/api/notes/status').then(setStatus).catch(() => {})
+    api.get(NB + '/status').then(setStatus).catch(() => {})
     loadFolders()
-  }, [])
+  }, [vault]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { loadNotes() }, [loadNotes])
   // Stabil fuer den Editor
-  const onChanged = useCallback(() => { loadNotes() }, [loadNotes])
-  const onGone = useCallback(() => { setSelected(null); loadNotes() }, [loadNotes])
+  const onChanged = useCallback(() => { loadNotes(); loadTags() }, [loadNotes])
+  const onGone = useCallback(() => { setSelected(cur => nextOf(cur, cur != null ? [cur] : [])); loadNotes() }, [loadNotes]) // eslint-disable-line react-hooks/exhaustive-deps
   const onOpen = useCallback(async (nid: number) => { await loadNotes(); setSelected(nid) }, [loadNotes])
   // Was von anderen Geraeten kommt, alle 30 Sekunden nachladen
   useEffect(() => {
-    const iv = setInterval(() => { if (!document.hidden) { loadNotes(); api.get('/api/notes/status').then(setStatus).catch(() => {}) } }, 30000)
+    const iv = setInterval(() => { if (!document.hidden) { loadNotes(); api.get(NB + '/status').then(setStatus).catch(() => {}) } }, 30000)
     return () => clearInterval(iv)
   }, [loadNotes])
 
   const sync = async () => {
-    try { setStatus(await api.post('/api/notes/sync')); loadNotes(); loadFolders() } catch (e) { fail(e) }
+    try { setStatus(await api.post(NB + '/sync')); loadNotes(); loadFolders() } catch (e) { fail(e) }
   }
 
   const curShare = view.kind === 'folder' ? shareOf(view.id) : undefined
   const canCreate = !curShare || curShare.canWrite
+  const creating = useRef(false)
   const create = async () => {
-    if (!canCreate) return
+    if (!canCreate || creating.current) return
+    creating.current = true
+    // Weiter getippte Zeichen sollen nicht den Knopf auslösen, bis der Text bereit ist
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
     try {
-      const r = await api.post('/api/notes', { folder: view.kind === 'folder' ? view.id : null })
+      const r = await api.post(NB, { folder: view.kind === 'folder' ? view.id : null })
+      setSelected(r.id)
+      setTypeInId(r.id)
+      void loadNotes()
+    } catch (e) { fail(e) } finally { creating.current = false }
+  }
+
+  // ---------------- notizi-Datenbanken im Tresor ----------------
+  const openVault = async (folder: string) => {
+    if (!tresorSt?.open && !await requestTresorOpen()) return
+    setSelected(null); setSearch(''); setView({ kind: 'all' }); setVault(folder)
+    if (mobileRef.current) closeSide()
+  }
+  const toTresor = async (d: { folder: string; title: string }) => {
+    if (!await askConfirm(t('In den Tresor verschieben'), t('„{name}“ in den Tresor verschieben? Die Notizen sind danach nur noch bei geöffnetem Tresor zu sehen. Andere Geräte erhalten Änderungen erst, wenn der Tresor in dmOffice geöffnet ist.', { name: d.title }), t('Verschieben'))) return
+    if (!tresorSt?.open && !await requestTresorOpen()) return
+    setSwitching(true); setSelected(null)
+    try {
+      await api.post(`/api/notes/databases/${encodeURIComponent(d.folder)}/tresor`)
+      await loadDbs()
+      setView({ kind: 'all' }); setVault(d.folder)
+      notify(t('In den Tresor verschoben'))
+    } catch (e) { fail(e) } finally { setSwitching(false) }
+  }
+  const fromTresor = async (folder: string) => {
+    const name = dbs?.tresor?.find(d => d.folder === folder)?.name ?? folder
+    if (!await askConfirm(t('Aus dem Tresor holen'), t('„{name}“ aus dem Tresor holen? Die Notizen liegen danach wieder im offenen Bereich.', { name }), t('Holen'))) return
+    if (!tresorSt?.open && !await requestTresorOpen()) return
+    setSwitching(true)
+    try {
+      await api.post(`/api/notes/databases/${encodeURIComponent(folder)}/out`)
+      if (vault === folder) { setSelected(null); setVault(null) }
+      await loadDbs()
+      notify(t('Aus dem Tresor geholt'))
+    } catch (e) { fail(e) } finally { setSwitching(false) }
+  }
+  const tresorRow = async () => {
+    if (!tresorSt?.open) { if (await requestTresorOpen()) loadDbs(); return }
+    if (!dbs?.tresor?.length) notify(t('Im Tresor liegt noch keine notizi-Datenbank. Verschieben geht über „Datenbank“ → „In den Tresor verschieben“.'))
+  }
+
+  // Rezept per Link: der Server liest das schema.org-Rezept der Seite und legt eine Notiz in der Rezeptvorlage an
+  const [importing, setImporting] = useState(false)
+  const [recipeSearch, setRecipeSearch] = useState(false)
+  const [recipeScan, setRecipeScan] = useState(false)
+  const importRecipe = async () => {
+    if (!canCreate) return
+    const url = await askText(t('Rezept aus Link'), '', t('Adresse der Rezeptseite'), t('Übernehmen'))
+    if (!url?.trim()) return
+    setImporting(true)
+    try {
+      const r = await api.post<{ id: number }>('/api/notes/recipes/import', { url: url.trim(), folder: view.kind === 'folder' ? view.id : null })
       await loadNotes()
       setSelected(r.id)
-    } catch (e) { fail(e) }
+      notify(t('Rezept übernommen'))
+    } catch (e) { fail(e) } finally { setImporting(false) }
   }
 
   const newFolder = async (parent: string | null = null) => {
     const name = await askText(parent ? t('Neuer Unterordner') : t('Neuer Ordner'), '', t('Name des Ordners'), t('Anlegen'))
     if (!name) return
-    try { await api.post('/api/notes/folders', { name, parent }); loadFolders() } catch (e) { fail(e) }
+    try { await api.post(NB + '/folders', { name, parent }); loadFolders() } catch (e) { fail(e) }
   }
 
   // ---------------- Auswahl, Kontextmenue, Tastatur, Ziehen ----------------
@@ -216,27 +362,31 @@ export default function NotesView() {
       : key(a).localeCompare(key(b)))
     return noteDesc ? sorted.reverse() : sorted
   }, [notes, noteSort, noteDesc])
+  listRef.current = items
   const mx = useMultiSelect<number>(useMemo(() => items.map(n => n.id), [items]))
   const picked = items.filter(n => mx.selected.includes(n.id))
   useEffect(() => { mx.clear() }, [view, query]) // eslint-disable-line react-hooks/exhaustive-deps
-  type Ctx = { kind: 'note'; ids: number[] } | { kind: 'folder'; f: NoteFolder; sh?: SharedRoot } | { kind: 'side' } | { kind: 'list' }
+  type Ctx = { kind: 'note'; ids: number[] } | { kind: 'folder'; f: NoteFolder; sh?: SharedRoot } | { kind: 'side' } | { kind: 'list' } | { kind: 'vault'; folder: string }
   const cm = useContextMenu<Ctx>()
   const cardsRef = useRef<HTMLDivElement>(null)
   // Geaenderte Notiz offen: Editor neu laden (Farbe, Ordner ...)
   const [editorRev, setEditorRev] = useState(0)
   // F2 / Umbenennen: Titel dieser Notiz fokussieren, sobald sie offen ist
   const [renameId, setRenameId] = useState<number | null>(null)
+  // Neue Notiz, Enter auf einer Karte: gleich in den Text
+  const [typeInId, setTypeInId] = useState<number | null>(null)
   const mobile = useIsMobile()
+  mobileRef.current = mobile
   const [closed, setClosed] = useState<string[]>([])
   const inTrash = view.kind === 'trash'
   const inArchive = view.kind === 'archive'
   const afterChange = async (ids: number[], gone: boolean) => {
-    if (selected != null && ids.includes(selected)) { if (gone) setSelected(null); else setEditorRev(r => r + 1) }
+    if (selected != null && ids.includes(selected)) { if (gone) setSelected(nextOf(selected, ids)); else setEditorRev(r => r + 1) }
     mx.clear()
     await loadNotes()
   }
   const metaMany = async (ids: number[], body: any) => {
-    try { for (const id of ids) await api.put(`/api/notes/${id}/meta`, body) } catch (e) { fail(e) }
+    try { for (const id of ids) await api.put(`${NB}/${id}/meta`, body) } catch (e) { fail(e) }
     // Weg aus der Liste: im Ordner verschoben, oder in einen geteilten Ordner (dort unter neuer Kennung)
     afterChange(ids, body.folder !== undefined && (view.kind === 'folder' || !!shareOf(body.folder)))
   }
@@ -244,7 +394,7 @@ export default function NotesView() {
   const [eventDraft, setEventDraft] = useState<{ draft: EventDraft; calendars: Collection[] } | null>(null)
   const eventFrom = async (id: number) => {
     try {
-      const [n, cals] = await Promise.all([api.get<NoteDetail>(`/api/notes/${id}`), api.get<Collection[]>('/api/pim/collections/calendars')])
+      const [n, cals] = await Promise.all([api.get<NoteDetail>(`${NB}/${id}`), api.get<Collection[]>('/api/pim/collections/calendars')])
       const calendars = cals.filter(c => c.components.includes('VEVENT'))
       if (calendars.length === 0) { notify(t('Kein Kalender vorhanden'), undefined, 'warning'); return }
       const doc = new DOMParser().parseFromString(n.blocks.join('\n'), 'text/html')
@@ -259,15 +409,20 @@ export default function NotesView() {
     } catch (e) { fail(e) }
   }
   const actionMany = async (ids: number[], a: 'archive' | 'restore' | 'trash') => {
-    try { for (const id of ids) await api.post(`/api/notes/${id}/${a}`) } catch (e) { fail(e) }
+    try { for (const id of ids) await api.post(`${NB}/${id}/${a}`) } catch (e) { fail(e) }
     afterChange(ids, true)
   }
   const destroyMany = async (ids: number[]) => {
-    if (!confirm(ids.length === 1 ? t('Endgültig löschen? Auch auf allen anderen Geräten.') : t('{n} Notizen endgültig löschen? Auch auf allen anderen Geräten.', { n: ids.length }))) return
-    try { for (const id of ids) await api.del(`/api/notes/${id}`) } catch (e) { fail(e) }
+    if (!await askConfirm('', ids.length === 1 ? t('Endgültig löschen? Auch auf allen anderen Geräten.') : t('{n} Notizen endgültig löschen? Auch auf allen anderen Geräten.', { n: ids.length }))) return
+    try { for (const id of ids) await api.del(`${NB}/${id}`) } catch (e) { fail(e) }
     afterChange(ids, true)
   }
   const removeMany = (ids: number[]) => { if (ids.length) (inTrash ? destroyMany(ids) : actionMany(ids, 'trash')) }
+  // Menüband (wie bei Mail und Aufgaben): wirkt auf die markierten Notizen, sonst auf die offene
+  const target = picked.length ? picked : items.filter(n => n.id === selected)
+  const targetIds = target.map(n => n.id)
+  const targetTheirs = target.some(n => n.id < 0)
+  const targetImportant = target.length > 0 && target.every(n => n.important)
   const clickCard = (e: React.MouseEvent, id: number) => {
     mx.click(e, id)
     if (!(e.ctrlKey || e.metaKey || e.shiftKey)) setSelected(id)
@@ -289,25 +444,30 @@ export default function NotesView() {
     else if (k === 'Escape') { mx.clear(); setSelected(null) }
     else if (e.ctrlKey && k.toLowerCase() === 'a') { e.preventDefault(); mx.all() }
     else if (e.ctrlKey && k.toLowerCase() === 'n') { e.preventDefault(); create() }
-    else if (k === 'Enter' && ids.length) { e.preventDefault(); setSelected(ids[0]) }
+    else if (k === 'Enter' && ids.length) { e.preventDefault(); setSelected(ids[0]); setTypeInId(ids[0]) }
     else if (k === 'F2' && ids.length === 1) { e.preventDefault(); setSelected(ids[0]); setRenameId(ids[0]) }
     else if (k === 'ArrowDown' || k === 'ArrowUp') { e.preventDefault(); mx.step(k === 'ArrowDown' ? 1 : -1, e.shiftKey) }
   }
+  // Per Pfeil gewaehlt: die Karte bleibt im sichtbaren Bereich
+  useEffect(() => {
+    const id = mx.selected[mx.selected.length - 1]
+    if (id != null) cardsRef.current?.querySelector(`[data-note="${id}"]`)?.scrollIntoView({ block: 'nearest' })
+  }, [mx.selected])
   const renameFolder = async (f: NoteFolder) => {
     const name = await askText(t('Umbenennen'), f.name)
     if (!name || name === f.name) return
-    try { await api.put(`/api/notes/folders/${f.syncId}`, { name }); loadFolders() } catch (err) { fail(err) }
+    try { await api.put(`${NB}/folders/${f.syncId}`, { name }); loadFolders() } catch (err) { fail(err) }
   }
   const deleteFolder = async (f: NoteFolder) => {
-    if (!confirm(t('Ordner „{name}“ löschen?', { name: f.name }))) return
+    if (!await askConfirm('', t('Ordner „{name}“ löschen?', { name: f.name }))) return
     try {
-      await api.del(`/api/notes/folders/${f.syncId}`)
+      await api.del(`${NB}/folders/${f.syncId}`)
       if (view.kind === 'folder' && view.id === f.syncId) setView({ kind: 'all' })
       loadFolders()
     } catch (err) { fail(err) }
   }
   const leaveShare = async (sh: SharedRoot) => {
-    if (!confirm(t('„{name}“ nicht mehr anzeigen? Der Besitzer kann den Ordner erneut teilen.', { name: sh.name }))) return
+    if (!await askConfirm('', t('„{name}“ nicht mehr anzeigen? Der Besitzer kann den Ordner erneut teilen.', { name: sh.name }))) return
     try {
       await api.post(`/api/notes/shares/${sh.share}/leave`)
       if (view.kind === 'folder' && sh.folders.some(f => f.syncId === view.id)) setView({ kind: 'all' })
@@ -315,7 +475,7 @@ export default function NotesView() {
     } catch (err) { fail(err) }
   }
   const moveFolder = async (id: string, parent: string | null) => {
-    try { await api.post(`/api/notes/folders/${id}/move`, { parent }); loadFolders() } catch (err) { fail(err) }
+    try { await api.post(`${NB}/folders/${id}/move`, { parent }); loadFolders() } catch (err) { fail(err) }
   }
   /** Ordner selbst und alle darunter - dorthin laesst er sich nicht verschieben. */
   const below = (id: string): string[] => [id, ...folders.filter(f => f.parent === id).flatMap(f => below(f.syncId))]
@@ -356,6 +516,10 @@ export default function NotesView() {
   const ctxMenu = () => {
     const x = cm.ctx?.data
     if (!x) return null
+    if (x.kind === 'vault') return <>
+      <MenuItem icon={<Open20Regular />} onClick={() => openVault(x.folder)}>{t('Öffnen')}</MenuItem>
+      <MenuItem icon={<LockOpen20Regular />} onClick={() => fromTresor(x.folder)}>{t('Aus dem Tresor holen')}</MenuItem>
+    </>
     if (x.kind === 'side') return <MenuItem icon={<FolderAdd20Regular />} onClick={() => newFolder()}>{t('Neuer Ordner')}</MenuItem>
     if (x.kind === 'list') return <>
       <MenuItem icon={<NoteAdd20Regular />} onClick={create} disabled={!canCreate}>{t('Neue Notiz')}</MenuItem>
@@ -366,7 +530,7 @@ export default function NotesView() {
       return <>
         <MenuItem icon={<Open20Regular />} onClick={() => { setView({ kind: 'folder', id: f.syncId }); setSearch('') }}>{t('Öffnen')}</MenuItem>
         {sh.canWrite && <MenuItem icon={<NoteAdd20Regular />} onClick={async () => {
-          try { const r = await api.post('/api/notes', { folder: f.syncId }); setView({ kind: 'folder', id: f.syncId }); setSearch(''); setSelected(r.id) } catch (err) { fail(err) }
+          try { const r = await api.post(NB, { folder: f.syncId }); setView({ kind: 'folder', id: f.syncId }); setSearch(''); setSelected(r.id) } catch (err) { fail(err) }
         }}>{t('Neue Notiz')}</MenuItem>}
         {sh.canWrite && <MenuItem icon={<FolderAdd20Regular />} onClick={() => newFolder(f.syncId)}>{t('Neuer Unterordner')}</MenuItem>}
         {f.syncId === sh.root && <>
@@ -381,10 +545,10 @@ export default function NotesView() {
       return <>
         <MenuItem icon={<Open20Regular />} onClick={() => { setView({ kind: 'folder', id: f.syncId }); setSearch('') }}>{t('Öffnen')}</MenuItem>
         <MenuItem icon={<NoteAdd20Regular />} onClick={async () => {
-          try { const r = await api.post('/api/notes', { folder: f.syncId }); setView({ kind: 'folder', id: f.syncId }); setSearch(''); setSelected(r.id) } catch (err) { fail(err) }
+          try { const r = await api.post(NB, { folder: f.syncId }); setView({ kind: 'folder', id: f.syncId }); setSearch(''); setSelected(r.id) } catch (err) { fail(err) }
         }}>{t('Neue Notiz')}</MenuItem>
         <MenuItem icon={<FolderAdd20Regular />} onClick={() => newFolder(f.syncId)}>{t('Neuer Unterordner')}</MenuItem>
-        <MenuItem icon={<People20Regular />} onClick={() => setShareDialog(f)}>{t('Teilen …')}</MenuItem>
+        {!vault && <MenuItem icon={<People20Regular />} onClick={() => setShareDialog(f)}>{t('Teilen …')}</MenuItem>}
         <MenuDivider />
         <MenuItem icon={<Rename20Regular />} onClick={() => renameFolder(f)}>{t('Umbenennen')}</MenuItem>
         <TargetMenu kind="move" targets={[{ id: '', label: t('Oberste Ebene'), disabled: !f.parent }, ...folderTargets(below(f.syncId).concat(parentOf ? [parentOf.syncId] : []))]}
@@ -411,6 +575,7 @@ export default function NotesView() {
       return <>
         {!one && <MenuItem disabled>{t('{n} Notizen ausgewählt', { n: sel.length })}</MenuItem>}
         {one && <MenuItem icon={<Open20Regular />} onClick={() => setSelected(one.id)}>{t('Öffnen')}</MenuItem>}
+        {one && singleOf(one.id) && <MenuItem icon={<PersonDelete20Regular />} onClick={() => leaveSingle(singleOf(one.id)!)}>{t('Nicht mehr anzeigen')}</MenuItem>}
         {edit && <>
           {one && <MenuItem icon={<Rename20Regular />} onClick={() => { setSelected(one.id); setRenameId(one.id) }}>{t('Umbenennen')}</MenuItem>}
           <MenuDivider />
@@ -431,7 +596,9 @@ export default function NotesView() {
         <MenuDivider />
         <MenuItem icon={allImp ? <StarOff20Regular /> : <Star20Regular />} onClick={() => metaMany(ids, { important: !allImp })}>{allImp ? t('Nicht mehr wichtig') : t('Als wichtig markieren')}</MenuItem>
         <ColorMenu colors={noteColors} square current={one?.color} label={t('Farbe der Notiz')} onPick={c => { cm.close(); if (c) metaMany(ids, { color: c }) }} />
-        {one && <MenuItem icon={<CalendarAdd20Regular />} onClick={() => eventFrom(one.id)}>{t('Termin erstellen')}</MenuItem>}
+        {one && !vault && <MenuItem icon={<CalendarAdd20Regular />} onClick={() => eventFrom(one.id)}>{t('Termin erstellen')}</MenuItem>}
+        {ids.every(id => id > 0) && !vault && <MenuItem icon={<Chat20Regular />} onClick={() => sendToChat(ids.map(id => ({ type: 'note', noteId: id })))}>{t('Im Chat …')}</MenuItem>}
+        {one && one.id > 0 && !vault && <MenuItem icon={<People20Regular />} onClick={() => setShareNote({ id: one.id, title: one.title })}>{t('Teilen …')}</MenuItem>}
         <MenuDivider />
         <TargetMenu kind="move" targets={[{ id: '', label: t('Ohne Ordner') }, ...folderTargets(), ...sharedTargets()]} onPick={id => metaMany(ids, { folder: String(id) })} />
       </>}
@@ -476,8 +643,18 @@ export default function NotesView() {
     })
 
 
+  /** Einzeln mit mir geteilte Notiz zu einer Kennung (Version 2) */
+  const singleOf = (id: number) => singles.find(x => x.id === id)
+  const leaveSingle = async (x: SingleShared) => {
+    try {
+      await api.post(`/api/notes/single-shared/${x.share}/leave`)
+      if (selected === x.id) setSelected(null)
+      await loadFolders(); loadNotes()
+    } catch (e) { fail(e) }
+  }
+
   const nav = (v: View, icon: JSX.Element, label: string, n?: number) => {
-    const key = v.kind === 'folder' ? 'nofolder' : v.kind
+    const key = v.kind === 'folder' ? 'nofolder' : v.kind === 'tag' ? 'tag:' + v.tag : v.kind
     // Notizen ablegen: ohne Ordner, wichtig, archivieren, in den Papierkorb
     const drop = v.kind === 'folder' ? { notes: (ids: number[]) => metaMany(ids, { folder: '' }), folder: (id: string) => moveFolder(id, null) }
       : v.kind === 'important' ? { notes: (ids: number[]) => metaMany(ids, { important: true }) }
@@ -485,8 +662,8 @@ export default function NotesView() {
       : v.kind === 'trash' ? { notes: (ids: number[]) => actionMany(ids, 'trash') }
       : v.kind === 'all' ? { folder: (id: string) => moveFolder(id, null) } : {}
     return (
-      <div className={mergeClasses(nv.row, view.kind === v.kind && (v.kind !== 'folder' || (view as any).id === (v as any).id) && nv.active, dropOn === key && nv.drop)}
-        onClick={() => { setView(v); setSearch('') }} {...dropTarget(key, drop)}>
+      <div className={mergeClasses(nv.row, view.kind === v.kind && (v.kind !== 'folder' || (view as any).id === (v as any).id) && (v.kind !== 'tag' || (view as any).tag === v.tag) && nv.active, dropOn === key && nv.drop)}
+        onClick={() => { setView(v); setSearch('') }} {...pressable(() => { setView(v); setSearch('') })} {...dropTarget(key, drop)}>
         {icon}<span className={nv.name}>{label}</span><span className={nv.count}>{n || ''}</span>
       </div>
     )
@@ -498,19 +675,43 @@ export default function NotesView() {
       <RibbonHeader area="notes" onMenu={toggleSide}
         start={<>
           <RibbonButton primary icon={<NoteAdd20Regular />} label={t('Neue Notiz')} onClick={create} disabled={switching || !canCreate} />
+          <RibbonButton icon={<Link20Regular />} label={importing ? t('Lädt …') : t('Rezept aus Link')} onClick={importRecipe} disabled={switching || !canCreate || importing || !!vault} />
+          <RibbonButton icon={<Camera20Regular />} label={t('Rezept aus Foto')} onClick={() => setRecipeScan(true)} disabled={switching || !canCreate || !!vault} />
+          <RibbonButton icon={<Search20Regular />} label={t('Rezepte suchen')} onClick={() => setRecipeSearch(true)} disabled={switching || !!vault} />
           <RibbonDivider />
           <RibbonButton icon={<FolderAdd20Regular />} label={t('Neuer Ordner')} onClick={() => newFolder()} />
+          <RibbonDivider />
+          <RibbonButton icon={targetImportant ? <Star20Filled color={tokens.colorPaletteYellowForeground1} /> : <Star20Regular />} label={t('Wichtig')}
+            pressed={targetImportant} disabled={!target.length || inTrash} onClick={() => metaMany(targetIds, { important: !targetImportant })} />
+          <Menu>
+            <MenuTrigger disableButtonEnhancement><RibbonButton icon={<Color20Regular />} label={t('Farbe')} disabled={!target.length || inTrash} /></MenuTrigger>
+            <MenuPopover>
+              <div className={s.swatches}>{noteColors.map(c => <button key={c} className={s.swatch} style={{ background: c }} aria-label={c} onClick={() => metaMany(targetIds, { color: c })} />)}</div>
+            </MenuPopover>
+          </Menu>
+          <Menu>
+            <MenuTrigger disableButtonEnhancement><RibbonButton icon={<FolderArrowRight20Regular />} label={t('Verschieben')} disabled={!target.length || inTrash || targetTheirs} /></MenuTrigger>
+            <MenuPopover>
+              <MenuList>
+                {[{ id: '', label: t('Ohne Ordner') }, ...folderTargets(), ...sharedTargets()].map(x => <MenuItem key={String(x.id)} onClick={() => metaMany(targetIds, { folder: String(x.id) })}>{x.label}</MenuItem>)}
+              </MenuList>
+            </MenuPopover>
+          </Menu>
+          {inTrash || inArchive
+            ? <RibbonButton icon={<ArrowUndo20Regular />} label={t('Wiederherstellen')} disabled={!target.length || targetTheirs} onClick={() => actionMany(targetIds, 'restore')} />
+            : <RibbonButton icon={<Archive20Regular />} label={t('Archivieren')} disabled={!target.length || targetTheirs} onClick={() => actionMany(targetIds, 'archive')} />}
+          <RibbonButton icon={<Delete20Regular />} label={inTrash ? t('Endgültig löschen') : t('Löschen')} disabled={!target.length} onClick={() => removeMany(targetIds)} />
           <RibbonDivider />
           {dbs?.list && (
             <Menu>
               <MenuTrigger disableButtonEnhancement>
                 {/* Der Knopf zeigt, welche Datenbank offen ist - ein Klick wechselt */}
-                <RibbonButton icon={<Database20Regular />} disabled={switching}
-                  label={switching ? t('Wechsle …') : dbs.list.find(d => d.folder === dbs.current)?.title ?? t('Datenbank')}
+                <RibbonButton icon={vault ? <LockOpen20Regular style={{ color: OPEN_COLOR }} /> : <Database20Regular />} disabled={switching}
+                  label={switching ? t('Wechsle …') : vaultName ?? dbs.list.find(d => d.folder === dbs.current)?.title ?? t('Datenbank')}
                   title={t('Datenbank wechseln')} />
               </MenuTrigger>
               <MenuPopover>
-                <MenuList checkedValues={{ db: [dbs.current] }} onCheckedValueChange={(_, d) => d.checkedItems[0] && switchDb(d.checkedItems[0])}>
+                <MenuList checkedValues={{ db: [vault ? '' : dbs.current] }} onCheckedValueChange={(_, d) => d.checkedItems[0] && switchDb(d.checkedItems[0])}>
                   {dbs.list.map(d => (
                     <MenuItemRadio key={d.folder} name="db" value={d.folder} disabled={!d.passwordFits}>
                       {d.title}{!d.passwordFits && ' ' + t('(anderes Passwort)')}
@@ -518,11 +719,32 @@ export default function NotesView() {
                   ))}
                   <MenuDivider />
                   <MenuItem onClick={() => switchDb('__new')}>{t('Neue Datenbank …')}</MenuItem>
+                  {featureOn('vault') && dbs.tresorExists && <>
+                    <MenuDivider />
+                    {(dbs.tresor ?? []).map(d => (
+                      <MenuItem key={'t:' + d.folder} icon={dbs.tresorOpen ? <LockOpen20Regular style={{ color: OPEN_COLOR }} /> : <LockClosed20Regular />}
+                        onClick={() => openVault(d.folder)}>{d.name ?? d.folder}</MenuItem>
+                    ))}
+                    <Menu>
+                      <MenuTrigger disableButtonEnhancement><MenuItem>{t('In den Tresor verschieben')}</MenuItem></MenuTrigger>
+                      <MenuPopover><MenuList>
+                        {dbs.list.filter(d => d.passwordFits).length === 0 && <MenuItem disabled>{t('Keine Datenbank im offenen Bereich')}</MenuItem>}
+                        {dbs.list.filter(d => d.passwordFits).map(d => <MenuItem key={d.folder} onClick={() => toTresor(d)}>{d.title}</MenuItem>)}
+                      </MenuList></MenuPopover>
+                    </Menu>
+                    {(dbs.tresor ?? []).length > 0 && <Menu>
+                      <MenuTrigger disableButtonEnhancement><MenuItem>{t('Aus dem Tresor holen')}</MenuItem></MenuTrigger>
+                      <MenuPopover><MenuList>
+                        {(dbs.tresor ?? []).map(d => <MenuItem key={d.folder} onClick={() => fromTresor(d.folder)}>{d.name ?? d.folder}</MenuItem>)}
+                      </MenuList></MenuPopover>
+                    </Menu>}
+                  </>}
                 </MenuList>
               </MenuPopover>
             </Menu>
           )}
-          <RibbonButton icon={<ArrowSync20Regular />} label={t('Abgleichen')} onClick={sync} disabled={status?.running} />
+          {/* Abgleich mit notizi: erst nach der Einrichtung, vorher täte der Knopf nichts */}
+          {config?.enabled && <RibbonButton icon={<ArrowSync20Regular />} label={t('Abgleichen')} onClick={sync} disabled={status?.running} />}
         </>}
         view={<>
           <RibbonButton icon={<TextDescription20Regular />} label={t('Vorschau­text')} pressed={preview} onClick={() => update({ notePreview: !preview })} />
@@ -551,8 +773,17 @@ export default function NotesView() {
           <RibbonButton icon={<Settings20Regular />} label={t('Notiz­einstellungen')} onClick={() => { location.hash = '#/settings/notes' }} />
         </>} />
       <div className={s.root}>
-      <SidePane as="aside" className={mergeClasses(s.side, nv.pane)} open={sidePane} onClose={closeSide}>
+      <SidePane as="aside" className={mergeClasses(s.side, nv.pane)} open={sidePane} onClose={closeSide} width={{ key: 'notes.side', def: 220 }}>
         <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }} onContextMenu={e => cm.open(e, { kind: 'side' })}>
+        {vault && (
+          <div className={nv.section} style={{ gap: 4 }}>
+            <LockOpen16Regular style={{ color: OPEN_COLOR, flexShrink: 0 }} />
+            <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t('Im Tresor: {name}', { name: vaultName ?? '' })}</span>
+            <Tooltip content={t('Zurück zu den Notizen')} relationship="label">
+              <Button appearance="subtle" size="small" icon={<ArrowLeft20Regular />} onClick={() => { setSelected(null); setView({ kind: 'all' }); setVault(null) }} />
+            </Tooltip>
+          </div>
+        )}
         {nav({ kind: 'all' }, <Note20Regular />, t('Alle Notizen'))}
         {nav({ kind: 'folder', id: null }, <Note20Regular />, t('Ohne Ordner'))}
         {nav({ kind: 'important' }, <Star20Regular />, t('Wichtig'))}
@@ -561,48 +792,69 @@ export default function NotesView() {
           <Tooltip content={t('Neuer Ordner')} relationship="label"><Button appearance="subtle" size="small" icon={<FolderAdd20Regular />} onClick={() => newFolder()} /></Tooltip>
         </div>
         {tree(null, 0)}
-        {shared.length > 0 && <>
-          <div className={nv.section}><span style={{ flex: 1 }}>{t('Geteilt mit mir')}</span></div>
+        {allTags.length > 0 && <>
+          <div className={nv.section}><span style={{ flex: 1 }}>{t('Schlagwörter')}</span></div>
+          {allTags.map(x => <div key={x.tag}>{nav({ kind: 'tag', tag: x.tag }, <Tag20Regular />, tagLabel(x.tag), x.count)}</div>)}
+        </>}
+        {(shared.length > 0 || singles.length > 0) && <>
+          <div className={nv.section}><span style={{ flex: 1 }}>{t('Mit mir geteilt')}</span></div>
           {shared.flatMap(sh => tree(null, 0, sh.folders, sh))}
+          {singles.length > 0 && nav({ kind: 'single' }, <People20Regular />, t('Einzelne Notizen'), singles.length)}
         </>}
         <div style={{ flex: 1, minHeight: 16 }} />
         {nav({ kind: 'archive' }, <Archive20Regular />, t('Archiv'), notes?.archived)}
         {nav({ kind: 'trash' }, <Delete20Regular />, t('Papierkorb'), notes?.trashed)}
-        <div className={nv.row} onClick={sync} title={status?.error ?? status?.report ?? ''}>
+        {tresorSt && featureOn('vault') && <>
+          <div className={nv.row} onClick={tresorRow} {...pressable(tresorRow)}
+            title={tresorSt.open ? t('Tresor – offen') : tresorSt.exists ? t('Tresor – geschlossen') : t('Tresor')}>
+            {tresorSt.open ? <LockOpen20Regular style={{ color: OPEN_COLOR }} /> : <LockClosed20Regular />}<span className={nv.name}>{t('Tresor')}</span>
+          </div>
+          {tresorSt.open && (dbs?.tresor ?? []).map(d => (
+            <div key={d.folder} className={mergeClasses(nv.row, vault === d.folder && nv.active)} style={{ paddingLeft: 28 }}
+              onClick={() => openVault(d.folder)} {...pressable(() => openVault(d.folder))} onContextMenu={e => { e.stopPropagation(); cm.open(e, { kind: 'vault', folder: d.folder }) }}>
+              <Database20Regular /><span className={nv.name}>{d.name ?? d.folder}</span>
+            </div>
+          ))}
+        </>}
+        {config?.enabled && <div className={nv.row} onClick={sync} {...pressable(sync)} title={status?.error ?? status?.report ?? ''}>
           <ArrowSync20Regular />
           <span style={{ fontSize: 12 }}>
             {status?.running ? t('Gleicht ab …') : status?.error ? <span style={{ color: tokens.colorPaletteRedForeground1 }}>{t('Abgleich: Fehler')}</span>
               : status?.lastRun ? t('Abgeglichen {date}', { date: fmtDate(status.lastRun) }) : t('Abgleichen')}
           </span>
-        </div>
+        </div>}
         </div>
       </SidePane>
       <div className={s.column}>
       <div className={s.panes}>
-      <div className={s.list}>
-        {config && !config.enabled && (
+      <div className={s.list} style={listW.width ? { width: listW.width, position: 'relative' } : undefined}>
+        {listW.handle('right', true)}
+        {config && !config.enabled && !prefs.notiziTipHidden && (
           <MessageBar intent="info" style={{ margin: '10px 10px 0' }}>
             <MessageBarBody>
               {t('Tipp: Mit der App notizi hast du deine Notizen auch auf dem Windows-Desktop – mit Erinnerungen, Texterkennung und Abgleich.')}{' '}
               <a href="#/settings/notes">{t('Abgleich einrichten')}</a>
             </MessageBarBody>
+            <MessageBarActions containerAction={<Button appearance="transparent" size="small" icon={<Dismiss16Regular />} aria-label={t('Ausblenden')}
+              onClick={() => update({ notiziTipHidden: true })} />} />
           </MessageBar>
         )}
-        <div style={{ padding: 10 }}><SearchBox placeholder={t('Notizen durchsuchen')} value={search} onChange={(_, d) => setSearch(d.value)} style={{ width: '100%' }} /></div>
-        <div className={s.cards} ref={cardsRef} tabIndex={-1} onKeyDown={onCardsKey} onContextMenu={e => cm.open(e, { kind: 'list' })}
+        <div style={{ padding: 10 }}><SearchBox placeholder={t('Notizen durchsuchen')} value={search} onChange={(_, d) => setSearch(d.value)} style={{ width: '100%' }}
+          onKeyDown={e => { if (e.key === 'ArrowDown') { e.preventDefault(); cardsRef.current?.focus(); mx.step(1, false) } }} /></div>
+        <div className={mergeClasses(s.cards, s.cardsFocus)} ref={cardsRef} tabIndex={0} role="listbox" aria-multiselectable aria-label={t('Notizen')} onKeyDown={onCardsKey} onContextMenu={e => cm.open(e, { kind: 'list' })}
           onClick={e => { if (e.target === e.currentTarget) mx.clear() }}>
           {!notes ? <Spinner /> : items.length === 0 ? <Text style={{ padding: 8, color: tokens.colorNeutralForeground3 }}>{t('Keine Notizen.')}</Text>
             : items.map(n => (
-              <div key={n.id} className={mergeClasses(s.card, !preview && s.cardShort, mx.selected.includes(n.id) && s.cardMulti, selected === n.id && s.cardSel)}
+              <div key={n.id} data-note={n.id} role="option" aria-selected={mx.selected.includes(n.id) || selected === n.id} className={mergeClasses(s.card, !preview && s.cardShort, mx.selected.includes(n.id) && s.cardMulti, selected === n.id && s.cardSel)}
                 onClick={e => clickCard(e, n.id)} onContextMenu={e => cardMenu(e, n.id)} draggable={!mobile}
                 onDragStart={e => { e.dataTransfer.setData(DRAG_NOTES, JSON.stringify(mx.selected.includes(n.id) ? mx.selected : [n.id])); e.dataTransfer.effectAllowed = 'move' }}
                 style={{ borderTopColor: n.color || '#FFF9A8', paddingRight: n.image ? 84 : undefined }}>
-                {n.image && <img className={s.cardThumb} src={`/api/notes/blob/${encodeURIComponent(n.image)}?thumb=160`} alt="" loading="lazy" draggable={false}
+                {n.image && <img className={s.cardThumb} src={`${NB}/blob/${encodeURIComponent(n.image)}?thumb=160`} alt="" loading="lazy" draggable={false}
                   onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none' }} />}
                 <div className={s.cardTitle}>{n.important && '★ '}{n.title}</div>
                 {n.match ? <div className={s.cardText}>📎 {t('im Anhang {name}', { name: n.match.name })}: <Snippet text={n.match.snippet} /></div>
                   : preview && n.snippet && <div className={s.cardText}>{n.snippet}</div>}
-                <div className={s.cardDate}>{fmtDate(n.modified)}{n.attachments > 0 && ` · 📎 ${n.attachments}`}{n.owner && ` · ${t('von {name}', { name: n.owner })}`}</div>
+                <div className={s.cardDate}>{fmtDate(n.modified)}{n.attachments > 0 && ` · 📎 ${n.attachments}`}{n.owner && ` · ${t('von {name}', { name: n.owner })}`}{n.tags?.length ? ' · ' + n.tags.map(x => '#' + tagLabel(x)).join(' ') : ''}</div>
               </div>
             ))}
         </div>
@@ -625,8 +877,8 @@ export default function NotesView() {
         </div>
       ) : selected ? (
         <div className={s.editorWrap}>
-          <NoteEditor key={`${selected}-${editorRev}`} id={selected} folders={folders} shared={shared} sharedTargets={sharedTargets} focusTitle={renameId === selected} onTitleFocused={() => setRenameId(null)}
-            onChanged={onChanged} onGone={onGone} onOpen={onOpen} notify={notify} fail={fail} onBack={() => setSelected(null)} />
+          <NoteEditor key={`${selected}-${editorRev}`} id={selected} folders={folders} shared={shared} sharedTargets={sharedTargets} focusTitle={renameId === selected} onTitleFocused={() => setRenameId(null)} focusText={typeInId === selected} onTextFocused={() => setTypeInId(null)}
+            onChanged={onChanged} onGone={onGone} onOpen={onOpen} notify={notify} fail={fail} onBack={() => setSelected(null)} knownTags={allTags.map(x => x.tag)} />
         </div>
       ) : (
         <div className={mergeClasses(s.empty, s.emptyPane)}><Text>{t('Wähle eine Notiz aus oder lege eine neue an.')}</Text></div>
@@ -636,6 +888,14 @@ export default function NotesView() {
       <ContextMenu at={cm.ctx?.at} onClose={cm.close}>{ctxMenu()}</ContextMenu>
       {shareDialog && <ShareDialog notesFolder={shareDialog.syncId} list={{ id: 0, name: shareDialog.name, components: [], sharedWith: shareDialog.sharedWith }}
         onClose={changed => { setShareDialog(null); if (changed) loadFolders() }} />}
+      {recipeScan && <RecipeScanDialog folder={view.kind === 'folder' ? view.id : null}
+        onClose={async id => { setRecipeScan(false); if (id != null) { await loadNotes(); setSelected(id); notify(t('Rezept übernommen')) } }} />}
+      {recipeSearch && <RecipeSearchDialog folder={view.kind === 'folder' ? view.id : null}
+        dbName={dbs?.list?.find(d => d.folder === dbs.current)?.title ?? null}
+        targets={[...folderTargets(), ...shared.filter(r => r.canWrite && !r.showOnly).flatMap(r => r.folders.map(f => ({ id: f.syncId, label: `${f.name} (${r.owner})`, depth: 0 })))]}
+        onClose={n => { setRecipeSearch(false); if (n) loadNotes() }} />}
+      {shareNote && <ShareDialog noteId={shareNote.id} list={{ id: 0, name: shareNote.title, components: [], sharedWith: null }}
+        onClose={changed => { setShareNote(null); if (changed) loadNotes() }} />}
       {eventDraft && (
         <EventDialog draft={eventDraft.draft} calendars={eventDraft.calendars}
           onClose={saved => { setEventDraft(null); if (saved) notify(t('Termin angelegt')) }} />
@@ -645,7 +905,8 @@ export default function NotesView() {
   )
 }
 
-function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onOpen, notify, fail, onBack, focusTitle, onTitleFocused }: {
+function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onOpen, notify, fail, onBack, focusTitle, onTitleFocused, focusText, onTextFocused, knownTags }: {
+  knownTags: string[]; focusText?: boolean; onTextFocused?: () => void
   id: number; folders: NoteFolder[]; shared: SharedRoot[]; sharedTargets: () => { id: string; label: string; depth: number }[]; onChanged: () => void; onGone: () => void; onOpen: (id: number) => void; onBack: () => void; focusTitle?: boolean; onTitleFocused?: () => void
   notify: (t: string, b?: string, i?: any) => void; fail: (e: unknown) => void
 }) {
@@ -667,6 +928,17 @@ function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onO
   const [rejected, setRejected] = useState<string | null>(null)
   const rejectedRef = useRef(false)
   rejectedRef.current = !!rejected
+  // Abgelehnt, weil es inzwischen einen neueren Stand gibt (nicht wegen fehlender Verbindung oder Rechte)
+  const [conflict, setConflict] = useState(false)
+  const conflictRef = useRef(false)
+  conflictRef.current = conflict
+  // Speichern unterwegs; Zaehler, damit eine vor dem Speichern gestellte Abfrage danach nicht mehr zaehlt
+  const inFlight = useRef(false)
+  const saveRun = useRef(0)
+  // Der Editor steht noch (false: die Person ist schon bei einer anderen Notiz)
+  const alive = useRef(true)
+  // „Beides behalten“: diese Bloecke kommen unter den neu geladenen Stand
+  const pendingAdd = useRef<string[] | null>(null)
   // Version, auf die sich die Blocknummern im Editor beziehen, und welche Bloecke gesperrt sind
   const version = useRef<string | undefined>(undefined)
   const prot = useRef<boolean[]>([])
@@ -678,31 +950,42 @@ function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onO
   /** Laedt die Notiz. Den Editor nur neu aufbauen, wenn sich der Inhalt geaendert hat und nichts offen ist. */
   const load = useCallback(async (force = false) => {
     try {
-      const n = await api.get<NoteDetail>(`/api/notes/${id}`)
+      const n = await api.get<NoteDetail>(`${NB}/${id}`)
       setNote(n)
-      setTitle(n.customTitle ?? '')
+      // Einen gerade getippten Titel nicht ueberschreiben
+      if (document.activeElement !== titleRef.current) setTitle(n.customTitle ?? '')
       if (force || version.current === undefined || (n.version !== version.current && !dirty.current)) {
         version.current = n.version
         dirty.current = false
         setRev(r => r + 1)
       }
-    } catch (e) { fail(e) }
+      return true
+    } catch (e) { fail(e); return false }
   }, [id, fail])
   useEffect(() => { load() }, [load])
-  // Mit mir geteilt: schaut jemand anderes in dieselbe Notiz? Ungespeichertes bleibt, der Hinweis bietet Kopie oder Verwerfen
+  // Geteilt (mit mir oder von mir): alle paar Sekunden schauen, ob jemand anderes geändert hat; sonst seltener (andere Geräte).
+  // Nichts offen: der neue Stand erscheint. Getipptes bleibt stehen, der Hinweis bietet die Wahl
+  const inSharedFolder = (() => {
+    for (let f = folders.find(x => x.syncId === note?.folder), n = 0; f && n < 50; f = folders.find(x => x.syncId === f!.parent), n++)
+      if (f.sharedWith?.length) return true
+    return false
+  })()
+  const sharedNote = !!note?.owner || !!note?.sharedWith || inSharedFolder
   useEffect(() => {
-    if (!note?.owner) return
     const iv = setInterval(async () => {
-      if (document.hidden) return
+      if (document.hidden || inFlight.current || version.current === undefined) return
+      const run = saveRun.current
       try {
-        const n = await api.get<NoteDetail>(`/api/notes/${id}`)
-        if (n.version === version.current) return
-        if (dirty.current) setRejected(t('Die Notiz wurde inzwischen von jemand anderem geändert.'))
-        else load()
+        const n = await api.get<NoteDetail>(`${NB}/${id}`)
+        if (run !== saveRun.current || inFlight.current || n.version === version.current) return
+        if (dirty.current) {
+          setConflict(true)
+          setRejected(sharedNote ? t('Die Notiz wurde inzwischen von jemand anderem geändert.') : t('Die Notiz wurde inzwischen auf einem anderen Gerät geändert.'))
+        } else load()
       } catch { /* weg oder nicht mehr geteilt: die Liste räumt auf */ }
-    }, 15000)
+    }, sharedNote ? 5000 : 30000)
     return () => clearInterval(iv)
-  }, [note?.owner, id, load])
+  }, [sharedNote, id, load])
   // F2 / "Umbenennen": in den Titel
   useEffect(() => {
     if (!focusTitle || !note) return
@@ -715,25 +998,49 @@ function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onO
     const el = root.current
     if (!el || !note) return
     prot.current = note.protected
+    const caret = caretOf(el)
     el.innerHTML = ''
-    note.blocks.forEach((html, i) => {
+    const nodesOf = (html: string) => {
       const tpl = document.createElement('template')
       tpl.innerHTML = html.trim().startsWith('<') ? html : `<p>${html}</p>`
       const nodes = Array.from(tpl.content.children) as HTMLElement[]
+      nodes.forEach(node => node.querySelectorAll('img').forEach(img => {
+        const src = img.getAttribute('src') || ''
+        if (src.startsWith('blob:')) { img.setAttribute('data-blob', src.slice(5)); img.setAttribute('src', `${NB}/blob/${src.slice(5)}`) }
+      }))
+      return nodes
+    }
+    note.blocks.forEach((html, i) => {
+      const nodes = nodesOf(html)
       const node = nodes[0] ?? document.createElement('p')
       node.setAttribute('data-i', String(i))
       if (note.protected[i] || note.readOnly) node.setAttribute('contenteditable', 'false')
-      node.querySelectorAll('img').forEach(img => {
-        const src = img.getAttribute('src') || ''
-        if (src.startsWith('blob:')) { img.setAttribute('data-blob', src.slice(5)); img.setAttribute('src', `/api/notes/blob/${src.slice(5)}`) }
-      })
       el.appendChild(node)
       nodes.slice(1).forEach(n => el.appendChild(n))
     })
     if (!el.children.length) el.appendChild(document.createElement('p'))
     fixContrast(el)
     ser0.current = Array.from(el.children).map(c => ser(c as HTMLElement))
+    if (caret) setCaret(el, caret)
+    // „Beides behalten“: was nur im Editor stand, kommt unter den neueren Stand
+    const add = pendingAdd.current
+    pendingAdd.current = null
+    if (add) {
+      const fresh = add.filter(html => !ser0.current.includes(html))
+      fresh.forEach(html => nodesOf(html).forEach(n => el.appendChild(n)))
+      if (fresh.length) { fixContrast(el); changed() }
+    }
   }, [note?.id, rev]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Neue Notiz oder Enter auf der Karte: die Tastatur schreibt gleich in den Text
+  useEffect(() => {
+    const el = root.current
+    if (!focusText || !note || !el) return
+    onTextFocused?.()
+    if (note.readOnly || note.deleted) return
+    el.focus()
+    setCaret(el, { block: el.childNodes.length - 1, offset: el.lastChild?.textContent?.length ?? 0 })
+  }, [focusText, note?.id, rev]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Hell/Dunkel gewechselt: Kontrast neu pruefen (Inhalt bleibt)
   useEffect(() => { if (root.current) fixContrast(root.current) }, [isDark])
@@ -753,7 +1060,7 @@ function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onO
 
   const textBlock = (txt: string) => `<p>${txt.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</p>`
 
-  const doSave = async (plain?: string) => {
+  const doSave = async (plain?: string, leaving = false) => {
     const el = root.current ?? lastEl.current
     if (!el || !note || note.readOnly) return
     const used = new Set<number>()
@@ -771,25 +1078,69 @@ function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onO
       else { if (i >= 0) used.add(i); blocks.push({ html: node.tagName === 'DIV' && !node.hasAttribute('data-i') ? `<p>${node.innerHTML}</p>` : now }) }
       nodes.push(node); snap.push(now)
     })
+    const text = plain ?? el.innerText
+    // Fuer den Fall, dass der neuere Stand die Speicherung ablehnt und die Notiz schon verlassen ist
+    const copy = blocksOf(el)
     dirty.current = false
     setSaving('saving')
+    inFlight.current = true
+    saveRun.current++
+    let stale = false
     try {
-      const r = await e2eFetch(`/api/notes/${id}/content`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
-        body: JSON.stringify({ blocks, plain: plain ?? el.innerText, version: version.current }),
+      const body = JSON.stringify({ blocks, plain: text, version: version.current })
+      const r = await e2eFetch(`${NB}/${id}/content`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body,
+        // Beim Verlassen der Seite soll die Anfrage das Schließen überstehen; der Browser erlaubt das nur für kleine Anfragen
+        keepalive: leaving && body.length < 40000,
       })
       const data = await r.json().catch(() => null)
+      stale = r.status === 409
       if (!r.ok) throw new Error(data?.error || r.statusText)
       version.current = data?.version
       renumber(el, blocks, nodes, snap, data?.protected ?? null)
       setSaving(dirty.current ? 'dirty' : 'saved')
       setRejected(null)
+      setConflict(false)
       onChanged()
     } catch (e) {
+      const message = e instanceof TypeError ? t('Keine Verbindung zum Server.') : tError(e instanceof Error ? e.message : String(e))
+      if (!alive.current) {
+        // Schon woanders: der Hinweis im Editor wäre nicht mehr zu sehen
+        if (stale) keepAsCopy(copy, text)
+        else fail(new Error(message))
+        return
+      }
       dirty.current = true
       setSaving('dirty')
-      setRejected(e instanceof Error ? e.message : String(e))
-    }
+      setConflict(stale)
+      setRejected(message)
+    } finally { inFlight.current = false }
+  }
+
+  /** Alle Bloecke des Editors als HTML (fuer Kopie und „Beides behalten“). */
+  const blocksOf = (el: HTMLElement) => {
+    const blocks: string[] = []
+    el.childNodes.forEach(n => {
+      if (n.nodeType === 3) { if (n.textContent?.trim()) blocks.push(textBlock(n.textContent)); return }
+      if (n.nodeType !== 1) return
+      const node = n as HTMLElement
+      blocks.push(node.tagName === 'DIV' && !node.hasAttribute('data-i') ? `<p>${node.innerHTML}</p>` : ser(node))
+    })
+    return blocks
+  }
+
+  /** Das Getippte als eigene neue Notiz sichern: im selben Ordner, wenn das geht, sonst bei den eigenen Notizen. */
+  const copyToNote = async (blocks: string[], text: string) => {
+    const r = await api.post<{ id: number }>(NB, { folder: note?.single ? null : note?.folder })
+      .catch(() => api.post<{ id: number }>(NB, { folder: null }))
+    await api.put(`${NB}/${r.id}/content`, { blocks: blocks.map(html => ({ html })), plain: text })
+    return r.id
+  }
+  /** Nach dem Verlassen der Notiz: nichts geht verloren, die Meldung sagt, wo der Text jetzt liegt. */
+  const keepAsCopy = (blocks: string[], text: string) => {
+    copyToNote(blocks, text)
+      .then(() => { notify(t('Die Notiz wurde inzwischen geändert. Dein Text liegt jetzt in einer eigenen Kopie.'), undefined, 'warning'); onChanged() })
+      .catch(fail)
   }
 
   /** Nach dem Speichern: Nummern im Editor auf die neue Version umstellen. */
@@ -812,7 +1163,9 @@ function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onO
   // Immer die aktuelle Version aufrufen (keine veralteten Closures), nacheinander
   const saveRef = useRef(doSave)
   saveRef.current = doSave
-  const save = useCallback((plain?: string) => (chain.current = chain.current.then(() => saveRef.current(plain))), [])
+  const keepAsCopyRef = useRef(keepAsCopy)
+  keepAsCopyRef.current = keepAsCopy
+  const save = useCallback((plain?: string, leaving = false) => (chain.current = chain.current.then(() => saveRef.current(plain, leaving))), [])
 
   const changed = () => {
     dirty.current = true
@@ -829,53 +1182,103 @@ function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onO
     else await chain.current
   }
   // Beim Wechseln der Notiz sofort sichern - als Layout-Cleanup, da steht der Editor noch im DOM
-  useLayoutEffect(() => () => {
-    // Text jetzt lesen - ausgehaengt liefert innerText keine Zeilenumbrueche mehr
-    if (timer.current !== undefined) { clearTimeout(timer.current); timer.current = undefined; save(root.current?.innerText) }
+  useLayoutEffect(() => {
+    alive.current = true
+    return () => {
+      alive.current = false
+      // Text jetzt lesen - ausgehaengt liefert innerText keine Zeilenumbrueche mehr
+      if (timer.current !== undefined) { clearTimeout(timer.current); timer.current = undefined; save(root.current?.innerText) }
+      else if (dirty.current && root.current) {
+        // Abgelehnt und nicht entschieden: der neuere Stand bleibt, das Getippte wird eine Kopie
+        if (conflictRef.current) keepAsCopyRef.current(blocksOf(root.current), root.current.innerText)
+        else save(root.current.innerText)
+      }
+    }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Seite neu laden oder schließen: Offenes sofort abschicken und warnen, solange es nicht sicher angekommen ist.
+  // Tab im Hintergrund: gleich speichern, statt auf die Pause zu warten
+  const titleSaved = useRef('')
+  titleSaved.current = note?.customTitle ?? ''
+  useEffect(() => {
+    const sendNow = () => { if (timer.current !== undefined) { clearTimeout(timer.current); timer.current = undefined; save(undefined, true) } }
+    const onLeave = (e: BeforeUnloadEvent) => {
+      const typed = titleRef.current?.value
+      const titleOpen = typed !== undefined && !titleRef.current?.readOnly && typed !== titleSaved.current
+      if (titleOpen) api.put(`${NB}/${id}/meta`, typed ? { customTitle: typed } : { clearCustomTitle: true }).catch(() => {})
+      if (!titleOpen && !dirty.current && !inFlight.current && timer.current === undefined) return
+      sendNow()
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    const onHidden = () => { if (document.visibilityState === 'hidden') sendNow() }
+    window.addEventListener('beforeunload', onLeave)
+    document.addEventListener('visibilitychange', onHidden)
+    window.addEventListener('pagehide', sendNow)
+    return () => {
+      window.removeEventListener('beforeunload', onLeave)
+      document.removeEventListener('visibilitychange', onHidden)
+      window.removeEventListener('pagehide', sendNow)
+    }
+  }, [id, save])
 
   const meta = async (body: any) => {
     try {
-      await flush(); await api.put(`/api/notes/${id}/meta`, body)
-      // In einen geteilten Ordner kopiert: die Notiz hat dort eine neue Kennung, die Liste zeigt sie unter „Geteilt mit mir“
+      await flush(); await api.put(`${NB}/${id}/meta`, body)
+      // In einen geteilten Ordner kopiert: die Notiz hat dort eine neue Kennung, die Liste zeigt sie unter „Mit mir geteilt“
       if (id > 0 && body.folder && shared.some(x => x.folders.some(f => f.syncId === body.folder))) { onGone(); return }
       await load(); onChanged()
     } catch (e) { fail(e) }
   }
   const action = async (a: 'archive' | 'restore' | 'trash') => {
-    try { await flush(); await api.post(`/api/notes/${id}/${a}`); a === 'restore' ? (await load(), onChanged()) : onGone() } catch (e) { fail(e) }
+    try { await flush(); await api.post(`${NB}/${id}/${a}`); a === 'restore' ? (await load(), onChanged()) : onGone() } catch (e) { fail(e) }
   }
   /** Aenderungen verwerfen und den Stand vom Server laden. */
   const discard = () => {
     clearTimeout(timer.current); timer.current = undefined
     dirty.current = false
-    setRejected(null); setSaving('saved')
+    setRejected(null); setConflict(false); setSaving('saved')
+    saveRun.current++
     load(true)
   }
+  /** Bei Konflikt: der neuere Stand bleibt, was nur hier im Editor steht, kommt darunter. */
+  const keepBoth = async () => {
+    const el = root.current
+    if (!el) return
+    const message = rejected
+    clearTimeout(timer.current); timer.current = undefined
+    const before = new Set(ser0.current)
+    pendingAdd.current = blocksOf(el).filter(html => {
+      if (before.has(html)) return false
+      const d = document.createElement('div')
+      d.innerHTML = html
+      return !!d.textContent?.trim() || !!d.querySelector('img')
+    })
+    saveRun.current++
+    setRejected(null); setConflict(false)
+    if (await load(true)) return
+    // Nicht geladen: alles bleibt, wie es war
+    pendingAdd.current = null
+    setRejected(message); setConflict(true)
+  }
+  /** Nach einem Fehler ohne Konflikt (Verbindung weg): noch einmal versuchen. */
+  const retry = () => { setRejected(null); save() }
   /** Bei Konflikt: den Editorinhalt als neue Notiz sichern, diese bleibt unveraendert. */
   const saveAsCopy = async () => {
     const el = root.current
     if (!el || !note) return
-    const blocks: { html: string }[] = []
-    el.childNodes.forEach(n => {
-      if (n.nodeType === 3) { if (n.textContent?.trim()) blocks.push({ html: textBlock(n.textContent) }); return }
-      if (n.nodeType !== 1) return
-      const node = n as HTMLElement
-      blocks.push({ html: node.tagName === 'DIV' && !node.hasAttribute('data-i') ? `<p>${node.innerHTML}</p>` : ser(node) })
-    })
     try {
-      const r = await api.post<{ id: number }>('/api/notes', { folder: note.folder })
-      await api.put(`/api/notes/${r.id}/content`, { blocks, plain: el.innerText })
+      const copy = await copyToNote(blocksOf(el), el.innerText)
       clearTimeout(timer.current); timer.current = undefined
       dirty.current = false
-      setRejected(null)
+      setRejected(null); setConflict(false)
       notify(t('Als Kopie gespeichert'))
-      onOpen(r.id)
+      onOpen(copy)
     } catch (e) { fail(e) }
   }
   const destroy = async () => {
-    if (!confirm(t('Endgültig löschen? Auch auf allen anderen Geräten.'))) return
-    try { await api.del(`/api/notes/${id}`); onGone() } catch (e) { fail(e) }
+    if (!await askConfirm('', t('Endgültig löschen? Auch auf allen anderen Geräten.'))) return
+    try { await api.del(`${NB}/${id}`); onGone() } catch (e) { fail(e) }
   }
   const exec = (cmd: string, value?: string) => { document.execCommand('styleWithCSS', false, 'true'); document.execCommand(cmd, false, value); changed() }
 
@@ -942,6 +1345,20 @@ function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onO
     }
   }
 
+  // Aus der Galerie oder den Dateien von dmOffice: im Browser holen, dann wie vom Gerät (Bilder an die Schreibmarke, sonst Anhang)
+  const [pickFrom, setPickFrom] = useState<'gallery' | 'files' | null>(null)
+  const fromServer = async (items: Item[], source: Source) => {
+    try {
+      const files = await Promise.all(items.filter(i => !i.isDir).map(async i => {
+        const r = await fetch(source.download(i), { credentials: 'same-origin' })
+        if (!r.ok) throw new Error(i.name)
+        const blob = await r.blob()
+        return new File([blob], i.name, { type: i.mime || blob.type || 'application/octet-stream' })
+      }))
+      await addFiles(files)
+    } catch (e) { fail(e) }
+  }
+
   /** Bilder kommen an die Schreibmarke (wie in notizi), alles andere wird Anhang. */
   const addFiles = async (files: File[]) => {
     const images = files.filter(f => f.type.startsWith('image/'))
@@ -955,8 +1372,8 @@ function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onO
         for (const f of images) {
           const form = new FormData()
           form.append('file', f, f.name || 'bild.png')
-          const { name } = await api.form<{ name: string }>(`/api/notes/images?note=${id}`, form)
-          html += `<p><img src="/api/notes/blob/${name}" data-blob="${name}" style="max-width:100%" /></p>`
+          const { name } = await api.form<{ name: string }>(`${NB}/images?note=${id}`, form)
+          html += `<p><img src="${NB}/blob/${name}" data-blob="${name}" style="max-width:100%" /></p>`
         }
         root.current?.focus()
         if (range) { const s2 = window.getSelection(); s2?.removeAllRanges(); s2?.addRange(range) }
@@ -975,7 +1392,7 @@ function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onO
     if (!files?.length) return
     const f = new FormData()
     Array.from(files).forEach(x => f.append('files', x, x.name))
-    try { await flush(); await api.form(`/api/notes/${id}/attachments`, f); await load(); notify(t('Angehängt')) } catch (e) { fail(e) }
+    try { await flush(); await api.form(`${NB}/${id}/attachments`, f); await load(); notify(t('Angehängt')) } catch (e) { fail(e) }
   }
 
   if (!note) return <Spinner style={{ margin: 'auto' }} />
@@ -1015,7 +1432,11 @@ function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onO
             {saving === 'saving' ? <Spinner size="extra-tiny" /> : saving === 'dirty' || note.pending ? <Circle16Filled color={tokens.colorPaletteYellowForeground1} /> : <CheckmarkCircle16Regular />}
           </span>
         </Tooltip>
-        <Tooltip content={t('Wichtig')} relationship="label">
+        {/* Sichtbar, ob das Getippte schon angekommen ist */}
+        {!mobile && saving !== 'idle' && <Text size={200} role="status" style={{ color: tokens.colorNeutralForeground3, whiteSpace: 'nowrap' }}>
+          {saving === 'saving' ? t('Speichert …') : saving === 'dirty' ? t('Ungespeichert') : t('Gespeichert')}
+        </Text>}
+        {mobile && <><Tooltip content={t('Wichtig')} relationship="label">
           <Button appearance="subtle" disabled={locked} icon={note.important ? <Star20Filled color={tokens.colorPaletteYellowForeground1} /> : <Star20Regular />} onClick={() => meta({ important: !note.important })} />
         </Tooltip>
         <Menu>
@@ -1025,7 +1446,7 @@ function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onO
           </MenuPopover>
         </Menu>
         <Menu>
-          <MenuTrigger disableButtonEnhancement><Tooltip content={t('In Ordner verschieben')} relationship="label"><Button appearance="subtle" disabled={locked} icon={<FolderArrowRight20Regular />} /></Tooltip></MenuTrigger>
+          <MenuTrigger disableButtonEnhancement><Tooltip content={t('In Ordner verschieben')} relationship="label"><Button appearance="subtle" disabled={locked || note.single} icon={<FolderArrowRight20Regular />} /></Tooltip></MenuTrigger>
           <MenuPopover>
             <MenuList>
               {!note.owner && <MenuItem onClick={() => meta({ folder: '' })}>{t('Ohne Ordner')}</MenuItem>}
@@ -1033,16 +1454,29 @@ function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onO
               {!note.owner && sharedTargets().map(x => <MenuItem key={x.id} onClick={() => meta({ folder: x.id })}>{x.label}</MenuItem>)}
             </MenuList>
           </MenuPopover>
+        </Menu></>}
+        {/* Anhängen: vom Gerät, aus der Galerie oder aus den Dateien von dmOffice (die werden geholt und wie vom Gerät eingefügt) */}
+        <Menu>
+          <MenuTrigger disableButtonEnhancement>
+            <Tooltip content={t('Datei anhängen')} relationship="label"><Button appearance="subtle" disabled={locked} icon={<Attach20Regular />} /></Tooltip>
+          </MenuTrigger>
+          <MenuPopover><MenuList>
+            <MenuItem icon={<Desktop20Regular />} onClick={() => fileInput.current?.click()}>{t('Vom Computer')}</MenuItem>
+            <MenuItem icon={<ImageMultiple20Regular />} onClick={() => setPickFrom('gallery')}>{t('Aus der dmOffice-Galerie')}</MenuItem>
+            <MenuItem icon={<Cloud20Regular />} onClick={() => setPickFrom('files')}>{t('Aus den dmOffice-Dateien')}</MenuItem>
+          </MenuList></MenuPopover>
         </Menu>
-        <Tooltip content={t('Datei anhängen')} relationship="label"><Button appearance="subtle" disabled={locked} icon={<Attach20Regular />} onClick={() => fileInput.current?.click()} /></Tooltip>
-        {note.owner ? null : inTrash || note.archived
+        {pickFrom === 'gallery' && <PickPhotoDialog title={t('Aus der dmOffice-Galerie')} onClose={() => setPickFrom(null)} onPickMany={items => { setPickFrom(null); fromServer(items, gallerySource) }} />}
+        {pickFrom === 'files' && <StoredFilesDialog onClose={() => setPickFrom(null)} onPick={items => { setPickFrom(null); fromServer(items, ownSource) }} />}
+        {!mobile ? null : note.owner ? null : inTrash || note.archived
           ? <Tooltip content={t('Wiederherstellen')} relationship="label"><Button appearance="subtle" icon={<ArrowUndo20Regular />} onClick={() => action('restore')} /></Tooltip>
           : <Tooltip content={t('Archivieren')} relationship="label"><Button appearance="subtle" icon={<Archive20Regular />} onClick={() => action('archive')} /></Tooltip>}
-        {inTrash
+        {!mobile ? null : inTrash
           ? <Button appearance="subtle" icon={<Delete20Regular />} onClick={destroy}>{t('Endgültig löschen')}</Button>
-          : <Tooltip content={t('In den Papierkorb')} relationship="label"><Button appearance="subtle" disabled={locked} icon={<Delete20Regular />} onClick={() => action('trash')} /></Tooltip>}
+          : <Tooltip content={t('In den Papierkorb')} relationship="label"><Button appearance="subtle" disabled={locked || note.single} icon={<Delete20Regular />} onClick={() => action('trash')} /></Tooltip>}
         <input ref={fileInput} type="file" multiple hidden onChange={e => { upload(e.target.files); e.target.value = '' }} />
       </div>
+      <NoteTags tags={note.tags ?? []} known={knownTags} readOnly={locked || inTrash} onChange={tags => meta({ tags })} />
       <Toolbar size="small" className={s.bar}>
         {tb(t('Fett'), <TextBold20Regular />, 'bold')}
         {tb(t('Kursiv'), <TextItalic20Regular />, 'italic')}
@@ -1072,8 +1506,11 @@ function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onO
       </Toolbar>
       {rejected && (
         <MessageBar intent="error">
-          <MessageBarBody>{rejected}</MessageBarBody>
+          <MessageBarBody>{rejected} {t('Dein Text ist noch nicht gespeichert und bleibt hier stehen.')}</MessageBarBody>
           <MessageBarActions>
+            {conflict
+              ? <Tooltip content={t('Der neuere Stand bleibt, dein Text kommt darunter.')} relationship="description"><Button size="small" appearance="primary" onClick={keepBoth}>{t('Beides behalten')}</Button></Tooltip>
+              : <Button size="small" appearance="primary" onClick={retry}>{t('Erneut versuchen')}</Button>}
             <Button size="small" onClick={saveAsCopy}>{t('Als Kopie speichern')}</Button>
             <Button size="small" onClick={discard}>{t('Änderungen verwerfen')}</Button>
           </MessageBarActions>
@@ -1082,7 +1519,7 @@ function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onO
       {note.owner && (
         <MessageBar intent="info"><MessageBarBody>{locked
           ? t('Geteilt von {name} – du darfst sie nur lesen.', { name: note.owner })
-          : t('Geteilt von {name} – Änderungen sind sofort für alle da.', { name: note.owner })}</MessageBarBody></MessageBar>
+          : t('Geteilt von {name} – Änderungen werden automatisch gespeichert, andere sehen sie nach wenigen Sekunden. Schreiben zwei gleichzeitig, fragt dmOffice nach.', { name: note.owner })}</MessageBarBody></MessageBar>
       )}
       {note.readOnly && !locked && <MessageBar intent="warning"><MessageBarBody>{t('Diese Notiz lässt sich hier nur lesen.')}</MessageBarBody></MessageBar>}
       {inTrash && (
@@ -1137,10 +1574,12 @@ function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onO
         <div className={s.atts}>
           {note.attachments.map(a => (
             <span key={a.name} className={s.att}>
-              <a href={`/api/notes/blob/${a.blob}?` + q({ download: true, file: a.name })} style={{ color: 'inherit' }}>{a.name}</a>
+              {note.showOnly
+                ? <Text title={t('Nur gezeigt – herunterladen ist nicht erlaubt.')}>{a.name}</Text>
+                : <a href={`${NB}/blob/${a.blob}?` + q({ download: true, file: a.name })} style={{ color: 'inherit' }}>{a.name}</a>}
               <Text size={200}>({fmtSize(a.size)})</Text>
               <Button size="small" appearance="transparent" icon={<Dismiss16Regular />} aria-label={t('Entfernen')}
-                onClick={async () => { if (!confirm(t('„{name}“ entfernen?', { name: a.name }))) return; await api.del(`/api/notes/${id}/attachments/${encodeURIComponent(a.name)}`).catch(fail); load() }} />
+                onClick={async () => { if (!await askConfirm('', t('„{name}“ entfernen?', { name: a.name }))) return; await api.del(`${NB}/${id}/attachments/${encodeURIComponent(a.name)}`).catch(fail); load() }} />
             </span>
           ))}
         </div>

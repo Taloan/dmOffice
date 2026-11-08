@@ -49,4 +49,27 @@ public class SpamFilterTests
         Assert.True(spam > 0.9, $"Junk-Mail bekam {spam}");
         Assert.True(ham < 0.1, $"Gute Mail bekam {ham}");
     }
+
+    [Fact]
+    public void Begruendung_nennt_die_staerksten_Merkmale_je_Richtung()
+    {
+        var db = NewDb();
+        for (int i = 0; i < 3; i++)
+        {
+            SpamFilter.Train(db, Spam($"spam{i}@test"), spam: true);
+            SpamFilter.Train(db, Ham($"ham{i}@test"), spam: false);
+        }
+        var (score, junk, good, lists, nspam, nham) = SpamFilter.Explain(db, Spam("neu-spam@test"));
+        Assert.True(score > 0.9);
+        Assert.Equal((3, 3), (nspam, nham));
+        Assert.NotEmpty(junk);
+        Assert.All(junk, r => Assert.True(r.P > 0.5));
+        Assert.All(good, r => Assert.True(r.P < 0.5));
+        Assert.Empty(lists);
+        // Ohne Gelerntes: keine Merkmale, nur der neutrale Wert
+        var empty = SpamFilter.Explain(NewDb(), Spam("x@test"));
+        Assert.Equal(0.5, empty.Score);
+        Assert.Empty(empty.Junk);
+    }
 }
+

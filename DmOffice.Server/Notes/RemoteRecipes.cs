@@ -15,7 +15,7 @@ namespace DmOffice.Notes;
 /// </summary>
 public static class RemoteRecipes
 {
-    private sealed record Recipe(string SyncId, string Title, string? Folder, List<string> Ingredients);
+    private sealed record Recipe(string SyncId, string Title, string? Folder, List<string> Ingredients, int? Kcal);
     private sealed record Loaded(string Stamp, List<Recipe> Recipes);
     private sealed record Catalog(DateTime At, string Root, string Active, List<CatalogEntry> Dbs);
 
@@ -23,7 +23,8 @@ public static class RemoteRecipes
     private static readonly ConcurrentDictionary<string, Catalog> Catalogs = new();
     private static readonly TimeSpan CatalogTtl = TimeSpan.FromMinutes(10);
 
-    public sealed record Ingredients(string SyncId, string Title, List<string> Items);
+    /// <param name="Kcal">Kalorien je Portion laut Rezept, sonst null.</param>
+    public sealed record Ingredients(string SyncId, string Title, List<string> Items, int? Kcal = null);
 
     /// <summary>Rezepte der anderen Datenbanken; leer ohne Abgleich oder E2EE-Passwort. Fehler einer Datenbank lassen die anderen stehen.</summary>
     public static async Task<List<Recipes.Entry>> AllAsync(UserSpace space, string? q, CancellationToken ct)
@@ -43,7 +44,7 @@ public static class RemoteRecipes
         if (wanted.Count == 0) return result;
         foreach (var (_, loaded) in await LoadAllAsync(space, ct))
             foreach (var r in loaded.Recipes.Where(r => wanted.Contains(r.SyncId)))
-                if (result.All(x => x.SyncId != r.SyncId)) result.Add(new Ingredients(r.SyncId, r.Title, r.Ingredients));
+                if (result.All(x => x.SyncId != r.SyncId)) result.Add(new Ingredients(r.SyncId, r.Title, r.Ingredients, r.Kcal));
         return result;
     }
 
@@ -103,7 +104,7 @@ public static class RemoteRecipes
         foreach (var note in items.OfType<NoteItem>().Where(x => x.Deleted == null && x.Archived == null && Recipes.IsRecipe(x.Tags, x.Plain ?? "")))
         {
             var row = new NoteRow { SyncId = note.Id, Folder = note.Folder, Title = note.Title ?? "", CustomTitle = note.CustomTitle, Html = note.Html ?? "", Plain = note.Plain ?? "", Tags = note.Tags };
-            recipes.Add(new Recipe(note.Id, row.DisplayTitle, note.Folder != null && paths.TryGetValue(note.Folder, out var p) ? p : null, Recipes.Ingredients(row)));
+            recipes.Add(new Recipe(note.Id, row.DisplayTitle, note.Folder != null && paths.TryGetValue(note.Folder, out var p) ? p : null, Recipes.Ingredients(row), Recipes.Kcal(row.Plain)));
         }
         var loaded = new Loaded(stamp, recipes.OrderBy(r => r.Title, StringComparer.CurrentCultureIgnoreCase).ToList());
         Cache[key] = loaded;

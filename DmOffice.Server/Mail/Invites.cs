@@ -19,7 +19,13 @@ public sealed record InviteDto(
     /// <summary>Andere Termine zur selben Zeit.</summary>
     List<string> Conflicts,
     /// <summary>Organisator hat geantwortet (METHOD:REPLY): wer und wie.</summary>
-    string? ReplyFrom, string? ReplyStatus);
+    string? ReplyFrom, string? ReplyStatus,
+    /// <summary>Eigene Einladung (Organisator oder Absender ist eine eigene Adresse): keine Antwort, stattdessen die Teilnehmer.</summary>
+    bool Mine = false,
+    /// <summary>Bei eigener Einladung: Teilnehmer mit Antwort (laut Kalender, sonst laut Mail).</summary>
+    List<InviteAttendee>? Attendees = null);
+
+public sealed record InviteAttendee(string Name, string Status);
 
 /// <summary>
 /// Einladungen annehmen, mit Vorbehalt annehmen, ablehnen - wie in Outlook.
@@ -51,7 +57,7 @@ public static class Invites
         p == null ? null : p.Value.StartsWith("mailto:", StringComparison.OrdinalIgnoreCase) ? p.Value[7..].Trim() : p.Value.Trim();
 
     private static HashSet<string> MyAddresses(UserSpace space) =>
-        space.Settings.MailAccounts.Select(a => a.Email.ToLowerInvariant()).ToHashSet();
+        space.Settings.MailAccounts.Select(a => a.Email.ToLowerInvariant()).Append(Pim.InternalInvites.InternalAddress(space.User)).ToHashSet();
 
     private static Prop? MyAttendee(UserSpace space, Component ev)
     {
@@ -98,10 +104,15 @@ public static class Invites
         string? myStatus = me?.Param("PARTSTAT")?.ToUpperInvariant();
 
         var existing = Existing(space, uid);
+        var mine = MyAddresses(space);
+        var own = (Mailto(org) is { } orgMail && mine.Contains(orgMail.ToLowerInvariant()))
+                  || m.From.Mailboxes.Any(f => mine.Contains(f.Address.ToLowerInvariant()));
         bool outdated = false;
+        Component? storedEv = null;
         if (existing is { } ex)
         {
             var stored = Ics.Parse(ex.Obj.Data).FirstOrDefault()?.Of("VEVENT").FirstOrDefault(e => e.Get("RECURRENCE-ID") == null);
+            storedEv = stored;
             if (stored != null)
             {
                 outdated = Seq(stored) > Seq(ev);
@@ -139,9 +150,17 @@ public static class Invites
             replyStatus = att.Param("PARTSTAT")?.ToUpperInvariant();
         }
 
+        // Eigene Einladung: wer eingeladen ist und wie geantwortet hat (der Kalender kennt die übernommenen Antworten)
+        List<InviteAttendee>? attendees = null;
+        if (own && method == "REQUEST")
+            attendees = (storedEv ?? ev).All("ATTENDEE")
+                .Where(a => Mailto(a) is { } x && !mine.Contains(x.ToLowerInvariant()))
+                .Select(a => new InviteAttendee(a.Param("CN") ?? Mailto(a) ?? "", (a.Param("PARTSTAT") ?? "NEEDS-ACTION").ToUpperInvariant()))
+                .ToList();
+
         return new InviteDto(method, uid, Seq(ev), ev.Text("SUMMARY") ?? "", start, end, allDay, ev.Text("LOCATION"),
-            org?.Param("CN"), Mailto(org), ev.Get("RRULE") != null, myStatus,
-            existing?.Coll.Id, existing?.Coll.Name, outdated, conflicts, replyFrom, replyStatus);
+            org?.Param("CN"), Mailto(org), ev.Get("RRULE") != null, own ? null : myStatus,
+            existing?.Coll.Id, existing?.Coll.Name, outdated, conflicts, replyFrom, replyStatus, own, attendees);
     }
 
     /// <summary>

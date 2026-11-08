@@ -1,3 +1,4 @@
+import { DmsMailRibbon } from '../dms/MailToDms'
 import {
   Button, Menu, MenuDivider, MenuItem, MenuItemCheckbox, MenuItemRadio, MenuList, MenuPopover, MenuTrigger, SearchBox, Spinner, Text,
   Tooltip, makeStyles, mergeClasses, tokens, Checkbox, Tab, TabList,
@@ -5,20 +6,22 @@ import {
 import {
   MailAdd20Regular, Delete20Regular, Archive20Regular, ShieldError20Regular, ShieldCheckmark20Regular, FolderArrowRight20Regular,
   Tag20Regular, MailRead20Regular, MailUnread20Regular, Flag20Regular, Flag20Filled, ArrowReply20Regular, ArrowReplyAll20Regular, ArrowForward20Regular,
-  Filter20Regular, ArrowSort20Regular, ArrowSwap20Regular, MoreHorizontal20Regular, ArrowLeft20Regular, ArrowUndo20Regular, Clock20Regular, CalendarAdd20Regular, Attach20Regular, Note20Regular,
+  Filter20Regular, ArrowSort20Regular, ArrowSwap20Regular, ArrowSync20Regular, MoreHorizontal20Regular, ArrowLeft20Regular, ArrowUndo20Regular, Clock20Regular, CalendarAdd20Regular, Attach20Regular, Note20Regular,
   TextLineSpacing20Regular, TextFontSize20Regular, PanelLeft20Regular, PanelRight20Regular, PanelRightContract20Regular, TextDescription20Regular,
-  PersonCircle20Regular, Settings20Regular, Navigation20Regular, CalendarLtr20Regular,
-  Open20Regular,
+  PersonCircle20Regular, PersonMail20Regular, Settings20Regular, Navigation20Regular, CalendarLtr20Regular,
+  Open20Regular, Filter20Filled,
 } from '@fluentui/react-icons'
+import { ruleFromMail } from './ruleFromMail'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Account, api, Folder, MailItem, Message, q } from '../api'
 import { prefetch } from './messageCache'
 import { useApp } from '../App'
-import { MobileRibbonRow, Ribbon, RibbonButton, RibbonDisplayMenu, RibbonDivider, RibbonTabs } from '../shell/Ribbon'
+import { MobileRibbonRow, Ribbon, RibbonButton, RibbonDisplayMenu, RibbonDivider, RibbonFrame, RibbonTabs } from '../shell/Ribbon'
 import { useBackClose, useIsMobile } from '../shell/mobile'
 import { TodoBar } from './TodoBar'
 import { CategoryMenuList, CategoryDot, useCategories } from './Categories'
 import { SnoozeMenu, snoozeOptions } from './SnoozeMenu'
+import { ExpiryMenuItems, expiryOf, useExpiries } from './ExpiryMenu'
 import { fmtDate } from '../shell/hooks'
 import { usePrefs } from '../prefs'
 import { useDebounced } from '../shell/hooks'
@@ -26,15 +29,22 @@ import { FolderPane, folderLabel } from './FolderPane'
 import { FollowUpItems, FollowUpRibbon } from './FollowUpMenu'
 import { SEARCH_FOLDERS_CHANGED, useVirtualName } from './VirtualFolders'
 import { MessageList } from './MessageList'
+import { checkTrust, TrustCheck, TrustOffer } from './TrustOffer'
 import { ReadingPane } from './ReadingPane'
 import { Compose, ComposeHandle, ComposeInit, QueuedSend, forwardAsAttachmentOf, forwardOf, replyOf } from './Compose'
 import { OutboxView } from './Outbox'
+import { NewAliasDialog } from './AliasDialog'
+import { AdoptAliasDialog, CATCHALL_CHANGED, catchallTitle, setAliasBlocked, useCatchall } from './CatchallFolders'
 import { openComposeWindow, openMailWindow } from './MailWindow'
+import { takeCompose } from './handoff'
 import { EventDialog, EventDraft, guessStart } from '../calendar/EventDialog'
 import type { Collection } from '../api'
 import { locale, t } from '../i18n'
+import { usePaneWidth } from '../shell/Splitter'
+import { askConfirm } from '../shell/context'
 
 const useStyles = makeStyles({
+  smartBar: { display: 'flex', flexWrap: 'nowrap', gap: '4px', padding: '2px 8px 4px', overflowX: 'auto', flexShrink: 0, scrollbarWidth: 'none', '& > *': { flexShrink: 0, whiteSpace: 'nowrap' } },
   outer: { display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 },
   root: { display: 'flex', flex: 1, minWidth: 0, minHeight: 0, position: 'relative' },
   folders: { width: '250px', flexShrink: 0, borderRight: `1px solid ${tokens.colorNeutralStroke2}`, display: 'flex', flexDirection: 'column', minHeight: 0 },
@@ -76,6 +86,10 @@ function useWidth(): [number, (el: HTMLElement | null) => void] {
 
 export default function MailView({ status }: { status: any }) {
   const s = useStyles()
+  // Verstellbare Breiten: Ordnerleiste, Liste (Lesebereich rechts), Aufgabenleiste
+  const folderW = usePaneWidth('mail.folders', 250)
+  const listW = usePaneWidth('mail.list', 380, 260, 900)
+  const todoW = usePaneWidth('mail.todo', 290)
   // Stufen wie Outlook: erst schwebt die Aufgabenleiste, dann zeigt die offene Mail
   // die ganze Breite, zuletzt klappt der Ordnerbereich in ein Menue
   const [width, rootRef] = useWidth()
@@ -130,7 +144,7 @@ export default function MailView({ status }: { status: any }) {
   const [filter, setFilter] = useState<string>('')
   // Prio-Posteingang: Reiter Relevant/Sonstige im Posteingang (ohne eigenen Filter)
   const [focusTab, setFocusTab] = useState<'focused' | 'other'>('focused')
-  const [focusInfo, setFocusInfo] = useState<{ enabled: boolean; focused: number; other: number } | null>(null)
+  const [focusInfo, setFocusInfo] = useState<{ enabled: boolean; focused: number; other: number; focusedTotal?: number; otherTotal?: number } | null>(null)
   const [search, setSearch] = useState('')
   const searchSort = prefs.searchSort ?? (prefs.searchRelevance ? 'relevance' : 'newest')
   // Reihenfolge der Mailliste eines Ordners (der Server sortiert, damit auch lange Ordner stimmen)
@@ -153,6 +167,8 @@ export default function MailView({ status }: { status: any }) {
   }
   // Gerade gesendet: noch ein paar Sekunden zurueckrufbar (auch aus einem eigenen Verfassen-Fenster)
   const [undo, setUndo] = useState<QueuedSend | null>(null)
+  // Nach „Kein Junk“ einer einzelnen Mail: Angebot „Diesem Absender immer vertrauen?“ (vorher vom Server geprüft)
+  const [trustOffer, setTrustOffer] = useState<TrustCheck | null>(null)
   const [, tick] = useState(0)
   useEffect(() => { (window as any).__dmUndo = (q: QueuedSend) => setUndo(q); return () => { delete (window as any).__dmUndo } }, [])
   useEffect(() => {
@@ -181,8 +197,8 @@ export default function MailView({ status }: { status: any }) {
     composeDirty.current = false
     setComposeState(null)
   }
-  const setCompose = (init: ComposeInit | null) => {
-    if (init && compose && composeDirty.current && !confirm(t('Aktuellen Entwurf verwerfen?'))) return
+  const setCompose = async (init: ComposeInit | null) => {
+    if (init && compose && composeDirty.current && !await askConfirm('', t('Aktuellen Entwurf verwerfen?'))) return
     composeDirty.current = false
     setComposeState(init ? { id: ++composeSeq.current, init } : null)
   }
@@ -191,6 +207,8 @@ export default function MailView({ status }: { status: any }) {
   // Wiedervorlage: wann welche Mail zurueckkommt
   const [snoozes, setSnoozes] = useState<{ account: string; uid: number; messageId?: string; until: string }[]>([])
   useEffect(() => { api.get('/api/mail/snoozes').then(setSnoozes).catch(() => {}) }, [version])
+  // Entfernen nach Zeit: wann welche Mail in den Papierkorb kommt oder vernichtet wird
+  const expiries = useExpiries(version)
   const listRef = useRef(items)
   listRef.current = items
 
@@ -219,6 +237,19 @@ export default function MailView({ status }: { status: any }) {
     })
     setTimeout(() => window.dispatchEvent(new Event('dmoffice:mailstatus')), 300)
   }
+
+  // Aus einem anderen Bereich übergebener Entwurf (Belege aus Finanzen)
+  // Auch, wenn der Mailbereich schon offen war: beim Wechsel dorthin nachsehen
+  useEffect(() => {
+    if (!accounts?.length) return
+    const check = () => {
+      const handed = takeCompose()
+      if (handed) setCompose({ ...handed, account: accounts.some(a => a.id === handed.account) ? handed.account : accounts[0].id })
+    }
+    check()
+    window.addEventListener('hashchange', check)
+    return () => window.removeEventListener('hashchange', check)
+  }, [accounts])
 
   // Aus den Kontakten: "E-Mail an ..."
   useEffect(() => {
@@ -277,8 +308,11 @@ export default function MailView({ status }: { status: any }) {
   const listCache = useRef(new Map<string, { items: MailItem[]; total: number }>())
   const inboxSel = !!sel && folders[sel.account]?.find(f => f.path === sel.folder)?.special === 'inbox'
   const focusOn = inboxSel && !!focusInfo?.enabled
+  // Zähler der Reiter und Kategorien wie beim Ordner eingestellt (Ordneranzahl: ungelesene oder alle)
+  const totalMode = !!sel && prefs.folderCount?.[sel.account + '|' + sel.folder] === 'total'
+  const countOf = (unread: number, total?: number) => totalMode && total != null ? total : unread
   const listFilter = filter || (focusOn ? focusTab : '')
-  const listKey = sel ? `${sel.account}|${sel.folder}|${listFilter}` : ''
+  const listKey = sel ? `${sel.account}|${sel.folder}|${listFilter}|${listSort}` : ''
   const itemsKey = useRef('')
   const remember = (key: string, items: MailItem[], total: number) => {
     const c = listCache.current
@@ -365,6 +399,12 @@ export default function MailView({ status }: { status: any }) {
   const selRef = useRef(sel)
   selRef.current = sel
   const loadListRef = useRef(loadList)
+  // Alias gesperrt oder übernommen: Liste neu (Zustand, Ordner)
+  useEffect(() => {
+    const reload = () => { loadListRef.current(true) }
+    window.addEventListener(CATCHALL_CHANGED, reload)
+    return () => window.removeEventListener(CATCHALL_CHANGED, reload)
+  }, [])
   loadListRef.current = loadList
   useEffect(() => {
     const on = () => {
@@ -409,10 +449,22 @@ export default function MailView({ status }: { status: any }) {
   // Suchordner ("sf:"), Kategorien ("cat:") und Alle Posteingaenge: Mails aus allen Konten
   const virtual = !!sel && (sel.folder.startsWith('sf:') || sel.folder.startsWith('cat:') || sel.folder === '__unified')
   const virtualName = useVirtualName(virtual ? sel!.folder : undefined)
+  // Catchall-Ordner: oben die Adresse des Alias (mit Notiz) bzw. die Domain statt des Ordnernamens
+  const catchall = useCatchall()
+  const catchallName = sel && !virtual ? catchallTitle(catchall, sel.account, sel.folder) : null
   // Verschieben geht in einen Ordner des Kontos - im virtuellen Ordner nur, wenn alle Mails aus einem Konto sind
   const moveAccount = !virtual ? sel?.account : new Set(selectedItems.map(i => i.account)).size === 1 ? selectedItems[0].account : undefined
 
   // Gruppiert nach Konto und Ordner - in der Suche koennen es mehrere sein
+  // Neu einordnen (nur im Posteingang): Junk-Erkennung, Relevant/Sonstige und Kategorien für Mails, die schon da waren
+  const inInbox = selectedItems.length > 0 && selectedItems.every(i => folders[i.account]?.find(f => f.path === i.folder)?.special === 'inbox')
+  const reclassify = async () => {
+    try {
+      let n = 0
+      for (const g of groups()) n += (await api.post<{ count: number }>(`/api/mail/${g.account}/reclassify`, { folder: g.folder, uids: g.uids })).count
+      notify(t('Wird neu eingeordnet'), t('{n} Mails – Junk-Erkennung, Relevant/Sonstige und Kategorien. Den Fortschritt siehst du unter „Aktivität“.', { n }))
+    } catch (e) { fail(e) }
+  }
   const groups = () => {
     const g = new Map<string, { account: string; folder: string; uids: number[] }>()
     for (const i of selectedItems) {
@@ -448,7 +500,11 @@ export default function MailView({ status }: { status: any }) {
     const all = selectedItems.map(i => i.id)
     if (removes && (what !== 'archive' || selectedItems.every(i => folders[i.account]?.some(f => f.special === 'archive')))) afterRemove(all)
     else if (!removes) setItems(list => list.map(i => !all.includes(i.id) ? i :
-      { ...i, seen: what === 'read' ? true : what === 'unread' ? false : i.seen, flagged: what === 'flag' ? true : what === 'unflag' ? false : i.flagged }))
+      { ...i, seen: what === 'read' ? true : what === 'unread' ? false : i.seen, flagged: what === 'flag' ? true : what === 'unflag' ? false : i.flagged,
+        spam: what === 'notjunk' ? 0 : i.spam }))
+    // Vor dem Verschieben prüfen lassen, ob sich der Absender als sicher eintragen ließe
+    const trust = what === 'notjunk' && selectedItems.length === 1
+      ? checkTrust(selectedItems[0].account, selectedItems[0].folder, selectedItems[0].uid).catch(() => null) : null
     // Bereits erledigte Gruppen
     const done: number[] = []
     try {
@@ -456,11 +512,11 @@ export default function MailView({ status }: { status: any }) {
         const body = { folder: g.folder, uids: g.uids }
         if (what === 'delete') await api.post(`/api/mail/${g.account}/delete`, body)
         else if (what === 'junk') await api.post(`/api/mail/${g.account}/junk`, body)
-        else if (what === 'notjunk') await api.post(`/api/mail/${g.account}/notjunk`, body)
+        else if (what === 'notjunk') { await trust; await api.post(`/api/mail/${g.account}/notjunk`, body) }
         else if (what === 'archive') {
           const archive = folders[g.account]?.find(f => f.special === 'archive')
           // Konto ohne Archiv ueberspringen, die anderen trotzdem erledigen
-          if (!archive) { notify(t('Kein Archiv-Ordner'), t('Lege beim Mailanbieter einen Ordner „Archiv“ an.'), 'warning'); continue }
+          if (!archive) { notify(t('Kein Archiv-Ordner'), t('Lege in den Konto-Einstellungen unter „Ordner“ einen Archiv-Ordner fest oder an.'), 'warning'); continue }
           await api.post(`/api/mail/${g.account}/move`, { ...body, target: archive.path })
         }
         else if (what === 'read' || what === 'unread') {
@@ -473,9 +529,8 @@ export default function MailView({ status }: { status: any }) {
       }
       if (removes && done.length < all.length) afterRemove(done)
       if ((what === 'flag' || what === 'unflag') && accounts) loadFolders(accounts)
-      if (what === 'notjunk') setItems(list => list.map(i => selected.includes(i.id) ? { ...i, spam: 0 } : i))
       if (what === 'junk') notify(t('Als Junk gelernt'))
-      if (what === 'notjunk') notify(t('Als „Kein Junk“ gelernt'))
+      if (what === 'notjunk') { const tc = await trust; if (tc) setTrustOffer(tc); else notify(t('Als „Kein Junk“ gelernt')) }
       if (target) { /* nur fuer move */ }
     } catch (e) {
       fail(e)
@@ -490,6 +545,61 @@ export default function MailView({ status }: { status: any }) {
       for (const g of groups()) await api.post(`/api/mail/${g.account}/category`, { folder: g.folder, uids: g.uids, key, on })
       setItems(list => list.map(i => !selected.includes(i.id) ? i :
         { ...i, keywords: on ? [...new Set([...(i.keywords ?? []), key])] : (i.keywords ?? []).filter(k => k !== key) }))
+    } catch (e) { fail(e) }
+  }
+  // Klick auf einen Badge: Kategorie nur von dieser Mail nehmen; im Ordner dieser Kategorie verschwindet sie aus der Liste
+  const uncategorize = async (i: MailItem, key: string) => {
+    const targets = selected.includes(i.id) ? selectedItems.filter(x => x.keywords?.includes(key)) : [i]
+    const ids = new Set(targets.map(x => x.id))
+    if (sel?.folder === 'cat:' + key) afterRemove([...ids])
+    else setItems(list => list.map(x => ids.has(x.id) ? { ...x, keywords: (x.keywords ?? []).filter(k => k !== key) } : x))
+    const byFolder = new Map<string, { account: string; folder: string; uids: number[] }>()
+    for (const x of targets) {
+      const k = x.account + '|' + x.folder
+      if (!byFolder.has(k)) byFolder.set(k, { account: x.account, folder: x.folder, uids: [] })
+      byFolder.get(k)!.uids.push(x.uid)
+    }
+    try { for (const g of byFolder.values()) await api.post(`/api/mail/${g.account}/category`, { folder: g.folder, uids: g.uids, key, on: false }) }
+    catch (e) { fail(e); loadList(true) }
+  }
+  // Gezogene Mails nach Konto und Ordner (fuer Relevant/Sonstige per Ziehen)
+  const draggedGroups = (ids: number[]) => {
+    const by = new Map<string, { account: string; folder: string; uids: number[] }>()
+    for (const i of items.filter(x => ids.includes(x.id))) {
+      const k = i.account + '|' + i.folder
+      if (!by.has(k)) by.set(k, { account: i.account, folder: i.folder, uids: [] })
+      by.get(k)!.uids.push(i.uid)
+    }
+    return [...by.values()]
+  }
+  const dropIds = (e: React.DragEvent): number[] | null => {
+    e.preventDefault()
+    try { const d = JSON.parse(e.dataTransfer.getData('application/x-dmoffice-mail') || '{}'); return d.ids?.length ? d.ids : null } catch { return null }
+  }
+  const dragOk = (e: React.DragEvent) => { if (e.dataTransfer.types.includes('application/x-dmoffice-mail')) { e.preventDefault(); e.dataTransfer.dropEffect = 'move' } }
+  // Auf „Relevant“ bzw. „Sonstige“ gezogen: dorthin, der Filter lernt daraus
+  const focusDropped = async (ids: number[], focused: boolean) => {
+    try {
+      for (const g of draggedGroups(ids)) await api.post(`/api/mail/${g.account}/focus`, { folder: g.folder, uids: g.uids, focused, always: false })
+      if ((focusTab === 'focused') !== focused) afterRemove(ids)
+      notify(focused ? t('Nach Relevant verschoben') : t('Nach Sonstige verschoben'))
+      loadFocus()
+    } catch (e) { fail(e) }
+  }
+  // Mails auf eine Kategorie im Ordnerbereich gezogen: zuordnen (eine lernende Kategorie lernt daraus)
+  const categorizeDropped = async (key: string, ids: number[]) => {
+    const list = items.filter(i => ids.includes(i.id))
+    const byFolder = new Map<string, { account: string; folder: string; uids: number[] }>()
+    for (const i of list) {
+      const k = i.account + '|' + i.folder
+      if (!byFolder.has(k)) byFolder.set(k, { account: i.account, folder: i.folder, uids: [] })
+      byFolder.get(k)!.uids.push(i.uid)
+    }
+    try {
+      for (const g of byFolder.values()) await api.post(`/api/mail/${g.account}/category`, { folder: g.folder, uids: g.uids, key, on: true })
+      setItems(l => l.map(i => !ids.includes(i.id) ? i : { ...i, keywords: [...new Set([...(i.keywords ?? []), key])] }))
+      const name = categories.find(c => c.key === key)?.name ?? key
+      notify(list.length === 1 ? t('Kategorie „{name}“ zugeordnet', { name }) : t('{n} Mails der Kategorie „{name}“ zugeordnet', { n: list.length, name }))
     } catch (e) { fail(e) }
   }
   const clearCategories = async () => {
@@ -564,6 +674,8 @@ export default function MailView({ status }: { status: any }) {
     try { const m = await messageFor(i); setCompose(forwardAsAttachmentOf(m, accounts.find(a => a.id === m.account)!)) } catch (e) { fail(e) }
   }
   const [eventDraft, setEventDraft] = useState<{ draft: EventDraft; calendars: Collection[] } | null>(null)
+  const [newAlias, setNewAlias] = useState(false)
+  const [adoptFor, setAdoptFor] = useState<MailItem | null>(null)
   /** Termin aus einer Mail: Betreff als Titel, Text als Beschreibung, ein Datum im Text als Vorschlag. */
   const eventFrom = async (i: MailItem) => {
     try {
@@ -590,6 +702,8 @@ export default function MailView({ status }: { status: any }) {
   // Tastatur wie in Outlook
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Ausgeblendet (anderer Bereich aktiv): nicht reagieren
+      if (!location.hash.startsWith('#/mail')) return
       const t = e.target as HTMLElement
       if (compose || t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName)) return
       // Nicht hinter offenen Dialogen und Menues
@@ -667,9 +781,14 @@ export default function MailView({ status }: { status: any }) {
         {!many && <MenuItem icon={<ArrowReply20Regular />} onClick={() => { replyTo(item, false); close() }}>{t('Antworten')}</MenuItem>}
         {!many && <MenuItem icon={<ArrowReplyAll20Regular />} onClick={() => { replyTo(item, true); close() }}>{t('Allen antworten')}</MenuItem>}
         {!many && <MenuItem icon={<ArrowForward20Regular />} onClick={() => { forwardItem(item); close() }}>{t('Weiterleiten')}</MenuItem>}
+        {!many && item.alias && item.aliasState === 'unknown' && <MenuItem icon={<PersonMail20Regular />} onClick={() => { setAdoptFor(item); close() }}>{t('Als Alias anlegen …')}</MenuItem>}
+        {!many && item.alias && item.aliasState && item.aliasState !== 'unknown' && <MenuItem icon={<PersonMail20Regular />}
+          onClick={() => { setAliasBlocked(item.alias!, item.aliasState !== 'blocked').catch(fail); close() }}>
+          {item.aliasState === 'blocked' ? t('Alias {a} entsperren', { a: item.alias }) : t('Alias {a} sperren', { a: item.alias })}</MenuItem>}
         {!many && <MenuItem icon={<Attach20Regular />} onClick={() => { forwardAsAttachment(item); close() }}>{t('Als Anlage weiterleiten')}</MenuItem>}
         {!many && <MenuItem icon={<CalendarAdd20Regular />} onClick={() => { eventFrom(item); close() }}>{t('Termin aus E-Mail')}</MenuItem>}
         {!many && <MenuItem icon={<Note20Regular />} onClick={() => { toNote(item); close() }}>{t('Als Notiz speichern')}</MenuItem>}
+        {!many && <MenuItem icon={<Filter20Filled />} onClick={() => { ruleFromMail(item, shown).catch(fail); close() }}>{t('Regel erstellen …')}</MenuItem>}
         <MenuDivider />
         <MenuItem icon={<Delete20Regular />} onClick={() => { act('delete'); close() }}>{t('Löschen')}</MenuItem>
         <MenuItem icon={<Archive20Regular />} onClick={() => { act('archive'); close() }}>{t('Archivieren')}</MenuItem>
@@ -727,10 +846,13 @@ export default function MailView({ status }: { status: any }) {
             </MenuPopover>
           </Menu>
         )}
+        <ExpiryMenuItems targets={selectedItems} onClose={close} onError={fail}
+          onDone={w => notify(w === 'set' ? t('Entfernen nach Zeit eingeplant') : t('Entfernen nach Zeit zurückgenommen'))} />
         <MenuDivider />
         {junkFolder
           ? <MenuItem icon={<ShieldCheckmark20Regular />} onClick={() => { act('notjunk'); close() }}>{t('Kein Junk')}</MenuItem>
           : <MenuItem icon={<ShieldError20Regular />} onClick={() => { act('junk'); close() }}>{t('Als Junk melden')}</MenuItem>}
+        {inInbox && <MenuItem icon={<ArrowSync20Regular />} onClick={() => { reclassify(); close() }}>{t('Neu einordnen')}</MenuItem>}
       </MenuList>
     )
   }
@@ -794,6 +916,9 @@ export default function MailView({ status }: { status: any }) {
       onClick={() => update({ showPreview: !(prefs.showPreview ?? true) })} />
     <RibbonButton icon={<PersonCircle20Regular />} label={t("Absender\u00ADbilder")} pressed={prefs.showAvatars ?? true}
       onClick={() => update({ showAvatars: !(prefs.showAvatars ?? true) })} />
+    {/* Kategorien als Ordner im Ordnerbereich */}
+    <RibbonButton icon={<Tag20Regular />} label={t("Kategorie­ordner")} pressed={prefs.categoryFolders ?? true}
+      onClick={() => update({ categoryFolders: !(prefs.categoryFolders ?? true) })} />
     <RibbonDivider />
     <RibbonButton icon={<Settings20Regular />} label={t("Ansicht\u00ADeinstellungen")} onClick={() => { location.hash = '#/settings/list' }} />
     <RibbonDivider />
@@ -801,6 +926,7 @@ export default function MailView({ status }: { status: any }) {
   </>
   const startItems = <>
     <RibbonButton primary icon={<MailAdd20Regular />} label={t('Neue E-Mail')} onClick={newMail} />
+    <RibbonButton icon={<PersonMail20Regular />} label={t('Catchall-Alias')} onClick={() => setNewAlias(true)} />
     <RibbonDivider />
     <RibbonButton icon={<Delete20Regular />} label={t('Löschen')} disabled={!selected.length} onClick={() => act('delete')} />
     <RibbonButton icon={<Archive20Regular />} label={t('Archivieren')} disabled={!selected.length} onClick={() => act('archive')} />
@@ -817,6 +943,7 @@ export default function MailView({ status }: { status: any }) {
     <RibbonButton icon={<ArrowForward20Regular />} label={t('Weiterleiten')} disabled={!shown} onClick={forward} />
     <RibbonButton icon={<CalendarAdd20Regular />} label={t('Termin')} disabled={!current} onClick={() => current && eventFrom(current)} />
     <RibbonButton icon={<Note20Regular />} label={t('Als Notiz')} disabled={!current} onClick={() => current && toNote(current)} />
+    <DmsMailRibbon items={selectedItems} disabled={!selected.length} />
     <RibbonDivider />
     <Menu>
       <MenuTrigger disableButtonEnhancement>
@@ -844,6 +971,7 @@ export default function MailView({ status }: { status: any }) {
           <MenuItem icon={<Attach20Regular />} disabled={!current} onClick={() => current && forwardAsAttachment(current)}>{t('Als Anlage weiterleiten')}</MenuItem>
           <MenuItem icon={<CalendarAdd20Regular />} disabled={!current} onClick={() => current && eventFrom(current)}>{t('Termin aus E-Mail')}</MenuItem>
           <MenuItem icon={<Note20Regular />} disabled={!current} onClick={() => current && toNote(current)}>{t('Als Notiz speichern')}</MenuItem>
+          <MenuItem icon={<Filter20Filled />} disabled={!current} onClick={() => current && ruleFromMail(current, shown).catch(fail)}>{t('Regel erstellen …')}</MenuItem>
           <MenuDivider />
           <MenuItem icon={<MailRead20Regular />} onClick={() => act('read')}>{t('Als gelesen markieren (Strg+Q)')}</MenuItem>
           <MenuItem icon={<MailUnread20Regular />} onClick={() => act('unread')}>{t('Als ungelesen markieren (Strg+U)')}</MenuItem>
@@ -858,6 +986,7 @@ export default function MailView({ status }: { status: any }) {
   // Handy: nur das Noetigste als Symbol, der Rest im Menue "Mehr" (wie beim Rechtsklick)
   const mobileStart = <>
     <RibbonButton primary icon={<MailAdd20Regular />} label={t('Neue E-Mail')} onClick={newMail} />
+    {!current && <RibbonButton icon={<PersonMail20Regular />} label={t('Catchall-Alias')} onClick={() => setNewAlias(true)} />}
     {current && <>
       <RibbonDivider />
       <RibbonButton icon={<Delete20Regular />} label={t('Löschen')} onClick={() => act('delete')} />
@@ -879,7 +1008,7 @@ export default function MailView({ status }: { status: any }) {
           onView={() => update({ ribbonTab: ribbonTab === 'view' ? 'start' : 'view' })} after={todoButton}>
           {ribbonTab === 'view' ? viewItems : mobileStart}
         </MobileRibbonRow>
-      ) : <>
+      ) : <RibbonFrame area="mail" tabs={
       <div className={s.tabsRow}>
         {foldersCollapsed && (
           <Tooltip content={t('Ordnerbereich')} relationship="label">
@@ -890,23 +1019,25 @@ export default function MailView({ status }: { status: any }) {
           <RibbonTabs tabs={[['start', t('Start')], ['view', t('Ansicht')]]} value={prefs.ribbonTab ?? 'start'} onChange={v => update({ ribbonTab: v as any })} />
         </div>
         {todoButton}
-      </div>
+      </div>}>
       <Ribbon>{ribbonTab === 'view' ? viewItems : startItems}</Ribbon>
-      </>}
+      </RibbonFrame>}
     <div className={s.root}>
       {foldersCollapsed && foldersOpen && <div className={s.backdrop} onClick={() => setFoldersOpen(false)} />}
       <div className={mergeClasses(s.folders, foldersCollapsed && s.flyout)}
-        style={foldersCollapsed ? (foldersOpen ? { left: 0, width: mobile ? 'min(86vw, 320px)' : 280 } : { display: 'none' }) : (prefs.folderPane ?? true) ? undefined : { display: 'none' }}>
-        {(status?.outbox ?? 0) > 0 && (
+        style={foldersCollapsed ? (foldersOpen ? { left: 0, width: mobile ? 'min(86vw, 320px)' : 280 } : { display: 'none' }) : (prefs.folderPane ?? true) ? { width: folderW.width, position: 'relative' } : { display: 'none' }}>
+        {!foldersCollapsed && folderW.handle('right', true)}
+        {/* Immer da, auch leer: Erschiene der Eintrag erst mit der ersten Mail, rutschte die ganze Ordnerleiste nach unten */}
+        {accounts && accounts.length > 0 && (
           <Button appearance={sel?.folder === '__outbox' ? 'secondary' : 'subtle'} icon={<Clock20Regular />}
             style={{ justifyContent: 'flex-start', margin: '6px 8px 0' }}
-            onClick={() => { if (compose) leaveCompose(); if (accounts?.length) setSel({ account: accounts[0].id, folder: '__outbox' }); setSelected([]); setMessage(null); setSearch(''); setFoldersOpen(false) }}>
-            {t('Postausgang')} ({status.outbox})
+            onClick={() => { if (compose) leaveCompose(); setSel({ account: accounts[0].id, folder: '__outbox' }); setSelected([]); setMessage(null); setSearch(''); setFoldersOpen(false) }}>
+            {t('Postausgang')}{(status?.outbox ?? 0) > 0 ? ` (${status!.outbox})` : ''}
           </Button>
         )}
         <FolderPane accounts={accounts} folders={folders} selection={sel} status={status}
           onSelect={x => { if (compose) leaveCompose(); autoSelect.current = true; setSel(x); setSelected([]); setMessage(null); setSearch(''); setFoldersOpen(false) }}
-          onDrop={(account, target, ids) => move(account, target, ids)}
+          onDrop={(account, target, ids) => move(account, target, ids)} onCategoryDrop={categorizeDropped}
           onChanged={() => loadFolders(accounts)} />
       </div>
       <div className={s.content}>
@@ -920,12 +1051,13 @@ export default function MailView({ status }: { status: any }) {
         )}
         <div style={{ flex: 1, display: sel?.folder === '__outbox' ? 'none' : 'flex', minHeight: 0, minWidth: 0, position: 'relative' }}>
         <div className={mergeClasses(s.panes, pane === 'bottom' && s.panesBottom)}>
-          <div className={mergeClasses(s.list, pane === 'bottom' && s.listBottom)} style={pane === 'off' && (current || compose) ? { display: 'none' } : pane === 'off' ? { width: '100%', borderRight: 'none' } : undefined}>
+          <div className={mergeClasses(s.list, pane === 'bottom' && s.listBottom)} style={pane === 'off' && (current || compose) ? { display: 'none' } : pane === 'off' ? { width: '100%', borderRight: 'none' } : pane === 'right' ? { width: listW.width, position: 'relative' } : undefined}>
+            {pane === 'right' && listW.handle('right', true)}
             <div className={s.listHead}>
               <SearchBox placeholder={t('Suchen (von:, an:, betreff:)')} value={search} onChange={(_, d) => setSearch(d.value)} size="medium" />
               <div className={s.listTitle}>
                 <Text weight="semibold" size={400} truncate>
-                  {query ? (total === 1 ? t('Suche: 1 Treffer') : t('Suche: {n} Treffer', { n: total })) : virtualName ?? folderLabel(currentFolder)}
+                  {query ? (total === 1 ? t('Suche: 1 Treffer') : t('Suche: {n} Treffer', { n: total })) : virtualName ?? catchallName ?? folderLabel(currentFolder)}
                   {query && remoteSearch && <Text size={200} weight="regular" style={{ marginLeft: 6, color: tokens.colorNeutralForeground3 }}>{t('sucht auch beim Anbieter …')}</Text>}
                 </Text>
                 {query ? (
@@ -1001,16 +1133,19 @@ export default function MailView({ status }: { status: any }) {
             </div>
             {focusOn && !query && !filter && (
               <TabList size="small" selectedValue={focusTab} onTabSelect={(_, d) => setFocusTab(d.value as 'focused' | 'other')} style={{ padding: '0 8px' }}>
-                <Tab value="focused">{t('Relevant')}{focusInfo!.focused > 0 ? ` (${focusInfo!.focused})` : ''}</Tab>
-                <Tab value="other">{t('Sonstige')}{focusInfo!.other > 0 ? ` (${focusInfo!.other})` : ''}</Tab>
+                <Tab value="focused" onDragOver={dragOk} onDrop={e => { const ids = dropIds(e); if (ids) focusDropped(ids, true) }}>{t('Relevant')}{countOf(focusInfo!.focused, focusInfo!.focusedTotal) > 0 ? ` (${countOf(focusInfo!.focused, focusInfo!.focusedTotal)})` : ''}</Tab>
+                <Tab value="other" onDragOver={dragOk} onDrop={e => { const ids = dropIds(e); if (ids) focusDropped(ids, false) }}>{t('Sonstige')}{countOf(focusInfo!.other, focusInfo!.otherTotal) > 0 ? ` (${countOf(focusInfo!.other, focusInfo!.otherTotal)})` : ''}</Tab>
               </TabList>
             )}
+            {trustOffer && <TrustOffer check={trustOffer} onClose={() => setTrustOffer(null)} />}
             <MessageList items={listItems} grouped={query ? searchSort === 'newest' || searchSort === 'oldest' : listSort === 'newest' || listSort === 'oldest'} selected={selected}
               onSelect={ids => { if (compose) leaveCompose().then(() => setSelected(ids)); else setSelected(ids) }} loading={loading}
               onContextMenu={(item, x, y) => setCtx({ item, x, y })}
+              onRemoveCategory={uncategorize}
               showFolder={!!query || sel?.folder === '__flagged' || virtual} folders={folders} spamCutoffs={null}
               more={!query && items.length < total} onMore={() => setPage(p => p + 1)}
               snoozeOf={snoozeOf}
+              expiryOf={i => expiryOf(expiries, i)}
               onOpen={item => { if (currentFolder?.special !== 'drafts') openMailWindow(item) }}
               empty={query ? 'search' : filter ? 'filter' : sel && folders[sel.account]?.find(f => f.path === sel.folder)?.special === 'inbox' ? 'inbox' : sel && !virtual && !sel.folder.startsWith('__') ? 'folder' : undefined}
               onToggleFlag={async i => {
@@ -1047,7 +1182,7 @@ export default function MailView({ status }: { status: any }) {
                   setItems(list => list.map(x => x.id === current.id ? { ...x, seen: true } : x))
                   bumpUnread([{ account: current.account, folder: current.folder, delta: -1 }])
                 }
-              }} onReply={reply} onForward={forward} onAct={act} />
+              }} onReply={reply} onForward={forward} onAct={act} onRemoveCategory={k => uncategorize(current, k)} />
             ) : (
               <div className={s.empty}>
                 {selected.length > 1 ? <Text>{t('{n} Mails ausgewählt', { n: selected.length })}</Text> : <Text>{t('Wähle eine Mail aus.')}</Text>}
@@ -1058,8 +1193,9 @@ export default function MailView({ status }: { status: any }) {
           {(prefs.todoBar ?? []).length > 0 && (!todoFloating || todoOpen) && (
             <>
               {todoFloating && <div className={s.backdrop} onClick={() => setTodoOpen(false)} />}
+              {!todoFloating && todoW.handle('left')}
               <div className={todoFloating ? s.flyout : undefined} style={todoFloating ? { right: 0 } : { display: 'flex' }}>
-                <TodoBar onWrite={(address, name) => accounts?.length && setCompose({ account: sel?.account ?? accounts[0].id, to: [name ? `"${name}" <${address}>` : address], cc: [], bcc: [], subject: '', html: '' })} />
+                <TodoBar width={todoFloating ? undefined : todoW.width} onWrite={(address, name) => accounts?.length && setCompose({ account: sel?.account ?? accounts[0].id, to: [name ? `"${name}" <${address}>` : address], cc: [], bcc: [], subject: '', html: '' })} />
               </div>
             </>
           )}
@@ -1072,6 +1208,8 @@ export default function MailView({ status }: { status: any }) {
           <MenuPopover>{actionList(ctx.item, () => setCtx(null))}</MenuPopover>
         </Menu>
       )}
+      {newAlias && <NewAliasDialog onClose={() => setNewAlias(false)} />}
+      {adoptFor?.alias && <AdoptAliasDialog address={adoptFor.alias} sender={adoptFor.from?.name} onClose={() => setAdoptFor(null)} />}
       {eventDraft && (
         <EventDialog draft={eventDraft.draft} calendars={eventDraft.calendars}
           onClose={saved => { setEventDraft(null); if (saved) notify(t('Termin angelegt')) }} />

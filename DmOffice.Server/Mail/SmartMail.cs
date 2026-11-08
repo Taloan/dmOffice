@@ -173,7 +173,7 @@ public static class SmartMail
         ("UPS", new(@"(^|[@.])ups\.com$", RegexOptions.IgnoreCase)),
     };
 
-    private static readonly Regex Delivered = new(@"(wurde|ist)\s+(erfolgreich\s+)?zugestellt|has been delivered|was delivered|zugestellt am", RegexOptions.IgnoreCase);
+    private static readonly Regex Delivered = new(@"^\s*(zugestellt|geliefert|delivered)\s*:|(wurde|ist)\s+(erfolgreich\s+)?zugestellt|has been delivered|was delivered|zugestellt am", RegexOptions.IgnoreCase);
     private static readonly Regex Announce = new(@"zustellung|lieferung|liefertermin|kommt\s+(heute|morgen|am|voraussichtlich)|voraussichtlich|unterwegs|wird\s+(heute|morgen)\s+zugestellt|arriving|delivery|out for delivery|expected", RegexOptions.IgnoreCase);
     private static readonly Regex Tracking = new(@"\b(JJD\d{14,22}|1Z[0-9A-Z]{16}|\d{12,20})\b");
     private static readonly string[] MonthNames = { "januar", "februar", "märz", "april", "mai", "juni", "juli", "august", "september", "oktober", "november", "dezember" };
@@ -239,13 +239,34 @@ public static class SmartMail
             if (end > start) allDay = false;
         }
         var tracking = Tracking.Match(text);
+        var order = OrderNo(text);
         var merchant = carrier == "Amazon" || Regex.IsMatch(subject, @"\bamazon\b", RegexOptions.IgnoreCase) ? "Amazon" : null;
         var title = "📦 " + (merchant != null && carrier != "Amazon" ? $"Paket von {merchant} ({carrier})" : $"Paket ({carrier})");
-        var key = "parcel:" + (tracking.Success ? tracking.Value : carrier + ":" + Regex.Replace(subject, @"\s+", " ").Trim().ToLowerInvariant());
+        // Zur selben Bestellung kommen mehrere Mails („Versandt: …“, „In Zustellung: …“) - ein Termin: Bestellnummer vor
+        // Sendungsnummer vor dem Betreff ohne Status-Vorspann
+        var key = "parcel:" + (order != null ? "order:" + order : tracking.Success ? tracking.Value : carrier + ":" + Topic(subject));
         return new SmartItem("parcel", key, title,
             allDay ? DateTime.SpecifyKind(start, DateTimeKind.Unspecified) : Ics.ToUtc(start, zone),
             allDay ? DateTime.SpecifyKind(end, DateTimeKind.Unspecified) : Ics.ToUtc(end, zone), allDay, null,
-            Join("Aus der Mail: " + subject, tracking.Success ? "Sendungsnummer: " + tracking.Value : null));
+            Join("Aus der Mail: " + subject, order != null ? "Bestellnummer: " + order : null, tracking.Success ? "Sendungsnummer: " + tracking.Value : null));
+    }
+
+    // Amazon „302-1234567-1234567“, sonst „Bestellnummer: A12345“ / „Bestellnr. 12345“ / „Order #12345“
+    private static readonly Regex AmazonOrder = new(@"\b\d{3}-\d{7}-\d{7}\b");
+    private static readonly Regex OrderLabel = new(@"(?:bestell(?:ung)?s?[\s-]*(?:nummer|nr\.?)|order\s*(?:number|no\.?|#))\s*[:#]?\s*([A-Z0-9][A-Z0-9-]{4,24})\b", RegexOptions.IgnoreCase);
+
+    internal static string? OrderNo(string text) =>
+        AmazonOrder.Match(text) is { Success: true } a ? a.Value
+        : OrderLabel.Match(text) is { Success: true } o && o.Groups[1].Value.Any(char.IsDigit) ? o.Groups[1].Value.ToUpperInvariant() : null;
+
+    /// <summary>Betreff ohne Status-Vorspann: „Versandt: „CREAPROOF…““ und „In Zustellung: „CREAPROOF…““ sind dieselbe Sendung.</summary>
+    internal static string Topic(string subject)
+    {
+        var s = Regex.Replace(subject, @"\s+", " ").Trim();
+        s = Regex.Replace(s, @"^((re|aw|fw|fwd|wg)\s*:\s*)+", "", RegexOptions.IgnoreCase);
+        // „Status: „Artikel““ - der Teil vor dem Doppelpunkt ist der Stand der Lieferung
+        if (Regex.Match(s, @"^[^:„“""]{1,40}:\s*([„“""].+)$") is { Success: true } q) s = q.Groups[1].Value;
+        return s.ToLowerInvariant();
     }
 
     private static DateTime? Safe(int y, int mo, int d)
@@ -282,15 +303,21 @@ public static class SmartMail
         long.TryParse(db.Get(CalendarKey), out var id) && PimStore.ByUid(db, id, Uid(item.Key)) != null;
 
     /// <summary>Termin anlegen oder (gleiche Sendung/Buchung) aktualisieren. Gibt die Kalender-Id zurueck.</summary>
-    public static long Upsert(UserSpace space, SmartItem item, string? mailLink)
+    /// <param name="mailDate">Datum der Mail: Angaben aus einer älteren Mail („Versandt“) überschreiben die einer neueren („In
+    /// Zustellung 15–17 Uhr“) nicht. null (von Hand eingetragen): immer übernehmen.</param>
+    public static long Upsert(UserSpace space, SmartItem item, string? mailLink, DateTimeOffset? mailDate = null)
     {
         var db = space.Db;
         var coll = CalendarFor(db);
         var uid = Uid(item.Key);
+        if (mailDate is { } md && PimStore.ByUid(db, coll.Id, uid) is { } existing
+            && MailDateRx.Match(existing.Data) is { Success: true } x && string.CompareOrdinal(x.Groups[1].Value, Ics.Utc(md.UtcDateTime)) >= 0)
+            return coll.Id;
         var vcal = CalendarModel.NewCalendar();
         var ev = new Component("VEVENT");
         ev.Set("UID", uid);
         ev.Set("DTSTAMP", Ics.Stamp());
+        if (mailDate is { } when) ev.Set("X-DM-MAIL-DATE", Ics.Utc(when.UtcDateTime));
         ev.SetText("SUMMARY", item.Title);
         if (item.AllDay)
         {
@@ -314,21 +341,61 @@ public static class SmartMail
         return coll.Id;
     }
 
-    /// <summary>Neue Mails im Posteingang (letzte 14 Tage) einmal pruefen - nach jedem Sync-Lauf.</summary>
+    private static readonly Regex MailDateRx = new(@"(?m)^X-DM-MAIL-DATE[^:]*:(\d{8}T\d{6}Z)");
+    private static readonly Regex StartRx = new(@"(?m)^DTSTART([^:]*):(\d{8})(T\d{6}Z?)?");
+    private static readonly Regex FromMailRx = new(@"Aus der Mail: ([^\r\n\\]+)");
+    private const string DedupeKey = "smart.dedupe";
+
+    /// <summary>
+    /// Einmal: Paket-Termine, die früher je Mail einzeln angelegt wurden („Versandt: …“, „In Zustellung: …“ derselben Bestellung),
+    /// zusammenlegen. Behalten wird der genaueste (mit Zeitfenster vor ganztägig, dann der späteste Tag).
+    /// </summary>
+    internal static int Dedupe(UserDb db)
+    {
+        if (db.Get(DedupeKey) == "1" || !long.TryParse(db.Get(CalendarKey), out var id) || PimStore.Find(db, id) is not { } coll) return 0;
+        int removed = 0;
+        var groups = PimStore.Objects(db, id)
+            .Select(o => (o, From: FromMailRx.Match(o.Data.Replace("\r\n ", "")), Start: StartRx.Match(o.Data)))
+            .Where(x => x.From.Success && x.Start.Success && x.o.Data.Contains("CATEGORIES:Lieferung"))
+            .GroupBy(x => (Summary: Regex.Match(x.o.Data, @"(?m)^SUMMARY[^:]*:(.*)$").Groups[1].Value.Trim(), Topic: Topic(x.From.Groups[1].Value)));
+        foreach (var g in groups.Where(g => g.Count() > 1))
+        {
+            var keep = g.OrderByDescending(x => x.Start.Groups[3].Success).ThenByDescending(x => x.Start.Groups[2].Value + x.Start.Groups[3].Value).First();
+            foreach (var x in g.Where(x => x.o.Id != keep.o.Id))
+                if (PimStore.Delete(db, coll, x.o.Uri)) removed++;
+        }
+        db.Set(DedupeKey, "1");
+        return removed;
+    }
+
+    /// <summary>Neue Mails im Posteingang und in den Ordnern der Catchall-Aliase (letzte 14 Tage) einmal pruefen - nach jedem Sync-Lauf.</summary>
     public static int Scan(UserSpace space, MailAccount account)
     {
         var db = space.Db;
         RenameOld(db);
-        if (!space.Settings.SmartCalendar) return 0;
+        if (!space.Settings.CalendarOn(account)) return 0;
+        Dedupe(db);
         db.Exec("CREATE TABLE IF NOT EXISTS smart_done (account TEXT NOT NULL, message_id TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(account, message_id)) WITHOUT ROWID");
         var since = DateTimeOffset.UtcNow.AddDays(-Days).ToUnixTimeMilliseconds();
         db.Exec("DELETE FROM smart_done WHERE at < $s", ("$s", since - 30L * 86400000));
-        var todo = db.Query(@"SELECT m.folder, m.uid, m.message_id FROM mail m
-            JOIN mail_folders f ON f.account=m.account AND f.path=m.folder AND f.special='inbox'
+        // Posteingang und - im Postfach der Catchall-Aliase - die Ordner der Aliase und Domains: dort landen deren Mails direkt
+        var extra = new List<string>();
+        var aliases = CatchallAliases.Load(db);
+        if (CatchallAliases.ActiveFor(aliases, account.Id))
+        {
+            extra.AddRange(CatchallAliases.List(db).Select(x => x.Folder).OfType<string>());
+            extra.AddRange(aliases.Domains.Select(d => CatchallAliases.DomainFolder(db, d)).OfType<string>());
+        }
+        var folders = string.Join(",", extra.Distinct().Select((_, i) => "$f" + i));
+        var args = new List<(string, object?)> { ("$a", account.Id), ("$s", since) };
+        args.AddRange(extra.Distinct().Select((x, i) => ("$f" + i, (object?)x)));
+        var todo = db.Query($@"SELECT m.folder, m.uid, m.message_id FROM mail m
+            JOIN mail_folders f ON f.account=m.account AND f.path=m.folder
             WHERE m.account=$a AND m.cached=1 AND m.date >= $s AND m.message_id IS NOT NULL
+              AND (f.special='inbox'{(folders.Length > 0 ? $" OR m.folder IN ({folders})" : "")})
               AND NOT EXISTS (SELECT 1 FROM smart_done d WHERE d.account=m.account AND d.message_id=m.message_id)
             ORDER BY m.date DESC LIMIT 200",
-            r => (r.GetString(0), (uint)r.GetInt64(1), r.GetString(2)), ("$a", account.Id), ("$s", since));
+            r => (r.GetString(0), (uint)r.GetInt64(1), r.GetString(2)), args.ToArray());
         int added = 0;
         foreach (var (folder, uid, mid) in todo)
         {
@@ -337,7 +404,9 @@ public static class SmartMail
                 if (MailStore.Raw(db, account.Id, folder, uid) is { } raw)
                 {
                     var m = MimeMessage.Load(new MemoryStream(raw));
-                    foreach (var item in Extract(m, space.Zone, DateTime.UtcNow)) { Upsert(space, item, null); added++; }
+                    // Ohne Anfrage kein Hostname: interner Link, den der Termin-Dialog als „Mail öffnen“ anbietet
+                    var link = $"#/mail/open/{Uri.EscapeDataString(account.Id)}/{Uri.EscapeDataString(mid)}";
+                    foreach (var item in Extract(m, space.Zone, DateTime.UtcNow)) { Upsert(space, item, link, m.Date); added++; }
                 }
             }
             catch { /* eine kaputte Mail haelt die anderen nicht auf */ }

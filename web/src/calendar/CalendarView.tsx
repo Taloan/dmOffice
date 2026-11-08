@@ -1,3 +1,4 @@
+import { sendToChat } from '../chat/SendToChat'
 import FullCalendar from '@fullcalendar/react'
 import dayGridPlugin from '@fullcalendar/daygrid'
 import timeGridPlugin from '@fullcalendar/timegrid'
@@ -16,8 +17,10 @@ import {
   PanelLeft20Regular, Settings20Regular, TaskListLtr20Regular, Clock20Regular, CalendarWeekStart20Regular,
   MoreHorizontal16Regular, Open20Regular, Edit20Regular, Rename20Regular, ArrowImport20Regular, ArrowExport20Regular, Delete20Regular,
   ArrowSync20Regular, Eye20Regular, CheckmarkCircle20Regular, CalendarEmpty20Regular, People16Regular, People20Regular, PersonDelete20Regular, ChevronDown16Regular, ChevronRight16Regular,
+  Chat20Regular, Cloud16Regular, Cloud20Regular,
 } from '@fluentui/react-icons'
-import { ColorMenu, ContextMenu, TargetMenu, askText, isTyping, useContextMenu } from '../shell/context'
+import { ColorMenu, ContextMenu, TargetMenu, askConfirm, askText, isTyping, useContextMenu } from '../shell/context'
+import { graphAccounts, graphTitle } from './graph'
 import { useNavStyles } from '../shell/nav'
 import { RibbonButton, RibbonDivider, RibbonHeader, useSidePane } from '../shell/Ribbon'
 import { SidePane, useIsMobile } from '../shell/mobile'
@@ -25,10 +28,11 @@ import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { api, CalEvent, Collection, q, Task } from '../api'
 import { useApp } from '../App'
 import { usePrefs } from '../prefs'
-import { EventDialog, EventDraft, askScope } from './EventDialog'
+import { EVENT_RESTORED, EventDialog, EventDraft, askScope, restoreEvent } from './EventDialog'
 import { CollectionDialog, importInto, removeCollection } from './CollectionDialog'
 import { SubscribeDialog } from './SubscribeDialog'
 import { ShareDialog } from './ShareDialog'
+import { artOf } from './arts'
 import { CALENDAR_KINDS, inNormalViews, kindOf } from './kinds'
 import { lang, locale, t } from '../i18n'
 
@@ -63,7 +67,7 @@ const fcLocale = lang === 'en' ? enGbLocale : deLocale
 
 export default function CalendarView() {
   const s = useStyles()
-  const { fail, notify } = useApp()
+  const { fail, notify, undoable } = useApp()
   const fc = useRef<FullCalendar>(null)
   const { prefs, update } = usePrefs()
   const [sidePane, toggleSide, closeSide] = useSidePane('calendar')
@@ -93,7 +97,7 @@ export default function CalendarView() {
     } catch (e) { fail(e); loadCalendars() }
   }
   const endSub = async (c: Collection) => {
-    if (!confirm(t('Abo „{name}“ beenden? Die Termine verschwinden aus dem Kalender.', { name: c.name }))) return
+    if (!await askConfirm('', t('Abo „{name}“ beenden? Die Termine verschwinden aus dem Kalender.', { name: c.name }))) return
     try { await api.del(`/api/pim/collections/${c.id}`); loadCalendars() } catch (e) { fail(e) }
   }
   const [miniMonth, setMiniMonth] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1) })
@@ -110,6 +114,36 @@ export default function CalendarView() {
   useEffect(() => { loadCalendars() }, [loadCalendars])
 
   const refetch = () => fc.current?.getApi().refetchEvents()
+  useEffect(() => {
+    const on = () => refetch()
+    window.addEventListener(EVENT_RESTORED, on)
+    return () => window.removeEventListener(EVENT_RESTORED, on)
+  }, [])
+  // Direkt einen Tag öffnen: #/calendar/2026-10-25 (aus der Übersicht); einen Termin: #/calendar/event/<uri>/2026-10-25
+  useEffect(() => {
+    const open = () => {
+      const ev = location.hash.match(/^#\/calendar\/event\/([^/]+)\/(\d{4}-\d{2}-\d{2})$/)
+      if (ev) {
+        history.replaceState(null, '', '#/calendar')
+        const uri = decodeURIComponent(ev[1])
+        const from = new Date(ev[2] + 'T00:00:00'), to = new Date(from.getTime() + 86_400_000)
+        fc.current?.getApi().gotoDate(ev[2])
+        api.get<CalEvent[]>('/api/pim/events?' + q({ from: from.toISOString(), to: to.toISOString() })).then(list => {
+          const e = list.find(x => x.uri === uri)
+          if (e) openEvent(e, new Date(e.start), new Date(e.end))
+        }).catch(fail)
+        return
+      }
+      const m = location.hash.match(/^#\/calendar\/(\d{4}-\d{2}-\d{2})$/)
+      if (!m) return
+      history.replaceState(null, '', '#/calendar')
+      const cal = fc.current?.getApi()
+      if (cal) { cal.gotoDate(m[1]); if (cal.view.type !== 'dayGridMonth') cal.changeView('timeGridDay') }
+    }
+    const h = setTimeout(open, 50)
+    window.addEventListener('hashchange', open)
+    return () => { clearTimeout(h); window.removeEventListener('hashchange', open) }
+  }, [])
   useEffect(() => { refetch() }, [hidden, calendars, showTasks])
   useEffect(() => { try { localStorage.setItem(HIDDEN, JSON.stringify(hidden)) } catch { /* egal */ } }, [hidden])
   const isOff = (c: Collection) => hidden.includes(c.id)
@@ -122,7 +156,8 @@ export default function CalendarView() {
       ? await api.get<CalEvent[]>('/api/pim/events?' + q({ from: info.start.toISOString(), to: info.end.toISOString(), calendars: visible.join(',') }))
       : []
     const events = list.map<FcEvent>(e => ({
-      id: e.id, title: e.title, start: e.start, end: e.end, allDay: e.allDay,
+      // Art (Version 2) als Symbol vor dem Titel
+      id: e.id, title: (artOf(e.categories) ? artOf(e.categories)!.icon + ' ' : '') + e.title, start: e.start, end: e.end, allDay: e.allDay,
       backgroundColor: colorOf(e.calendar), borderColor: colorOf(e.calendar), textColor: '#fff',
       editable: !calendars.find(c => c.id === e.calendar)?.subscription && e.canWrite !== false,
       classNames: e.busy ? [] : ['dm-free'], extendedProps: { ev: e },
@@ -133,9 +168,22 @@ export default function CalendarView() {
     const tasks = await api.get<Task[]>('/api/pim/tasks?' + q({ lists: lists.join(',') })).catch(() => [] as Task[])
     for (const task of tasks) {
       if (!task.due) continue
+      const color = colorOf(task.list)
+      // Erledigt: am Tag, an dem sie erledigt wurde (nicht mehr am alten Fälligkeitstag), ganztägig und nicht verschiebbar
+      const doneAt = task.completed && task.completedAt ? new Date(task.completedAt) : null
+      if (doneAt) {
+        const day = new Date(doneAt.getFullYear(), doneAt.getMonth(), doneAt.getDate())
+        if (day < info.start || day >= info.end) continue
+        events.push({
+          id: 'task:' + task.id, title: task.title, allDay: true,
+          start: `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`,
+          backgroundColor: 'transparent', borderColor: color, textColor: 'inherit', editable: false,
+          classNames: ['dm-task', 'dm-task-done'], extendedProps: { task, color },
+        } as FcEvent)
+        continue
+      }
       const due = new Date(task.due)
       if (due < info.start || due >= info.end) continue
-      const color = colorOf(task.list)
       events.push({
         id: 'task:' + task.id, title: task.title, allDay: task.dueAllDay, start: task.dueAllDay ? task.due.slice(0, 10) : task.due,
         end: task.dueAllDay ? undefined : new Date(due.getTime() + 30 * 60000).toISOString(),
@@ -271,7 +319,7 @@ export default function CalendarView() {
     if (name && name !== c.name) setCollection(c, { name })
   }
   const leaveShared = async (c: Collection) => {
-    if (!confirm(t('„{name}“ nicht mehr anzeigen? {owner} kann den Kalender wieder mit dir teilen.', { name: c.name, owner: c.owner ?? '' }))) return
+    if (!await askConfirm('', t('„{name}“ nicht mehr anzeigen? {owner} kann den Kalender wieder mit dir teilen.', { name: c.name, owner: c.owner ?? '' }))) return
     try { await api.post(`/api/pim/shares/${c.id}/leave`); setHidden(h => h.filter(x => x !== c.id)); loadCalendars() } catch (e) { fail(e) }
   }
   const deleteCollection = async (c: Collection, tasks?: boolean) => {
@@ -281,7 +329,7 @@ export default function CalendarView() {
     calendar: e.calendar, uri: e.uri, etag: e.etag, title: e.title, location: e.location, description: e.description,
     start, end, allDay: e.allDay, rRule: e.rRule ?? '',
     reminder: e.reminder ?? null, busy: e.busy, recurring: e.recurring, instance: e.recurrenceId,
-    attendees: e.attendees ?? [], organizer: e.organizer ?? null,
+    attendees: e.attendees ?? [], organizer: e.organizer ?? null, categories: e.categories,
   })
   /** Termin so speichern wie geladen, mit einer Aenderung (anderer Kalender, frei/beschaeftigt). */
   const resave = async (e: CalEvent, change: { moveTo?: number; busy?: boolean }) => {
@@ -313,9 +361,11 @@ export default function CalendarView() {
       const r = await askScope(t('Termin löschen'))
       if (!r) return
       if (r === 'instance') instance = e.recurrenceId
-    } else if (!confirm(t('„{name}“ löschen?', { name: e.title || t('Termin') }))) return
+    } else if (!await askConfirm('', t('„{name}“ löschen? Es gibt dafür keinen Papierkorb, nur direkt danach „Rückgängig“.', { name: e.title || t('Termin') }))) return
     try {
-      await api.del(`/api/pim/events/${e.calendar}/${encodeURIComponent(e.uri)}` + (instance ? `?instance=${encodeURIComponent(instance)}` : ''))
+      const r = await api.del(`/api/pim/events/${e.calendar}/${encodeURIComponent(e.uri)}` + (instance ? `?instance=${encodeURIComponent(instance)}` : '')) as { cancelled?: number; undo?: string } | undefined
+      if (r?.cancelled) notify(t('Absage an {n} Teilnehmer im Postausgang', { n: r.cancelled }))
+      else if (r?.undo) undoable(t('Termin gelöscht'), () => restoreEvent(e.calendar, e.uri, r.undo!))
       refetch()
     } catch (err) { fail(err) }
   }
@@ -345,7 +395,7 @@ export default function CalendarView() {
     if (!row || !e) return
     const target = Number(row.dataset.cal)
     if (target === e.calendar || !writable.some(c => c.id === target)) return
-    if (a.jsEvent.ctrlKey) copyEvent(e, a.event.start, a.event.end ?? a.event.start, target)
+    if (a.jsEvent.ctrlKey) { if (!calendars.find(c => c.id === e.calendar)?.showOnly) copyEvent(e, a.event.start, a.event.end ?? a.event.start, target) }
     else if (!calendars.find(c => c.id === e.calendar)?.subscription && e.canWrite !== false) resave(e, { moveTo: target })
   }
   const goDay = (d: Date) => { changeView('timeGridDay'); fc.current?.getApi().gotoDate(d) }
@@ -353,6 +403,8 @@ export default function CalendarView() {
   // Tastatur wie in Outlook: Strg+N neuer Termin, Bild auf/ab blaettert, Strg+Alt+1..5 Ansicht
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Ausgeblendet (anderer Bereich aktiv): nicht reagieren
+      if (!location.hash.startsWith('#/calendar')) return
       if (isTyping(e) || draft || editColl || subscribe || cm.ctx) return
       const cal = fc.current?.getApi()
       if (e.ctrlKey && !e.altKey && e.key.toLowerCase() === 'n') { e.preventDefault(); newEvent() }
@@ -391,6 +443,8 @@ export default function CalendarView() {
     if (x.kind === 'event') {
       const { e } = x
       const ro = !!calendars.find(c => c.id === e.calendar)?.subscription || e.canWrite === false
+      // Nur gezeigt: ansehen ja, kopieren und exportieren nicht
+      const shown = !!calendars.find(c => c.id === e.calendar)?.showOnly
       const targets = writable.filter(c => c.components.includes('VEVENT'))
       return <>
         <MenuItem icon={<Open20Regular />} onClick={() => openEvent(e, x.start, x.end)}>{t('Öffnen')}</MenuItem>
@@ -409,8 +463,9 @@ export default function CalendarView() {
         <MenuDivider />
         {!ro && <TargetMenu kind="move" targets={targets.filter(c => c.id !== e.calendar).map(c => ({ id: c.id, label: c.name }))}
           onPick={id => resave(e, { moveTo: Number(id) })} />}
-        <TargetMenu kind="copy" targets={targets.map(c => ({ id: c.id, label: c.name }))} onPick={id => copyEvent(e, x.start, x.end, Number(id))} />
-        <MenuItem icon={<ArrowExport20Regular />} onClick={() => window.open(`/api/pim/events/${e.calendar}/${encodeURIComponent(e.uri)}/ics`)}>{t('Exportieren (.ics)')}</MenuItem>
+        {!shown && <TargetMenu kind="copy" targets={targets.map(c => ({ id: c.id, label: c.name }))} onPick={id => copyEvent(e, x.start, x.end, Number(id))} />}
+        {!shown && <MenuItem icon={<ArrowExport20Regular />} onClick={() => window.open(`/api/pim/events/${e.calendar}/${encodeURIComponent(e.uri)}/ics`)}>{t('Exportieren (.ics)')}</MenuItem>}
+        {e.calendar > 0 && <MenuItem icon={<Chat20Regular />} onClick={() => sendToChat([{ type: 'event', collection: e.calendar, item: e.uri }])}>{t('Im Chat …')}</MenuItem>}
         {!ro && <>
           <MenuDivider />
           <MenuItem icon={<Delete20Regular />} onClick={() => deleteEvent(e)}>{t('Löschen')}</MenuItem>
@@ -425,7 +480,9 @@ export default function CalendarView() {
       <MenuItem icon={<Rename20Regular />} onClick={() => renameCollection(c)}>{t('Umbenennen')}</MenuItem>
       <ColorMenu current={c.color} onPick={color => { cm.close(); if (color) setCollection(c, { color }) }} />
       <MenuDivider />
-      <MenuItem icon={<Delete20Regular />} onClick={() => deleteCollection(c, true)}>{t('Löschen')}</MenuItem>
+      {c.graph
+        ? <MenuItem icon={<Cloud20Regular />} onClick={() => { location.hash = '#/settings/accounts' }}>{t('Microsoft-Abgleich …')}</MenuItem>
+        : <MenuItem icon={<Delete20Regular />} onClick={() => deleteCollection(c, true)}>{t('Löschen')}</MenuItem>}
     </>
     return <>
       <MenuItem icon={<Eye20Regular />} onClick={() => onlyThis(c)}>{t('Nur diesen anzeigen')}</MenuItem>
@@ -443,13 +500,15 @@ export default function CalendarView() {
       {!c.owner && <ColorMenu current={c.color} onPick={color => { cm.close(); if (color) setCollection(c, { color }) }} />}
       <MenuDivider />
       {!c.subscription && c.canWrite !== false && <MenuItem icon={<ArrowImport20Regular />} onClick={() => { importTarget.current = c.id; importInput.current?.click() }}>{t('Importieren (.ics) …')}</MenuItem>}
-      <MenuItem icon={<ArrowExport20Regular />} onClick={() => window.open(`/api/pim/export/${c.id}`)}>{t('Exportieren (.ics)')}</MenuItem>
+      {!c.showOnly && <MenuItem icon={<ArrowExport20Regular />} onClick={() => window.open(`/api/pim/export/${c.id}`)}>{t('Exportieren (.ics)')}</MenuItem>}
       <MenuDivider />
       {c.owner
         ? <MenuItem icon={<PersonDelete20Regular />} onClick={() => leaveShared(c)}>{t('Nicht mehr anzeigen')}</MenuItem>
         : c.subscription
           ? <MenuItem icon={<Delete20Regular />} onClick={() => endSub(c)}>{t('Abo beenden')}</MenuItem>
-          : <MenuItem icon={<Delete20Regular />} onClick={() => deleteCollection(c)}>{t('Löschen')}</MenuItem>}
+          : c.graph
+            ? <MenuItem icon={<Cloud20Regular />} onClick={() => { location.hash = '#/settings/accounts' }}>{t('Microsoft-Abgleich …')}</MenuItem>
+            : <MenuItem icon={<Delete20Regular />} onClick={() => deleteCollection(c)}>{t('Löschen')}</MenuItem>}
     </>
   }
 
@@ -465,12 +524,13 @@ export default function CalendarView() {
         onKeyDown={e => {
           if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); toggleRow(c, kind) }
           else if (e.key === 'F2' && !c.subscription && !c.owner) { e.preventDefault(); renameCollection(c) }
-          else if (e.key === 'Delete' && !c.subscription && !c.owner) { e.preventDefault(); deleteCollection(c, kind === 'list') }
+          else if (e.key === 'Delete' && !c.subscription && !c.owner && !c.graph) { e.preventDefault(); deleteCollection(c, kind === 'list') }
           else if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) { const r = e.currentTarget.getBoundingClientRect(); cm.open({ clientX: r.left + 24, clientY: r.bottom, preventDefault: () => e.preventDefault(), stopPropagation: () => e.stopPropagation() }, data) }
         }}
         title={c.subscription ? (c.subscription.lastError
           ? t('Abo – letzter Abruf fehlgeschlagen: {error}', { error: c.subscription.lastError })
           : t('Abo – zuletzt geholt: {when}', { when: c.subscription.lastFetch ? new Date(c.subscription.lastFetch).toLocaleString(locale) : '–' }))
+          : c.graph ? graphTitle(c)
           : c.owner ? t('{name} (von {owner})', { name: c.name, owner: c.owner }) + (c.canWrite === false ? ' · ' + t('nur lesbar') : '')
           : c.sharedWith?.length ? t('Geteilt mit {names}', { names: c.sharedWith.map(x => x.name).join(', ') }) : c.name}>
         <span className={nv.check} style={{ borderColor: color, background: on ? color : 'transparent' }}>{on && '✓'}</span>
@@ -479,6 +539,7 @@ export default function CalendarView() {
         {(c.owner || !!c.sharedWith?.length) && <People16Regular style={{ opacity: .7 }} />}
         {kind === 'cal' && c.components.includes('VTODO') && <TaskListSquareLtr16Regular style={{ opacity: .6 }} aria-label={t('Enthält auch Aufgaben')} />}
         {c.subscription && <Rss16Regular style={{ opacity: .7, color: c.subscription.lastError ? 'var(--colorPaletteRedForeground1)' : undefined }} />}
+        {c.graph?.lastError && <Cloud16Regular style={{ color: 'var(--colorPaletteRedForeground1)' }} />}
         <Button className="dm-more" appearance="transparent" size="small" icon={<MoreHorizontal16Regular />} aria-label={t('Mehr')} onClick={e => { e.stopPropagation(); cm.open(e, data) }} />
       </div>
     )
@@ -519,11 +580,12 @@ export default function CalendarView() {
           <RibbonButton icon={<Settings20Regular />} label={t('Ansicht­einstellungen')} onClick={() => { location.hash = '#/settings/calview' }} />
         </>} />
       <div className={s.root}>
-      <SidePane as="aside" className={mergeClasses(s.side, nv.pane)} open={sidePane} onClose={closeSide}>
+      <SidePane as="aside" className={mergeClasses(s.side, nv.pane)} open={sidePane} onClose={closeSide} width={{ key: 'calendar.side', def: 240 }}>
         <div onContextMenu={e => cm.open(e, { kind: 'side' })} style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
         <div style={{ padding: '0 4px 4px' }}><MiniMonth month={miniMonth} setMonth={setMiniMonth} onPick={d => fc.current?.getApi().gotoDate(d)} /></div>
         {CALENDAR_KINDS.map(k => {
-          const own = calendars.filter(c => kindOf(c).key === k.key)
+          // Abonnierte und mit Microsoft verbundene Kalender stehen in eigenen Abschnitten darunter
+          const own = calendars.filter(c => kindOf(c).key === k.key && !c.subscription && !c.graph)
           if (k.key !== 'normal' && own.length === 0) return null
           const closed = collapsed.includes(k.key)
           return (
@@ -545,6 +607,38 @@ export default function CalendarView() {
                 </>}
               </div>
               {!closed && own.map(c => calRow(c, 'cal'))}
+            </Fragment>
+          )
+        })}
+        {calendars.some(c => c.subscription) && (() => {
+          const closed = collapsed.includes('subscribed')
+          return <>
+            <div className={nv.section}>
+              <button type="button" style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 4, padding: 0, background: 'none', border: 'none', color: 'inherit', font: 'inherit', textTransform: 'inherit', letterSpacing: 'inherit', cursor: 'pointer', minWidth: 0 }}
+                aria-expanded={!closed} onClick={() => toggleGroup('subscribed')}>
+                {closed ? <ChevronRight16Regular /> : <ChevronDown16Regular />}
+                <Rss16Regular />
+                <span style={{ flex: 1, textAlign: 'left' }}>{t('Abonniert')}</span>
+              </button>
+            </div>
+            {!closed && calendars.filter(c => c.subscription).map(c => calRow(c, 'cal'))}
+          </>
+        })()}
+        {/* Je Microsoft-Konto ein Abschnitt (Abgleich in beide Richtungen) */}
+        {graphAccounts(calendars).map(g => {
+          const key = 'graph:' + g.account
+          const closed = collapsed.includes(key)
+          return (
+            <Fragment key={key}>
+              <div className={nv.section}>
+                <button type="button" style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 4, padding: 0, background: 'none', border: 'none', color: 'inherit', font: 'inherit', textTransform: 'inherit', letterSpacing: 'inherit', cursor: 'pointer', minWidth: 0 }}
+                  aria-expanded={!closed} onClick={() => toggleGroup(key)} title={g.email}>
+                  {closed ? <ChevronRight16Regular /> : <ChevronDown16Regular />}
+                  <Cloud16Regular />
+                  <span style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t('Outlook · {name}', { name: g.name })}</span>
+                </button>
+              </div>
+              {!closed && calendars.filter(c => c.graph?.account === g.account).map(c => calRow(c, 'cal'))}
             </Fragment>
           )
         })}
@@ -594,6 +688,8 @@ export default function CalendarView() {
             slotDuration={`00:${String(prefs.slotMinutes ?? 30).padStart(2, '0')}:00`}
             businessHours={{ daysOfWeek: prefs.workDays ?? [1, 2, 3, 4, 5], startTime: prefs.workStart ?? '08:00', endTime: prefs.workEnd ?? '18:00' }}
             scrollTimeReset={false}
+            // Monat: auch Termine mit Uhrzeit als farbiger Balken (sonst nur Punkt und Text, anders als ganztägige)
+            eventDisplay="block"
             views={{ dayGridMonth: { businessHours: false }, timeGridWorkWeek: { type: 'timeGrid', duration: { weeks: 1 }, hiddenDays: [0, 1, 2, 3, 4, 5, 6].filter(d => !(prefs.workDays ?? [1, 2, 3, 4, 5]).includes(d)), buttonText: t('Arbeitswoche') } }}
             // Monatsansicht: freie Tage je Zelle einfaerben - die Flaeche von FullCalendar laege ueber Sa+So und verdeckt den Trennstrich
             dayCellClassNames={arg => arg.view.type.startsWith('dayGrid') && !(prefs.workDays ?? [1, 2, 3, 4, 5]).includes(arg.date.getDay()) ? ['dm-offday'] : []}
@@ -613,7 +709,7 @@ export default function CalendarView() {
                 }}>
                   <span className="dm-task-check" role="checkbox" aria-checked={task.completed} style={{ color }}>{task.completed ? '☑' : '☐'}</span>
                   {time && <span style={{ opacity: .8, flexShrink: 0 }}>{time}</span>}
-                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>{arg.event.title}</span>
+                  <span dir="auto" style={{ overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>{arg.event.title}</span>
                 </span>
               )
             }}

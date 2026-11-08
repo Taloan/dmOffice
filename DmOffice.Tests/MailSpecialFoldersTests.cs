@@ -37,5 +37,8 @@ public class MailSpecialFoldersTests
             ("INBOX.Trash", "Trash", "INBOX", FolderAttributes.None),
         };
         Assert.Equal(new string?[] { "inbox", null, "junk", "sent", "trash" }, MailSync.AssignSpecials(folders));
+        // Im Konto selbst festgelegt: ein eigener Ordner als Archiv, kein Junk-Ordner - die Erkennung tritt zurück
+        var map = new Dictionary<string, string> { ["archive"] = folders[1].Item1, ["junk"] = "" };
+        Assert.Equal(new string?[] { "inbox", "archive", null, "sent", "trash" }, MailSync.AssignSpecials(folders, map));
     }
 }

@@ -165,8 +165,8 @@ export function ComposeSettings() {
         <RadioGroup value={prefs.replyAll ? 'all' : 'one'} onChange={(_, d) => update({ replyAll: d.value === 'all' })}>
           <Radio value="one" label={t('Antworten')} /><Radio value="all" label={t('Allen antworten')} />
         </RadioGroup>
-        <Switch label={t('Signaturen pflegen: Konto → E-Mail-Konten → Konto bearbeiten')} disabled checked={false} style={{ display: 'none' }} />
-        <Hint>{t('Signaturen stehen je Konto unter Konto → E-Mail-Konten.')}</Hint>
+        <Switch label={t('Signaturen pflegen: E-Mail → E-Mail-Konten → Konto bearbeiten')} disabled checked={false} style={{ display: 'none' }} />
+        <Hint>{t('Signaturen stehen je Konto unter E-Mail → E-Mail-Konten.')}</Hint>
       </Section>
     </>
   )

@@ -19,6 +19,8 @@ public sealed class FilesCleanup(Spaces spaces, LinkIndex links, ILogger<FilesCl
                     var n = FileRetention.Apply(space.Db, DateTime.UtcNow) + FileStore.Expire(space.Db, 0, DateTime.UtcNow);
                     if (n > 0) log.LogInformation("Dateien {User}: {Count} alte Einträge aus Papierkorb/Versionen gelöscht", space.User.Login, n);
                     links.Prune(space.User.Id, Links.Ids(space.Db));
+                    // Offene Änderungen an Archiven, die zu lange liegen
+                    if (ArchiveEdits.Expire(space.Db) is > 0 and var dropped) log.LogInformation("Dateien {User}: {Count} offene Archiv-Änderungen verworfen (abgelaufen)", space.User.Login, dropped);
                 }
                 catch (Exception ex) { activity.Fail(ex.Message); log.LogWarning("Dateien aufräumen {User}: {Error}", space.User.Login, ex.Message); }
             }

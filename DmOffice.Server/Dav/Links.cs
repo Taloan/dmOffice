@@ -122,6 +122,27 @@ public static class Links
 
     public static bool Delete(UserDb db, string id) => db.Exec("DELETE FROM file_links WHERE id=$i", ("$i", id)) > 0;
 
+    private const string ByDeviceKey = "links.by-device";
+
+    /// <summary>Link von einem Gerät (App-Passwort) angelegt: merken, damit er mit dem Widerruf des App-Passworts verschwindet.</summary>
+    public static void ByDevice(UserDb db, string linkId, string appPasswordId)
+    {
+        var map = db.Get(ByDeviceKey) is { } json ? System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string>>(json) ?? [] : [];
+        foreach (var gone in map.Keys.Where(k => Get(db, k) == null).ToList()) map.Remove(gone);
+        map[linkId] = appPasswordId;
+        db.Set(ByDeviceKey, System.Text.Json.JsonSerializer.Serialize(map));
+    }
+
+    /// <summary>App-Passwort widerrufen: die Links, die damit angelegt wurden, löschen; gibt ihre Kennungen zurück.</summary>
+    public static List<string> DeleteForDevice(UserDb db, string appPasswordId)
+    {
+        if (db.Get(ByDeviceKey) is not { } json || System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string>>(json) is not { } map) return [];
+        var ids = map.Where(x => x.Value == appPasswordId).Select(x => x.Key).ToList();
+        foreach (var id in ids) { Delete(db, id); map.Remove(id); }
+        db.Set(ByDeviceKey, map.Count == 0 ? null : System.Text.Json.JsonSerializer.Serialize(map));
+        return ids;
+    }
+
     /// <summary>Einen Abruf zaehlen - in einem Schritt mit der Pruefung, damit gleichzeitige Abrufe die Grenze nicht ueberschreiten.
     /// false: Grenze erreicht.</summary>
     public static bool Take(UserDb db, string id) =>

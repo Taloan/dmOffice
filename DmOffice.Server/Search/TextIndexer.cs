@@ -58,10 +58,13 @@ public sealed class TextIndexer(Spaces spaces, ILogger<TextIndexer> log) : Backg
                     // Schalter fuer die Trigger nachziehen (etwa nach Wiederherstellen einer Sicherung)
                     if (space.Db.Get(TextIndex.OnKey) == null) TextIndex.Apply(space, new TextIndexSettings());
                     if (DateTime.UtcNow - _pruned > TimeSpan.FromHours(1)) TextIndex.Prune(space);
+                    TextIndex.EnqueueAwayOnce(space.Db);
                     if (!TextIndex.HasWork(space.Db)) continue;
                     // Je Benutzer ein Happen, dann der naechste - keiner wartet auf den Bestand eines anderen
                     using var activity = Activity.Start(space.User.Id, Activity.TextIndex);
-                    var n = await RunAsync(space, 50, stop, pause: TimeSpan.FromMilliseconds(50));
+                    int n;
+                    // Verdraengte Inhalte (Zwischenspeicher) zum Lesen aus S3 holen, aber nicht wieder hier ablegen
+                    using (BlobStore.FetchWithoutKeeping()) n = await RunAsync(space, 50, stop, pause: TimeSpan.FromMilliseconds(50));
                     busy |= n > 0;
                 }
                 catch (OperationCanceledException) when (stop.IsCancellationRequested) { return; }

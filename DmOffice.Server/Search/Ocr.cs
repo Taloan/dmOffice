@@ -116,26 +116,92 @@ public static class Ocr
         finally { Clean(dir); }
     }
 
-    private static string Tesseract(string file, TimeSpan timeout, CancellationToken ct)
+    /// <summary>
+    /// Bild als TSV (je Wort Block, Absatz, Zeile, Position, Hoehe, Text) - fuer den Rezept-Scan, der Spalten und Schriftgroesse braucht.
+    /// Das Bild muss aufrecht und in einem Format sein, das tesseract liest (PNG, JPG).
+    /// </summary>
+    public static string ImageTsv(byte[] data, string ext, TimeSpan timeout, CancellationToken ct)
+    {
+        var tools = Current;
+        if (!tools.Available) throw new InvalidOperationException(tools.Reason ?? "Keine Texterkennung.");
+        var dir = TempDir();
+        try
+        {
+            var file = Path.Combine(dir, "bild" + ext);
+            File.WriteAllBytes(file, data);
+            return Tesseract(file, timeout, ct, "tsv");
+        }
+        finally { Clean(dir); }
+    }
+
+    /// <summary>PDF-Seiten als PNG (200 dpi), hoechstens so viele Seiten - fuer den Rezept-Scan.</summary>
+    public static List<byte[]> PdfPages(byte[] data, int pages, TimeSpan timeoutPerPage, CancellationToken ct)
+    {
+        var tools = Current;
+        if (tools.PdfToPpm == null) throw new NotSupportedException("pdftoppm fehlt – PDFs lassen sich nicht lesen.");
+        var dir = TempDir();
+        try
+        {
+            var file = Path.Combine(dir, "doc.pdf");
+            File.WriteAllBytes(file, data);
+            var result = new List<byte[]>();
+            for (int page = 1; page <= pages; page++)
+            {
+                ct.ThrowIfCancellationRequested();
+                var prefix = Path.Combine(dir, "seite");
+                var (code, _, err) = Run(tools.PdfToPpm, new[] { "-r", "200", "-png", "-f", page.ToString(), "-l", page.ToString(), "-singlefile", file, prefix },
+                    null, timeoutPerPage, ct);
+                var png = prefix + ".png";
+                if (code != 0 || !File.Exists(png))
+                {
+                    if (page == 1) throw new InvalidOperationException("PDF-Seite rendern: " + Short(err));
+                    break;
+                }
+                result.Add(File.ReadAllBytes(png));
+                File.Delete(png);
+            }
+            return result;
+        }
+        finally { Clean(dir); }
+    }
+
+    /// <summary>Ausschnitt einer Seite (PNG) erkennen: ein Textblock, keine Spalten- und Seitenaufteilung (psm 6).</summary>
+    public static string Region(byte[] png, TimeSpan timeout, CancellationToken ct)
+    {
+        var tools = Current;
+        if (!tools.Available) throw new InvalidOperationException(tools.Reason ?? "Keine Texterkennung.");
+        var dir = TempDir();
+        try
+        {
+            var file = Path.Combine(dir, "ausschnitt.png");
+            File.WriteAllBytes(file, png);
+            return Tesseract(file, timeout, ct, psm: "6");
+        }
+        finally { Clean(dir); }
+    }
+
+    private static string Tesseract(string file, TimeSpan timeout, CancellationToken ct, string? format = null, string psm = "3")
     {
         var tools = Current;
         // Ein Faden je Aufruf: die Warteschlange begrenzt die Parallelitaet selbst
         var env = new Dictionary<string, string> { ["OMP_THREAD_LIMIT"] = "1" };
-        var (code, output, err) = Run(tools.Tesseract!, new[] { file, "stdout", "-l", tools.Languages, "--psm", "3" }, env, timeout, ct);
+        var args = new List<string> { file, "stdout", "-l", tools.Languages, "--psm", psm };
+        if (format != null) args.Add(format);
+        var (code, output, err) = Run(tools.Tesseract!, args, env, timeout, ct);
         if (code != 0) throw new InvalidOperationException("Tesseract: " + Short(err));
         return output;
     }
 
     private static string Short(string s) => s.Length > 300 ? s[..300] : s.Trim();
 
-    private static string TempDir()
+    internal static string TempDir()
     {
         var dir = Path.Combine(Path.GetTempPath(), "dmoffice-ocr-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
         return dir;
     }
 
-    private static void Clean(string dir)
+    internal static void Clean(string dir)
     {
         try { Directory.Delete(dir, true); } catch { /* beim naechsten Mal */ }
     }
@@ -164,6 +230,12 @@ public static class Ocr
             psi.ArgumentList.Add(exe);
         }
         foreach (var a in args) psi.ArgumentList.Add(a);
+        // Die Werkzeuge verarbeiten fremde Dateien: keine Geheimnisse des Servers (Hauptschlüssel, Zugangsdaten) in ihrer Umgebung
+        foreach (var k in psi.Environment.Keys.ToList())
+            if (k.StartsWith("DMOFFICE_", StringComparison.OrdinalIgnoreCase) || k.Contains("KEY", StringComparison.OrdinalIgnoreCase)
+                || k.Contains("SECRET", StringComparison.OrdinalIgnoreCase) || k.Contains("PASSWORD", StringComparison.OrdinalIgnoreCase)
+                || k.Contains("TOKEN", StringComparison.OrdinalIgnoreCase))
+                psi.Environment.Remove(k);
         if (env != null) foreach (var (k, v) in env) psi.Environment[k] = v;
         using var p = Process.Start(psi) ?? throw new InvalidOperationException(exe + " startet nicht.");
         try { p.PriorityClass = ProcessPriorityClass.Idle; } catch { /* nicht ueberall erlaubt */ }

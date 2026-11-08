@@ -67,7 +67,7 @@ public static class Focus
         return BulkSender(from);
     }
 
-    private static bool BulkSender(string from)
+    internal static bool BulkSender(string from)
     {
         var at = from.IndexOf('@');
         if (at <= 0) return false;

@@ -28,6 +28,8 @@ public sealed class InviteFlowFixture : IDisposable
 
     public InviteFlowFixture()
     {
+        // Version 2: Benutzer eines Servers laden sich sonst über Pukki ein - hier geht es um Mail wie zwischen zwei Servern
+        InternalInvites.ViaMail = true;
         _data = Directory.CreateTempSubdirectory("dmflow");
         Environment.SetEnvironmentVariable("DMOFFICE_DATA", _data.FullName);
         Factory = new WebApplicationFactory<Program>();
@@ -99,6 +101,7 @@ public sealed class InviteFlowFixture : IDisposable
     {
         Factory.Dispose();
         Smtp.Dispose();
+        InternalInvites.ViaMail = false;
         try { _data.Delete(true); } catch (IOException) { /* Datenbank noch offen */ }
     }
 }
@@ -213,6 +216,13 @@ public class InviteFlowTests : IClassFixture<InviteFlowFixture>
         var chris_ = Assert.Single(await Events("chris", "Teamrunde"));
         Assert.Equal("ACCEPTED", Status(chris_, "anna"));
         Assert.Equal("DECLINED", Status(chris_, "ben"));
+
+        // Die eigene Einladung (etwa in Gesendet): keine eigene Antwort, dafür die Antworten der Teilnehmer
+        var own = Read("chris", toAnna);
+        Assert.True(own.Mine);
+        Assert.Null(own.MyStatus);
+        Assert.Equal(["ACCEPTED", "DECLINED"], own.Attendees!.Select(x => x.Status).Order());
+        Assert.False(Read("anna", toAnna).Mine);
     }
 
     [Fact]

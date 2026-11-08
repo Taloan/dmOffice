@@ -59,6 +59,31 @@ public class SmartMailTests
     }
 
     [Fact]
+    public void Scan_liest_auch_Ordner_der_Catchall_Aliase()
+    {
+        var dir = Directory.CreateTempSubdirectory("dmsmart");
+        var db = new UserDb(Path.Combine(dir.FullName, "u.db"), new byte[32], "t");
+        var space = new UserSpace(new UserRecord { Login = "t" }, db);
+        var acc = new MailAccount { Id = "a", Email = "ich@x.de", ImapHost = "imap.x.de" };
+        space.UpdateSettings(s => s.MailAccounts.Add(acc));
+        MailStore.ReplaceFolders(db, "a", [("INBOX", "INBOX", "/", "inbox", true), ("x_de", "x_de", "/", null, true), ("x_de/shop", "shop", "/", null, true)]);
+        CatchallAliases.Save(db, new CatchallAliases.Config { Domains = ["x.de"], Account = "a" }, space.Settings.MailAccounts);
+        var alias = CatchallAliases.Create(db, CatchallAliases.Load(db), "shop", "x.de", null);
+        CatchallAliases.SetFolder(db, alias.Address, "x_de/shop");
+        // Mail an den Alias liegt direkt in dessen Ordner, nicht im Posteingang
+        var m = Mail("noreply@dhl.de", "DHL Paket", "Ihre Sendung kommt heute",
+            text: "Hallo, Ihre Sendung 00340434161234567890 kommt heute zwischen 10:30 und 13:30 Uhr.", date: DateTime.UtcNow);
+        m.MessageId = "alias-1@x.de";
+        db.Exec("INSERT INTO mail(account,folder,uid,message_id,subject,from_name,from_addr,date,size) VALUES('a','x_de/shop',1,$m,'s','DHL','noreply@dhl.de',$d,100)",
+            ("$m", m.MessageId), ("$d", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
+        using var ms = new MemoryStream();
+        m.WriteTo(ms);
+        MailStore.StoreRaw(db, "a", "x_de/shop", 1, ms.ToArray(), m);
+
+        Assert.Equal(1, SmartMail.Scan(space, acc));
+    }
+
+    [Fact]
     public void Amazon_ueber_Alias_mit_Datum()
     {
         // Weitergeleitet ueber einen Wegwerf-Alias: Absenderadresse fremd, "DHL"/"Amazon" in Name und Betreff
@@ -89,6 +114,56 @@ public class SmartMailTests
         Assert.Single(objs);
         Assert.Contains("20261024", objs[0].Data);
         Assert.True(SmartMail.InCalendar(db, a));
+    }
+
+    [Fact]
+    public void Mehrere_Mails_zur_selben_Bestellung_ein_Termin()
+    {
+        // Amazon über SimpleLogin: „Versandt“, dann „In Zustellung“ mit Zeitfenster - beide mit Bestellnummer
+        MimeMessage Amazon(string subject, string text, DateTime date) =>
+            Mail("shipment-tracking_at_amazon_de_molvhu@simplelogin.co", "Amazon.de - shipment-tracking at amazon.de", subject, text: text, date: date);
+        var shipped = SmartMail.Extract(Amazon("Versandt: „CREAPROOF® Creatin Monohydrat…“", "Bestellnr. 302-1234567-7654321\nLieferung voraussichtlich am 22.10.", Now.AddHours(-20)), Berlin, Now).Single();
+        var today = SmartMail.Extract(Amazon("In Zustellung: „CREAPROOF® Creatin Monohydrat…“", "Bestellnr. 302-1234567-7654321\nZustellung heute zwischen 15:15 und 17:15", Now), Berlin, Now).Single();
+        Assert.Equal(shipped.Key, today.Key);
+        Assert.Equal("parcel:order:302-1234567-7654321", today.Key);
+        // Ohne Bestellnummer: Betreff ohne Status-Vorspann
+        Assert.Equal(SmartMail.Topic("Versandt: „CREAPROOF®“"), SmartMail.Topic("Zustellung heute: „CREAPROOF®“"));
+        Assert.Equal("ihre sendung kommt morgen", SmartMail.Topic("WG: Ihre Sendung kommt morgen"));
+        // „Zugestellt: …“ legt nichts an
+        Assert.Empty(SmartMail.Extract(Amazon("Zugestellt: „CREAPROOF® Creatin Monohydrat…“", "Bestellnr. 302-1234567-7654321\nIhre Lieferung von heute", Now), Berlin, Now));
+
+        // Der Abruf trägt die neueste Mail zuerst ein - die ältere überschreibt das Zeitfenster nicht
+        var dir = Directory.CreateTempSubdirectory("dmsmartorder");
+        var db = new UserDb(Path.Combine(dir.FullName, "u.db"), new byte[32], "t");
+        var space = new UserSpace(new UserRecord { Login = "t" }, db);
+        var cal = SmartMail.Upsert(space, today, null, Now);
+        SmartMail.Upsert(space, shipped, null, Now.AddHours(-20));
+        var obj = Assert.Single(PimStore.Objects(db, cal));
+        Assert.Contains("T131500Z", obj.Data);   // 15:15 Berlin
+        // Von Hand eingetragen (ohne Mail-Datum): wird übernommen
+        SmartMail.Upsert(space, shipped, null);
+        Assert.DoesNotContain("T131500Z", Assert.Single(PimStore.Objects(db, cal)).Data);
+    }
+
+    [Fact]
+    public void Frueher_doppelt_angelegte_Pakete_werden_zusammengelegt()
+    {
+        var dir = Directory.CreateTempSubdirectory("dmsmartdedupe");
+        var db = new UserDb(Path.Combine(dir.FullName, "u.db"), new byte[32], "t");
+        var space = new UserSpace(new UserRecord { Login = "t" }, db);
+        // So hat der alte Schlüssel (Zusteller + ganzer Betreff) drei Termine angelegt
+        SmartItem Old(string subject, DateTime start, DateTime end, bool allDay) =>
+            new("parcel", "parcel:Amazon:" + subject.ToLowerInvariant(), "📦 Paket (Amazon)", start, end, allDay, null, "Aus der Mail: " + subject);
+        var cal = SmartMail.Upsert(space, Old("Versandt: „CREAPROOF®“", new DateTime(2026, 10, 27), new DateTime(2026, 10, 28), true), null);
+        SmartMail.Upsert(space, Old("Bestellt: „CREAPROOF®“", new DateTime(2026, 10, 27), new DateTime(2026, 10, 28), true), null);
+        SmartMail.Upsert(space, Old("In Zustellung: „CREAPROOF®“", new DateTime(2026, 10, 27, 13, 15, 0, DateTimeKind.Utc), new DateTime(2026, 10, 27, 15, 15, 0, DateTimeKind.Utc), false), null);
+        SmartMail.Upsert(space, Old("Versandt: „Kaffeebohnen“", new DateTime(2026, 10, 28), new DateTime(2026, 10, 29), true), null);
+        Assert.Equal(4, PimStore.Objects(db, cal).Count);
+        Assert.Equal(2, SmartMail.Dedupe(db));
+        var left = PimStore.Objects(db, cal);
+        Assert.Equal(2, left.Count);
+        Assert.Contains(left, o => o.Data.Contains("T131500Z"));   // das mit Zeitfenster bleibt
+        Assert.Equal(0, SmartMail.Dedupe(db));                      // nur einmal
     }
 
     [Fact]

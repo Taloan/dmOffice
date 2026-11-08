@@ -13,3 +13,6 @@ data/
 
 # Arbeitsordner der Claude-Sitzungen (Worktrees, interne Berichte)
 .claude/
+# Android-App fuer das Image (vom Build-Ablauf)
+app-apk/*.apk
+app-apk/app.json

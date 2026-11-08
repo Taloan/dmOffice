@@ -17,6 +17,10 @@ services:
       DMOFFICE_MS_CLIENT_ID: ${DMOFFICE_MS_CLIENT_ID:-}
       # Behind a reverse proxy: set its address so only it may send X-Forwarded-* headers, e.g. 172.18.0.1/32.
       DMOFFICE_TRUSTED_PROXIES: ${DMOFFICE_TRUSTED_PROXIES:-}
+      # dmOffice does not run as root: /data is handed to UID/GID 1654 on first start. Change them if bind mounts
+      # need another owner, e.g. 99/100 on Unraid. Other mounted folders must be writable for this user themselves.
+      # DMOFFICE_UID: "1654"
+      # DMOFFICE_GID: "1654"
       TZ: Europe/Berlin
     volumes:
       - dmoffice-data:/data

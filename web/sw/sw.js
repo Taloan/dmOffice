@@ -76,23 +76,34 @@ function offline() {
   return new Response(html, { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } })
 }
 
-// Web-Push (vorbereitet): der Server schickt JSON { title, body, url, tag }.
-// Noch sendet dmOffice nichts - siehe docs/web-push.md.
+// Web-Push (2.0): der Server schickt JSON { title, body, url, tag } - Chat, neue Mail, Erinnerungen (docs/web-push.md).
+// Ist dmOffice gerade sichtbar offen, meldet sich die Seite selbst - dann keine zweite Benachrichtigung.
+// Safari (iPhone, Mac) verlangt zu jedem Push eine Benachrichtigung, sonst endet das Abo - dort immer zeigen.
 self.addEventListener('push', event => {
   let data = {}
   try { data = event.data ? event.data.json() : {} } catch { data = { body: event.data && event.data.text() } }
-  event.waitUntil(self.registration.showNotification(data.title || 'dmOffice', {
-    body: data.body || '',
-    icon: '/icon-192.png',
-    badge: '/icon-maskable-192.png',
-    tag: data.tag,
-    data: { url: data.url || '/' },
-  }))
+  event.waitUntil((async () => {
+    const apple = /Safari/.test(navigator.userAgent) && !/Chrome|Chromium|Edg|Firefox/.test(navigator.userAgent)
+    if (!apple) {
+      const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+      if (wins.some(w => w.visibilityState === 'visible')) return
+    }
+    await self.registration.showNotification(data.title || 'dmOffice', {
+      body: data.body || '',
+      icon: '/icon-192.png',
+      badge: '/icon-maskable-192.png',
+      tag: data.tag,
+      renotify: !!data.tag,
+      data: { url: data.url || '/' },
+    })
+  })())
 })
 
 self.addEventListener('notificationclick', event => {
   event.notification.close()
-  const target = new URL((event.notification.data && event.notification.data.url) || '/', self.location.origin)
+  let target = new URL((event.notification.data && event.notification.data.url) || '/', self.location.origin)
+  // Nur eigene Adressen oeffnen - eine Benachrichtigung darf nie auf eine fremde Seite fuehren
+  if (target.origin !== self.location.origin) target = new URL('/', self.location.origin)
   event.waitUntil((async () => {
     const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
     for (const w of wins) {

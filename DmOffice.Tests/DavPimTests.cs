@@ -45,6 +45,13 @@ public class DavPimTests
     }
 
     [Fact]
+    public void Doppelte_Stunde_meint_das_erste_Auftreten()
+    {
+        var berlin = TimeZoneInfo.FindSystemTimeZoneById("Europe/Berlin");
+        Assert.Equal(new DateTime(2026, 10, 25, 0, 30, 0, DateTimeKind.Utc), Ics.ToUtc(new DateTime(2026, 10, 25, 2, 30, 0), berlin));
+    }
+
+    [Fact]
     public void Zeit_in_der_Sommerzeit_Luecke_rueckt_vor()
     {
         var p = new Prop("DTSTART", "20270328T023000").With("TZID", "Europe/Berlin");

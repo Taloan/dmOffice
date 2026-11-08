@@ -32,6 +32,8 @@ public static class Lists
         public string? Section { get; set; }
         public int Count { get; set; }
         public DateTime Last { get; set; }
+        /// <summary>Kennung des Fotos (welche Marke, welche Packung) - die Bilddaten liegen eigens, siehe <see cref="PhotoKey"/>.</summary>
+        public string? Photo { get; set; }
     }
 
     public static readonly string[] DefaultShopSections =
@@ -43,6 +45,9 @@ public static class Lists
     private const int MaxHistory = 3000;
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private static string Key(long id) => "pim.list." + id;
+    private static string PhotoKey(string photo) => "pim.listphoto." + photo;
+    /// <summary>Fotos werden auf diese Kantenlaenge verkleinert - reicht, um im Laden die Packung zu erkennen.</summary>
+    public const int PhotoSize = 800;
 
     public static Meta Get(UserDb db, long id)
     {
@@ -90,7 +95,11 @@ public static class Lists
             if (!m.Sections.Contains(k.Section, StringComparer.OrdinalIgnoreCase)) m.Sections.Add(k.Section);
         }
         if (m.History.Count > MaxHistory)
-            m.History = m.History.OrderByDescending(h => h.Last).Take(MaxHistory).ToList();
+        {
+            var keep = m.History.OrderByDescending(h => h.Last).Take(MaxHistory).ToList();
+            foreach (var old in m.History.Except(keep)) DropPhoto(db, old);
+            m.History = keep;
+        }
         Save(db, id, m);
     }
 
@@ -121,6 +130,51 @@ public static class Lists
     public static void Forget(UserDb db, long id, string item)
     {
         var m = Get(db, id);
-        if (m.History.RemoveAll(h => string.Equals(h.Name, item.Trim(), StringComparison.OrdinalIgnoreCase)) > 0) Save(db, id, m);
+        var gone = m.History.Where(h => string.Equals(h.Name, item.Trim(), StringComparison.OrdinalIgnoreCase)).ToList();
+        if (gone.Count == 0) return;
+        foreach (var h in gone) { DropPhoto(db, h); m.History.Remove(h); }
+        Save(db, id, m);
+    }
+
+    /// <summary>
+    /// Foto zu einem Artikel (auch einem, der noch nie auf der Liste stand): verkleinert als WebP in der Datenbank,
+    /// damit es mit den Listen gesichert wird. Null: kein Bild. Ersetzt ein vorhandenes Foto.
+    /// </summary>
+    public static string? SetPhoto(UserDb db, long id, string item, byte[] image)
+    {
+        item = item.Trim();
+        if (item.Length == 0 || item.Length > 200) throw new ArgumentException("Ungültiger Artikel.");
+        if (Thumbs.FromBytes(image, PhotoSize) is not { } webp) return null;
+        var m = Get(db, id);
+        var k = m.History.FirstOrDefault(h => string.Equals(h.Name, item, StringComparison.OrdinalIgnoreCase));
+        if (k == null) { k = new Known { Name = item, Last = DateTime.UtcNow }; m.History.Add(k); }
+        DropPhoto(db, k);
+        k.Photo = Guid.NewGuid().ToString("N")[..16];
+        db.Set(PhotoKey(k.Photo), Convert.ToBase64String(webp));
+        Save(db, id, m);
+        return k.Photo;
+    }
+
+    public static void RemovePhoto(UserDb db, long id, string item)
+    {
+        var m = Get(db, id);
+        var k = m.History.FirstOrDefault(h => string.Equals(h.Name, item.Trim(), StringComparison.OrdinalIgnoreCase));
+        if (k?.Photo == null) return;
+        DropPhoto(db, k);
+        Save(db, id, m);
+    }
+
+    /// <summary>Bilddaten, wenn das Foto zu dieser Liste gehoert (sonst null - fremde Kennungen fuehren nirgendwohin).</summary>
+    public static byte[]? Photo(UserDb db, long id, string photo)
+    {
+        if (!Get(db, id).History.Any(h => h.Photo == photo)) return null;
+        return db.Get(PhotoKey(photo)) is { } b64 ? Convert.FromBase64String(b64) : null;
+    }
+
+    private static void DropPhoto(UserDb db, Known k)
+    {
+        if (k.Photo == null) return;
+        db.Set(PhotoKey(k.Photo), null);
+        k.Photo = null;
     }
 }

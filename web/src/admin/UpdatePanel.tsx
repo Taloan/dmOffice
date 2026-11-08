@@ -6,6 +6,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, fmtSize } from '../api'
 import { useApp } from '../App'
 import { t, locale } from '../i18n'
+import { AdminHeading } from './AdminHeading'
+import { askConfirm } from '../shell/context'
 
 // Migrations-Assistent: was an Datenaenderungen ansteht oder laeuft, mit Platz, Fortschritt und den Schaltern
 // "Jetzt starten", "Pausieren", "Sicherung ansehen". Gleiche Daten wie GET /api/admin/update (UpdateCenter.Describe).
@@ -97,7 +99,7 @@ export function UpdatePanel({ gate = false }: { gate?: boolean }) {
   const recheck = () => call(() => api.post('/api/admin/update/recheck'), t('Wird geprüft'))
   const setKeep = (keepDays: number) => call(() => api.put('/api/admin/update/settings', { keepDays }), t('Gespeichert'))
   const removeBackup = async (b: Backup) => {
-    if (!confirm(t('Sicherung „{name}“ ({size}) endgültig löschen?', { name: b.name, size: fmtSize(b.bytes) }))) return
+    if (!await askConfirm('', t('Sicherung „{name}“ ({size}) endgültig löschen?', { name: b.name, size: fmtSize(b.bytes) }))) return
     await call(() => api.del(`/api/admin/update/backups/${encodeURIComponent(b.name)}`))
   }
 
@@ -110,7 +112,7 @@ export function UpdatePanel({ gate = false }: { gate?: boolean }) {
 
   return (
     <div className={s.root}>
-      {!gate && <Text size={500} weight="semibold">{t('Updates und Datenänderungen')}</Text>}
+      {!gate && <AdminHeading first>{t('Updates und Datenänderungen')}</AdminHeading>}
       <Text>
         {t('Bei einer neuen Version bringt dmOffice die Daten selbst auf den neuen Stand. Vorher prüft es den freien Platz und sichert die Datenbanken; reicht der Platz nicht, wird nichts verändert, und hier steht, was fehlt. Große Umbauten starten erst nach „Jetzt starten“.')}
       </Text>
@@ -212,7 +214,7 @@ export function UpdatePanel({ gate = false }: { gate?: boolean }) {
 
       {!gate && (
         <>
-          <Text size={400} weight="semibold">{t('Sicherungen vor Datenänderungen')}</Text>
+          <AdminHeading>{t('Sicherungen vor Datenänderungen')}</AdminHeading>
           <Text size={200} className={s.muted}>
             {t('Vor jedem Umbau legt dmOffice von jeder Benutzerdatenbank eine verschlüsselte Kopie an (samt Benutzerliste, Einstellungen, Freigaben und Schlüsseln) – aber nur, wenn der Platz reicht. Die Dateiinhalte (Blob-Dateien) werden nicht mitgesichert: Das Auslagern löscht nichts, die alten Inhalte bleiben in der Datenbank – und damit in dieser Sicherung –, bis du ausdrücklich verdichtest. Die Sicherungen zählen zum belegten Platz: {size}.', { size: fmtSize(info.backupBytes) })}
           </Text>
@@ -267,13 +269,14 @@ export function UpdatePanel({ gate = false }: { gate?: boolean }) {
                     {viewing.users.map(u => <li key={u.id}>{t('{login}: Datenbank im Stand {schema} ({size})', { login: u.login, schema: u.schema, size: fmtSize(u.bytes) })}</li>)}
                     <li>{t('users.json, server.json, shares.json, Hauptschlüssel und keys/ (soweit vorhanden)')}</li>
                   </ul>
-                  <Text weight="semibold">{t('Zurückgehen')}</Text>
+                  <Text weight="semibold">{t('Zurückgehen auf eine frühere Version')}</Text>
                   <ol className={s.steps}>
-                    <li>{t('dmOffice (den Container) stoppen und die Image-Version festnageln, die zu dieser Sicherung passt, z. B. ghcr.io/taloan/dmoffice:{v}.', { v: viewing.appVersion || '1.1.0' })}</li>
-                    <li>{t('Aus dem Sicherungsordner users/*.db nach {dir}/users/ kopieren; die gleichnamigen Dateien mit -wal und -shm dort vorher löschen.', { dir: info.dataDir })}</li>
-                    <li>{t('users.json, server.json, shares.json (und master.key, keys/) aus dem Sicherungsordner in {dir} zurückkopieren.', { dir: info.dataDir })}</li>
-                    <li>{t('Container starten. Änderungen seit der Sicherung gehen dabei verloren; Blob-Dateien müssen nicht zurück (überzählige räumt dmOffice selbst weg).')}</li>
+                    <li>{t('dmOffice stoppen und die Image-Version einstellen, die zur Sicherung passt, z. B. {image}.', { image: 'ghcr.io/taloan/dmoffice:' + (viewing.appVersion || '1.1.0') })}</li>
+                    <li>{t('Benutzerdatenbanken wiederherstellen: Alle Dateien users/*.db aus der Sicherung nach {dir}/users/ kopieren. Zuvor die zugehörigen Dateien mit den Endungen -wal und -shm im Zielordner löschen.', { dir: info.dataDir })}</li>
+                    <li>{t('Einstellungen und Schlüssel wiederherstellen: Die Dateien users.json, server.json und shares.json sowie, falls vorhanden, master.key und den Ordner keys/ aus der Sicherung nach {dir} zurückkopieren.', { dir: info.dataDir })}</li>
+                    <li>{t('dmOffice wieder starten. Der Server befindet sich nun auf dem Stand der Sicherung.')}</li>
                   </ol>
+                  <Text>{t('Wichtig: Alle Änderungen seit der Sicherung gehen verloren. Die Blob-Dateien müssen nicht zurückkopiert werden. Nicht mehr benötigte Dateien bereinigt dmOffice automatisch.')}</Text>
                 </div>
               </DialogContent>
               <DialogActions><Button appearance="primary" onClick={() => setViewing(null)}>{t('Schließen')}</Button></DialogActions>

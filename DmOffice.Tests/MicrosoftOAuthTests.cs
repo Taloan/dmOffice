@@ -188,6 +188,54 @@ public class MicrosoftOAuthTests
     }
 
     [Fact]
+    public async Task Graph_Token_eigene_Anmeldung_eigene_Scopes_eigene_Kette()
+    {
+        var (oauth, fake) = Make(
+            (HttpStatusCode.OK, """{"device_code":"DC","user_code":"G-1","verification_uri":"https://www.microsoft.com/link","expires_in":900,"interval":5}"""),
+            (HttpStatusCode.OK, Token("GAT1", "GRT1")),
+            (HttpStatusCode.OK, Token("MAIL1")),
+            (HttpStatusCode.OK, Token("GAT2", "GRT2")));
+        var rotated = new List<(string, string, string)>();
+        oauth.GraphTokenRotated = (id, old, fresh) => rotated.Add((id, old, fresh));
+
+        var start = await oauth.StartAsync("u1", default, MicrosoftOAuth.GraphScopes);
+        Assert.Contains("https://graph.microsoft.com/Calendars.ReadWrite", fake.Requests[0].Form["scope"]);
+        Assert.DoesNotContain("outlook.office.com", fake.Requests[0].Form["scope"]);
+        Assert.Equal("ok", await oauth.PollAsync("u1", start.Flow, default));
+        // Eine Graph-Anmeldung taugt nicht als Mail-Anmeldung und umgekehrt
+        Assert.Null(oauth.Grant("u1", start.Flow));
+        Assert.Equal("GRT1", oauth.GraphGrant("u1", start.Flow));
+
+        var a = Account("RT-MAIL");
+        a.GraphRefreshToken = "GRT1";
+        Assert.Equal("GAT1", await oauth.GraphTokenAsync(a, default));   // aus der Anmeldung, ohne Anfrage
+        Assert.Equal("MAIL1", await oauth.AccessTokenAsync(a, default));  // Mail: eigene Kette
+        Assert.Equal("https://outlook.office.com/IMAP.AccessAsUser.All", fake.Requests[2].Form["scope"].Split(' ')[1]);
+        Assert.Equal(3, fake.Requests.Count);
+
+        // Gleiches Refresh-Token fuer beide: trotzdem getrennte Access-Tokens
+        var b = Account("SAME");
+        b.GraphRefreshToken = "SAME";
+        Assert.Equal("GAT2", await oauth.GraphTokenAsync(b, default));
+        Assert.Contains("graph.microsoft.com", fake.Requests[3].Form["scope"]);
+        Assert.Equal(new[] { ("acc1", "SAME", "GRT2") }, rotated);
+    }
+
+    [Fact]
+    public void Graph_Token_wird_eigens_gespeichert()
+    {
+        var space = Space("dmoauthgraph");
+        space.UpdateSettings(s => s.MailAccounts.Add(new MailAccount { Id = "acc1", Auth = MailAuth.Microsoft, OAuthRefreshToken = "RT1", GraphRefreshToken = "G1" }));
+        Assert.True(MicrosoftOAuth.Persist([space], "acc1", "G1", "G2", graph: true));
+        Assert.Equal(("RT1", "G2"), (space.Account("acc1").OAuthRefreshToken, space.Account("acc1").GraphRefreshToken));
+        Assert.False(MicrosoftOAuth.Persist([space], "acc1", "G1", "G3", graph: true));
+        // Zurueck auf Passwort: auch das Graph-Token weg
+        var target = space.Account("acc1");
+        SettingsApi.Merge(target, new MailAccount { Email = "anna@live.de", Auth = MailAuth.Password });
+        Assert.Null(target.GraphRefreshToken);
+    }
+
+    [Fact]
     public void Speichern_Token_nur_aus_Anmeldung_und_nie_die_Flow_Kennung()
     {
         var target = new MailAccount();

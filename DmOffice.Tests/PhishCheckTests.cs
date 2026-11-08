@@ -149,6 +149,16 @@ public class PhishCheckTests
         Assert.Empty(Check(Mail("a@appel.com")));
     }
 
+    [Fact]
+    public void Anderer_erster_Buchstabe_nur_bei_aehnlichem_Zeichen()
+    {
+        // pCloud ist ein eigener Dienst, kein nachgeahmtes iCloud
+        var ctx = new PhishCheck.Context { KnownDomains = new HashSet<string>(Ctx.KnownDomains) { "icloud.com" }, OwnHosts = Ctx.OwnHosts };
+        Assert.DoesNotContain(Check(Mail("team@pcloud.com", "<a href=\"https://e.pcloud.com/x\">Konto</a>"), ctx), f => f.Kind == "lookalike");
+        // l statt i am Anfang sieht gleich aus
+        Assert.Equal("icloud.com", Assert.Single(Check(Mail("id@lcloud.com"), ctx)).Like);
+    }
+
     // ---------------- Erstmaliger Absender ----------------
 
     [Fact]
@@ -164,6 +174,74 @@ public class PhishCheckTests
         Assert.Empty(Check(Mail("a@hilfe.example", html), new PhishCheck.Context { WroteBefore = () => true, KnownDomains = Ctx.KnownDomains }));
         // Ohne Anmeldelink kein Merkmal
         Assert.Empty(Check(Mail("a@hilfe.example", "<a href=\"https://hilfe.example/rezept\">Zum Rezept</a>")));
+    }
+
+    // ---------------- Cloud-Speicher, versteckte Adresse, Drohung ----------------
+
+    [Fact]
+    public void Bankimitat_von_sauberem_Server_wird_an_Speicherlink_Adresse_und_Frist_erkannt()
+    {
+        // Echte Vorlage: Volksbank-Logo, Absender eines gekaperten Servers (SPF und DKIM bestanden), Button auf Amazon S3,
+        // ref = Base64 der eigenen Adresse, Drohung mit Sperre und Frist
+        var html = "<p>Unserer Datenbank zufolge ist die Bestätigung auf Ihrer Seite noch ausstehend.</p>"
+            + "<p>Bitte erledigen Sie den Vorgang innerhalb von 7 Tagen. Falls nicht, werden wir Ihre Transaktionsfunktionen vorläufig sperren.</p>"
+            + "<p>Frist: 27.10.2026</p><a href=\"https://s3.eu-west-3.amazonaws.com/cdn-vw64ylc3-456356/7cbga4vi0n?ref=" + Convert.ToBase64String("ich@beispiel.de"u8.ToArray()) + "\">Vorgang durchführen</a>";
+        var found = Check(Mail("admin@mahveen.co.id", html, ("Authentication-Results",
+            "beispiel.de; dkim=pass header.i=@mahveen.co.id; spf=pass smtp.mailfrom=admin@mahveen.co.id; dmarc=none header.from=mahveen.co.id")),
+            new PhishCheck.Context { KnownDomains = Ctx.KnownDomains, OwnHosts = Ctx.OwnHosts, OwnAddresses = ["ich@beispiel.de"] });
+        Assert.Equal(["hosted", "myaddress", "pressure"], found.Select(f => f.Kind));
+        Assert.All(found, f => Assert.False(f.Strong));
+        Assert.Equal(("Vorgang durchführen", "s3.eu-west-3.amazonaws.com"), (found[0].Shown, found[0].Target));
+        Assert.Equal("ich@beispiel.de", found[1].Domain);
+
+        // Bekannter Absender: nichts davon
+        Assert.Empty(Check(Mail("admin@mahveen.co.id", html), new PhishCheck.Context { KnownSender = true, OwnAddresses = ["ich@beispiel.de"] }));
+    }
+
+    [Fact]
+    public void Speicherlink_Adresse_und_Frist_einzeln_nicht_ueberempfindlich()
+    {
+        // Offen im Abmeldelink stehende Adresse zählt nicht, nur versteckte
+        Assert.Empty(Check(Mail("news@shop.example", "<a href=\"https://shop.example/abmelden?email=ich@beispiel.de\">Abmelden</a>")));
+        // Seite auf dem eigenen Speicher des Absenders: kein Hinweis
+        Assert.Empty(Check(Mail("team@netlify.app", "<a href=\"https://docs.netlify.app/x\">Doku</a>")));
+        // Frist ohne Drohung (Rechnung) und Drohung ohne Frist: kein Hinweis
+        Assert.Empty(Check(Mail("rechnung@firma.example", "<p>Bitte zahlen Sie innerhalb von 14 Tagen.</p><a href=\"https://firma.example/r\">Rechnung</a>")));
+        Assert.Empty(Check(Mail("info@firma.example", "<p>Gestohlene Karten werden gesperrt.</p><a href=\"https://firma.example/r\">Mehr</a>")));
+        // Bucket-Link ohne S3 im Namen ist kein gemieteter Speicher
+        Assert.Empty(Check(Mail("info@firma.example", "<a href=\"https://ec2-1-2-3-4.compute.amazonaws.com/x\">x</a>")));
+    }
+
+    [Fact]
+    public void Ueber_SimpleLogin_weitergeleitet()
+    {
+        // SimpleLogin ersetzt den Absender durch eine Antwortadresse; der Mailserver bestätigt simplelogin.co
+        MimeMessage Sl(string html, string? auth = "dkim=pass header.d=simplelogin.co; dmarc=pass header.from=simplelogin.co")
+        {
+            var m = auth == null ? Mail("x@y.example", html) : Mail("x@y.example", html, ("Authentication-Results", "imap.beispiel.de; " + auth));
+            m.From.Clear();
+            m.From.Add(new MailboxAddress("Amazon.de - shipment-tracking at amazon.de", "shipment-tracking_at_amazon_de_molvhu@simplelogin.co"));
+            return m;
+        }
+        var ctx = new PhishCheck.Context { KnownDomains = new HashSet<string> { "amazon.de" }, OwnHosts = Ctx.OwnHosts };
+        // Anmeldelink auf die Seite des eigentlichen Absenders (amazon.de): kein Hinweis
+        Assert.Empty(Check(Sl("<a href=\"https://www.amazon.de/ap/signin\">Anmelden</a>"), ctx));
+        // Anmeldelink woandershin: Hinweis mit dem eigentlichen Absender und dem Dienst
+        var f = Assert.Single(Check(Sl("<a href=\"https://amazon-konto.example/login\">Anmelden</a>"), ctx));
+        Assert.Equal(("newsender", "shipment-tracking@amazon.de", "SimpleLogin", "amazon-konto.example"), (f.Kind, f.Domain, f.Detail, f.Target));
+        // Ohne Bestätigung des Dienstes: Hinweis mit der Antwortadresse, wie bei jedem anderen Absender
+        Assert.Equal("shipment-tracking_at_amazon_de_molvhu@simplelogin.co",
+            Assert.Single(Check(Sl("<a href=\"https://amazon-konto.example/login\">Anmelden</a>", auth: null), ctx)).Domain);
+        // Ablesen der Adresse
+        Assert.Equal(("SimpleLogin", "shipment-tracking@amazon.de", "amazon.de"), Forwarders.Decode("shipment-tracking_at_amazon_de_molvhu@simplelogin.co", null) is { } i ? (i.Service, i.Original, i.Domain) : default);
+        Assert.Equal("info@shop.example", Forwarders.Decode("alias+info=shop.example@addy.io", null)?.Original);
+        Assert.Equal("news@firma.example", Forwarders.Decode("abc123@simplelogin.co", "Firma - news at firma.example")?.Original);
+        Assert.Null(Forwarders.Decode("info@amazon.de", "Amazon"));
+        // Firefox Relay: eigene Tarnadresse als Absender, der eigentliche steht im Namen
+        var relay = Forwarders.Decode("abc123xy@mozmail.com", "\"info@shop.example [via Relay]\"");
+        Assert.Equal(("Firefox Relay", "info@shop.example", false), (relay!.Service, relay.Original, relay.PerSender));
+        Assert.Null(Forwarders.Decode("abc123xy@mozmail.com", "Shop"));
+        Assert.Null(Forwarders.Decode("kaputt_at_@simplelogin.co", null));
     }
 
     [Theory]

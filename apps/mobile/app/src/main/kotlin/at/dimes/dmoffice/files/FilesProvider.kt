@@ -59,6 +59,8 @@ class FilesProvider : DocumentsProvider() {
     override fun queryDocument(documentId: String, projection: Array<out String>?): Cursor {
         val c = MatrixCursor(projection ?: DOC_COLS)
         val path = pathOf(documentId)
+        // Nur gezeigt (Version 2): nicht an andere Apps auf dem Geraet
+        if (path.isNotEmpty() && repo.isShown(path)) throw FileNotFoundException(documentId)
         val item = try { repo.find(path) } catch (e: Exception) { throw FileNotFoundException(e.message) } ?: throw FileNotFoundException(documentId)
         addRow(c, item, if (path.isEmpty()) context!!.getString(R.string.app_name) else item.name)
         return c
@@ -90,7 +92,8 @@ class FilesProvider : DocumentsProvider() {
             if (error != null) putString(DocumentsContract.EXTRA_ERROR, error)
         }
         val c = object : MatrixCursor(projection ?: DOC_COLS) { override fun getExtras(): Bundle = extras }
-        listing?.items?.forEach { addRow(c, it, it.name) }
+        // Nur gezeigte Ordner (Version 2) bleiben in dmOffice
+        if (!repo.isShown(path)) listing?.items?.filter { it.showOnly != true && !repo.isShownCached(it.path) }?.forEach { addRow(c, it, it.name) }
         c.setNotificationUri(ctx.contentResolver, uri)
         return c
     }
@@ -100,6 +103,7 @@ class FilesProvider : DocumentsProvider() {
         val path = pathOf(documentId)
         val item = try { repo.find(path) } catch (e: Exception) { throw FileNotFoundException(e.message) }
         if (item == null || item.isDir) throw FileNotFoundException(documentId)
+        if (repo.isShown(path)) throw FileNotFoundException(documentId)
         val pfdMode = ParcelFileDescriptor.parseMode(mode)
         if (!mode.contains('w') && !mode.contains('a')) {
             val f = try { repo.cacheFile(item) } catch (e: Exception) { throw FileNotFoundException(e.message) }

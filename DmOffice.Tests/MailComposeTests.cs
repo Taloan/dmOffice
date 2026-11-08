@@ -48,4 +48,47 @@ public class MailComposeTests
         Assert.Single(m.To.Mailboxes);
         Assert.Empty(m.Cc);
     }
+
+    // iPhone: Text, Bild (inline, ohne Content-ID), Text als Teile nacheinander in multipart/mixed
+    private static MimeMessage IPhoneMail(bool pictureAsAttachment = false)
+    {
+        var picture = new MimePart("image", "jpeg")
+        {
+            Content = new MimeContent(new MemoryStream([0xFF, 0xD8, 0xFF, 0xD9])),
+            ContentDisposition = new ContentDisposition(pictureAsAttachment ? ContentDisposition.Attachment : ContentDisposition.Inline) { FileName = "image0.jpeg" },
+            ContentTransferEncoding = ContentEncoding.Base64,
+        };
+        var mixed = new Multipart("mixed")
+        {
+            new TextPart("html") { Text = "<div>Danke für das schöne Geschenk</div>" },
+            picture,
+            new TextPart("html") { Text = "<div>Von meinem iPhone gesendet</div>" },
+        };
+        return new MimeMessage { Body = mixed };
+    }
+
+    [Fact]
+    public void IPhone_Text_Bild_Text_erscheinen_nacheinander_statt_als_Anhaenge()
+    {
+        var m = IPhoneMail();
+        var parts = MailCompose.Parts(m);
+        var used = new HashSet<int>();
+        var html = MailCompose.InlineSequence(m, parts, used);
+        Assert.NotNull(html);
+        var a = html!.IndexOf("Geschenk", StringComparison.Ordinal);
+        var b = html.IndexOf("cid:" + MailCompose.SequencePart, StringComparison.Ordinal);
+        var c = html.IndexOf("iPhone gesendet", StringComparison.Ordinal);
+        Assert.True(a >= 0 && a < b && b < c);
+        // Bild und zweiter Text gelten als verwendet und erscheinen nicht als Anhang
+        Assert.Equal(parts.Count, used.Count);
+    }
+
+    [Fact]
+    public void Bild_als_echter_Anhang_bleibt_Anhang()
+    {
+        var m = IPhoneMail(pictureAsAttachment: true);
+        var used = new HashSet<int>();
+        Assert.Null(MailCompose.InlineSequence(m, MailCompose.Parts(m), used));
+        Assert.Empty(used);
+    }
 }

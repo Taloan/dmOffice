@@ -7,6 +7,8 @@ import { fmtDate } from '../shell/hooks'
 import { folderLabel } from './FolderPane'
 import { usePrefs } from '../prefs'
 import { CategoryChips } from './Categories'
+import { AliasHint } from './CatchallFolders'
+import { Expiry, ExpiryTag } from './ExpiryMenu'
 import { locale, t } from '../i18n'
 
 const useStyles = makeStyles({
@@ -67,6 +69,10 @@ interface Props {
   onToggleFlag: (i: MailItem) => void
   /** Wann eine zurueckgelegte Mail wiederkommt (Wiedervorlage). */
   snoozeOf?: (i: MailItem) => string | undefined
+  /** Entfernen nach Zeit: Sanduhr mit Zeitpunkt */
+  expiryOf?: (i: MailItem) => Expiry | undefined
+  /** Klick auf einen Kategorie-Badge: Kategorie von dieser Mail entfernen. */
+  onRemoveCategory?: (i: MailItem, key: string) => void
   /** Rechtsklick: Mail (ggf. erst auswaehlen) und Mausposition. */
   onContextMenu?: (item: MailItem, x: number, y: number) => void
   /** Was eine leere Liste bedeutet: leerer Posteingang, keine Treffer, nichts fuer den Filter, leerer Ordner. */
@@ -88,7 +94,7 @@ const inboxZero = () => [
   t('Alles abgearbeitet. Der Rest des Tages gehört dir.'),
 ]
 
-export function MessageList({ items, selected, onSelect, loading, showFolder, folders, more, onMore, onToggleFlag, snoozeOf, onContextMenu, empty, onOpen, grouped = true }: Props) {
+export function MessageList({ items, selected, onSelect, loading, showFolder, folders, more, onMore, onToggleFlag, snoozeOf, expiryOf, onContextMenu, onRemoveCategory, empty, onOpen, grouped = true }: Props) {
   // Einmal je Anzeige auswuerfeln, nicht bei jedem Neuzeichnen
   const saying = useMemo(() => { const l = inboxZero(); return l[Math.floor(Math.random() * l.length)] }, [empty])
   const s = useStyles()
@@ -181,11 +187,13 @@ export function MessageList({ items, selected, onSelect, loading, showFolder, fo
                 <span className={mergeClasses(s.subject, !item.seen && s.bold, !item.seen && s.brand)}>{item.subject || t('(ohne Betreff)')}</span>
                 <span className={s.date}>{fmtDate(item.date)}</span>
               </div>
-              {(preview || unsure || folder || item.keywords?.length > 0) && <div className={s.row}>
-                <CategoryChips keywords={item.keywords} />
+              {(preview || unsure || folder || item.alias || item.keywords?.length > 0 || expiryOf?.(item)) && <div className={s.row}>
+                <CategoryChips keywords={item.keywords} onRemove={onRemoveCategory ? k => onRemoveCategory(item, k) : undefined} />
                 {snoozeOf?.(item) && <span className={s.tag} title={t('Wiedervorlage')}>⏰ {fmtDate(snoozeOf(item)!)}</span>}
+                {expiryOf?.(item) && <ExpiryTag e={expiryOf(item)!} className={s.tag} />}
                 {unsure && <span className={mergeClasses(s.tag, s.unsure)}><ShieldError16Regular style={{ verticalAlign: -3 }} /> {t('unsicher')}</span>}
                 {folder && <span className={s.tag} title={folder.path}>{folderLabel(folder)}</span>}
+                {item.alias && <AliasHint className={s.tag} address={item.alias} state={item.aliasState} sender={item.from?.name} />}
                 {preview && !item.match && <span className={s.preview}>{item.preview || (item.cached ? '' : '…')}</span>}
               </div>}
               {item.match && <div className={s.row}>

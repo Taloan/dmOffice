@@ -38,13 +38,13 @@ const useStyles = makeStyles({
 
 const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate())
 
-export function TodoBar({ onWrite }: { onWrite: (address: string, name?: string) => void }) {
+export function TodoBar({ onWrite, width }: { onWrite: (address: string, name?: string) => void; width?: number }) {
   const s = useStyles()
   const { prefs, update } = usePrefs()
   const parts = prefs.todoBar ?? []
   const close = (p: string) => update({ todoBar: parts.filter(x => x !== p) })
   return (
-    <aside className={s.root}>
+    <aside className={s.root} style={width ? { width } : undefined}>
       {parts.includes('calendar') && <CalendarPart onClose={() => close('calendar')} />}
       {parts.includes('people') && <PeoplePart onWrite={onWrite} onClose={() => close('people')} />}
       {parts.includes('tasks') && <TasksPart onClose={() => close('tasks')} />}
@@ -124,7 +124,7 @@ function CalendarPart({ onClose }: { onClose: () => void }) {
           <div key={k}>
             <div className={s.dayHead}>{label}</div>
             {list.map(e => (
-              <div key={e.id} className={s.event} onClick={() => { location.hash = '#/calendar' }} title={e.location ?? ''}>
+              <div key={e.id} className={s.event} onClick={() => { location.hash = `#/calendar/event/${encodeURIComponent(e.uri)}/${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}` }} title={e.location ?? ''}>
                 <span className={s.bar} style={{ backgroundColor: colors[e.calendar] ?? tokens.colorBrandBackground }} />
                 <div className={s.ellipsis}>
                   <div className={s.ellipsis}>{e.title || t('(ohne Titel)')}</div>

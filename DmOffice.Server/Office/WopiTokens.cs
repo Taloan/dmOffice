@@ -18,7 +18,13 @@ namespace DmOffice.Office;
 /// <param name="E">ETag beim Oeffnen (ONLYOFFICE: Konflikt erkennen, wenn die Datei inzwischen anders geaendert wurde)</param>
 /// <param name="V">Mitglied, das eine mit ihm geteilte Datei des Besitzers (U) oeffnet; sonst null. S ist dann sein Stempel.
 /// Die Freigabe wird bei jeder Anfrage neu geprueft - Widerruf beendet auch laufende Sitzungen.</param>
-public sealed record WopiGrant(string U, long F, bool W, string B, string O, string S, string? L, string N, string? E = null, string? V = null);
+/// <param name="X">Nur gezeigt (Version 2): nicht drucken, nicht exportieren, nicht kopieren</param>
+/// <param name="T">Datei im Tresor (F ist dann ihre Id in der Tresor-Datenbank, siehe <see cref="TresorOffice"/>)</param>
+public sealed record WopiGrant(string U, long F, bool W, string B, string O, string S, string? L, string N, string? E = null, string? V = null, bool X = false, bool T = false)
+{
+    /// <summary>Schlüssel für Sperren und Dokumente: Tresor-Dateien getrennt von der Ablage (beide zählen ihre Ids eigenständig).</summary>
+    public string Owner => T ? U + "#tresor" : U;
+}
 
 /// <summary>
 /// Kurzlebige, signierte und verschluesselte access_tokens fuer WOPI (Data Protection, wie das Anmelde-Cookie,
@@ -56,6 +62,8 @@ public static class WopiTokens
     /// <summary>Datei-Id fuer die WOPI-Adresse: Benutzer und fileid - der Office-Server fasst Sitzungen je WOPISrc zusammen,
     /// darum darf die Adresse nicht bei zwei Benutzern gleich sein.</summary>
     public static string FileId(string user, long fileId) => $"{user}_{fileId}";
+
+    public static string FileId(WopiGrant g) => g.T ? $"{g.U}_t{g.F}" : FileId(g.U, g.F);
 }
 
 /// <summary>WOPI-Sperren je Datei, im Speicher (ein Server-Prozess). Laufen nach 30 Minuten ohne Erneuern ab.</summary>

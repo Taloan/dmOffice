@@ -10,7 +10,7 @@ export const menus: Record<string, string> = {
   'Frei': 'Free',
   'E-Mail senden': 'Send email',
   'Erledigte ausblenden': 'Hide completed',
-  'Geteilt mit mir': 'Shared with me',
+  'Mit mir geteilt': 'Shared with me',
   'In Aufgaben öffnen': 'Open in To Do',
   'In neuem Fenster öffnen': 'Open in new window',
   'Kein Fälligkeitsdatum': 'No due date',
@@ -27,7 +27,6 @@ export const menus: Record<string, string> = {
   '{n} Aufgaben ausgewählt': '{n} tasks selected',
   '{n} Aufgaben löschen?': 'Delete {n} tasks?',
   '{n} Kontakte ausgewählt': '{n} contacts selected',
-  '{n} Kontakte löschen?': 'Delete {n} contacts?',
   '{n} Notizen ausgewählt': '{n} notes selected',
   '{n} Notizen endgültig löschen? Auch auf allen anderen Geräten.': 'Permanently delete {n} notes? Also on all other devices.',
 }

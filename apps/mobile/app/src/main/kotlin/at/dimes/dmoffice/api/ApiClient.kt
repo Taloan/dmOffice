@@ -21,7 +21,8 @@ import okhttp3.Response
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
-class ApiException(val code: Int, message: String) : IOException(message)
+/** [locked]: Bereichssperre (423) - welcher Bereich gesperrt ist. */
+class ApiException(val code: Int, message: String, val locked: String? = null) : IOException(message)
 
 /**
  * Web-API von dmOffice mit App-Passwort (Basic). Der Server laesst damit Mail, Kalender,
@@ -34,6 +35,8 @@ class ApiClient(private val account: Account, private val counters: E2e.Counters
 
     val http: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS).readTimeout(90, TimeUnit.SECONDS).writeTimeout(90, TimeUnit.SECONDS)
+        // Bereichssperre: 423 → gemeinsamer Entsperr-Dialog, dann dieselbe Anfrage noch einmal (vor dem Umschlag, sieht die Klartext-Antwort)
+        .addInterceptor(at.dimes.dmoffice.ui.TresorInterceptor())
         .apply { if (account.encrypted) addInterceptor(E2e.Interceptor(account, counters)) }
         .build()
 
@@ -67,8 +70,11 @@ class ApiClient(private val account: Account, private val counters: E2e.Counters
     private fun check(r: Response): Response {
         if (r.code in 200..299) return r
         val text = try { r.body?.string() ?: "" } catch (_: Exception) { "" }
-        val msg = try { json.parseToJsonElement(text).jsonObject["error"]?.jsonPrimitive?.content } catch (_: Exception) { null }
-        throw ApiException(r.code, msg ?: (if (r.code == 401) "401" else "HTTP ${r.code}"))
+        val obj = try { json.parseToJsonElement(text).jsonObject } catch (_: Exception) { null }
+        val msg = obj?.get("error")?.jsonPrimitive?.content
+        // App-Passwort abgelehnt (nicht ein abgelaufenes Ticket): „Neu verbinden“ anbieten
+        if (r.code == 401 && r.request.header(TICKET_HEADER) == null) AuthLost.report(account)
+        throw ApiException(r.code, msg ?: (if (r.code == 401) "401" else "HTTP ${r.code}"), obj?.get("locked")?.jsonPrimitive?.content)
     }
 
     fun getText(url: String): String = http.newCall(build("GET", url, null)).execute().use { check(it).body?.string() ?: "" }
@@ -76,14 +82,40 @@ class ApiClient(private val account: Account, private val counters: E2e.Counters
 
     inline fun <reified T> get(url: String): T = json.decodeFromString(getText(url))
 
+    /** GET mit ETag (große Listen wie die Audiothek): (Text, neuer ETag), null wenn unverändert (304). */
+    fun getIfChanged(url: String, etag: String?): Pair<String, String?>? =
+        http.newCall(build("GET", url, null).newBuilder().apply { if (etag != null) header("If-None-Match", etag) }.build()).execute().use { r ->
+            if (r.code == 304) null else check(r).let { (it.body?.string() ?: "") to it.header("ETag") }
+        }
+
     fun postText(url: String, body: String?): String =
         http.newCall(build("POST", url, (body ?: "").toRequestBody(jsonType))).execute().use { check(it).body?.string() ?: "" }
     fun putText(url: String, body: String): String =
         http.newCall(build("PUT", url, body.toRequestBody(jsonType))).execute().use { check(it).body?.string() ?: "" }
     fun delete(url: String) { http.newCall(build("DELETE", url, null)).execute().use { check(it) } }
+    /** DELETE mit JSON im Körper (Tresor löschen: Tresor-Passwort zur Bestätigung). */
+    fun deleteWithBody(url: String, body: String) { http.newCall(build("DELETE", url, body.toRequestBody(jsonType))).execute().use { check(it) } }
+    /** Bytes roh im Koerper (Version 2: Profilbild). */
+    fun putBytes(url: String, mime: String, bytes: ByteArray): String =
+        http.newCall(build("PUT", url, bytes.toRequestBody(mime.toMediaType()))).execute().use { check(it).body?.string() ?: "" }
+
+    /** Ein Stueck roh im Koerper, am Umschlag vorbei mit Ticket (Hochladen in Stuecken); [onCall] zum Abbrechen. */
+    fun putRaw(url: String, bytes: ByteArray, length: Int, onCall: (okhttp3.Call) -> Unit = {}): String =
+        sendDirect("PUT", url, bytes.toRequestBody("application/octet-stream".toMediaType(), 0, length), onCall)
+
+    /** POST ohne Koerper am Umschlag vorbei, mit langer Wartezeit (grosse Datei auf dem Server zusammensetzen). */
+    fun postLong(url: String): String = sendDirect("POST", url, ByteArray(0).toRequestBody(null))
+
+    /** Datei roh im Koerper hochladen (Chat), gestreamt am Umschlag vorbei mit Ticket - wie grosse Dateien in der Ablage. */
+    fun postFile(url: String, mime: String?, file: java.io.File): String =
+        sendDirect("POST", url, file.asRequestBody((mime ?: "application/octet-stream").toMediaTypeOrNull()))
 
     inline fun <reified B> post(url: String, body: B): String = postText(url, json.encodeToString(body))
     inline fun <reified B, reified T> postFor(url: String, body: B): T = json.decodeFromString(post(url, body))
+    /** POST mit JSON, Antwort als Bytes (z. B. ein Vorschaubild). */
+    inline fun <reified B> postForBytes(url: String, body: B): ByteArray = postTextForBytes(url, json.encodeToString(body))
+    fun postTextForBytes(url: String, body: String): ByteArray =
+        http.newCall(build("POST", url, body.toRequestBody(jsonType))).execute().use { r -> check(r); r.body?.bytes() ?: ByteArray(0) }
 
     /** Multipart wie das Web: Feld "json" plus Dateien "files". */
     fun postMultipart(url: String, jsonField: String, files: List<Triple<String, String, ByteArray>>): String {
@@ -91,6 +123,10 @@ class ApiClient(private val account: Account, private val counters: E2e.Counters
         for ((name, mime, bytes) in files) b.addFormDataPart("files", name, bytes.toRequestBody(mime.toMediaType()))
         return http.newCall(build("POST", url, b.build())).execute().use { check(it).body?.string() ?: "" }
     }
+
+    /** Beliebiges Multipart-Formular im Umschlag (kleine Inhalte, etwa die Seiten des Rezept-Scans). */
+    fun postForm(url: String, body: MultipartBody): String =
+        http.newCall(build("POST", url, body)).execute().use { check(it).body?.string() ?: "" }
 
     /** Antwort in eine Datei schreiben (im Umschlag, also ganz im Speicher - nur fuer kleine Inhalte). */
     fun download(url: String, dest: java.io.File) {
@@ -152,6 +188,12 @@ class ApiClient(private val account: Account, private val counters: E2e.Counters
         }
     }
 
+    /** GET am Umschlag vorbei (wie [sendDirect]), die Antwort als Strom an [read]. */
+    fun <T> streamDirect(url: String, read: (java.io.InputStream) -> T): T {
+        val t = ticket("GET", url)
+        return direct.newCall(buildDirect("GET", url, null, t)).execute().use { r -> read(checkDirect(r, t).body?.byteStream() ?: throw IOException("leer")) }
+    }
+
     /**
      * Adresse und Kopfzeilen, mit denen ein Player [url] selbst abruft (Bereichsanfragen beim Spulen, am Umschlag vorbei):
      * mit Umschlag ein langlebiges Lese-Ticket, sonst das App-Passwort. Geht ins Netz, also nicht im Hauptthread.
@@ -167,8 +209,9 @@ class ApiClient(private val account: Account, private val counters: E2e.Counters
      * Datei der Ablage nach [dest]. Klein: im Umschlag. Gross ([big]): mit [downloadDirect]. Kennt der Server keine
      * Tickets, geht es im Umschlag, wenn [envelopeOk] (Groesse unbekannt, etwa Versionen); sonst [TicketsUnsupported].
      */
-    fun downloadFile(path: String, dest: java.io.File, big: Boolean, version: Long? = null, envelopeOk: Boolean = false) {
-        val url = url("/api/files/download", "path" to path, "version" to version)
+    fun downloadFile(path: String, dest: java.io.File, big: Boolean, version: Long? = null, envelopeOk: Boolean = false, inline: Boolean = false) {
+        // inline (Version 2): gezeigte Dateien laesst der Server nur zum Ansehen heraus
+        val url = url("/api/files/download", "path" to path, "version" to version, "inline" to inline.takeIf { it })
         if (!big) return download(url, dest)
         try { downloadDirect(url, dest) } catch (e: TicketsUnsupported) { if (envelopeOk) download(url, dest) else throw e }
     }

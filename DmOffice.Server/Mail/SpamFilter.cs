@@ -35,6 +35,8 @@ public static partial class SpamFilter
             if (at > 0) tokens.Add("from-domain:" + from.Address[(at + 1)..].ToLowerInvariant());
             if (!string.IsNullOrEmpty(from.Name)) foreach (var w in Words(from.Name)) tokens.Add("from-name:" + w);
         }
+        // Urteil des eigenen Mailservers (nur von ihm geschriebene Zeilen)
+        tokens.UnionWith(SpamHeaders.Tokens(m));
         if (m.Headers[HeaderId.XMailer] is { Length: > 0 } mailer) tokens.Add("x-mailer:" + mailer.ToLowerInvariant().Split(' ')[0]);
         tokens.Add("to-count:" + Math.Min(10, m.To.Count + m.Cc.Count));
         tokens.Add("has-html:" + (m.HtmlBody != null));
@@ -54,10 +56,12 @@ public static partial class SpamFilter
 
         foreach (var w in Words(MailStore.BodyText(m).Length > 50_000 ? MailStore.BodyText(m)[..50_000] : MailStore.BodyText(m)))
             tokens.Add(w);
+        // Echtheit (DMARC/DKIM), Markenimitation, verschleierter Name, Zufallskennung (SpamSignals)
+        foreach (var t in SpamSignals.Tokens(SpamSignals.Of(m))) tokens.Add(t);
         return tokens;
     }
 
-    private static IEnumerable<string> Words(string text)
+    internal static IEnumerable<string> Words(string text)
     {
         foreach (Match w in WordRx().Matches(text.ToLowerInvariant()))
         {
@@ -65,13 +69,34 @@ public static partial class SpamFilter
             if (s.Length < 3) continue;
             if (s.Length > 20) { yield return "skip:" + s[0] + " " + (s.Length / 10 * 10); continue; }
             if (s.All(char.IsDigit)) continue;
+            if (Stopwords.Contains(s)) continue;
             yield return s;
         }
     }
 
+    /// <summary>Füllwörter (deutsch, englisch) - sagen in keiner Richtung etwas und blähen nur die Wortlisten auf.</summary>
+    internal static readonly HashSet<string> Stopwords =
+    [
+        "und", "oder", "aber", "der", "die", "das", "den", "dem", "des", "ein", "eine", "einen", "einem", "einer", "eines", "ist", "sind", "war",
+        "wird", "werden", "wurde", "hat", "haben", "hatte", "sein", "ich", "sie", "ihr", "ihre", "ihren", "ihrem", "ihrer", "ihnen", "wir", "uns",
+        "unsere", "unser", "euch", "mit", "von", "vom", "für", "auf", "aus", "bei", "bis", "durch", "gegen", "nach", "ohne", "über", "unter", "vor",
+        "zum", "zur", "auch", "noch", "nur", "schon", "sehr", "wie", "was", "wer", "wenn", "dass", "als", "also", "nicht", "kein", "keine", "hier",
+        "dort", "dann", "denn", "doch", "mehr", "kann", "können", "muss", "soll", "will", "diese", "dieser", "dieses", "diesem", "jetzt", "alle",
+        "the", "and", "for", "you", "your", "are", "was", "with", "this", "that", "from", "have", "has", "not", "but", "our", "can", "will", "all",
+        "any", "its", "his", "her", "they", "them", "their", "there", "here", "about", "into", "than", "then", "also", "just", "more",
+    ];
+
     // ---------------- Bewerten ----------------
 
-    public static double Score(UserDb db, MimeMessage m) => Score(db, Tokens(m));
+    public static double Score(UserDb db, MimeMessage m) => Score(db, WithLists(db, m));
+
+    /// <summary>Merkmale samt Treffern der globalen Spamlisten (Blocklists), soweit für diese Mail gefragt.</summary>
+    private static HashSet<string> WithLists(UserDb db, MimeMessage m)
+    {
+        var t = Tokens(m);
+        t.UnionWith(Blocklists.Tokens(db, m));
+        return t;
+    }
 
     public static double Score(UserDb db, HashSet<string> tokens)
     {
@@ -101,8 +126,37 @@ public static partial class SpamFilter
         return (s - h + 1) / 2;   // nahe 1: Junk
     }
 
+    /// <summary>Ein Merkmal und wie stark es für Junk (p nahe 1) oder für gut (p nahe 0) spricht; Spam/Ham: so oft gelernt.</summary>
+    public sealed record Reason(string Token, double P, int Spam, int Ham);
+
+    /// <summary>
+    /// Warum diese Einstufung? Wert wie Score, dazu die stärksten Merkmale je Richtung (für die Oberfläche „Warum?“),
+    /// die Treffer der Spamlisten und wie viel gelernt ist.
+    /// </summary>
+    public static (double Score, List<Reason> Junk, List<Reason> Good, List<string> Lists, int Nspam, int Nham) Explain(UserDb db, MimeMessage m, int top = 8)
+    {
+        var tokens = WithLists(db, m);
+        var (nspam, nham) = Counts(db);
+        var score = Score(db, tokens);
+        var lists = tokens.Where(t => t.StartsWith("rbl:")).Select(t => t[4..]).ToList();
+        if (nspam == 0 || nham == 0) return (score, [], [], lists, nspam, nham);
+        var counts = Lookup(db, tokens);
+        var reasons = new List<Reason>();
+        foreach (var t in tokens)
+        {
+            counts.TryGetValue(t, out var c);
+            double spamRatio = (double)c.Spam / nspam, hamRatio = (double)c.Ham / nham;
+            double p = spamRatio + hamRatio == 0 ? UnknownProb : spamRatio / (spamRatio + hamRatio);
+            int n = c.Spam + c.Ham;
+            double f = (UnknownStrength * UnknownProb + n * p) / (UnknownStrength + n);
+            if (Math.Abs(f - 0.5) >= MinStrength) reasons.Add(new Reason(t, Math.Round(Math.Clamp(f, 0.01, 0.99), 2), c.Spam, c.Ham));
+        }
+        return (score, reasons.Where(r => r.P > 0.5).OrderByDescending(r => r.P).ThenByDescending(r => r.Spam).Take(top).ToList(),
+            reasons.Where(r => r.P < 0.5).OrderBy(r => r.P).ThenByDescending(r => r.Ham).Take(top).ToList(), lists, nspam, nham);
+    }
+
     /// <summary>Wahrscheinlichkeit, dass Chi-Quadrat mit v Freiheitsgraden mindestens x2 ist.</summary>
-    private static double Chi2Q(double x2, int v)
+    internal static double Chi2Q(double x2, int v)
     {
         double m = x2 / 2, sum = Math.Exp(-m), term = sum;
         for (int i = 1; i < v / 2; i++)
@@ -142,13 +196,24 @@ public static partial class SpamFilter
         var before = db.Scalar("SELECT as_spam FROM spam_trained WHERE key=$k", ("$k", key));
         if (before is long b && (b != 0) == spam) return;
 
-        var tokens = Tokens(m);
+        var tokens = WithLists(db, m);
         using var conn = db.Open();
         using var tx = conn.BeginTransaction();
         if (before is long old) Apply(conn, tokens, old != 0, -1);
         Apply(conn, tokens, spam, +1);
         UserDb.Exec(conn, "INSERT INTO spam_trained(key, as_spam) VALUES($k,$s) ON CONFLICT(key) DO UPDATE SET as_spam=$s",
             ("$k", key), ("$s", spam ? 1 : 0));
+        tx.Commit();
+    }
+
+    /// <summary>Merkmale einer schon gelernten Mail nachtragen (neue Merkmalsarten), ohne die Zahl der gelernten Mails zu ändern.</summary>
+    internal static void AddTokens(UserDb db, IEnumerable<string> tokens, bool spam)
+    {
+        var col = spam ? "spam" : "ham";
+        using var conn = db.Open();
+        using var tx = conn.BeginTransaction();
+        foreach (var t in tokens)
+            UserDb.Exec(conn, $"INSERT INTO spam_tokens(token, {col}) VALUES($t, 1) ON CONFLICT(token) DO UPDATE SET {col} = {col} + 1", ("$t", t));
         tx.Commit();
     }
 

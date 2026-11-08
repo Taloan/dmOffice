@@ -53,6 +53,11 @@ object Updater {
     /** Entwickler-Build: anders signiert, ein Update von GitHub liesse sich nicht installieren. */
     val isDevBuild: Boolean = BuildConfig.APPLICATION_ID.endsWith(".debug")
 
+    /** Test-App (Version 2): Updates vom eigenen Server statt von GitHub - App und Server gehoeren zusammen. */
+    private val fromServer: Boolean = BuildConfig.APPLICATION_ID.contains(".next")
+    /** Adresse des eigenen Servers (aus dem Konto) - nur dorthin darf die Test-App ihr Update laden. */
+    @Volatile private var serverBase: String? = null
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var job: Job? = null
 
@@ -70,7 +75,11 @@ object Updater {
     fun autoEnabled(context: Context): Boolean = !isDevBuild && !isPlay && App.get(context).prefs.settings.value.autoUpdate
 
     /** Zuletzt gefundene Version (ueberlebt Neustarts, damit der Hinweis nicht jedes Mal neu laden muss). */
-    private fun cached(context: Context): Release? = sp(context).getString("release", null)?.let { UpdateLogic.parseRelease(it) }
+    private fun cached(context: Context): Release? = if (fromServer) {
+        val base = sp(context).getString("serverBase", null)
+        if (base != null) serverBase = base
+        sp(context).getString("serverRelease", null)?.let { body -> base?.let { UpdateLogic.parseServerInfo(body, it) } }
+    } else sp(context).getString("release", null)?.let { UpdateLogic.parseRelease(it) }
 
     /** Beim Start der App: hoechstens einmal pro Stunde bei GitHub fragen, sonst den letzten Stand nehmen. */
     fun checkOnStart(context: Context) {
@@ -101,6 +110,18 @@ object Updater {
     suspend fun check(context: Context): Release = withContext(Dispatchers.IO) {
         _state.value = State.Checking
         try {
+            if (fromServer) {
+                val base = App.get(context).prefs.account.value?.baseUrl?.trimEnd('/') ?: throw IOException("Kein Konto")
+                serverBase = base
+                val body = get("$base/api/app/info", "application/json").use { resp ->
+                    if (!resp.isSuccessful) throw IOException("Server: HTTP ${resp.code}")
+                    resp.body?.string() ?: throw IOException("Server: empty")
+                }
+                val r = UpdateLogic.parseServerInfo(body, base) ?: throw IOException("Server: keine App")
+                sp(context).edit().putString("serverRelease", body).putString("serverBase", base).putLong("lastCheck", System.currentTimeMillis()).apply()
+                publish(r)
+                return@withContext r
+            }
             val body = get(UpdateLogic.RELEASES_LATEST, "application/vnd.github+json").use { resp ->
                 if (!resp.isSuccessful) throw IOException("GitHub: HTTP ${resp.code}")
                 resp.body?.string() ?: throw IOException("GitHub: empty")
@@ -212,7 +233,9 @@ object Updater {
     private fun get(url: String, accept: String?): Response {
         var u = url
         repeat(6) {
-            if (!UpdateLogic.isAllowedUrl(u)) throw IOException("blocked: " + (try { java.net.URI(u).host } catch (_: Exception) { "?" }))
+            // Erlaubt: GitHub (HTTPS) - die Test-App nur ihren eigenen Server, so wie das Konto ihn kennt
+            val own = fromServer && serverBase?.let { u.startsWith("$it/") } == true
+            if (!own && !UpdateLogic.isAllowedUrl(u)) throw IOException("blocked: " + (try { java.net.URI(u).host } catch (_: Exception) { "?" }))
             val req = Request.Builder().url(u).header("User-Agent", "dmOffice-Android/" + BuildConfig.VERSION_NAME)
                 .apply { if (accept != null) header("Accept", accept) }.build()
             val resp = http.newCall(req).execute()

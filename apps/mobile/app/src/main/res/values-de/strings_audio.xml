@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Audiothek (ui/AudioScreen.kt, audio/*) -->
+<resources>
+    <string name="audio">Audiothek</string>
+    <string name="audio_playlists">Playlists</string>
+    <string name="audio_albums">Alben</string>
+    <string name="audio_tracks">Titel</string>
+    <string name="audio_search">Suchen</string>
+    <string name="audio_artists">Interpreten</string>
+    <string name="audio_genres">Genres</string>
+    <string name="audio_unknown_artist">Unbekannter Interpret</string>
+    <string name="audio_no_genre">Ohne Genre</string>
+    <string name="audio_view_tiles">Kacheln</string>
+    <string name="audio_view_list">Liste</string>
+    <string name="audio_n_albums">%1$d Alben</string>
+    <string name="audio_play">Abspielen</string>
+    <string name="audio_pause">Pause</string>
+    <string name="audio_shuffle">Zufällig</string>
+    <string name="audio_next">Nächster Titel</string>
+    <string name="audio_prev">Vorheriger Titel</string>
+    <string name="audio_repeat_off">Wiederholen: aus</string>
+    <string name="audio_repeat_all">Wiederholen: alle</string>
+    <string name="audio_repeat_one">Wiederholen: diesen Titel</string>
+    <string name="audio_queue">Warteschlange</string>
+    <string name="audio_remove">Aus der Warteschlange nehmen</string>
+    <string name="audio_n_tracks">%1$d Titel</string>
+    <string name="audio_empty">Noch keine Musik. Die Audiothek-Ordner legst du im Web unter Audiothek → Audiothek-Ordner fest.</string>
+    <string name="audio_no_results">Keine Treffer.</string>
+    <string name="audio_no_playlists">Playlists legst du im Web an.</string>
+    <string name="audio_playlist_empty">Keine Titel.</string>
+    <string name="audio_various">Verschiedene Interpreten</string>
+    <string name="audio_unknown_album">Unbekanntes Album</string>
+    <string name="audio_auto_added">Zuletzt hinzugefügt</string>
+    <string name="audio_auto_recent">Zuletzt gehört</string>
+    <string name="audio_auto_most">Am meisten gehört</string>
+    <string name="audio_auto_rare">Selten gehört</string>
+    <string name="audio_auto_never">Nie gehört</string>
+    <string name="audio_error">Die Audiothek ließ sich nicht laden.</string>
+    <string name="widget_audio">dmOffice Musik</string>
+    <string name="widget_audio_desc">Player der Audiothek: laufender Titel, Abspielen/Pause, zurück und weiter</string>
+    <string name="widget_audio_idle">Nichts in der Wiedergabe – tippen zum Öffnen</string>
+    <string name="audio_stop">Wiedergabe beenden</string>
+</resources>
