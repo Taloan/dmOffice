@@ -113,7 +113,7 @@ dependencies {
     // Coach: Schritte, Schlaf, Gewicht ... von der Uhr über Health Connect
     implementation(libs.androidx.health.connect)
     // Health Connect bringt Guava zur Laufzeit mit, beim Übersetzen aber nur die leere „listenablefuture“ - WorkManager-Aufrufe brauchen ListenableFuture
-    implementation("com.google.guava:guava:31.1-android")
+    implementation("com.google.guava:guava:33.8.0-android")
     implementation(libs.androidx.glance.appwidget)
     implementation(libs.androidx.glance.material3)
     implementation(libs.androidx.security.crypto)
