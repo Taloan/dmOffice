@@ -50,7 +50,6 @@ DmOffice.Server/        ASP.NET Core (net10.0) – API, background services, DAV
   Office/               WOPI and ONLYOFFICE integration for editing in the browser
   Search/               full-text index and text recognition (OCR)
 web/                    React + Fluent UI 9, FullCalendar
-apps/mobile/            Android app (Kotlin, Jetpack Compose)
 vendor/Notizi.Core/     copy from notizi – tools/notizi-core-holen.ps1 updates it
 DmOffice.Tests/         tests, including notizi as a second device over HTTP
 unraid/dmoffice.xml     Unraid template (Community Applications), icon dmoffice.png
@@ -72,7 +71,7 @@ dmOffice is configured with environment variables. Only the master key is really
 | `DMOFFICE_TRUSTED_PROXIES` | Optional: comma-separated networks (CIDR) whose `X-Forwarded-*` headers are trusted, e.g. `203.0.113.0/24,2001:db8::/32`. Default: loopback and private networks |
 | `DMOFFICE_ANON_LIMIT` | Optional: rising limit for requests **without** login, per address (IPv6 per /64). Default: 300 at once, then 240 per minute; whoever exceeds it is blocked for 30 s, and every further violation doubles the block (up to 1 hour). Logged-in requests are never limited. A number sets the requests per minute, `off` turns the limit off |
 | `DMOFFICE_INDEX_THREADS` | Optional: parallelism of the full-text indexer and text recognition (1–8). Default 1, or 2 with four or more cores |
-| `DMOFFICE_FCM_CREDENTIALS` | Optional: path to a Firebase service-account key for push notifications to the Android app (default `<data>/keys/fcm.json`). See [apps/mobile/README.md](apps/mobile/README.md) |
+| `DMOFFICE_FCM_CREDENTIALS` | Optional: path to a Firebase service-account key for push notifications to the Android app (default `<data>/keys/fcm.json`). |
 | `DMOFFICE_DAV_LOG` | `1` logs CalDAV/CardDAV requests for troubleshooting (not the file storage, no passwords) |
 | `TZ` | Time zone of the container (logs) |
 
@@ -128,7 +127,7 @@ dmOffice is an installable web app (PWA): on Windows, macOS, Linux, Android and 
 
 ### Android app
 
-The native Android app (Android 8 and newer) is published as a signed APK in the [GitHub releases](https://github.com/Taloan/dmOffice/releases) (`dmOffice.apk`) and updates itself from there. In dmOffice, *Settings* → *Account* → *Devices & sync* → *Pair phone app* shows a QR code that sets up the app. Details: [apps/mobile/README.md](apps/mobile/README.md).
+The native Android app (Android 8 and newer) is published as a signed APK in the [GitHub releases](https://github.com/Taloan/dmOffice/releases) (`dmOffice.apk`) and updates itself from there. In dmOffice, *Settings* → *Account* → *Devices & sync* → *Pair phone app* shows a QR code that sets up the app.
 
 ## Outlook.com, Hotmail and Live
 
@@ -177,7 +176,6 @@ The Nextcloud desktop and mobile clients work against `/remote.php/dav/` and `/r
 | Web push | [docs/web-push.md](docs/web-push.md) | [docs/web-push.de.md](docs/web-push.de.md) |
 | Photos: info, location, people, editing | [docs/galerie-fotos.md](docs/galerie-fotos.md) | [docs/galerie-fotos.de.md](docs/galerie-fotos.de.md) |
 | Music library | [docs/audiothek.md](docs/audiothek.md) | [docs/audiothek.de.md](docs/audiothek.de.md) |
-| Android app | [apps/mobile/README.md](apps/mobile/README.md) | [apps/mobile/README.de.md](apps/mobile/README.de.md) |
 
 ## Development
 

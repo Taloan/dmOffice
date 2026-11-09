@@ -2,7 +2,7 @@
 #   Push to master  -> ghcr.io/<owner>/dmoffice:edge and :sha-<short>   (tested dev builds)
 #   Tag v1.2.3      -> :1.2.3, :1.2 and :latest                          (releases only)
 # So :latest always points at a released version, never at an untested master commit. Pull :edge to track master.
-# Changes only to the Android app (apps/) or docs/ do not build a new image; the app has android.yml.
+# Changes only to docs/ do not build a new image.
 # The version number in the interface: for tag 1.2.3 it is 1.2.3, otherwise YYYY.MM.DD-<short>, as in Gitea.
 # The Gitea workflow (.gitea/workflows/docker.yml) builds independently into its own registry.
 # Every `uses:` is pinned to a commit SHA (tag in the comment); Dependabot proposes updates.
@@ -12,7 +12,7 @@ on:
   push:
     branches: [master]
     tags: ['v*']
-    paths-ignore: ['apps/**', 'docs/**']
+    paths-ignore: ['docs/**']
   workflow_dispatch:
 permissions:
   contents: read

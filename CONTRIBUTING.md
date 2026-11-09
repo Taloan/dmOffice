@@ -18,7 +18,7 @@ cd web && npm install && npm run dev      # web interface on http://localhost:51
 dotnet test                               # tests
 ```
 
-The Android app is built from `apps/mobile` (JDK 17 and the Android SDK, see [apps/mobile/README.md](apps/mobile/README.md)). More details are in the [README](README.md#development).
+More details are in the [README](README.md#development).
 
 ## Pull requests
 

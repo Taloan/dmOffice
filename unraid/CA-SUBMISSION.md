@@ -69,14 +69,5 @@ git push github v1.0.0
 
 The workflow then builds `:1.0.0`, `:1.0` and `:latest`. Every push to `master` updates `:latest`.
 
-Changes only under `apps/` or `docs/` do not build a new image.
+Changes only under `docs/` do not build a new image.
 
-## Publishing the Android app
-
-For every tag `v…` (and `android-v…`), `.github/workflows/android.yml` builds the APK, signs it and attaches it to a GitHub release. Create a signing key once and keep it safe (without it there are no more updates):
-
-```bash
-keytool -genkeypair -v -keystore dmoffice.jks -alias dmoffice -keyalg RSA -keysize 4096 -validity 10000
-```
-
-Create under *Settings → Secrets and variables → Actions* in the repository: `ANDROID_KEYSTORE_BASE64` (contents of `base64 -w0 dmoffice.jks`), `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` (`dmoffice`), `ANDROID_KEY_PASSWORD`. Never put the file `dmoffice.jks` into the repository.

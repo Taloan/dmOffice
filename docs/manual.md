@@ -283,8 +283,6 @@ The native Android app (Android 8 and newer) brings dmOffice to your phone. It i
 - **Android calendar and contacts:** optionally mirrored into the phone’s own calendar and contacts so that other apps see them.
 - **Security:** encrypted local database, optional app lock with fingerprint, face or PIN.
 
-Technical details, the build and optional push notifications: [apps/mobile/README.md](../apps/mobile/README.md).
-
 ---
 
 ## 11. Connecting your phone, tablet and Thunderbird

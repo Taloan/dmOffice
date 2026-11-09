@@ -283,8 +283,6 @@ Die native Android-App (Android 8 und neuer) bringt dmOffice aufs Handy. Sie lie
 - **Android-Kalender und -Kontakte:** auf Wunsch in Kalender und Kontakte des Handys gespiegelt, damit andere Apps sie sehen.
 - **Sicherheit:** verschlüsselte lokale Datenbank, optionale App-Sperre per Fingerabdruck, Gesicht oder PIN.
 
-Technik, Bauen und optionales Push: [apps/mobile/README.de.md](../apps/mobile/README.de.md).
-
 ---
 
 ## 11. Handy, Tablet und Thunderbird verbinden

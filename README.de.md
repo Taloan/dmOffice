@@ -50,7 +50,6 @@ DmOffice.Server/        ASP.NET Core (net10.0) – API, Hintergrunddienste, DAV-
   Office/               WOPI- und ONLYOFFICE-Anbindung zum Bearbeiten im Browser
   Search/               Volltextindex und Texterkennung (OCR)
 web/                    React + Fluent UI 9, FullCalendar
-apps/mobile/            Android-App (Kotlin, Jetpack Compose)
 vendor/Notizi.Core/     Kopie aus notizi – tools/notizi-core-holen.ps1 aktualisiert sie
 DmOffice.Tests/         Prüfungen, darunter notizi als zweites Gerät über HTTP
 unraid/dmoffice.xml     Unraid-Vorlage (Community Applications), Icon dmoffice.png
@@ -72,7 +71,7 @@ dmOffice wird über Umgebungsvariablen eingestellt. Nötig ist eigentlich nur de
 | `DMOFFICE_TRUSTED_PROXIES` | Optional: Netze (CIDR, durch Komma getrennt), deren `X-Forwarded-*`-Kopfzeilen gelten, z. B. `203.0.113.0/24,2001:db8::/32`. Vorgabe: Loopback und private Netze |
 | `DMOFFICE_ANON_LIMIT` | Optional: ansteigende Bremse für Anfragen **ohne** Anmeldung, je Adresse (IPv6 je /64). Vorgabe: 300 auf einmal, dann 240 je Minute. Wer darüber liegt, ist 30 s gesperrt, und jeder weitere Verstoß verdoppelt die Sperre (bis 1 Stunde). Angemeldete Anfragen werden nie gebremst. Eine Zahl setzt die Anfragen je Minute, `off` schaltet die Bremse ab |
 | `DMOFFICE_INDEX_THREADS` | Optional: Parallelität von Volltextindex und Texterkennung (1–8). Vorgabe 1, ab vier Kernen 2 |
-| `DMOFFICE_FCM_CREDENTIALS` | Optional: Pfad zum Firebase-Dienstkonto-Schlüssel für Push zur Android-App (Vorgabe `<Daten>/keys/fcm.json`). Siehe [apps/mobile/README.de.md](apps/mobile/README.de.md) |
+| `DMOFFICE_FCM_CREDENTIALS` | Optional: Pfad zum Firebase-Dienstkonto-Schlüssel für Push zur Android-App (Vorgabe `<Daten>/keys/fcm.json`). |
 | `DMOFFICE_DAV_LOG` | `1` protokolliert CalDAV-/CardDAV-Anfragen zur Fehlersuche (nicht die Dateiablage, keine Passwörter) |
 | `TZ` | Zeitzone des Containers (Protokolle) |
 
@@ -128,7 +127,7 @@ dmOffice ist eine installierbare Web-App (PWA): unter Windows, macOS, Linux, And
 
 ### Android-App
 
-Die native Android-App (Android 8 und neuer) liegt als signierte APK bei den [GitHub-Releases](https://github.com/Taloan/dmOffice/releases) (`dmOffice.apk`) und aktualisiert sich von dort. In dmOffice zeigt *Einstellungen* → *Konto* → *Geräte & Sync* → *Handy-App koppeln* einen QR-Code, der die App einrichtet. Einzelheiten: [apps/mobile/README.de.md](apps/mobile/README.de.md).
+Die native Android-App (Android 8 und neuer) liegt als signierte APK bei den [GitHub-Releases](https://github.com/Taloan/dmOffice/releases) (`dmOffice.apk`) und aktualisiert sich von dort. In dmOffice zeigt *Einstellungen* → *Konto* → *Geräte & Sync* → *Handy-App koppeln* einen QR-Code, der die App einrichtet.
 
 ## Outlook.com, Hotmail und Live
 
@@ -175,7 +174,6 @@ Die Nextcloud-Clients für Desktop und Handy arbeiten gegen `/remote.php/dav/` u
 | Fotos: Angaben, Ort, Personen, Bearbeiten | [docs/galerie-fotos.de.md](docs/galerie-fotos.de.md) | [docs/galerie-fotos.md](docs/galerie-fotos.md) |
 | Audiothek | [docs/audiothek.de.md](docs/audiothek.de.md) | [docs/audiothek.md](docs/audiothek.md) |
 | Wiederherstellen und Werkzeug restore-tool | [docs/wiederherstellen.de.md](docs/wiederherstellen.de.md) | [docs/wiederherstellen.md](docs/wiederherstellen.md) |
-| Android-App | [apps/mobile/README.de.md](apps/mobile/README.de.md) | [apps/mobile/README.md](apps/mobile/README.md) |
 
 ## Entwickeln
 

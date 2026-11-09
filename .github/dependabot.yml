@@ -23,13 +23,6 @@ updates:
     groups:
       web:
         patterns: ['*']
-  - package-ecosystem: gradle
-    directory: /apps/mobile
-    schedule:
-      interval: monthly
-    groups:
-      app:
-        patterns: ['*']
   - package-ecosystem: docker
     directory: /
     schedule:
