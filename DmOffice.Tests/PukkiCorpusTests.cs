@@ -124,7 +124,7 @@ public class PukkiCorpusTests : IClassFixture<ChatFixture>
         ContactModel.Save(space, new ContactDto { Book = book, DisplayName = "Hilde Berger", Given = "Hilde", Family = "Berger", Nickname = "Oma",
             Phones = [new TypedValue("home", "030 123456")], Birthday = today.AddDays(5).AddYears(-80).ToString("yyyy-MM-dd") });
         ContactModel.Save(space, new ContactDto { Book = book, DisplayName = "Dr. Weiß", Org = "Zahnarztpraxis am Markt",
-            Emails = [new TypedValue("work", "praxis@zahnarzt-weiss.de")], Phones = [new TypedValue("work", "030 987654")] });
+            Emails = [new TypedValue("work", "praxis@zahnarzt-weiss.example")], Phones = [new TypedValue("work", "030 987654")] });
     }
 
     private static string Check(Line l, Pukki.Reply reply)

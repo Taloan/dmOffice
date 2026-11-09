@@ -133,10 +133,10 @@
 	frage	wann ist omas geburtstag	+Hilde Berger
 	frage	wie ist die nummer von oma	+030 123456
 	frage	telefonnummer von dr. weiß	+030 987654
-	frage	hast du die nummer vom zahnarzt?	+030 987654 ;; +praxis@zahnarzt-weiss.de
+	frage	hast du die nummer vom zahnarzt?	+030 987654 ;; +praxis@zahnarzt-weiss.example
 	frage	wie erreiche ich oma	+030 123456
 	frage	omas nummer	+030 123456
-	frage	e-mail von dr. weiß	+praxis@zahnarzt-weiss.de
+	frage	e-mail von dr. weiß	+praxis@zahnarzt-weiss.example
 	frage	wo wohnt oma?	+keine Adresse
 	frage	nummer von tante erna	+finde ich keinen Kontakt
 	frage	welche notizen hab ich	+Ideen für den Urlaub

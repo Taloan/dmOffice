@@ -4,7 +4,7 @@ namespace DmOffice.Mail;
 
 /// <summary>
 /// Alias-Dienste, die Mails an eine Tarnadresse weiterleiten und dabei den Absender durch eine eigene Antwortadresse ersetzen
-/// (SimpleLogin/Proton Pass: „shipment-tracking_at_amazon_de_molvhu@simplelogin.co“, DuckDuckGo, addy.io). Für jede Mail ist
+/// (SimpleLogin/Proton Pass: „shipment-tracking_at_amazon_de_abcdef@simplelogin.co“, DuckDuckGo, addy.io). Für jede Mail ist
 /// der Absender damit scheinbar neu und fremd. Aus der Antwortadresse (oder dem Namen) lässt sich der eigentliche Absender
 /// ablesen - geglaubt wird das nur, wenn der eigene Mailserver bestätigt hat, dass die Mail wirklich vom Dienst kommt. Bestätigt
 /// ist der eigentliche Absender damit nicht; er dient darum nur zum Einordnen (Marke, Linkziel, Anzeige), nie als Vertrauen.

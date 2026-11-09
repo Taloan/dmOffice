@@ -395,7 +395,7 @@ public class TextIndexTests
     private static MimeMessage Mail(string subject, string messageId)
     {
         var m = new MimeMessage { Subject = subject, MessageId = messageId };
-        m.From.Add(new MailboxAddress("Stadtwerke", "rechnung@stadtwerke.de"));
+        m.From.Add(new MailboxAddress("Stadtwerke", "rechnung@stadtwerke.example"));
         m.To.Add(new MailboxAddress("Ich", "ich@x.de"));
         var mixed = new Multipart("mixed") { new TextPart("plain") { Text = "Ihre Rechnung finden Sie im Anhang." } };
         mixed.Add(new MimePart("application", "pdf")
@@ -416,10 +416,10 @@ public class TextIndexTests
 
     private static void Store(UserDb db, string folder, uint uid, MimeMessage m, bool raw = true)
     {
-        db.Exec("INSERT INTO mail(account,folder,uid,message_id,subject,from_name,from_addr,date,size,has_att) VALUES('a',$f,$u,$mid,$s,'Stadtwerke','rechnung@stadtwerke.de',$d,1000,1)",
+        db.Exec("INSERT INTO mail(account,folder,uid,message_id,subject,from_name,from_addr,date,size,has_att) VALUES('a',$f,$u,$mid,$s,'Stadtwerke','rechnung@stadtwerke.example',$d,1000,1)",
             ("$f", folder), ("$u", (long)uid), ("$mid", m.MessageId), ("$s", m.Subject), ("$d", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
         var id = Convert.ToInt64(db.Scalar("SELECT id FROM mail WHERE folder=$f AND uid=$u", ("$f", folder), ("$u", (long)uid)));
-        db.Exec("INSERT INTO mail_fts(rowid,subject,sender,recipients,body) VALUES($i,$s,'Stadtwerke rechnung@stadtwerke.de','','')", ("$i", id), ("$s", m.Subject));
+        db.Exec("INSERT INTO mail_fts(rowid,subject,sender,recipients,body) VALUES($i,$s,'Stadtwerke rechnung@stadtwerke.example','','')", ("$i", id), ("$s", m.Subject));
         if (!raw) return;
         using var ms = new MemoryStream();
         m.WriteTo(ms);
@@ -431,7 +431,7 @@ public class TextIndexTests
     {
         var space = NewSpace();
         var db = space.Db;
-        Store(db, "INBOX", 1, Mail("Ihre Rechnung", "r1@stadtwerke.de"));
+        Store(db, "INBOX", 1, Mail("Ihre Rechnung", "r1@stadtwerke.example"));
         Assert.Equal(1, Queued(db));
         Run(space);
 
@@ -454,7 +454,7 @@ public class TextIndexTests
     {
         var space = NewSpace();
         var db = space.Db;
-        var m = Mail("Ihre Rechnung", "r2@stadtwerke.de");
+        var m = Mail("Ihre Rechnung", "r2@stadtwerke.example");
         Store(db, "INBOX", 7, m);
         Run(space);
 
@@ -467,7 +467,7 @@ public class TextIndexTests
         Assert.Empty(MailStore.Search(db, "fernwaerme", "a", "INBOX"));
 
         // Schlank: Inhalt verworfen, Text bleibt
-        Store(db, "INBOX", 8, Mail("Zweite", "r3@stadtwerke.de"));
+        Store(db, "INBOX", 8, Mail("Zweite", "r3@stadtwerke.example"));
         Run(space);
         db.Exec("DELETE FROM mail_raw; UPDATE mail SET cached=0;");
         Assert.Equal(2, MailStore.Search(db, "fernwaerme", null, null).Count);
@@ -477,7 +477,7 @@ public class TextIndexTests
         Assert.Equal(0, TextIndex.Prune(space));
         db.Exec("UPDATE text_docs SET gone = gone - 864000 WHERE gone IS NOT NULL");
         Assert.True(TextIndex.Prune(space) > 0);
-        Assert.Equal(0L, Convert.ToInt64(db.Scalar("SELECT COUNT(*) FROM text_docs WHERE msgid='r2@stadtwerke.de'")));
+        Assert.Equal(0L, Convert.ToInt64(db.Scalar("SELECT COUNT(*) FROM text_docs WHERE msgid='r2@stadtwerke.example'")));
         Assert.Single(MailStore.Search(db, "fernwaerme", null, null));
     }
 

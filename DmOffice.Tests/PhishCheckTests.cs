@@ -186,8 +186,8 @@ public class PhishCheckTests
         var html = "<p>Unserer Datenbank zufolge ist die Bestätigung auf Ihrer Seite noch ausstehend.</p>"
             + "<p>Bitte erledigen Sie den Vorgang innerhalb von 7 Tagen. Falls nicht, werden wir Ihre Transaktionsfunktionen vorläufig sperren.</p>"
             + "<p>Frist: 27.10.2026</p><a href=\"https://s3.eu-west-3.amazonaws.com/cdn-vw64ylc3-456356/7cbga4vi0n?ref=" + Convert.ToBase64String("ich@beispiel.de"u8.ToArray()) + "\">Vorgang durchführen</a>";
-        var found = Check(Mail("admin@mahveen.co.id", html, ("Authentication-Results",
-            "beispiel.de; dkim=pass header.i=@mahveen.co.id; spf=pass smtp.mailfrom=admin@mahveen.co.id; dmarc=none header.from=mahveen.co.id")),
+        var found = Check(Mail("admin@gekapert.example", html, ("Authentication-Results",
+            "beispiel.de; dkim=pass header.i=@gekapert.example; spf=pass smtp.mailfrom=admin@gekapert.example; dmarc=none header.from=gekapert.example")),
             new PhishCheck.Context { KnownDomains = Ctx.KnownDomains, OwnHosts = Ctx.OwnHosts, OwnAddresses = ["ich@beispiel.de"] });
         Assert.Equal(["hosted", "myaddress", "pressure"], found.Select(f => f.Kind));
         Assert.All(found, f => Assert.False(f.Strong));
@@ -195,7 +195,7 @@ public class PhishCheckTests
         Assert.Equal("ich@beispiel.de", found[1].Domain);
 
         // Bekannter Absender: nichts davon
-        Assert.Empty(Check(Mail("admin@mahveen.co.id", html), new PhishCheck.Context { KnownSender = true, OwnAddresses = ["ich@beispiel.de"] }));
+        Assert.Empty(Check(Mail("admin@gekapert.example", html), new PhishCheck.Context { KnownSender = true, OwnAddresses = ["ich@beispiel.de"] }));
     }
 
     [Fact]
@@ -220,7 +220,7 @@ public class PhishCheckTests
         {
             var m = auth == null ? Mail("x@y.example", html) : Mail("x@y.example", html, ("Authentication-Results", "imap.beispiel.de; " + auth));
             m.From.Clear();
-            m.From.Add(new MailboxAddress("Amazon.de - shipment-tracking at amazon.de", "shipment-tracking_at_amazon_de_molvhu@simplelogin.co"));
+            m.From.Add(new MailboxAddress("Amazon.de - shipment-tracking at amazon.de", "shipment-tracking_at_amazon_de_abcdef@simplelogin.co"));
             return m;
         }
         var ctx = new PhishCheck.Context { KnownDomains = new HashSet<string> { "amazon.de" }, OwnHosts = Ctx.OwnHosts };
@@ -230,10 +230,10 @@ public class PhishCheckTests
         var f = Assert.Single(Check(Sl("<a href=\"https://amazon-konto.example/login\">Anmelden</a>"), ctx));
         Assert.Equal(("newsender", "shipment-tracking@amazon.de", "SimpleLogin", "amazon-konto.example"), (f.Kind, f.Domain, f.Detail, f.Target));
         // Ohne Bestätigung des Dienstes: Hinweis mit der Antwortadresse, wie bei jedem anderen Absender
-        Assert.Equal("shipment-tracking_at_amazon_de_molvhu@simplelogin.co",
+        Assert.Equal("shipment-tracking_at_amazon_de_abcdef@simplelogin.co",
             Assert.Single(Check(Sl("<a href=\"https://amazon-konto.example/login\">Anmelden</a>", auth: null), ctx)).Domain);
         // Ablesen der Adresse
-        Assert.Equal(("SimpleLogin", "shipment-tracking@amazon.de", "amazon.de"), Forwarders.Decode("shipment-tracking_at_amazon_de_molvhu@simplelogin.co", null) is { } i ? (i.Service, i.Original, i.Domain) : default);
+        Assert.Equal(("SimpleLogin", "shipment-tracking@amazon.de", "amazon.de"), Forwarders.Decode("shipment-tracking_at_amazon_de_abcdef@simplelogin.co", null) is { } i ? (i.Service, i.Original, i.Domain) : default);
         Assert.Equal("info@shop.example", Forwarders.Decode("alias+info=shop.example@addy.io", null)?.Original);
         Assert.Equal("news@firma.example", Forwarders.Decode("abc123@simplelogin.co", "Firma - news at firma.example")?.Original);
         Assert.Null(Forwarders.Decode("info@amazon.de", "Amazon"));

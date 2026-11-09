@@ -121,7 +121,7 @@ public class SmartMailTests
     {
         // Amazon über SimpleLogin: „Versandt“, dann „In Zustellung“ mit Zeitfenster - beide mit Bestellnummer
         MimeMessage Amazon(string subject, string text, DateTime date) =>
-            Mail("shipment-tracking_at_amazon_de_molvhu@simplelogin.co", "Amazon.de - shipment-tracking at amazon.de", subject, text: text, date: date);
+            Mail("shipment-tracking_at_amazon_de_abcdef@simplelogin.co", "Amazon.de - shipment-tracking at amazon.de", subject, text: text, date: date);
         var shipped = SmartMail.Extract(Amazon("Versandt: „CREAPROOF® Creatin Monohydrat…“", "Bestellnr. 302-1234567-7654321\nLieferung voraussichtlich am 22.10.", Now.AddHours(-20)), Berlin, Now).Single();
         var today = SmartMail.Extract(Amazon("In Zustellung: „CREAPROOF® Creatin Monohydrat…“", "Bestellnr. 302-1234567-7654321\nZustellung heute zwischen 15:15 und 17:15", Now), Berlin, Now).Single();
         Assert.Equal(shipped.Key, today.Key);

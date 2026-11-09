@@ -98,7 +98,7 @@ H1	frage	Wann ist mein Zahnarzttermin?	+Kalender „Familie“ ;; +Zahnreinigung
 H1	dialog	das ist nicht meiner	+Dann suche ich weiter ;; +Zahnarzt Kontrolle ;; +Kalender „Persönlich“
 H1	dialog	danke	+Gern geschehen
 H2	frage	wann ist der zahnarzt	+Zahnreinigung
-H2	dialog	das ist meiner. Schreib dem Zahnarzt eine Mail, dass ich nicht teilnehmen kann. Sag den Termin für mich ab.	+kann ich leider nicht ;; +praxis@zahnarzt-weiss.de ;; +030 987654 ;; @nichts
+H2	dialog	das ist meiner. Schreib dem Zahnarzt eine Mail, dass ich nicht teilnehmen kann. Sag den Termin für mich ab.	+kann ich leider nicht ;; +praxis@zahnarzt-weiss.example ;; +030 987654 ;; @nichts
 H3	frage	wann ist der zahnarzt?	+Zahnreinigung
 H3	dialog	nicht meiner	+Dann suche ich weiter ;; +Zahnarzt Kontrolle
 H3	dialog	nein	+Okay
@@ -106,7 +106,7 @@ H4	frage	wann ist der zahnarzt?	+Zahnreinigung
 H4	dialog	meiner	+Alles klar
 H5	frage	wann ist der friseur	+Friseur
 H5	frage	und der elternabend?	+Elternabend
-H6	dialog	schreib dem zahnarzt eine mail	+kann ich leider nicht ;; +praxis@zahnarzt-weiss.de ;; @nichts
+H6	dialog	schreib dem zahnarzt eine mail	+kann ich leider nicht ;; +praxis@zahnarzt-weiss.example ;; @nichts
 H7	dialog	ruf oma an	+kann ich leider nicht ;; +030 123456 ;; @nichts
 H8	dialog	sag den termin beim friseur ab	+kann ich leider nicht ;; @nichts
 H9	dialog	schick Ben eine Nachricht	+kann ich leider nicht ;; @nichts

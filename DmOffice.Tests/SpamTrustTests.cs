@@ -23,18 +23,18 @@ public class SpamTrustTests : IClassFixture<ChatFixture>
         return MimeMessage.Load(new MemoryStream(Encoding.UTF8.GetBytes(sb.ToString())));
     }
 
-    private const string SparkasseOk = "dkim=pass header.d=sparkasse-koelnbonn.de; dmarc=pass header.from=sparkasse-koelnbonn.de";
+    private const string SparkasseOk = "dkim=pass header.d=musterbank.example; dmarc=pass header.from=musterbank.example";
 
     [Fact]
     public void Sichere_Absender_nur_verifiziert()
     {
         var db = _fx.Space("anna").Db;
-        var real = Mail("Sparkasse KölnBonn <info@sparkasse-koelnbonn.de>", "Ihr Kontoauszug", SparkasseOk);
+        var real = Mail("Musterbank <info@musterbank.example>", "Ihr Kontoauszug", SparkasseOk);
         var r = SpamSignals.Of(real);
-        Assert.Equal("@sparkasse-koelnbonn.de", SafeList.Add(db, real, r, "domain"));
+        Assert.Equal("@musterbank.example", SafeList.Add(db, real, r, "domain"));
         Assert.True(SafeList.Trusts(db, real, r));
         // Gefälscht: dieselbe Adresse, aber ohne Bestätigung des Mailservers - kein Vertrauen
-        var fake = Mail("Sparkasse KölnBonn <info@sparkasse-koelnbonn.de>", "Konto gesperrt", "spf=fail; dmarc=fail header.from=sparkasse-koelnbonn.de");
+        var fake = Mail("Musterbank <info@musterbank.example>", "Konto gesperrt", "spf=fail; dmarc=fail header.from=musterbank.example");
         Assert.False(SafeList.Trusts(db, fake, SpamSignals.Of(fake)));
         // Nicht verifizierbar: Eintrag wird abgelehnt, mit dem vorgegebenen Satz
         var plain = Mail("Verein <info@kleiner-verein.example>", "Einladung", null);
@@ -48,12 +48,12 @@ public class SpamTrustTests : IClassFixture<ChatFixture>
         var other = Mail("Betrüger <betrug@gmail.com>", "Hallo", "dkim=pass header.d=gmail.com; dmarc=pass header.from=gmail.com");
         Assert.False(SafeList.Trusts(db, other, SpamSignals.Of(other)));
         // Alias-Dienste: nie die Domain des Dienstes; bei Firefox Relay (eigene Tarnadresse als Absender) gar nichts
-        var sl = Mail("Amazon.de - shipment-tracking at amazon.de <shipment-tracking_at_amazon_de_molvhu@simplelogin.co>", "Versandt", "dkim=pass header.d=simplelogin.co; dmarc=pass header.from=simplelogin.co");
+        var sl = Mail("Amazon.de - shipment-tracking at amazon.de <shipment-tracking_at_amazon_de_abcdef@simplelogin.co>", "Versandt", "dkim=pass header.d=simplelogin.co; dmarc=pass header.from=simplelogin.co");
         Assert.Contains("nur einzelnen Adressen", Assert.Throws<ArgumentException>(() => SafeList.Add(db, sl, SpamSignals.Of(sl), "domain")).Message);
-        Assert.Equal("shipment-tracking_at_amazon_de_molvhu@simplelogin.co", SafeList.Add(db, sl, SpamSignals.Of(sl), "address"));
+        Assert.Equal("shipment-tracking_at_amazon_de_abcdef@simplelogin.co", SafeList.Add(db, sl, SpamSignals.Of(sl), "address"));
         var rl = Mail("\"info@shop.example [via Relay]\" <abc123xy@mozmail.com>", "Angebot", "dkim=pass header.d=mozmail.com; dmarc=pass header.from=mozmail.com");
         Assert.Throws<ArgumentException>(() => SafeList.Add(db, rl, SpamSignals.Of(rl), "address"));
-        SafeList.Remove(db, "@sparkasse-koelnbonn.de");
+        SafeList.Remove(db, "@musterbank.example");
         Assert.False(SafeList.Trusts(db, real, r));
     }
 
@@ -145,17 +145,17 @@ public class SpamTrustTests : IClassFixture<ChatFixture>
         var path = Path.Combine(Path.GetTempPath(), "jp-" + Guid.NewGuid().ToString("N") + ".db");
         var prints = new JunkPrints(path, RandomNumberGenerator.GetBytes(32), null);
         var text = "Beantworten und gewinnen Sie einen Samsung 65 Zoll 4K Smart TV. Sie wurden ausgewählt, um kostenlos an unserem Treueprogramm teilzunehmen – völlig gratis! Jetzt starten und Gewinn sichern.";
-        Mail("\"F R I T Z !\" <a1@hub.advantageaff.com>", "Ihr FRITZ! Geschenk wartet __ID:ia3q12854589s6", null, "Hello ich@gmx.example! " + text, "eins");
+        Mail("\"F R I T Z !\" <a1@hub.werbenetz.example>", "Ihr Geschenk wartet __ID:aa11bb22cc33", null, "Hello ich@gmx.example! " + text, "eins");
         var anna = _fx.Space("anna");
         var dora = _fx.Space("dora");
         var cleo = _fx.Space("cleo");
-        var forAnna = Mail("\"F R I T Z !\" <a1@hub.advantageaff.com>", "Ihr FRITZ! Geschenk wartet __ID:ia3q12854589s6", null, "Hello anna@gmx.de! " + text, "eins");
+        var forAnna = Mail("\"F R I T Z !\" <a1@hub.werbenetz.example>", "Ihr Geschenk wartet __ID:aa11bb22cc33", null, "Hello anna@gmx.de! " + text, "eins");
         prints.Report(anna, forAnna);
         // Bei Dora kommt dieselbe Kampagne an - andere Anrede, andere Zufallskennung, andere Absenderadresse
-        var forDora = Mail("\"F R I T Z !\" <x9@hub.advantageaff.com>", "Ihr FRITZ! Geschenk wartet __ID:k2p99887766zz", null, "Hello dora@web.de! " + text, "zwei");
+        var forDora = Mail("\"F R I T Z !\" <x9@hub.werbenetz.example>", "Ihr Geschenk wartet __ID:k2p99887766zz", null, "Hello dora@web.de! " + text, "zwei");
         Assert.Equal(1, prints.Reports(dora, forDora));
         Assert.Equal(0, prints.Reports(anna, forAnna));   // die eigene Meldung zählt nicht
-        prints.Report(cleo, Mail("\"F R I T Z !\" <q@hub.advantageaff.com>", "Ihr FRITZ! Geschenk wartet __ID:zz11aa22bb33", null, "Hi cleo@gmx.at! " + text, "drei"));
+        prints.Report(cleo, Mail("\"F R I T Z !\" <q@hub.werbenetz.example>", "Ihr Geschenk wartet __ID:zz11aa22bb33", null, "Hi cleo@gmx.at! " + text, "drei"));
         Assert.Equal(2, prints.Reports(dora, forDora));
         var r = SpamSignals.Of(forDora) with { SharedReports = 2 };
         Assert.Equal("shared-junk", SpamSignals.Adjust(0.1, r with { Obfuscated = false, RandomId = false }, false, false, new SpamSettings()).Rule);

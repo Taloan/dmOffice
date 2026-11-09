@@ -6,7 +6,7 @@ namespace DmOffice.Mail;
 
 /// <summary>
 /// Sichere Absender, die man nach „Kein Junk“ selbst einträgt (neben Adressbuch und Gesendet, SafeSenders): eine Adresse oder eine
-/// ganze Domain („@sparkasse-koelnbonn.de“). Ein Eintrag gilt nur für Mails, die der eigene Mailserver als wirklich von dieser Domain
+/// ganze Domain („@musterbank.example“). Ein Eintrag gilt nur für Mails, die der eigene Mailserver als wirklich von dieser Domain
 /// bestätigt hat (DMARC oder passende DKIM-Signatur) - eine gefälschte Absenderadresse bekommt das Vertrauen nicht. Für Freemail-Domains
 /// (gmail.com, gmx.de …) gibt es nur einzelne Adressen: Dort kann sich jeder eine Adresse anlegen, und sie bestehen DMARC echt.
 /// </summary>

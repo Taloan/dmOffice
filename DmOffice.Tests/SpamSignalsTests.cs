@@ -22,10 +22,10 @@ public class SpamSignalsTests
     private static readonly SpamSettings Settings = new();
 
     [Fact]
-    public void FRITZ_Geschenk_ist_eindeutig_Junk()
+    public void Geschenk_Werbung_ist_eindeutig_Junk()
     {
-        var m = Mail("\"F R I T Z !\" <erltJ2FJD@hub.advantageaff.com>", "Ihr FRITZ! Geschenk wartet __ID:ia3q12854589s6",
-            "mx.gmx.net; dkim=pass header.d=advantageaff.com; dmarc=pass header.from=hub.advantageaff.com", list: true);
+        var m = Mail("\"F R I T Z !\" <xyz1@hub.werbenetz.example>", "Ihr Geschenk wartet __ID:aa11bb22cc33",
+            "mx.gmx.net; dkim=pass header.d=werbenetz.example; dmarc=pass header.from=hub.werbenetz.example", list: true);
         var r = SpamSignals.Of(m);
         Assert.True(r.Obfuscated);
         Assert.True(r.RandomId);
@@ -38,8 +38,8 @@ public class SpamSignalsTests
 
     [Theory]
     [InlineData("Paul Fritz <paul@gmx.de>", false)]                        // Personenname
-    [InlineData("\"Cloud-Support-Team\" <exklusiv-angebot@zohomail.com>", true)]
-    [InlineData("\"ADAC Umfrage-Belohnung\" <exklusiv-angebot@zohomail.com>", true)]
+    [InlineData("\"Cloud-Support-Team\" <werbung@zohomail.com>", true)]
+    [InlineData("\"Auto-Club Umfrage-Belohnung\" <werbung@zohomail.com>", true)]
     [InlineData("\"Kundenservice\" <info@firma.example>", false)]         // eigene Domain, kein Freemail
     [InlineData("\"Malerbetrieb Huber\" <huber.maler@gmail.com>", false)]
     public void Freemail_mit_Firmenname(string from, bool expected)
@@ -131,7 +131,7 @@ public class SpamSignalsTests
     }
 
     [Theory]
-    [InlineData("Ihr FRITZ! Geschenk wartet __ID:ia3q12854589s6", true)]
+    [InlineData("Ihr Geschenk wartet __ID:aa11bb22cc33", true)]
     [InlineData("Gewinnbenachrichtigung #Ref: 8f3k29dk4x", true)]
     [InlineData("Rechnung Nr. 2026-10-123", false)]
     [InlineData("Ihre Bestellung 302-1234567-1234567", false)]
@@ -142,10 +142,10 @@ public class SpamSignalsTests
     private static MimeMessage Zoho(string name, string subject, string link, bool flagged)
     {
         var sb = new StringBuilder();
-        sb.Append("Authentication-Results: gmx.net; dkim=pass header.i=exklusiv-angebot@zohomail.com header.s=zm2022; spf=softfail; dmarc=pass header.from=zohomail.com\r\n");
+        sb.Append("Authentication-Results: gmx.net; dkim=pass header.i=werbung@zohomail.com header.s=s1; spf=softfail; dmarc=pass header.from=zohomail.com\r\n");
         sb.Append("Received: from 139-162-173-130.fonic.online ([139.162.173.130]) by mx-ha.gmx.net (mxgmx006) with ESMTP; Mon, 26 Oct 2026 09:30:20 +0100\r\n");
         sb.Append("Received: from mail.zoho.com by mx.zohomail.com with SMTP; Mon, 26 Oct 2026 00:40:49 -0700\r\n");
-        sb.Append($"From: {name} <exklusiv-angebot@zohomail.com>\r\nTo: \"fremd\" <fremde.person@gmail.example>\r\nSubject: {subject}\r\n");
+        sb.Append($"From: {name} <werbung@zohomail.com>\r\nTo: \"fremd\" <fremde.person@gmail.example>\r\nSubject: {subject}\r\n");
         sb.Append($"Message-ID: <{Guid.NewGuid():N}@zohomail.com>\r\nEnvelope-To: <ich@gmx.example>\r\n");
         if (flagged) sb.Append("X-Spam-Flag: YES\r\n");
         sb.Append($"Content-Type: text/html; charset=utf-8\r\n\r\n<p>Guten Tag,</p><a href=\"https://w.linkhd.example/x\">{link}</a>\r\n");
@@ -172,9 +172,9 @@ public class SpamSignalsTests
     }
 
     [Fact]
-    public void ADAC_Gewinnspiel_von_Freemail_wird_erkannt()
+    public void Gewinnspiel_von_Freemail_wird_erkannt()
     {
-        var m = Zoho("ADAC Umfrage-Belohnung", "ADAC: Ihr persönlicher Vorteil – jetzt entdecken!", "Jetzt teilnehmen", flagged: false);
+        var m = Zoho("Auto-Club Umfrage-Belohnung", "Auto-Club: Ihr persönlicher Vorteil – jetzt entdecken!", "Jetzt teilnehmen", flagged: false);
         var found = PhishCheck.Analyze(m, new PhishCheck.Context { OwnHosts = ["imap.gmx.example", "gmx.example"], OwnAddresses = ["ich@gmx.example"] });
         Assert.True(Assert.Single(found, x => x.Kind == "freemail-org").Strong);
         // Spamfilter: Firmenname von Freemail, nicht an einen selbst - mindestens unsicher, auch mit DMARC „pass“ für zohomail.com
