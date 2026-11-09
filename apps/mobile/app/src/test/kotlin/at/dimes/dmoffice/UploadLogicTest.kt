@@ -112,7 +112,7 @@ class UploadLogicTest {
         assertEquals(0, UploadLogic.folderRank("DCIM/Camera/"))
         assertEquals(0, UploadLogic.folderRank("Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images/"))
         assertEquals(1, UploadLogic.folderRank("Pictures/Urlaub/"))
-        assertEquals(2, UploadLogic.folderRank("Android/media/com.nextcloud.client/nextcloud/admin@nc.dimes.at/SofortUpload/Camera/2026/"))
+        assertEquals(2, UploadLogic.folderRank("Android/media/com.nextcloud.client/nextcloud/admin@cloud.example.org/SofortUpload/Camera/2026/"))
         assertEquals("2026", UploadLogic.folderName("Android/media/com.nextcloud.client/x/SofortUpload/Camera/2026/"))
         assertEquals("…/SofortUpload/Camera", UploadLogic.folderParent("Android/media/com.nextcloud.client/x/SofortUpload/Camera/2026/"))
         assertEquals("DCIM", UploadLogic.folderParent("DCIM/Camera/"))

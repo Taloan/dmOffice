@@ -112,15 +112,15 @@ public class SpamSignalsTests
     public void Bestaetigter_Absender_mit_mittlerem_Wert_nicht_unsicher()
     {
         // Newsletter einer Bank, vom eigenen Mailserver per DKIM bestätigt (über eine Weiterleitung angekommen)
-        var m = Mail("Ayvens Bank <zinsupdate@e.ayvensbank.de>", "Gute Neuigkeiten! Wir erhöhen die Zinsen",
-            "dd11616.kasserver.com; dkim=pass (2048-bit key) header.d=e.ayvensbank.de header.s=cd2", by: "dd11616.kasserver.com");
+        var m = Mail("Zinsbank <news@e.zinsbank.example>", "Gute Neuigkeiten! Wir erhöhen die Zinsen",
+            "mx1.mailhost.example; dkim=pass (2048-bit key) header.d=e.zinsbank.example header.s=cd2", by: "mx1.mailhost.example");
         var r = SpamSignals.Of(m);
-        Assert.Equal("ayvensbank.de", r.VerifiedDomain);
+        Assert.Equal("zinsbank.example", r.VerifiedDomain);
         Assert.Equal((0.19, "verified-sender"), SpamSignals.Adjust(0.44, r, false, false, Settings));
         // Deutlich Junk bleibt es auch mit Signatur - Spammer signieren ihre eigenen Domains
         Assert.Equal((0.8, (string?)null), SpamSignals.Adjust(0.8, r, false, false, Settings));
         // Ohne Bestätigung bleibt ein mittlerer Wert „unsicher“
-        Assert.Null(SpamSignals.Adjust(0.44, SpamSignals.Of(Mail("Ayvens Bank <zinsupdate@e.ayvensbank.de>", "Zinsen")), false, false, Settings).Rule);
+        Assert.Null(SpamSignals.Adjust(0.44, SpamSignals.Of(Mail("Zinsbank <news@e.zinsbank.example>", "Zinsen")), false, false, Settings).Rule);
     }
 
     [Fact]

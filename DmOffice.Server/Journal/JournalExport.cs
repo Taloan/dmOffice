@@ -13,7 +13,7 @@ using Microsoft.Net.Http.Headers;
 namespace DmOffice.Journal;
 
 /// <summary>
-/// Tagebuch exportieren (KOORDINATION Auftrag 6): ZIP mit je Eintrag einer Markdown-Datei (yyyy/MM/yyyy-MM-dd.md, bei mehreren
+/// Tagebuch exportieren: ZIP mit je Eintrag einer Markdown-Datei (yyyy/MM/yyyy-MM-dd.md, bei mehreren
 /// Einträgen am Tag mit Uhrzeit) samt Kopf (Datum, Uhrzeit, Titel, Ort, Wetter, Stimmung, Schlagwörter), den Fotos und Videos
 /// im Original daneben (yyyy/MM/media/…) und einer tagebuch.json mit allem - die liest der Import wieder ein, auch in ein
 /// anderes dmOffice. Gestreamt wie der ZIP-Download der Dateiablage.

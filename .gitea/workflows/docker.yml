@@ -1,6 +1,5 @@
-# Image in die Container-Registry der Gitea: bei jedem Push auf master als `latest` und `sha-<kurz>`,
-# auf v2 (Version 2.0 in Arbeit, siehe KOORDINATION.md) als `v2` und `v2-sha-<kurz>`.
-# Wie bei journali: Der Job laeuft im Image docker:cli, der Docker-Socket des Hosts ist hineingereicht (Runner-Einstellung).
+# Image in die Container-Registry einer eigenen Gitea: bei jedem Push auf master als `latest` und `sha-<kurz>`.
+# Der Job laeuft im Image docker:cli, der Docker-Socket des Hosts ist hineingereicht (Runner-Einstellung).
 # Zwei Adressen fuer dieselbe Gitea:
 #   git clone  - GITHUB_SERVER_URL, so wie der Job-Container sie sieht
 #   Registry   - 127.0.0.1:<Port>, so wie der Docker des Hosts sie sieht; ohne https nimmt Docker nur localhost an
@@ -8,7 +7,7 @@
 name: docker
 on:
   push:
-    branches: [master, v2]
+    branches: [master]
   workflow_dispatch:
 jobs:
   image:
@@ -25,38 +24,15 @@ jobs:
           besitzer=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
           bild="$registry/$besitzer/dmoffice"
           kurz=$(echo "$GITHUB_SHA" | cut -c1-7)
-          # master: latest; jeder andere Branch: sein Name als Tag und Vorsilbe (v2, v2-sha-…)
-          if [ "$GITHUB_REF_NAME" = master ]; then tag=latest; vor=""; else tag="$GITHUB_REF_NAME"; vor="$GITHUB_REF_NAME-"; fi
           auth=$(printf '%s:%s' "$GITHUB_ACTOR" "$TOKEN" | base64 | tr -d '\n')
           git -c http.extraheader="Authorization: Basic $auth" clone --depth 50 -b "$GITHUB_REF_NAME" "$gitea/$GITHUB_REPOSITORY.git" quelle
           cd quelle
-          # Android-App vom eigenen Server (Version 2): die App desselben Stands ins Image, sonst die neueste, auf master keine
           mkdir -p app-apk
-          if [ "$GITHUB_REF_NAME" != master ]; then
-            pak="$gitea/api/packages/$besitzer/generic/dmoffice-next"
-            # Letzter Stand, der die App geaendert hat - deren Build passt auch zu spaeteren Staenden ohne App-Aenderung
-            appsha=$(git log -1 --format=%H -- apps/mobile .gitea/workflows/android.yml | cut -c1-7)
-            for v in "sha-$appsha" "sha-$kurz" latest; do
-              if wget -q --header "Authorization: Basic $auth" -O app-apk/dmOffice.apk "$pak/$v/dmOffice2.apk" \
-                && wget -q --header "Authorization: Basic $auth" -O app-apk/app.json "$pak/$v/app.json"; then
-                echo "App im Image: $v"
-                # Gehoert zu diesem Stand: der Server meldet dann „passt zu diesem Server“. Auch „latest“, wenn die App aus
-                # einem Stand gebaut ist, der die letzte App-Aenderung enthaelt (App-Build wird bei reinen Server-Aenderungen
-                # uebersprungen)
-                gebaut=$(sed -n 's/.*"sha":"\([0-9a-f]*\)".*/\1/p' app-apk/app.json)
-                if [ "$v" = "sha-$appsha" ] || [ "$v" = "sha-$kurz" ] || { [ -n "$gebaut" ] && git merge-base --is-ancestor "$appsha" "$gebaut" 2>/dev/null; }; then
-                  sed -i "s/}$/,\"server\":\"$kurz\"}/" app-apk/app.json
-                fi
-                break
-              fi
-              rm -f app-apk/dmOffice.apk app-apk/app.json
-            done
-          fi
           echo "$TOKEN" | docker login "$registry" -u "$GITHUB_ACTOR" --password-stdin
-          docker build --pull --build-arg VERSION="$vor$(date +%Y.%m.%d)-$kurz" -t "$bild:$tag" -t "$bild:${vor}sha-$kurz" .
-          docker push "$bild:$tag"
-          docker push "$bild:${vor}sha-$kurz"
-          docker image rm "$bild:${vor}sha-$kurz" || true
-          # Das bisherige Image mit diesem Namen hat jetzt keinen Namen mehr: unbenannte Images (und Reste frueherer Laeufe) gleich entfernen
+          docker build --pull --build-arg VERSION="$(date +%Y.%m.%d)-$kurz" -t "$bild:latest" -t "$bild:sha-$kurz" .
+          docker push "$bild:latest"
+          docker push "$bild:sha-$kurz"
+          docker image rm "$bild:sha-$kurz" || true
+          # Das bisherige Image mit diesem Namen hat jetzt keinen Namen mehr: unbenannte Images gleich entfernen
           docker image prune -f || true
-          echo "Image: $bild:$tag"
+          echo "Image: $bild:latest"
