@@ -13,7 +13,7 @@ public class SpamSignalsTests
         var sb = new StringBuilder();
         if (auth != null) sb.Append($"Authentication-Results: {auth}\r\n");
         sb.Append($"Received: from mail-out.example ([203.0.113.7]) by {by} with ESMTPS; Tue, 27 Oct 2026 09:04:00 +0100\r\n");
-        sb.Append($"From: {from}\r\nTo: dimes@gmx.de\r\nSubject: {subject}\r\nMessage-ID: <{Guid.NewGuid():N}@x>\r\n");
+        sb.Append($"From: {from}\r\nTo: ich@gmx.example\r\nSubject: {subject}\r\nMessage-ID: <{Guid.NewGuid():N}@x>\r\n");
         if (list) sb.Append("List-Unsubscribe: <https://example.invalid/u>\r\n");
         sb.Append("Content-Type: text/plain; charset=utf-8\r\n\r\nHallo\r\n");
         return MimeMessage.Load(new MemoryStream(Encoding.UTF8.GetBytes(sb.ToString())));
@@ -52,7 +52,7 @@ public class SpamSignalsTests
     public void Eigene_FRITZBox_bleibt_unauffaellig()
     {
         // Die Push-Mail der eigenen FRITZ!Box kommt von der eigenen Adresse
-        var r = SpamSignals.Of(Mail("\"FRITZ!Box\" <dimes@gmx.de>", "FRITZ!Box Info"));
+        var r = SpamSignals.Of(Mail("\"FRITZ!Box\" <ich@gmx.example>", "FRITZ!Box Info"));
         Assert.Equal((0.1, (string?)null), SpamSignals.Adjust(0.1, r, trusted: false, own: true, Settings));
     }
 
@@ -76,7 +76,7 @@ public class SpamSignalsTests
     public void Google_Sicherheitswarnung_im_Microsoft_Konto()
     {
         // Wie ein echtes Beispiel (live.de): Exchange Online schreibt Authentication-Results ohne Serverkennung
-        var m = Mail("Google <no-reply@accounts.google.com>", "Sicherheitswarnung für dimesde@gmail.com",
+        var m = Mail("Google <no-reply@accounts.google.com>", "Sicherheitswarnung für ich@gmail.example",
             "spf=pass (sender IP is 209.85.220.73) smtp.mailfrom=accounts.google.com; dkim=pass (signature was verified) header.d=accounts.google.com;dmarc=pass action=none header.from=accounts.google.com;compauth=pass reason=100",
             by: "AM0PR02MB1234.eurprd02.prod.outlook.com");
         var r = SpamSignals.Of(m);
@@ -146,7 +146,7 @@ public class SpamSignalsTests
         sb.Append("Received: from 139-162-173-130.fonic.online ([139.162.173.130]) by mx-ha.gmx.net (mxgmx006) with ESMTP; Mon, 26 Oct 2026 09:30:20 +0100\r\n");
         sb.Append("Received: from mail.zoho.com by mx.zohomail.com with SMTP; Mon, 26 Oct 2026 00:40:49 -0700\r\n");
         sb.Append($"From: {name} <exklusiv-angebot@zohomail.com>\r\nTo: \"fremd\" <fremde.person@gmail.example>\r\nSubject: {subject}\r\n");
-        sb.Append($"Message-ID: <{Guid.NewGuid():N}@zohomail.com>\r\nEnvelope-To: <dimes@gmx.de>\r\n");
+        sb.Append($"Message-ID: <{Guid.NewGuid():N}@zohomail.com>\r\nEnvelope-To: <ich@gmx.example>\r\n");
         if (flagged) sb.Append("X-Spam-Flag: YES\r\n");
         sb.Append($"Content-Type: text/html; charset=utf-8\r\n\r\n<p>Guten Tag,</p><a href=\"https://w.linkhd.example/x\">{link}</a>\r\n");
         return MimeMessage.Load(new MemoryStream(Encoding.UTF8.GetBytes(sb.ToString())));
@@ -156,7 +156,7 @@ public class SpamSignalsTests
     public void Cloud_Phishing_von_Freemail_wird_erkannt()
     {
         var m = Zoho("Cloud-Support-Team", "Letzte Warnung: Ihre Cloud-Daten werden gelöscht", "Zahlung aktualisieren & Daten behalten", flagged: true);
-        var ctx = new PhishCheck.Context { OwnHosts = ["imap.gmx.net", "gmx.de"], OwnAddresses = ["dimes@gmx.de"] };
+        var ctx = new PhishCheck.Context { OwnHosts = ["imap.gmx.example", "gmx.example"], OwnAddresses = ["ich@gmx.example"] };
         var found = PhishCheck.Analyze(m, ctx);
         var f = Assert.Single(found, x => x.Kind == "freemail-org");
         Assert.True(f.Strong);
@@ -164,7 +164,7 @@ public class SpamSignalsTests
         // Der Zahlungslink zählt wie ein Anmeldelink
         Assert.Contains(found, x => x.Kind == "newsender");
         // Spamfilter: GMX hat sie als Spam gekennzeichnet - mindestens unsicher, und kein „bestätigter Absender“ (Freemail)
-        var r = SpamSignals.Of(m, ["imap.gmx.net", "gmx.de"]);
+        var r = SpamSignals.Of(m, ["imap.gmx.example", "gmx.example"]);
         Assert.True(r.ServerSpam);
         Assert.True(r.FreemailOrg);
         Assert.Contains("srv-spam:yes", SpamHeaders.Tokens(m));
@@ -175,12 +175,12 @@ public class SpamSignalsTests
     public void ADAC_Gewinnspiel_von_Freemail_wird_erkannt()
     {
         var m = Zoho("ADAC Umfrage-Belohnung", "ADAC: Ihr persönlicher Vorteil – jetzt entdecken!", "Jetzt teilnehmen", flagged: false);
-        var found = PhishCheck.Analyze(m, new PhishCheck.Context { OwnHosts = ["imap.gmx.net", "gmx.de"], OwnAddresses = ["dimes@gmx.de"] });
+        var found = PhishCheck.Analyze(m, new PhishCheck.Context { OwnHosts = ["imap.gmx.example", "gmx.example"], OwnAddresses = ["ich@gmx.example"] });
         Assert.True(Assert.Single(found, x => x.Kind == "freemail-org").Strong);
         // Spamfilter: Firmenname von Freemail, nicht an einen selbst - mindestens unsicher, auch mit DMARC „pass“ für zohomail.com
-        var r = SpamSignals.Of(m, ["imap.gmx.net", "gmx.de"]) with { NotToMe = true };
+        var r = SpamSignals.Of(m, ["imap.gmx.example", "gmx.example"]) with { NotToMe = true };
         Assert.Equal("zohomail.com", r.VerifiedDomain);
         Assert.Equal("freemail-org", SpamSignals.Adjust(0.3, r, false, false, Settings).Rule);
-        Assert.True(SpamSignals.NotToMe(m, ["dimes@gmx.de"]));
+        Assert.True(SpamSignals.NotToMe(m, ["ich@gmx.example"]));
     }
 }

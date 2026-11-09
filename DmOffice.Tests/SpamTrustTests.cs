@@ -18,7 +18,7 @@ public class SpamTrustTests : IClassFixture<ChatFixture>
         var sb = new StringBuilder();
         if (auth != null) sb.Append($"Authentication-Results: mx.gmx.net; {auth}\r\n");
         sb.Append("Received: from mail-out.example ([203.0.113.7]) by mx.gmx.net with ESMTPS; Tue, 27 Oct 2026 09:04:00 +0100\r\n");
-        sb.Append($"From: {from}\r\nTo: dimes@gmx.de\r\nSubject: {subject}\r\nMessage-ID: <{id ?? Guid.NewGuid().ToString("N")}@x>\r\n");
+        sb.Append($"From: {from}\r\nTo: ich@gmx.example\r\nSubject: {subject}\r\nMessage-ID: <{id ?? Guid.NewGuid().ToString("N")}@x>\r\n");
         sb.Append($"Date: Tue, 20 Oct 2026 09:04:00 +0100\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n{body}\r\n");
         return MimeMessage.Load(new MemoryStream(Encoding.UTF8.GetBytes(sb.ToString())));
     }
@@ -145,7 +145,7 @@ public class SpamTrustTests : IClassFixture<ChatFixture>
         var path = Path.Combine(Path.GetTempPath(), "jp-" + Guid.NewGuid().ToString("N") + ".db");
         var prints = new JunkPrints(path, RandomNumberGenerator.GetBytes(32), null);
         var text = "Beantworten und gewinnen Sie einen Samsung 65 Zoll 4K Smart TV. Sie wurden ausgewählt, um kostenlos an unserem Treueprogramm teilzunehmen – völlig gratis! Jetzt starten und Gewinn sichern.";
-        Mail("\"F R I T Z !\" <a1@hub.advantageaff.com>", "Ihr FRITZ! Geschenk wartet __ID:ia3q12854589s6", null, "Hello dimes@gmx.de! " + text, "eins");
+        Mail("\"F R I T Z !\" <a1@hub.advantageaff.com>", "Ihr FRITZ! Geschenk wartet __ID:ia3q12854589s6", null, "Hello ich@gmx.example! " + text, "eins");
         var anna = _fx.Space("anna");
         var dora = _fx.Space("dora");
         var cleo = _fx.Space("cleo");

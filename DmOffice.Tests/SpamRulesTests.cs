@@ -35,7 +35,7 @@ public class SpamRulesTests
     public void Treffer_je_Bereich()
     {
         var m = Mail("From: \"Gewinnspiel\" <win@promo.example>\nTo: a@b.example\nSubject: SIE HABEN GEWONNEN\nReply-To: x@other.example",
-            "Hallo dimes@gmx.de,\nhier ist Ihr Preis: https://bit.ly/abc123 sichern.");
+            "Hallo ich@gmx.example,\nhier ist Ihr Preis: https://bit.ly/abc123 sichern.");
         var rules = SpamRules.Defaults();
         var hits = SpamRules.Hits(m, rules).Select(r => r.Id).ToList();
         Assert.Contains("betreff-grossbuchstaben", hits);
