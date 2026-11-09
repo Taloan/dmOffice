@@ -1,6 +1,6 @@
 # Dreistufig: Node baut die Oberflaeche, das SDK den Server, das Laufzeit-Image traegt nur das Ergebnis.
 # Die Oberflaeche liegt als wwwroot im Server. Alles Weitere (Daten, Schluessel) unter /data.
-FROM node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914 AS web
+FROM node:26-alpine@sha256:8996bb5821d62a8fd9bb27c1cb07462f3fdce6e47d640c6a881ead0b064ce216 AS web
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci --no-audit --no-fund
@@ -10,7 +10,7 @@ COPY tools/lizenzen/ /tools/lizenzen/
 # vite.config.ts schreibt nach ../DmOffice.Server/wwwroot
 RUN npm run build
 
-FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:de4fe90a98845d75910b9769662465c84de1a934665c431279d1382b2bddc02b AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:212fe4cb74627d5adf9817a4088906ae3edff1bd853bb27565d4b46731efe61e AS build
 WORKDIR /src
 COPY vendor/Notizi.Core/Notizi.Core.csproj vendor/Notizi.Core/
 COPY DmOffice.Server/DmOffice.Server.csproj DmOffice.Server/
@@ -25,7 +25,7 @@ RUN dotnet publish DmOffice.Server/DmOffice.Server.csproj -c Release -o /app --n
  && find /app/runtimes -mindepth 1 -maxdepth 1 ! -name linux-x64 ! -name linux-arm64 ! -name linux-arm -exec rm -rf {} + \
  && find /app -name '*.pdb' -delete
 
-FROM mcr.microsoft.com/dotnet/aspnet:10.0@sha256:de0ee358cdd672f7017a003bed21e9ac9ed48a27c922a59b18175b6e82fa7fee
+FROM mcr.microsoft.com/dotnet/aspnet:10.0@sha256:1a48394b6f29d3a32c79d9edecd4abda0ecbe8776d567dbfc4590ed6979c740c
 # Versionsnummer fuer die Anzeige (Ordnerbereich, Verwaltung) - beim Bauen gesetzt
 ARG VERSION=dev
 ENV DMOFFICE_VERSION=$VERSION
