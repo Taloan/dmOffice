@@ -1,0 +1,55 @@
+# Image for GitHub: builds the Dockerfile for linux/amd64 and pushes it to the GitHub Container Registry.
+#   Push to master  -> ghcr.io/<owner>/dmoffice:edge and :sha-<short>   (tested dev builds)
+#   Tag v1.2.3      -> :1.2.3, :1.2 and :latest                          (releases only)
+# So :latest always points at a released version, never at an untested master commit. Pull :edge to track master.
+# Changes only to docs/ do not build a new image.
+# The version number in the interface: for tag 1.2.3 it is 1.2.3, otherwise YYYY.MM.DD-<short>.
+# Every `uses:` is pinned to a commit SHA (tag in the comment); Dependabot proposes updates.
+# Still open: sign the image (cosign) with provenance/SBOM so pulls can be verified.
+name: docker
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+    paths-ignore: ['docs/**']
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: write
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - id: version
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then v="${GITHUB_REF_NAME#v}"; else v="$(date +%Y.%m.%d)-${GITHUB_SHA::7}"; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/dmoffice
+          tags: |
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=edge,enable=${{ github.ref == 'refs/heads/master' }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-
+          labels: |
+            org.opencontainers.image.licenses=AGPL-3.0-only
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: VERSION=${{ steps.version.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

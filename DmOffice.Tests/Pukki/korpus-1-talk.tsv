@@ -1,0 +1,304 @@
+# Pukkis Sprachkorpus 1: kleine Worte, Befinden, wer er ist, Dank, Abschied, Gefühle, Witze, Uhrzeit, Datum, Rechnen, Ehrlichkeit
+# Spalten (Tab): Gespräch, Art, Satz, Erwartung (+enthält ;; -enthält nicht ;; ~Regex ;; !Regex ;; @neu ;; @nichts ;; @knopf:Text)
+	talk	hallo	+Was kann ich für dich tun
+	talk	Hallo!	+Was kann ich für dich tun
+	talk	hi	+Was kann ich für dich tun
+	talk	Hi Pukki	+Was kann ich für dich tun
+	talk	hey	+Was kann ich für dich tun
+	talk	hey du	+Was kann ich für dich tun
+	talk	moin	+Was kann ich für dich tun
+	talk	moin moin	+Was kann ich für dich tun
+	talk	moinsen	+Was kann ich für dich tun
+	talk	servus	+Was kann ich für dich tun
+	talk	servas	+Was kann ich für dich tun
+	talk	grüß gott	+Was kann ich für dich tun
+	talk	griaß di	+Was kann ich für dich tun
+	talk	grüezi	+Was kann ich für dich tun
+	talk	guten morgen	+Was kann ich für dich tun
+	talk	Guten Morgen Pukki!	+Was kann ich für dich tun
+	talk	guten tag	+Was kann ich für dich tun
+	talk	guten abend	+Was kann ich für dich tun
+	talk	huhu	+Was kann ich für dich tun
+	talk	hallöchen	+Was kann ich für dich tun
+	talk	tach	+Was kann ich für dich tun
+	talk	hello	+Was kann ich für dich tun
+	talk	good morning	+Was kann ich für dich tun
+	talk	na?	+Was kann ich für dich tun
+	talk	na du	+Was kann ich für dich tun
+	talk	pukki	~Ja\?|Was kann ich
+	talk	Pukki?	~Ja\?|Was kann ich|Das kann ich
+	talk	@Pukki	~Ja\?|Was kann ich
+	talk	wie geht's?	+Mir geht's gut
+	talk	wie gehts dir	+Mir geht's gut
+	talk	Wie geht es dir?	+Mir geht's gut
+	talk	alles gut bei dir?	+Mir geht's gut
+	talk	na, wie läuft's?	+Mir geht's gut
+	talk	was geht	+Mir geht's gut
+	talk	how are you?	+Mir geht's gut
+	talk	hallo, wie geht's?	+Mir geht's gut
+	talk	geht's dir gut?	+Mir geht's gut
+	talk	wer bist du	+Pukki
+	talk	Wer bist du?	+Pukki
+	talk	was bist du eigentlich	+Pukki
+	talk	wie heißt du	+Pukki
+	talk	wie heisst du?	+Pukki
+	talk	hast du einen namen?	+Pukki
+	talk	what's your name	+Pukki
+	talk	stell dich mal vor	+Pukki
+	talk	wer hat dich gemacht?	+dmOffice
+	talk	wer hat dich programmiert	+dmOffice
+	talk	wer ist dein chef	+dmOffice
+	talk	woher kommst du	+dmOffice
+	talk	bist du eine KI?	+keine KI
+	talk	bist du ein roboter	+keine KI
+	talk	bist du ein mensch?	+kein Mensch
+	talk	bist du chatgpt	+keine KI
+	talk	Bist du künstliche Intelligenz?	+keine KI
+	talk	are you an ai	+keine KI
+	talk	bist du ein bot	+keine KI
+	talk	bist du schlau?	+fleißig
+	talk	was kannst du	+Das kann ich
+	talk	Was kannst du alles?	+Das kann ich
+	talk	hilfe	+Das kann ich
+	talk	Hilfe!	+Das kann ich
+	talk	help	+Das kann ich
+	talk	?	+Das kann ich
+	talk	wie funktionierst du	+Das kann ich
+	talk	was kann ich dich fragen?	+Das kann ich
+	talk	kannst du mir helfen?	+Das kann ich
+	talk	ich brauche hilfe	+Das kann ich
+	talk	anleitung	+Das kann ich
+	talk	befehle	+Das kann ich
+	talk	wofür bist du da	+Das kann ich
+	talk	wie alt bist du	+jung
+	talk	wo wohnst du?	+Server
+	talk	hast du gefühle	+Gefühle
+	talk	schläfst du eigentlich?	+rund um die Uhr
+	talk	was machst du gerade?	+rund um die Uhr
+	talk	ich liebe dich	+lieb von dir
+	talk	magst du mich?	+lieb von dir
+	talk	willst du mich heiraten	+lieb von dir
+	talk	du bist süß	+lieb von dir
+	talk	du bist toll	+freut mich
+	talk	du bist super!	+freut mich
+	talk	gut gemacht	+freut mich
+	talk	toll gemacht, pukki	+freut mich
+	talk	braver pukki	+freut mich
+	talk	du bist der beste	+freut mich
+	talk	lieb von dir	+freut mich
+	talk	good job	+freut mich
+	talk	du bist doof	+lerne noch
+	talk	du bist blöd	+lerne noch
+	talk	du bist so dumm	+lerne noch
+	talk	du nervst	+lerne noch
+	talk	halt die klappe	+lerne noch
+	talk	du bist nutzlos	+lerne noch
+	talk	idiot	+lerne noch
+	talk	blöder bot	+lerne noch
+	talk	du verstehst ja gar nichts	+lerne noch
+	talk	scheiße	+Oh je
+	talk	mist!	+Oh je
+	talk	verdammt	+Oh je
+	talk	oh mann	+Oh je
+	talk	menno	+Oh je
+	talk	danke	+Gern geschehen
+	talk	Danke!	+Gern geschehen
+	talk	danke schön	+Gern geschehen
+	talk	dankeschön	+Gern geschehen
+	talk	vielen dank	+Gern geschehen
+	talk	vielen lieben dank!	+Gern geschehen
+	talk	merci	+Gern geschehen
+	talk	thx	+Gern geschehen
+	talk	thanks	+Gern geschehen
+	talk	thank you	+Gern geschehen
+	talk	danke dir	+Gern geschehen
+	talk	tausend dank	+Gern geschehen
+	talk	danke pukki	+Gern geschehen
+	talk	vergelt's gott	+Gern geschehen
+	talk	tschüss	+Bis bald
+	talk	tschüs	+Bis bald
+	talk	ciao	+Bis bald
+	talk	bye	+Bis bald
+	talk	bis bald	+Bis bald
+	talk	bis später	+Bis bald
+	talk	bis morgen!	+Bis bald
+	talk	baba	+Bis bald
+	talk	pfiat di	+Bis bald
+	talk	auf wiedersehen	+Bis bald
+	talk	mach's gut	+Bis bald
+	talk	ich muss los	+Bis bald
+	talk	see you	+Bis bald
+	talk	schönen abend noch	+Bis bald
+	talk	gute nacht	+Gute Nacht
+	talk	Gute Nacht, Pukki	+Gute Nacht
+	talk	schlaf gut	+Gute Nacht
+	talk	ich geh jetzt schlafen	+Gute Nacht
+	talk	good night	+Gute Nacht
+	talk	ich bin müde	+Pause
+	talk	ich bin so müde	+Pause
+	talk	bin total kaputt	+Pause
+	talk	ich bin fix und fertig	+Pause
+	talk	mir ist langweilig	+Spaziergang
+	talk	langweilig	+Spaziergang
+	talk	ich langweile mich	+Spaziergang
+	talk	ich bin traurig	+tut mir leid
+	talk	mir geht es schlecht	+tut mir leid
+	talk	mir geht's nicht gut	+tut mir leid
+	talk	ich fühle mich einsam	+tut mir leid
+	talk	ich bin gestresst	+eins nach dem anderen
+	talk	ich hab so viel zu tun	+eins nach dem anderen
+	talk	alles zu viel	+eins nach dem anderen
+	talk	ich bin krank	+Gute Besserung
+	talk	ich hab fieber	+Gute Besserung
+	talk	ich habe kopfschmerzen	+Gute Besserung
+	talk	mir ist schlecht	+Gute Besserung
+	talk	ich hab hunger	+Linsensuppe
+	talk	ich habe hunger!	+Linsensuppe
+	talk	hunger	+Linsensuppe
+	talk	was soll ich heute kochen	+Linsensuppe
+	talk	ich hab durst	+Wasser
+	talk	ich bin glücklich	+freut mich
+	talk	ich freu mich so	+freut mich
+	talk	endlich wochenende!	+freut mich
+	talk	juhu	+freut mich
+	talk	feierabend!	+freut mich
+	talk	mir ist kalt	+Tee
+	talk	mir ist heiß	+Wasser
+	talk	ich brauche eine pause	+gönn dir
+	talk	ich brauche urlaub	+verdient
+	talk	ich brauch einen kaffee	+Einkaufsliste
+	talk	erzähl mir einen witz	+😄
+	talk	kennst du einen witz?	+😄
+	talk	sag was lustiges	+😄
+	talk	witz	+😄
+	talk	tell me a joke	+😄
+	talk	haha	+😄
+	talk	hahaha	+😄
+	talk	lol	+😄
+	talk	hihi	+😄
+	talk	😂	+😄
+	talk	😂😂😂	+😄
+	talk	👍	+👍
+	talk	❤️	+❤
+	talk	😢	+helfen
+	talk	🙂	+🙂
+	talk	👋	+Hallo
+	talk	hmm	+Zeit
+	talk	ähm	+Zeit
+	talk	tja	+Zeit
+	talk	achso	+👍
+	talk	aha	+👍
+	talk	wow	+😊
+	talk	echt?	+wirklich
+	talk	keine ahnung	+Kein Problem
+	talk	egal	+Kein Problem
+	talk	weiß nicht	+Kein Problem
+	talk	hä?	+nicht klar
+	talk	wie bitte?	+nicht klar
+	talk	ich verstehe nicht	+nicht klar
+	talk	test	+bin da
+	talk	test 123	+bin da
+	talk	bist du da?	+bin da
+	talk	hallo???	~bin da|Was kann ich
+	talk	ping	+Pong
+	talk	ok	+👍
+	talk	okay	+👍
+	talk	alles klar	+👍
+	talk	passt	+👍
+	talk	super	+👍
+	talk	prima	+👍
+	talk	cool	+👍
+	talk	perfekt	+👍
+	talk	ja	+👍
+	talk	gut	+👍
+	talk	in ordnung	+👍
+	talk	wie schön!	+Finde ich auch
+	talk	was ist der sinn des lebens	+42
+	talk	ich heiße Anna	+Freut mich, Anna
+	talk	mein name ist Lisa	+Freut mich, Lisa
+	talk	wie heiße ich?	+Du bist
+	talk	sprichst du englisch?	+Englisch
+	talk	kannst du rechnen?	+12 mal 7
+	talk	kannst du kochen?	+kann ich leider nicht
+	talk	kannst du singen	+kann ich leider nicht
+	talk	kannst du tanzen?	+kann ich leider nicht
+# Uhrzeit, Datum, Woche, Feiertage
+	zeit	wie spät ist es	~Es ist \d\d:\d\d Uhr
+	zeit	Wie spät ist es?	~Es ist \d\d:\d\d Uhr
+	zeit	wie spät ists	~Es ist \d\d:\d\d Uhr
+	zeit	wieviel uhr ist es	~Es ist \d\d:\d\d Uhr
+	zeit	wie viel uhr haben wir	~Es ist \d\d:\d\d Uhr
+	zeit	uhrzeit	~Es ist \d\d:\d\d Uhr
+	zeit	what time is it	~Es ist \d\d:\d\d Uhr
+	zeit	kannst du mir sagen wie spät es ist	~Es ist \d\d:\d\d Uhr
+	zeit	welcher tag ist heute	~Heute ist \w+, der \d+\.
+	zeit	welches datum haben wir	~Heute ist \w+, der \d+\.
+	zeit	der wievielte ist heute?	~Heute ist \w+, der \d+\.
+	zeit	welcher wochentag ist heute	~Heute ist \w+, der \d+\.
+	zeit	was ist heute für ein tag	~Heute ist \w+, der \d+\.
+	zeit	datum	~Heute ist \w+, der \d+\.
+	zeit	welcher tag ist morgen	~Morgen ist \w+, der \d+\.
+	zeit	welche kw haben wir	~Kalenderwoche \d+
+	zeit	welche kalenderwoche ist	~Kalenderwoche \d+
+	zeit	KW?	~Kalenderwoche \d+
+	zeit	in welcher woche sind wir	~Kalenderwoche \d+
+	zeit	welche kw ist nächste woche	~Nächste Woche ist Kalenderwoche \d+
+	zeit	welches jahr haben wir	~Jahr \d{4}
+	zeit	wie lange noch bis weihnachten	+Heiligabend ;; ~Tage|morgen|heute
+	zeit	wie viele tage noch bis weihnachten?	+Heiligabend
+	zeit	wann ist weihnachten	+Heiligabend ;; +Dezember
+	zeit	wann ist ostern	+Ostersonntag
+	zeit	wann ist pfingsten?	+Pfingstsonntag
+	zeit	wann ist silvester	+Silvester ;; +31. Dezember
+	zeit	wann ist muttertag	+Muttertag ;; +Mai
+	zeit	wie lange ist es noch bis silvester	+Silvester
+	zeit	wie lange noch bis zum wochenende	~Wochenende
+	zeit	wie viele tage bis zum 24.12.	~Tage|heute|morgen
+	zeit	ist heute ein feiertag?	~Feiertag
+	zeit	ist morgen ein feiertag	~Feiertag
+	zeit	wann ist der nächste feiertag	+nächste bundesweite Feiertag
+# Rechnen
+	talk	was ist 2+2	+= 4
+	talk	2 + 2	+= 4
+	talk	wie viel ist 7 mal 8?	+= 56
+	talk	rechne 12 * 4	+= 48
+	talk	was ist 100 durch 4	+= 25
+	talk	was ergibt 15 minus 7	+= 8
+	talk	was ist 10 geteilt durch 0	+null
+	talk	was ist 3,5 plus 1,5	+= 5
+	talk	20 prozent von 50	+sind 10
+	talk	wurzel aus 16	+ist 4
+	talk	was ist 2 hoch 10	+= 1.024
+# Was Pukki nicht weiß oder nicht kann - ehrlich
+	talk	wie wird das wetter	+Wetter kenne ich leider nicht
+	talk	wie wird das wetter morgen?	+Wetter kenne ich leider nicht
+	talk	regnet es morgen	+Wetter kenne ich leider nicht
+	talk	wird es heute warm?	+Wetter kenne ich leider nicht
+	talk	brauche ich einen regenschirm	+Wetter kenne ich leider nicht
+	talk	wie ist das wetter in berlin	+Wetter kenne ich leider nicht
+	talk	wetter	+Wetter kenne ich leider nicht
+	talk	what's the weather	+Wetter kenne ich leider nicht
+	talk	gibt es heute gewitter?	+Wetter kenne ich leider nicht
+	talk	was gibt es neues in den nachrichten	+nicht ins Internet
+	talk	wie hat bayern gespielt	+weiß ich leider nicht
+	talk	spiel musik	+nicht ins Internet
+	talk	mach das licht an	+keine Geräte
+	talk	stell einen wecker für 7 uhr	+keine Geräte
+	talk	übersetze hallo auf englisch	+nicht ins Internet
+	talk	wie komme ich nach hamburg	+nicht ins Internet
+	frage	wer ist der bundeskanzler	+weiß ich leider nicht
+	frage	was ist die hauptstadt von frankreich?	+weiß ich leider nicht
+	frage	wie hoch ist der mount everest	+weiß ich leider nicht
+	frage	wie viele einwohner hat wien	+weiß ich leider nicht
+	frage	warum ist der himmel blau?	+weiß ich leider nicht
+	frage	wer hat die fußball-wm gewonnen	+weiß ich leider nicht
+	frage	wie viel kostet ein auto	+weiß ich leider nicht
+	frage	who is the president	+weiß ich leider nicht
+	frage	was ist eine quantenzahl?	+weiß ich leider nicht
+	frage	wie macht man pfannkuchen?	+In deinen Notizen ;; +Pfannkuchen
+	frage	wie lange kocht ein ei	+weiß ich leider nicht
+	frage	kannst du auto fahren?	+kann ich leider nicht
+	frage	kannst du mir eine pizza bestellen	+kann ich leider nicht
+	frage	ist das gesund?	+weiß ich leider nicht
+	frage	welche farbe hat die sonne	+weiß ich leider nicht
+	frage	woher kommt der mond	+weiß ich leider nicht

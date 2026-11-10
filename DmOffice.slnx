@@ -1,0 +1,7 @@
+<Solution>
+  <Folder Name="/vendor/">
+    <Project Path="vendor/Notizi.Core/Notizi.Core.csproj" />
+  </Folder>
+  <Project Path="DmOffice.Server/DmOffice.Server.csproj" />
+  <Project Path="DmOffice.Tests/DmOffice.Tests.csproj" />
+</Solution>

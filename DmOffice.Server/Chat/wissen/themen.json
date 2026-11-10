@@ -1,0 +1,1186 @@
+[
+  {
+    "art": "gesundheit",
+    "key": "physician",
+    "suche": "physician",
+    "wikidata": "Q39631",
+    "de": [
+      "arzt",
+      "ärztin",
+      "praxis",
+      "sprechstunde",
+      "untersuchung",
+      "behandlung",
+      "gesundheit"
+    ],
+    "en": [
+      "doctor",
+      "physician",
+      "practice",
+      "examination",
+      "health"
+    ]
+  },
+  {
+    "art": "gesundheit",
+    "key": "health-professional",
+    "suche": "health professional",
+    "de": [
+      "therapie",
+      "therapeut",
+      "behandlung",
+      "praxis",
+      "gesundheit"
+    ],
+    "en": [
+      "therapy",
+      "therapist",
+      "treatment",
+      "practice",
+      "health"
+    ],
+    "wikidata": "Q11974939",
+    "gefunden": "health professional — individual who provides medical treatments and health advice"
+  },
+  {
+    "art": "gesundheit",
+    "key": "therapy",
+    "suche": "therapy",
+    "de": [
+      "therapie",
+      "behandlung",
+      "gesundheit",
+      "praxis"
+    ],
+    "en": [
+      "therapy",
+      "treatment",
+      "health"
+    ],
+    "wikidata": "Q179661",
+    "gefunden": "therapy — attempted medical remediation of a health problem, usually following a diagnosis"
+  },
+  {
+    "art": "gesundheit",
+    "key": "vaccine",
+    "suche": "vaccine",
+    "de": [
+      "impfung",
+      "impfen",
+      "arzt",
+      "gesundheit"
+    ],
+    "en": [
+      "vaccination",
+      "vaccine",
+      "doctor",
+      "health"
+    ],
+    "wikidata": "Q134808",
+    "gefunden": "vaccine — substance used to stimulate the production of antibodies and provide immunity against one or several diseases, agent of a disease, its products, or a synthetic substitute"
+  },
+  {
+    "art": "gesundheit",
+    "key": "gesundheit-alltag",
+    "wikidata": false,
+    "suche": "",
+    "de": [
+      "arzt",
+      "zahnarzt",
+      "kinderarzt",
+      "hausarzt",
+      "frauenarzt",
+      "augenarzt",
+      "hautarzt",
+      "orthopäde",
+      "kieferorthopäde",
+      "physio",
+      "physiotherapie",
+      "ergotherapie",
+      "logopädie",
+      "osteopathie",
+      "apotheke",
+      "rezept",
+      "impfung",
+      "vorsorge",
+      "krankenhaus",
+      "klinik",
+      "op",
+      "blutabnahme",
+      "zahnreinigung",
+      "gesundheit"
+    ],
+    "en": [
+      "doctor",
+      "dentist",
+      "pediatrician",
+      "physio",
+      "pharmacy",
+      "hospital",
+      "checkup",
+      "health"
+    ]
+  },
+  {
+    "art": "schule",
+    "key": "school",
+    "suche": "school",
+    "wikidata": "Q3914",
+    "de": [
+      "schule",
+      "unterricht",
+      "klasse",
+      "lehrer",
+      "elternabend"
+    ],
+    "en": [
+      "school",
+      "class",
+      "teacher",
+      "lesson"
+    ]
+  },
+  {
+    "art": "schule",
+    "key": "school-subject",
+    "suche": "school subject",
+    "de": [
+      "schulfach",
+      "unterricht",
+      "hausaufgaben",
+      "schule"
+    ],
+    "en": [
+      "subject",
+      "lesson",
+      "homework",
+      "school"
+    ],
+    "wikidata": "Q362165",
+    "gefunden": "school subject — field of knowledge defined and organized for teaching in school"
+  },
+  {
+    "art": "schule",
+    "key": "kindergarten",
+    "suche": "kindergarten",
+    "wikidata": "Q126807",
+    "de": [
+      "kita",
+      "kindergarten",
+      "krippe",
+      "erzieherin",
+      "kinder"
+    ],
+    "en": [
+      "kindergarten",
+      "daycare",
+      "nursery",
+      "children"
+    ]
+  },
+  {
+    "art": "schule",
+    "key": "schule-alltag",
+    "wikidata": false,
+    "suche": "",
+    "de": [
+      "schule",
+      "kita",
+      "kindergarten",
+      "hort",
+      "elternabend",
+      "elterngespräch",
+      "elternsprechtag",
+      "klassenarbeit",
+      "klausur",
+      "schulaufgabe",
+      "test",
+      "hausaufgaben",
+      "zeugnis",
+      "einschulung",
+      "schulfest",
+      "kitafest",
+      "sommerfest",
+      "wandertag",
+      "klassenfahrt",
+      "projektwoche",
+      "ferienbetreuung",
+      "lehrer",
+      "lehrerin",
+      "abitur",
+      "prüfung"
+    ],
+    "en": [
+      "school",
+      "homework",
+      "exam",
+      "test",
+      "report",
+      "teacher",
+      "parents"
+    ]
+  },
+  {
+    "art": "abholen",
+    "key": "abholen",
+    "wikidata": false,
+    "suche": "",
+    "de": [
+      "abholen",
+      "bringen",
+      "hinbringen",
+      "holen",
+      "fahren",
+      "fahrdienst",
+      "mitnehmen",
+      "bahnhof",
+      "flughafen",
+      "haltestelle",
+      "fahrgemeinschaft",
+      "taxi",
+      "kinder"
+    ],
+    "en": [
+      "pick",
+      "pickup",
+      "drop",
+      "drive",
+      "ride",
+      "carpool",
+      "station",
+      "airport"
+    ]
+  },
+  {
+    "art": "kurse",
+    "key": "musical-instrument",
+    "suche": "musical instrument",
+    "wikidata": "Q34379",
+    "de": [
+      "instrument",
+      "musik",
+      "musikschule",
+      "unterricht",
+      "üben"
+    ],
+    "en": [
+      "instrument",
+      "music",
+      "lesson",
+      "practice"
+    ]
+  },
+  {
+    "art": "kurse",
+    "key": "dance",
+    "suche": "dance",
+    "wikidata": "Q11639",
+    "de": [
+      "tanz",
+      "tanzen",
+      "tanzkurs",
+      "tanzschule",
+      "kurs"
+    ],
+    "en": [
+      "dance",
+      "dancing",
+      "class",
+      "course"
+    ]
+  },
+  {
+    "art": "kurse",
+    "key": "kurse-alltag",
+    "wikidata": false,
+    "suche": "",
+    "de": [
+      "kurs",
+      "unterricht",
+      "nachhilfe",
+      "musikschule",
+      "chor",
+      "chorprobe",
+      "orchester",
+      "band",
+      "probe",
+      "klavier",
+      "gitarre",
+      "geige",
+      "flöte",
+      "schlagzeug",
+      "malkurs",
+      "töpferkurs",
+      "sprachkurs",
+      "volkshochschule",
+      "vhs",
+      "workshop",
+      "seminar",
+      "pfadfinder",
+      "jugendgruppe"
+    ],
+    "en": [
+      "course",
+      "class",
+      "lesson",
+      "tutoring",
+      "choir",
+      "rehearsal",
+      "workshop"
+    ]
+  },
+  {
+    "art": "familie",
+    "key": "ceremony",
+    "suche": "ceremony",
+    "de": [
+      "feier",
+      "fest",
+      "familie",
+      "gäste"
+    ],
+    "en": [
+      "celebration",
+      "party",
+      "family",
+      "guests"
+    ],
+    "wikidata": "Q2627975",
+    "gefunden": "ceremony — a unified ritualistic event with a purpose, usually consisting of a number of artistic components, performed on a special occasion"
+  },
+  {
+    "art": "familie",
+    "key": "relative",
+    "suche": "relative",
+    "wikidata": "Q1038779",
+    "de": [
+      "familie",
+      "verwandte",
+      "besuch",
+      "verwandtschaft"
+    ],
+    "en": [
+      "family",
+      "relatives",
+      "visit"
+    ]
+  },
+  {
+    "art": "familie",
+    "key": "familie-alltag",
+    "wikidata": false,
+    "suche": "",
+    "de": [
+      "geburtstag",
+      "geburtstagsfeier",
+      "kindergeburtstag",
+      "hochzeit",
+      "hochzeitstag",
+      "jahrestag",
+      "taufe",
+      "kommunion",
+      "konfirmation",
+      "firmung",
+      "jugendweihe",
+      "beerdigung",
+      "trauerfeier",
+      "besuch",
+      "familienfest",
+      "grillen",
+      "oma",
+      "opa",
+      "omi",
+      "opi",
+      "tante",
+      "onkel",
+      "cousin",
+      "cousine",
+      "schwiegereltern",
+      "eltern",
+      "familie",
+      "weihnachten",
+      "ostern",
+      "silvester",
+      "muttertag",
+      "vatertag",
+      "party",
+      "feier"
+    ],
+    "en": [
+      "birthday",
+      "wedding",
+      "anniversary",
+      "baptism",
+      "funeral",
+      "visit",
+      "family",
+      "grandma",
+      "grandpa",
+      "christmas",
+      "easter",
+      "party"
+    ]
+  },
+  {
+    "art": "freizeit",
+    "key": "performing-arts",
+    "suche": "performing arts",
+    "de": [
+      "kultur",
+      "bühne",
+      "aufführung",
+      "vorstellung",
+      "theater"
+    ],
+    "en": [
+      "culture",
+      "stage",
+      "performance",
+      "show",
+      "theatre"
+    ],
+    "wikidata": "Q184485",
+    "gefunden": "performing arts — art form that is performed for an audience"
+  },
+  {
+    "art": "freizeit",
+    "key": "museum",
+    "suche": "museum",
+    "wikidata": "Q33506",
+    "de": [
+      "museum",
+      "ausstellung",
+      "ausflug",
+      "kultur"
+    ],
+    "en": [
+      "museum",
+      "exhibition",
+      "trip",
+      "culture"
+    ]
+  },
+  {
+    "art": "freizeit",
+    "key": "hobby",
+    "suche": "hobby",
+    "wikidata": "Q47728",
+    "de": [
+      "hobby",
+      "freizeit",
+      "spaß"
+    ],
+    "en": [
+      "hobby",
+      "leisure",
+      "fun"
+    ]
+  },
+  {
+    "art": "freizeit",
+    "key": "freizeit-alltag",
+    "wikidata": false,
+    "suche": "",
+    "de": [
+      "kino",
+      "theater",
+      "konzert",
+      "oper",
+      "musical",
+      "zirkus",
+      "zoo",
+      "tierpark",
+      "freizeitpark",
+      "spielplatz",
+      "schwimmbad",
+      "ausflug",
+      "wanderung",
+      "picknick",
+      "museum",
+      "ausstellung",
+      "festival",
+      "lesung",
+      "spieleabend",
+      "kaffee",
+      "brunch",
+      "essen",
+      "restaurant",
+      "treffen",
+      "verabredung",
+      "freizeit"
+    ],
+    "en": [
+      "cinema",
+      "movie",
+      "theatre",
+      "concert",
+      "zoo",
+      "trip",
+      "hike",
+      "picnic",
+      "museum",
+      "festival",
+      "restaurant",
+      "dinner",
+      "lunch"
+    ]
+  },
+  {
+    "art": "reisen",
+    "key": "travel",
+    "suche": "travel",
+    "wikidata": "Q61509",
+    "de": [
+      "reise",
+      "reisen",
+      "urlaub",
+      "unterwegs"
+    ],
+    "en": [
+      "travel",
+      "trip",
+      "journey",
+      "vacation"
+    ]
+  },
+  {
+    "art": "reisen",
+    "key": "hotel",
+    "suche": "hotel",
+    "wikidata": "Q27686",
+    "de": [
+      "hotel",
+      "unterkunft",
+      "übernachtung",
+      "urlaub"
+    ],
+    "en": [
+      "hotel",
+      "accommodation",
+      "stay",
+      "vacation"
+    ]
+  },
+  {
+    "art": "reisen",
+    "key": "reisen-alltag",
+    "wikidata": false,
+    "suche": "",
+    "de": [
+      "urlaub",
+      "ferien",
+      "reise",
+      "flug",
+      "abflug",
+      "rückflug",
+      "hinflug",
+      "check-in",
+      "hotel",
+      "ferienwohnung",
+      "camping",
+      "zeltlager",
+      "kreuzfahrt",
+      "städtetrip",
+      "wochenendtrip",
+      "klassenfahrt",
+      "koffer",
+      "packen"
+    ],
+    "en": [
+      "vacation",
+      "holiday",
+      "trip",
+      "flight",
+      "hotel",
+      "camping",
+      "packing"
+    ]
+  },
+  {
+    "art": "arbeit",
+    "key": "meeting",
+    "suche": "meeting",
+    "wikidata": "Q2761147",
+    "de": [
+      "besprechung",
+      "meeting",
+      "sitzung",
+      "arbeit"
+    ],
+    "en": [
+      "meeting",
+      "session",
+      "work"
+    ]
+  },
+  {
+    "art": "arbeit",
+    "key": "arbeit-alltag",
+    "wikidata": false,
+    "suche": "",
+    "de": [
+      "arbeit",
+      "büro",
+      "meeting",
+      "besprechung",
+      "sitzung",
+      "konferenz",
+      "call",
+      "videocall",
+      "telefonkonferenz",
+      "kunde",
+      "kundentermin",
+      "präsentation",
+      "projekt",
+      "deadline",
+      "abgabe",
+      "dienstreise",
+      "schicht",
+      "frühschicht",
+      "spätschicht",
+      "nachtschicht",
+      "homeoffice",
+      "vorstellungsgespräch",
+      "bewerbungsgespräch",
+      "mitarbeitergespräch",
+      "schulung",
+      "fortbildung"
+    ],
+    "en": [
+      "work",
+      "office",
+      "meeting",
+      "call",
+      "client",
+      "presentation",
+      "project",
+      "deadline",
+      "shift",
+      "interview"
+    ]
+  },
+  {
+    "art": "behoerden",
+    "key": "government-agency",
+    "suche": "government agency",
+    "wikidata": "Q327333",
+    "de": [
+      "amt",
+      "behörde",
+      "antrag"
+    ],
+    "en": [
+      "office",
+      "agency",
+      "authority",
+      "application"
+    ]
+  },
+  {
+    "art": "behoerden",
+    "key": "insurance",
+    "suche": "insurance",
+    "wikidata": "Q43183",
+    "de": [
+      "versicherung",
+      "vertrag",
+      "police",
+      "beitrag"
+    ],
+    "en": [
+      "insurance",
+      "policy",
+      "contract"
+    ]
+  },
+  {
+    "art": "behoerden",
+    "key": "tax",
+    "suche": "tax",
+    "wikidata": "Q8161",
+    "de": [
+      "steuer",
+      "finanzamt",
+      "steuererklärung",
+      "abgabe"
+    ],
+    "en": [
+      "tax",
+      "taxes",
+      "return"
+    ]
+  },
+  {
+    "art": "behoerden",
+    "key": "behoerden-alltag",
+    "wikidata": false,
+    "suche": "",
+    "de": [
+      "amt",
+      "bürgeramt",
+      "rathaus",
+      "finanzamt",
+      "jobcenter",
+      "arbeitsamt",
+      "ausländerbehörde",
+      "standesamt",
+      "zulassungsstelle",
+      "bank",
+      "sparkasse",
+      "notar",
+      "anwalt",
+      "steuer",
+      "steuerberater",
+      "steuererklärung",
+      "versicherung",
+      "rechnung",
+      "überweisung",
+      "rate",
+      "miete",
+      "nebenkosten",
+      "kündigung",
+      "vertrag",
+      "antrag",
+      "ausweis",
+      "reisepass",
+      "führerschein",
+      "kindergeld",
+      "elterngeld",
+      "rente",
+      "formular"
+    ],
+    "en": [
+      "office",
+      "bank",
+      "lawyer",
+      "tax",
+      "insurance",
+      "invoice",
+      "bill",
+      "rent",
+      "contract",
+      "application",
+      "passport",
+      "license"
+    ]
+  },
+  {
+    "art": "haushalt",
+    "key": "craftsman",
+    "suche": "artisan",
+    "wikidata": "Q1294787",
+    "de": [
+      "handwerker",
+      "reparatur",
+      "handwerk"
+    ],
+    "en": [
+      "craftsman",
+      "repair",
+      "trade"
+    ]
+  },
+  {
+    "art": "haushalt",
+    "key": "garden",
+    "suche": "garden",
+    "wikidata": "Q1107656",
+    "de": [
+      "garten",
+      "gartenarbeit",
+      "pflanzen",
+      "rasen"
+    ],
+    "en": [
+      "garden",
+      "gardening",
+      "plants",
+      "lawn"
+    ]
+  },
+  {
+    "art": "haushalt",
+    "key": "haushalt-alltag",
+    "wikidata": false,
+    "suche": "",
+    "de": [
+      "handwerker",
+      "klempner",
+      "installateur",
+      "elektriker",
+      "maler",
+      "schornsteinfeger",
+      "hausmeister",
+      "reparatur",
+      "wartung",
+      "ablesen",
+      "zählerstand",
+      "heizung",
+      "müll",
+      "müllabfuhr",
+      "sperrmüll",
+      "gelbe",
+      "altpapier",
+      "biomüll",
+      "putzen",
+      "putzfrau",
+      "fensterputzer",
+      "umzug",
+      "renovieren",
+      "streichen",
+      "garten",
+      "rasenmähen",
+      "hecke",
+      "lieferung",
+      "paket",
+      "haushalt"
+    ],
+    "en": [
+      "plumber",
+      "electrician",
+      "repair",
+      "maintenance",
+      "heating",
+      "trash",
+      "garbage",
+      "cleaning",
+      "moving",
+      "garden",
+      "delivery",
+      "parcel",
+      "household"
+    ]
+  },
+  {
+    "art": "auto",
+    "key": "motor-vehicle",
+    "suche": "motor vehicle",
+    "wikidata": "Q752870",
+    "de": [
+      "fahrzeug",
+      "auto",
+      "werkstatt"
+    ],
+    "en": [
+      "vehicle",
+      "car",
+      "garage"
+    ]
+  },
+  {
+    "art": "auto",
+    "key": "auto-alltag",
+    "wikidata": false,
+    "suche": "",
+    "de": [
+      "auto",
+      "werkstatt",
+      "tüv",
+      "hu",
+      "au",
+      "inspektion",
+      "ölwechsel",
+      "reifenwechsel",
+      "reifen",
+      "winterreifen",
+      "sommerreifen",
+      "autowäsche",
+      "waschanlage",
+      "tanken",
+      "zulassung",
+      "fahrschule",
+      "fahrstunde",
+      "führerscheinprüfung",
+      "unfall",
+      "gutachter"
+    ],
+    "en": [
+      "car",
+      "garage",
+      "inspection",
+      "tires",
+      "oil",
+      "service",
+      "driving"
+    ]
+  },
+  {
+    "art": "tiere",
+    "key": "pet",
+    "suche": "pet",
+    "wikidata": "Q39201",
+    "de": [
+      "haustier",
+      "tier",
+      "tierarzt",
+      "füttern"
+    ],
+    "en": [
+      "pet",
+      "animal",
+      "vet",
+      "feed"
+    ]
+  },
+  {
+    "art": "tiere",
+    "key": "tiere-alltag",
+    "wikidata": false,
+    "suche": "",
+    "de": [
+      "tierarzt",
+      "tierklinik",
+      "hundeschule",
+      "hundefriseur",
+      "gassi",
+      "impfung",
+      "entwurmung",
+      "futter",
+      "katzenfutter",
+      "hundefutter",
+      "katzenklo",
+      "tierpension",
+      "hundesitter",
+      "hund",
+      "katze",
+      "pferd",
+      "reitstunde",
+      "kaninchen",
+      "meerschweinchen",
+      "haustier"
+    ],
+    "en": [
+      "vet",
+      "dog",
+      "cat",
+      "horse",
+      "pet",
+      "food",
+      "walk"
+    ]
+  },
+  {
+    "art": "sport",
+    "key": "sport",
+    "suche": "sport",
+    "de": [
+      "sport",
+      "sportlich",
+      "training",
+      "fitness",
+      "bewegung"
+    ],
+    "en": [
+      "sport",
+      "sports",
+      "training",
+      "fitness",
+      "athletic"
+    ],
+    "wikidata": "Q349",
+    "gefunden": "sport — form of event or activity involving competition; series of activities that provides challenges for an individual or team/s of participants"
+  },
+  {
+    "art": "sport",
+    "key": "ball-game",
+    "suche": "ball game",
+    "de": [
+      "ballsport",
+      "ball",
+      "spiel",
+      "mannschaft",
+      "training",
+      "sport"
+    ],
+    "en": [
+      "ball",
+      "game",
+      "team",
+      "sports",
+      "training",
+      "match"
+    ],
+    "wikidata": "Q877517",
+    "gefunden": "ball game — any form of game or sport which feature a ball as part of play"
+  },
+  {
+    "art": "sport",
+    "key": "team-sport",
+    "suche": "team sport",
+    "de": [
+      "mannschaftssport",
+      "mannschaft",
+      "team",
+      "verein",
+      "training",
+      "sport"
+    ],
+    "en": [
+      "team",
+      "club",
+      "squad",
+      "training",
+      "sports",
+      "match"
+    ],
+    "wikidata": "Q216048",
+    "gefunden": "team sport — type of sport"
+  },
+  {
+    "art": "sport",
+    "key": "racket-sport",
+    "suche": "racket sport",
+    "de": [
+      "schlägersport",
+      "schläger",
+      "ball",
+      "platz",
+      "training",
+      "sport"
+    ],
+    "en": [
+      "racket",
+      "racquet",
+      "ball",
+      "court",
+      "training",
+      "sports"
+    ],
+    "wikidata": "Q2426135",
+    "gefunden": "racket sport — game in which players use rackets to hit a ball or other object"
+  },
+  {
+    "art": "sport",
+    "key": "water-sport",
+    "suche": "water sport",
+    "de": [
+      "wassersport",
+      "wasser",
+      "wasserdicht",
+      "nass",
+      "schwimmen",
+      "sport"
+    ],
+    "en": [
+      "watersports",
+      "water",
+      "waterproof",
+      "wet",
+      "swimming",
+      "sports"
+    ],
+    "wikidata": "Q61065",
+    "gefunden": "water sport — sports that take place in or on water"
+  },
+  {
+    "art": "sport",
+    "key": "winter-sport",
+    "suche": "winter sport",
+    "de": [
+      "wintersport",
+      "winter",
+      "schnee",
+      "kalt",
+      "warm",
+      "ski"
+    ],
+    "en": [
+      "wintersports",
+      "winter",
+      "snow",
+      "cold",
+      "warm",
+      "ski"
+    ],
+    "wikidata": "Q204686",
+    "gefunden": "winter sport — sport mainly practiced during the wintertime, often on snow or ice"
+  },
+  {
+    "art": "sport",
+    "key": "combat-sport",
+    "suche": "combat sport",
+    "de": [
+      "kampfsport",
+      "kampf",
+      "training",
+      "schutz",
+      "polster",
+      "sport"
+    ],
+    "en": [
+      "combat",
+      "fighting",
+      "training",
+      "protection",
+      "padding",
+      "sports"
+    ],
+    "wikidata": "Q7128792",
+    "gefunden": "combat sport — competitive contact sport involving combat"
+  },
+  {
+    "art": "sport",
+    "key": "sport-alltag",
+    "wikidata": false,
+    "suche": "",
+    "de": [
+      "sport",
+      "training",
+      "fußball",
+      "fussball",
+      "handball",
+      "basketball",
+      "volleyball",
+      "tennis",
+      "tischtennis",
+      "badminton",
+      "hockey",
+      "eishockey",
+      "schwimmen",
+      "schwimmkurs",
+      "schwimmtraining",
+      "turnen",
+      "leichtathletik",
+      "judo",
+      "karate",
+      "taekwondo",
+      "reiten",
+      "yoga",
+      "fitness",
+      "joggen",
+      "laufen",
+      "radfahren",
+      "klettern",
+      "bouldern",
+      "skifahren",
+      "ski",
+      "snowboard",
+      "turnier",
+      "wettkampf",
+      "punktspiel",
+      "heimspiel",
+      "auswärtsspiel",
+      "sportverein",
+      "verein",
+      "sportfest",
+      "bundesjugendspiele"
+    ],
+    "en": [
+      "sport",
+      "sports",
+      "training",
+      "football",
+      "soccer",
+      "basketball",
+      "volleyball",
+      "tennis",
+      "swimming",
+      "gym",
+      "fitness",
+      "yoga",
+      "tournament",
+      "match",
+      "practice"
+    ]
+  }
+]

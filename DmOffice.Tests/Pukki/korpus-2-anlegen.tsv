@@ -1,0 +1,224 @@
+# Pukkis Sprachkorpus 2: anlegen - Termine, Aufgaben, Notizen, Einkauf, Mahlzeiten, Erinnerungen
+# Termine
+	termin	termin morgen 15 Uhr Zahnarzt	+Eingetragen ;; +15:00 ;; +Zahnarzt ;; +morgen
+	termin	Termin übermorgen 10 Uhr Werkstatt	+Eingetragen ;; +10:00 ;; +Werkstatt ;; +übermorgen
+	termin	t morgen 8 Uhr Physio	+Eingetragen ;; +08:00 ;; +Physio
+	termin	morgen um 9 Friseur	+Eingetragen ;; +09:00 ;; +Friseur
+	termin	morgen 14 Uhr Meeting mit Herrn Müller	+Eingetragen ;; +14:00 ;; +Meeting mit Herrn Müller
+	termin	übermorgen um halb drei Kaffee mit Lisa	+Eingetragen ;; +14:30 ;; +Kaffee mit Lisa
+	termin	am 3.11. um 14:30 Elternsprechtag	+Eingetragen ;; +14:30 ;; +Elternsprechtag ;; +3.11.
+	termin	am 3.11 um 14:30 Elternsprechtag	+Eingetragen ;; +14:30 ;; +3.11.
+	termin	3. November 10 Uhr Notar	+Eingetragen ;; +10:00 ;; +Notar ;; +3.11.
+	termin	am 12. Dezember um 19 Uhr Weihnachtsfeier	+Eingetragen ;; +19:00 ;; +Weihnachtsfeier ;; +12.12.
+	termin	nächsten Dienstag 10 Uhr Werkstatt	+Eingetragen ;; +10:00 ;; +Werkstatt ;; ~Dienstag|morgen|übermorgen
+	termin	Dienstag nächste Woche um 11 Uhr Bank	+Eingetragen ;; +11:00 ;; +Bank ;; -nächste ;; -Woche
+	termin	Freitag 9:30 bis 11 Elternabend	+Eingetragen ;; +09:30–11:00 ;; +Elternabend
+	termin	Zahnarzt am Montag um 8	+Eingetragen ;; +08:00 ;; +Zahnarzt
+	termin	heute 18 Uhr Yoga	+Eingetragen ;; +18:00 ;; +Yoga
+	termin	morgen früh um 7 Joggen	+Eingetragen ;; +07:00 ;; +Joggen ;; -früh
+	termin	morgen abend 20 uhr kino	+Eingetragen ;; +20:00 ;; +Kino ;; -abend
+	termin	morgen um 8 abends Theater	+Eingetragen ;; +20:00 ;; +Theater
+	termin	Freitag Abend um 7 Konzert	+Eingetragen ;; +19:00 ;; +Konzert
+	termin	viertel nach vier Kita abholen	+Eingetragen ;; +16:15
+	termin	morgen viertel vor fünf Klavierunterricht	+Eingetragen ;; +16:45 ;; +Klavierunterricht
+	termin	morgen um drei Uhr Kaffeeklatsch bei Oma	+Eingetragen ;; +15:00 ;; +Kaffeeklatsch bei Oma
+	termin	am Mittwoch um zehn Elterngespräch	+Eingetragen ;; +10:00 ;; +Elterngespräch
+	termin	morgen 15h Meeting	+Eingetragen ;; +15:00 ;; +Meeting
+	termin	morgen um 15.30 Uhr Training	+Eingetragen ;; +15:30 ;; +Training
+	termin	übermorgen 14 Uhr 30 Telefonkonferenz	+Eingetragen ;; +14:30 ;; +Telefonkonferenz
+	termin	morgen von 14 bis 16 Uhr Workshop	+Eingetragen ;; +14:00–16:00 ;; +Workshop
+	termin	morgen 9-11 Uhr Seminar	+Eingetragen ;; +09:00–11:00 ;; +Seminar
+	termin	Montag 13 bis 15 Uhr Sitzung	+Eingetragen ;; +13:00–15:00 ;; +Sitzung
+	termin	tomorrow 3pm dentist	+Eingetragen ;; +15:00 ;; +Dentist
+	termin	meeting on friday at 10	+Eingetragen ;; +10:00 ;; +Meeting
+	termin	dentist tomorrow at 8:15	+Eingetragen ;; +08:15
+	termin	am Montag um 9 zum Doktor	+Eingetragen ;; +09:00 ;; +Doktor
+	termin	übermorgen Jause bei der Oma um 15 Uhr	+Eingetragen ;; +15:00 ;; +Jause bei der Oma
+	termin	morgen um 3 am Nachmittag Besprechung	+Eingetragen ;; +15:00 ;; +Besprechung
+	termin	termn morgen 15 uhr zahnarzt	+Eingetragen ;; +15:00 ;; -termn
+	termin	temin übermorgen 9 uhr friseur	+Eingetragen ;; +09:00 ;; -temin
+	termin	Zahnarzt morgen um 15:30	+Eingetragen ;; +15:30 ;; +Zahnarzt
+	termin	in 3 Tagen um 10 Uhr Ablesung Strom	+Eingetragen ;; +10:00 ;; +Ablesung Strom
+	termin	heute in einer Woche 18 Uhr Stammtisch	+Eingetragen ;; +18:00 ;; +Stammtisch
+	termin	trag mir morgen 15 uhr zahnarzt ein	+Eingetragen ;; +15:00 ;; +Zahnarzt ;; !Trag mir
+	termin	Trag bitte für Freitag 10 Uhr Physio ein	+Eingetragen ;; +10:00 ;; +Physio
+	termin	kannst du morgen 14 uhr friseur eintragen?	+Eingetragen ;; +14:00 ;; +Friseur
+	termin	könntest du übermorgen um 11 den TÜV eintragen	+Eingetragen ;; +11:00 ;; +TÜV
+	termin	Schreib in den Kalender: Montag 8 Uhr Elterngespräch	+Eingetragen ;; +08:00 ;; +Elterngespräch
+	termin	Neuer Termin: Mittwoch 16 Uhr Klavierunterricht	+Eingetragen ;; +16:00 ;; +Klavierunterricht
+	termin	neuer termin morgen 10 uhr hautarzt	+Eingetragen ;; +10:00 ;; +Hautarzt
+	termin	Ich hab morgen um 10 Zahnarzt	+Eingetragen ;; +10:00 ;; +Zahnarzt ;; -ich hab
+	termin	ich habe am Freitag um 9 einen Termin beim Orthopäden	+Eingetragen ;; +09:00 ;; +Orthopäden
+	termin	wir gehen am samstag um 20 uhr ins kino	+Eingetragen ;; +20:00 ;; +Kino
+	termin	ich muss morgen um 10 zum zahnarzt	+Eingetragen ;; +10:00 ;; +Zahnarzt
+	termin	Geburtstag Oma am 12.5.	+Eingetragen ;; +ganztägig ;; +Geburtstag Oma
+	termin	am 24.12. Weihnachten bei Oma	+Eingetragen ;; +ganztägig ;; +Weihnachten bei Oma
+	termin	Samstag Geburtstag Oma	+Eingetragen ;; +ganztägig
+	termin	Urlaub vom 1.8. bis 14.8.	+Eingetragen ;; +bis ;; +Urlaub ;; +1.8. ;; +14.8.
+	termin	vom 20.12. bis 2.1. Skiurlaub	+Eingetragen ;; +Skiurlaub ;; +20.12.
+	termin	jeden Montag 18 Uhr Training	+Eingetragen ;; +jeden Montag ;; +18:00 ;; +Training
+	termin	jeden Tag um 7 Uhr Tabletten nehmen	+Eingetragen ;; +täglich ;; +07:00
+	termin	alle zwei Wochen Dienstag 17 Uhr Chor	+Eingetragen ;; +alle zwei Wochen ;; +17:00 ;; +Chor
+	termin	jeden zweiten Mittwoch 19 Uhr Spieleabend	+Eingetragen ;; +jeden zweiten Mittwoch ;; +Spieleabend
+	termin	wöchentlich freitags 16 Uhr Putzfrau	+Eingetragen ;; +jeden Freitag ;; +16:00 ;; +Putzfrau ;; -Freitags
+	termin	Sonntag Grillen bei Cleo	+als Termin eintragen ;; @nichts ;; @knopf:Als Termin
+	termin	Zahnarzt	+Wann ist „Zahnarzt“ ;; @nichts
+	termin	termin	+Wie heißt der Termin ;; @nichts
+	termin	termin morgen	+Wie heißt der Termin ;; @nichts
+	termin	morgen 15 uhr	+Wie heißt der Termin ;; @nichts
+	termin	Kino	~Wann ist „Kino“ ;; @nichts
+	termin	Elternabend in der Schule	+Wann ist ;; @nichts
+	termin	um 17 Uhr Kinder abholen	+Eingetragen ;; +17:00
+	termin	heute abend kino	+Eingetragen ;; +Kino ;; -abend
+	termin	morgen mittag mit lisa	+als Termin eintragen ;; @nichts
+	termin	um 8 uhr abends essen gehen	+Eingetragen ;; +20:00 ;; -Essensplan
+	termin	am Freitag essen gehen mit Tom um 19 Uhr	+Eingetragen ;; +19:00 ;; -Essensplan
+	termin	Mittagessen mit Lisa am Freitag um 12	+Eingetragen ;; +12:00 ;; -Essensplan
+# Erinnerungen
+	aufgabe	erinnere mich morgen um 9 an den Müll	+Okay, ich erinnere dich ;; +09:00 ;; +Müll ;; +erinnere dich
+	aufgabe	Erinner mich morgen um 18 Uhr ans Blumengießen	+Okay, ich erinnere dich ;; +18:00 ;; +Blumengießen ;; +erinnere dich
+	aufgabe	erinnere mich in 2 stunden an den kuchen	+Okay, ich erinnere dich ;; +Kuchen ;; +erinnere dich
+	aufgabe	erinnere mich in 30 minuten an die wäsche	+Okay, ich erinnere dich ;; +Wäsche ;; +erinnere dich
+	aufgabe	bitte erinnere mich übermorgen um 8 an die Mülltonne	+Okay, ich erinnere dich ;; +08:00 ;; +Mülltonne
+	aufgabe	kannst du mich morgen um 10 an den anruf bei oma erinnern?	+Okay, ich erinnere dich ;; +10:00 ;; +Anruf bei Oma
+	aufgabe	remind me tomorrow at 9 to call mom	+Okay, ich erinnere dich ;; +09:00 ;; +Call mom
+	aufgabe	erinnere mich am Freitag an die Steuer	+Notiert ;; +Steuer ;; +fällig
+	termin	erinnere mich an den Müll	+Wann soll ich dich ;; @nichts
+	termin	erinnere mich, dem Zahnarzt zu schreiben	+Wann soll ich dich ;; +Zahnarzt schreiben ;; @nichts
+# Aufgaben
+	aufgabe	aufgabe Steuer machen	+Notiert: Steuer machen
+	aufgabe	Aufgabe: Keller aufräumen	+Notiert: Keller aufräumen
+	aufgabe	todo: Keller aufräumen	+Notiert: Keller aufräumen
+	aufgabe	todo Reifen wechseln	+Notiert: Reifen wechseln
+	aufgabe	To-do: Reifen wechseln	+Notiert: Reifen wechseln
+	aufgabe	a Oma anrufen	+Notiert: Oma anrufen
+	aufgabe	aufgbe Steuer machen	+Notiert: Steuer machen
+	aufgabe	Arzt anrufen	+Notiert: Arzt anrufen
+	aufgabe	Mama anrufen	+Notiert: Mama anrufen
+	aufgabe	Freitag Steuer abgeben	+Notiert: Steuer abgeben ;; +fällig
+	aufgabe	bis Freitag Rechnung bezahlen	+Notiert: Rechnung bezahlen ;; +fällig
+	aufgabe	Rechnung bis Freitag bezahlen	+Notiert ;; +fällig
+	aufgabe	Müll rausbringen	+Notiert: Müll rausbringen
+	aufgabe	Rasen mähen	+Notiert: Rasen mähen
+	aufgabe	Fenster putzen	+Notiert: Fenster putzen
+	aufgabe	Wäsche waschen	+Notiert: Wäsche waschen
+	aufgabe	Geschenk für Lisa kaufen	+Notiert ;; +Geschenk für Lisa
+	aufgabe	Termin beim Zahnarzt vereinbaren	+Notiert ;; +Termin beim Zahnarzt vereinbaren
+	aufgabe	Auto zum TÜV bringen	+Notiert ;; +Auto zum TÜV bringen
+	aufgabe	Hausaufgaben mit Ben machen	+Notiert
+	aufgabe	Blumen gießen	+Notiert: Blumen gießen
+	aufgabe	Pfand wegbringen	+Notiert: Pfand wegbringen
+	aufgabe	Katze füttern	+Notiert: Katze füttern
+	aufgabe	Versicherung kündigen	+Notiert: Versicherung kündigen
+	aufgabe	Kinderreisepass beantragen	+Notiert: Kinderreisepass beantragen
+	aufgabe	Bewerbung schreiben	+Notiert: Bewerbung schreiben
+	aufgabe	ich muss noch die Steuer machen	+Notiert: Steuer machen ;; -ich muss
+	aufgabe	ich muss unbedingt Oma anrufen	+Notiert: Oma anrufen
+	aufgabe	Ich sollte mal wieder den Keller aufräumen	+Notiert: Keller aufräumen
+	aufgabe	nicht vergessen: Geschenk für Lisa besorgen	+Notiert ;; +Geschenk für Lisa besorgen
+	aufgabe	denk dran die Blumen zu gießen	+Notiert: Blumen gießen
+	aufgabe	vergiss nicht, den Müll rauszubringen	+Notiert
+	aufgabe	muss morgen die Steuer abgeben	+Notiert ;; +fällig morgen
+	aufgabe	wir müssen am Wochenende die Garage aufräumen	+Notiert ;; +Garage aufräumen ;; +fällig
+	aufgabe	neue aufgabe: Fahrradschloss kaufen	+Notiert ;; +Fahrradschloss kaufen
+	aufgabe	Fahrradschloss	+als Aufgabe notieren ;; @nichts ;; @knopf:Als Aufgabe
+	aufgabe	aufgabe	+Was soll auf die Liste ;; @nichts
+	aufgabe	jeden Monat Miete überweisen	+Notiert ;; +Wiederholen kann ich Aufgaben noch nicht
+	aufgabe	todo call mom	+Notiert ;; +Call mom
+	aufgabe	i need to buy a present	+Notiert
+	termin	morgen 14 Uhr Paket abholen	+Paket abholen ;; +14:00
+	aufgabe	bis morgen Formular ausfüllen	+Notiert ;; +fällig morgen
+# Notizen
+	notiz	notiz Ideen für den Urlaub	+Notiz angelegt
+	notiz	Notiz: Kinderarzt Telefonnummer 0123 45678	+Notiz angelegt ;; +Kinderarzt
+	notiz	notiere: Passwort WLAN steht auf dem Router	+Notiz angelegt ;; +Passwort WLAN
+	notiz	notier dir: Lisa mag keine Nüsse	+Notiz angelegt ;; +Lisa mag keine Nüsse
+	notiz	merk dir: Schuhgröße Ben 32	+Notiz angelegt ;; +Schuhgröße Ben 32
+	notiz	merk dir, dass der Schlüssel beim Nachbarn liegt	+Notiz angelegt ;; +Schlüssel beim Nachbarn
+	notiz	Gedanke: wir könnten im Sommer nach Schweden	+Notiz angelegt ;; +Schweden
+	notiz	note: present ideas for Ben	+Notiz angelegt
+	notiz	notitz Geschenkideen Weihnachten	+Notiz angelegt ;; -notitz
+	notiz	kannst du dir merken, dass das Auto in Reihe 4 steht?	+Notiz angelegt ;; +Auto in Reihe 4
+	notiz	notiz	+Was soll in die Notiz ;; @nichts
+	notiz	Rezept für Oma: 200 g Mehl, 3 Eier, etwas Milch und eine Prise Salz, alles gut verrühren und eine Stunde ruhen lassen	+Soll ich das als Notiz anlegen ;; @nichts
+# Einkauf
+	einkauf	Butter	+Einkaufsliste „Einkaufen“ ;; +Butter
+	einkauf	Käse und Wurst	+Käse ;; +Wurst
+	einkauf	2 Liter Hafermilch	+2 Liter Hafermilch
+	einkauf	wir brauchen Klopapier	+Klopapier
+	einkauf	Klopapier ist alle	+Klopapier
+	einkauf	das Klopapier ist leer	+Klopapier
+	einkauf	der Kaffee ist alle	+Kaffee
+	einkauf	uns ist der Kaffee ausgegangen	+Kaffee
+	einkauf	kein Kaffee mehr	+Kaffee
+	einkauf	wir haben keine Butter mehr	+Butter
+	einkauf	kauf noch Äpfel	~: Äpfel\.
+	einkauf	kauf bitte Bananen	~: Bananen\.
+	einkauf	bring Brötchen mit	+Brötchen ;; -Bring
+	einkauf	bitte noch Joghurt mitbringen	+Joghurt
+	einkauf	hol bitte Sahne	+Sahne ;; -Hol
+	einkauf	schreib Käse auf die Liste	+Käse ;; -Schreib
+	einkauf	setz Butter auf die Einkaufsliste	+Butter ;; -Setz
+	einkauf	pack Nudeln auf die Liste	+Nudeln ;; -Pack
+	einkauf	Tomaten auf die Einkaufsliste	+Tomaten
+	einkauf	Grillkohle auf die Liste	+Grillkohle
+	einkauf	setze Grillanzünder auf die einkaufsliste	+Grillanzünder
+	einkauf	auf die Einkaufsliste: Grillkohle	+Grillkohle
+	einkauf	einkaufsliste: Hundefutter	+Hundefutter
+	einkauf	einkauf Gartenschlauch	+Gartenschlauch
+	einkauf	einkaufen Glühbirnen	+Glühbirnen
+	einkauf	noch Zwiebeln	+Zwiebeln
+	einkauf	Zahnpasta	+Zahnpasta
+	einkauf	Spülmittel und Müllbeutel	+Spülmittel ;; +Müllbeutel
+	einkauf	3 Dosen Tomaten	+3 Dosen Tomaten
+	einkauf	1 kg Mehl	+1 kg Mehl
+	einkauf	ein Netz Zwiebeln	+1 Netz Zwiebeln
+	einkauf	500 g Hackfleisch	+500 g Hackfleisch
+	einkauf	eine Flasche Wein	+1 Flasche Wein
+	einkauf	Apfel, Birne, Banane	+Apfel ;; +Birne ;; +Banane
+	einkauf	Kartoffeln Zwiebeln Karotten	+Kartoffeln ;; +Zwiebeln ;; +Karotten
+	einkauf	Kaffee kaufen	~: Kaffee\.
+	einkauf	Katzenfutter	+Katzenfutter
+	einkauf	Paradeiser und Erdäpfel	+Paradeiser ;; +Erdäpfel
+	einkauf	Topfen	+Topfen
+	einkauf	Schlagobers	+Schlagobers
+	einkauf	Semmeln	+Semmeln
+	einkauf	need eggs and butter	+Butter
+	einkauf	buy coffee	+Coffee
+	einkauf	notier Sahne	+Sahne ;; +Einkaufsliste
+	einkauf	Kannst du Joghurt auf die Liste setzen?	+Joghurt
+	einkauf	Schreibst du Sahne auf die Einkaufsliste?	+Sahne
+	einkauf	wir brauchen dringend Spülmaschinentabs	+Spülmaschinentabs
+	einkauf	ich brauche neue Batterien	+Batterien
+	einkauf	es fehlt Zucker	+Zucker
+	einkauf	mir fehlt noch Backpulver	+Backpulver
+	einkauf	Pizza	+Pizza ;; +Einkaufsliste
+	einkauf	Milch	+steht schon auf der Einkaufsliste ;; @nichts
+	einkauf	wir brauchen milch	+Milch steht schon ;; @nichts
+	einkauf	milch ist alle	+steht schon ;; @nichts
+	einkauf	Milch, Brot und Eier	+stehen schon ;; @nichts
+	einkauf	Milch und Kekse	+Kekse ;; +Milch steht schon
+	einkauf	Brot und 6 Eier und Käse	+Käse ;; +stehen schon
+	einkauf	einkauf	+Auf der Einkaufsliste ;; +Milch ;; @nichts
+	einkauf	einkaufsliste	+Milch ;; @nichts
+	einkauf	setze nöhren auf die einkaufsliste	+Möhren ;; +Vorschlagsliste ;; @nichts ;; @knopf:Ja, Möhren ;; @knopf:Nein, Nöhren
+	einkauf	Tomatn	+Meinst du „Tomate ;; @nichts
+	einkauf	Kartofeln und Butter	+Butter ;; +Meinst du „Kartoffeln“ ;; @neu
+	einkauf	Joghurd	+Joghurt ;; @nichts
+	einkauf	wir brauchen Brezn	+Brezn
+	einkauf	Banane Telefon Wolke	@nichts ;; -Einkaufsliste „Einkaufen“
+# Mahlzeiten
+	essen	abendessen Spaghetti	+Im Essensplan „Essensplan“ ;; +Abendessen – Spaghetti
+	essen	morgen mittag gibt es Linsensuppe	+Mittagessen – Linsensuppe ;; +morgen
+	essen	heute abend gibt es Pizza	+Abendessen – Pizza
+	essen	zum Frühstück Müsli	+Frühstück – Müsli
+	essen	frühstück Rührei	+Frühstück – Rührei
+	essen	Mittagessen am Freitag: Fischstäbchen	+Mittagessen – Fischstäbchen
+	essen	heute kochen wir Gulasch	+Gulasch
+	essen	morgen essen wir Lasagne	+Lasagne ;; +morgen
+	essen	Abendbrot: Käsebrote	+Abendessen – Käsebrote
+	essen	mittags gibt es Kartoffelsuppe	+Mittagessen – Kartoffelsuppe
+	essen	essen Pfannkuchen	+Pfannkuchen ;; +Rezept
+	essen	essensplan morgen Schnitzel	+Schnitzel ;; +morgen
+	essen	am Sonntag mittag gibt es Braten	+Mittagessen – Braten
+	essen	heute gibt es Pizza	+Pizza ;; +Essensplan

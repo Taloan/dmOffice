@@ -1,0 +1,209 @@
+# Pukkis Sprachkorpus 4: kurze Gespräche (gleiche Kennung = nacheinander, Pukki merkt sich den Zusammenhang) und Korrekturen
+# Musterdialog A: Milch steht auf einer Einkaufsliste
+A1	frage	haben wir noch milch?	+Das weiß ich leider nicht
+A1	frage	warum nicht?	+Weil ich nicht in den Kühlschrank schauen kann ;; +Milch steht aber auf der Einkaufsliste „Einkaufen“
+A1	talk	ok	+👍 ;; -Zurückgenommen
+# Musterdialog B: Sahne steht auf keiner Einkaufsliste
+B1	frage	haben wir noch sahne?	+Das weiß ich leider nicht
+B1	frage	warum nicht?	+Kühlschrank ;; +Sahne steht aber auf keiner Einkaufsliste ;; +draufsetzen ;; @knopf:Ja ;; @knopf:Nein
+B1	dialog	ja	+Okay, ich habe Sahne auf die Einkaufsliste „Einkaufen“ gesetzt ;; +Möchtest du noch etwas auf die Einkaufsliste ;; @neu
+B1	dialog	nein	+Okay ;; -Zurückgenommen ;; @nichts
+# B wörtlich mit Milch: erst abhaken, dann fragen
+B2	einkauf	milch gekauft	+Abgehakt: Milch
+B2	frage	haben wir noch milch?	+Das weiß ich leider nicht
+B2	frage	wieso nicht?	+Milch steht aber auf keiner Einkaufsliste ;; @knopf:Ja
+B2	dialog	ja	+Okay, ich habe Milch auf die Einkaufsliste „Einkaufen“ gesetzt ;; +Möchtest du noch etwas ;; @neu
+B2	dialog	nein	+Okay ;; @nichts ;; -Zurückgenommen
+# Nach „Möchtest du noch etwas?“ kommt die Antwort auf dieselbe Liste
+B3	frage	haben wir noch butter?	+weiß ich leider nicht
+B3	frage	warum?	+Butter steht aber auf keiner Einkaufsliste
+B3	dialog	ja bitte	+Butter ;; +Möchtest du noch etwas ;; @neu
+B3	dialog	Brot und Käse	+Käse ;; +Brot steht schon ;; @neu
+B4	frage	haben wir noch sahne?	+weiß ich leider nicht
+B4	frage	warum nicht	+draufsetzen
+B4	dialog	nein danke	+Okay ;; @nichts
+B5	frage	haben wir noch sahne	+weiß ich leider nicht
+B5	frage	warum nicht	+draufsetzen
+B5	dialog	ja, gerne	+Sahne ;; @neu
+B5	dialog	ja	+Was denn ;; @nichts
+B5	dialog	Kekse	+Kekse ;; @neu
+# Ist … auf der Liste? → aufschreiben → und noch etwas
+C1	frage	Ist Butter auf der Liste?	+Nein ;; +Butter
+C1	dialog	Dann schreib sie auf	+Butter ;; +Einkaufsliste „Einkaufen“ ;; @neu
+C1	dialog	Und Käse auch	+Käse ;; @neu
+C2	frage	Ist Milch auf der Liste?	+Ja
+C2	dialog	Dann schreib sie auf	+Milch steht schon ;; @nichts
+C2	dialog	Und Brot auch	+Brot steht schon ;; @nichts
+C3	frage	steht käse auf der liste?	+Nein
+C3	dialog	nein	+Okay ;; @nichts ;; -Zurückgenommen
+C4	frage	ist sahne auf der liste?	+Nein
+C4	dialog	ja	+Sahne ;; @neu
+C4	dialog	und noch kekse	+Kekse ;; @neu
+C4	dialog	nein	+Zurückgenommen
+C5	frage	was steht auf der einkaufsliste?	+Milch
+C5	dialog	Schreib noch Käse dazu	+Käse ;; @neu
+C5	talk	danke	+Gern geschehen
+C6	frage	ist milch auf der liste	+Ja
+C6	frage	und butter?	+Nein ;; +Butter
+C6	dialog	ja	+Butter ;; @neu
+# Tippfehler gegen die Vorschlagsliste
+D1	einkauf	setze nöhren auf die einkaufsliste	+„Möhren“ in der Vorschlagsliste ;; @nichts
+D1	dialog	nein	+Okay, dann setze ich „Nöhren“ auf die Einkaufsliste ;; @neu
+D2	einkauf	setze nöhren auf die einkaufsliste	+Möhren ;; @nichts
+D2	dialog	ja	+Möhren ;; -Nöhren ;; @neu
+D3	einkauf	Butter und Nöhren	+Butter ;; +Möhren ;; @neu
+D3	dialog	ja, möhren	+Möhren ;; @neu
+D4	einkauf	Tomatn und Brot	+Meinst du „Tomate ;; +Brot steht schon ;; @nichts
+D4	dialog	ja	+Tomate ;; @neu
+# Tage im Gespräch
+E1	frage	Was steht morgen an?	+Zahnarzt Kontrolle
+E1	frage	Und übermorgen?	!Soll ich ;; -Zahnarzt Kontrolle
+E1	frage	Und am Freitag?	!Soll ich
+E2	frage	was steht heute an	+Steuer machen
+E2	frage	und morgen?	+Zahnarzt Kontrolle
+E2	frage	und nächste woche?	!Soll ich
+E3	frage	Was gibt es heute zu essen?	+Linsensuppe
+E3	frage	Und morgen?	+Spaghetti ;; -Zahnarzt
+E3	frage	und übermorgen?	+Pfannkuchen
+E4	frage	Welche Aufgaben sind offen?	+Fahrrad reparieren
+E4	frage	und heute?	+Steuer machen ;; -Fahrrad
+E4	frage	und morgen?	+keine Aufgabe fällig
+E5	frage	wie sieht es morgen aus	+Zahnarzt Kontrolle
+E5	frage	was ist mit übermorgen	!Soll ich
+# Zutaten (Musterdialog)
+F1	frage	Was gibt es am Samstag zu essen?	+Lasagne
+F1	frage	Sind alle Zutaten dafür schon auf der Einkaufsliste?	+Lasagneplatten ;; +Hackfleisch ;; +Tomatensoße ;; +Soll ich die fehlenden Zutaten ;; @knopf:Ja
+F1	dialog	ja	+Okay, ich habe ;; +Lasagneplatten ;; +Einkaufsliste „Einkaufen“ ;; @neu
+F2	frage	Was gibt es am Samstag zu essen?	+Lasagne
+F2	frage	sind alle zutaten dafür da?	+Soll ich die fehlenden Zutaten
+F2	dialog	nein	+Okay ;; @nichts
+F3	frage	was gibt es übermorgen zu essen	+Pfannkuchen
+F3	frage	habe ich alle zutaten dafür?	+Alle Zutaten für „Pfannkuchen“ stehen schon
+F4	frage	was essen wir morgen?	+Spaghetti
+F4	frage	sind alle zutaten dafür auf der liste?	~keine Zutatenliste|Lasagneplatten
+# Termin finden, Erinnerung (Musterdialog)
+G1	frage	wann ist das konzert	+Beethoven-Konzert ;; +Stadthalle ;; +Soll ich dich vorher erinnern
+G1	dialog	ja 2 tage	+Okay, ich erinnere dich ;; +19:30 Uhr ;; @neu
+G1	dialog	nein	+Zurückgenommen
+G2	frage	wann ist das konzert?	+Erinnerung
+G2	dialog	ja	+Wie lange vorher ;; @nichts
+G2	dialog	eine stunde vorher	+Okay, ich erinnere dich ;; +18:30 Uhr ;; @neu
+G3	frage	wann ist das konzert	+Erinnerung
+G3	dialog	nein	+Okay ;; @nichts
+G4	frage	wann ist das konzert	+Erinnerung
+G4	dialog	am vortag	+Okay, ich erinnere dich ;; @neu
+G5	termin	erinnere mich 2 tage vorher ans konzert	+Okay, ich erinnere dich ;; +19:30 Uhr ;; @neu
+# Geteilter Kalender: deiner? weitersuchen, absagen ehrlich ablehnen (Musterdialog)
+H1	frage	Wann ist mein Zahnarzttermin?	+Kalender „Familie“ ;; +Zahnreinigung ;; +geteilter Kalender
+H1	dialog	das ist nicht meiner	+Dann suche ich weiter ;; +Zahnarzt Kontrolle ;; +Kalender „Persönlich“
+H1	dialog	danke	+Gern geschehen
+H2	frage	wann ist der zahnarzt	+Zahnreinigung
+H2	dialog	das ist meiner. Schreib dem Zahnarzt eine Mail, dass ich nicht teilnehmen kann. Sag den Termin für mich ab.	+kann ich leider nicht ;; +praxis@zahnarzt-weiss.example ;; +030 987654 ;; @nichts
+H3	frage	wann ist der zahnarzt?	+Zahnreinigung
+H3	dialog	nicht meiner	+Dann suche ich weiter ;; +Zahnarzt Kontrolle
+H3	dialog	nein	+Okay
+H4	frage	wann ist der zahnarzt?	+Zahnreinigung
+H4	dialog	meiner	+Alles klar
+H5	frage	wann ist der friseur	+Friseur
+H5	frage	und der elternabend?	+Elternabend
+H6	dialog	schreib dem zahnarzt eine mail	+kann ich leider nicht ;; +praxis@zahnarzt-weiss.example ;; @nichts
+H7	dialog	ruf oma an	+kann ich leider nicht ;; +030 123456 ;; @nichts
+H8	dialog	sag den termin beim friseur ab	+kann ich leider nicht ;; @nichts
+H9	dialog	schick Ben eine Nachricht	+kann ich leider nicht ;; @nichts
+H10	dialog	lösch den termin beim zahnarzt	+nicht ;; @nichts
+H11	dialog	überweise die miete	+kann ich leider nicht ;; @nichts
+# Termin anlegen und korrigieren
+K1	termin	Termin morgen 15 Uhr Zahnarzt	+Eingetragen ;; +15:00
+K1	dialog	Mach 16 Uhr draus	+Geändert ;; +16:00 ;; +Zahnarzt ;; @neu
+K1	dialog	Nein, Donnerstag	+Geändert ;; +16:00 ;; ~Donnerstag|morgen|übermorgen ;; @neu
+K2	termin	termin morgen 10 uhr friseur	+Eingetragen ;; +10:00
+K2	dialog	verschieb das auf 11 uhr	+Geändert ;; +11:00 ;; +Friseur
+K2	talk	danke	+Gern geschehen
+K3	termin	termin morgen 10 uhr friseur	+Eingetragen
+K3	dialog	doch nicht	+Zurückgenommen
+K4	termin	termin morgen 10 uhr friseur	+Eingetragen
+K4	dialog	nein, als aufgabe	+Notiert ;; +Friseur ;; @neu
+K5	termin	morgen 9 Uhr Physio	+Eingetragen
+K5	dialog	und übermorgen auch	+Eingetragen ;; +übermorgen ;; +Physio ;; @neu
+K6	termin	termin morgen 10 uhr friseur	+Eingetragen
+K6	dialog	nein	+Zurückgenommen
+K7	dialog	ändere die uhrzeit auf 16 uhr	+welchen Eintrag ;; @nichts
+K8	dialog	mach 16 uhr draus	+welchen Eintrag ;; @nichts
+K9	termin	aufgabe Steuer bis Freitag	+Notiert ;; +fällig
+K9	dialog	nein, Montag	+Geändert ;; ~Montag|morgen|übermorgen
+K10	termin	termin übermorgen 8 uhr tüv	+Eingetragen ;; +08:00
+K10	dialog	lieber um 9	+Geändert ;; +09:00
+K11	termin	termin freitag 14 uhr friseur	+Eingetragen
+K11	dialog	nicht um 14 sondern um 15 uhr	+Geändert ;; +15:00
+K12	termin	termin morgen 10 uhr friseur	+Eingetragen
+K12	dialog	ändere den titel auf haare schneiden	+Namen oder Ort kann ich noch nicht ändern
+K13	termin	termin morgen 10 uhr friseur	+Eingetragen
+K13	dialog	lösch das	+Zurückgenommen
+K14	termin	termin morgen 10 uhr friseur	+Eingetragen
+K14	dialog	falsch	+Zurückgenommen
+K15	termin	termin morgen 10 uhr friseur	+Eingetragen
+K15	frage	was steht morgen an	+Friseur
+K15	dialog	nein	+Okay ;; -Zurückgenommen
+# Rückfragen beim Anlegen
+L1	aufgabe	Fahrrad	+als Aufgabe notieren ;; @nichts
+L1	dialog	nein	+lasse ich das ;; @nichts
+L2	termin	Sonntag Grillen bei Cleo	+als Termin eintragen ;; @nichts
+L2	dialog	ja	+Eingetragen ;; @neu
+L3	termin	Zahnarzt	+Wann ist ;; @nichts
+L3	dialog	morgen 15 uhr	+Eingetragen ;; +15:00 ;; +Zahnarzt ;; @neu
+L4	termin	morgen 15 uhr	+Wie heißt der Termin ;; @nichts
+L4	dialog	Zahnarzt	+Eingetragen ;; +15:00 ;; +Zahnarzt ;; @neu
+L5	aufgabe	Fahrrad	+als Aufgabe ;; @nichts
+L5	dialog	als notiz	+Notiz angelegt ;; @neu
+L6	aufgabe	Fahrrad	+als Aufgabe ;; @nichts
+L6	dialog	ja	+Notiert: Fahrrad ;; @neu
+L7	termin	Kino	+Wann ist ;; @nichts
+L7	dialog	ohne termin	+Notiert ;; @neu
+L8	termin	erinnere mich an den müll	+Wann soll ich dich ;; @nichts
+L8	dialog	morgen um 7	+Okay, ich erinnere dich ;; +07:00 ;; +erinnere dich ;; @neu
+L9	aufgabe	Fahrrad	+als Aufgabe ;; @nichts
+L9	frage	was steht morgen an?	+Zahnarzt Kontrolle
+L9	dialog	ja	+👍 ;; @nichts
+# Einkauf und Zurücknehmen
+M1	einkauf	Milch und Kekse	+Kekse
+M1	dialog	nein	+Zurückgenommen ;; +Kekse
+M2	einkauf	Butter	+Butter
+M2	dialog	rückgängig	+Zurückgenommen
+M3	einkauf	Butter	+Butter
+M3	dialog	und Käse auch	+Käse ;; @neu
+M4	einkauf	Butter	+Butter
+M4	dialog	nein, als aufgabe	+Notiert ;; +Butter
+M5	einkauf	streich brot von der liste	+Abgehakt: Brot ;; @neu
+M5	dialog	nein	+Wieder offen: Brot
+M6	aufgabe	Steuer machen ist erledigt	+Abgehakt: Steuer machen ;; @neu
+M6	dialog	rückgängig	+Wieder offen: Steuer machen
+M7	aufgabe	Fensterputzen erledigt	+finde ich ;; @nichts
+# Mahlzeiten im Gespräch
+N1	essen	abendessen Pizza	+Abendessen – Pizza
+N1	essen	und morgen Lasagne	+Lasagne ;; +morgen ;; @neu
+N2	essen	morgen abendessen Fisch	+Fisch
+N2	dialog	nein	+Zurückgenommen
+# Kleine Worte im Gespräch
+P1	talk	Wer bist du?	+Pukki
+P1	talk	Was kannst du?	+Das kann ich
+P1	talk	Danke	+Gern geschehen
+P2	talk	wie geht's?	+Und dir
+P2	talk	gut	+Das freut mich
+P3	talk	wie geht es dir	+Und dir
+P3	talk	nicht so gut	+tut mir leid
+P4	talk	wie gehts	+Und dir
+P4	talk	super, und dir?	+freut mich
+P5	talk	erzähl einen witz	+😄
+P5	talk	noch einen	+😄
+P5	talk	haha	+😄
+P6	talk	hallo	+Was kann ich für dich tun
+P6	zeit	wie spät ist es?	~Es ist \d\d:\d\d Uhr
+P6	talk	tschüss	+Bis bald
+P7	frage	wer ist der bundeskanzler	+weiß ich leider nicht
+P7	frage	warum nicht?	+nicht ins Internet
+P8	talk	wie wird das wetter morgen	+Wetter
+P8	frage	wieso?	+nicht ins Internet
+P9	talk	Hallo Pukki, was steht morgen an?	+Hallo ;; +Zahnarzt Kontrolle ;; @nichts
+P10	talk	guten morgen, schreib bitte Butter auf die Liste	+Guten Morgen ;; +Butter ;; @neu
+P11	talk	danke, und noch Käse bitte	+Käse ;; @neu
+P12	talk	ok, was gibt es heute zu essen?	+Linsensuppe ;; @nichts

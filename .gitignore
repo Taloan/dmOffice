@@ -1,0 +1,18 @@
+bin/
+obj/
+.vs/
+*.user
+node_modules/
+web/dist/
+DmOffice.Server/wwwroot/
+data/
+*.db
+*.db-wal
+*.db-shm
+.build/
+
+# Arbeitsordner der Claude-Sitzungen (Worktrees, interne Berichte)
+.claude/
+# Android-App fuer das Image (vom Build-Ablauf)
+app-apk/*.apk
+app-apk/app.json

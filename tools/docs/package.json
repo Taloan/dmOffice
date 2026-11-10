@@ -1,0 +1,9 @@
+{
+  "name": "dmoffice-docs",
+  "private": true,
+  "type": "module",
+  "description": "Beispieldaten und Screenshots fuer docs/ - siehe make.sh",
+  "devDependencies": {
+    "puppeteer-core": "24.10.0"
+  }
+}

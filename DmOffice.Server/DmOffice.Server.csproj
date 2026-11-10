@@ -1,0 +1,68 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>DmOffice</RootNamespace>
+    <InvariantGlobalization>false</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Anthropic" Version="13.1.0" />
+    <PackageReference Include="AWSSDK.S3" Version="4.0.104.6" />
+    <PackageReference Include="Konscious.Security.Cryptography.Argon2" Version="1.3.1" />
+    <!-- Cryptomator-Format (Core/Cryptomator): scrypt, AES-Key-Wrap, CMAC und AES-CTR für AES-SIV -->
+    <PackageReference Include="BouncyCastle.Cryptography" Version="2.7.0" />
+    <PackageReference Include="MailKit" Version="4.18.1" />
+    <PackageReference Include="HtmlSanitizer" Version="9.2.1039" />
+    <PackageReference Include="Ical.Net" Version="4.3.1" />
+    <!-- Aufnahmedatum und Ort aus Fotos (EXIF, GPS), Apache-2.0 -->
+    <PackageReference Include="MetadataExtractor" Version="2.8.1" />
+    <!-- Volltextsuche (Search/TextExtract.cs): Text aus PDF (Apache-2.0) und Office-Dateien (MIT) -->
+    <PackageReference Include="PdfPig" Version="0.1.16" />
+    <PackageReference Include="DocumentFormat.OpenXml" Version="3.5.1" />
+    <PackageReference Include="SharpCompress" Version="0.50.7" />
+    <!-- von MimeKit mitgebracht; 10.0.0 hat bekannte Luecken -->
+    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.13" />
+    <!-- SQLCipher: jede Benutzerdatenbank ist verschluesselt -->
+    <PackageReference Include="Microsoft.Data.Sqlite.Core" Version="10.0.0" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlcipher" Version="2.1.11" />
+    <!-- Vorschaubilder der Dateiablage: SkiaSharp (MIT, Skia BSD-3) fuer Bilder, PDFtoImage (MIT) mit PDFium
+         (BSD-3/Apache-2.0) fuer die erste PDF-Seite. NoDependencies: laeuft im schlanken Docker-Image ohne fontconfig. -->
+    <PackageReference Include="SkiaSharp" Version="4.150.1" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="4.150.1" />
+    <PackageReference Include="PDFtoImage" Version="5.4.0" />
+    <!-- Audiothek: Tags, Cover und Dauer aus MP3, M4A, FLAC, OGG/Opus (Audio/AudioFolders.cs), MIT -->
+    <PackageReference Include="z440.atl.core" Version="7.19.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\vendor\Notizi.Core\Notizi.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="DmOffice.Tests" />
+  </ItemGroup>
+
+  <!-- Pukki (Version 2): Familien-Themen und Assoziationen aus Wikidata (CC0), eingebettet -->
+  <ItemGroup>
+    <EmbeddedResource Include="Chat\wissen\*.json" />
+    <!-- Rezeptsuche (Naehrwerte): Bundeslebensmittelschluessel 4.0 (Max Rubner-Institut, CC BY 4.0), aufbereitet -->
+    <EmbeddedResource Include="Notes\Nutrition\bls40.tsv.gz" LogicalName="DmOffice.Notes.Data.bls40.tsv.gz" />
+    <EmbeddedResource Include="Notes\Nutrition\portionen.tsv" LogicalName="DmOffice.Notes.Data.portionen.tsv" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Name der Version (1.5, 2.0 ...) fuer die Titelzeile; liegt neben der Assembly im Image -->
+    <Content Include="release.txt" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Release-Liste: ab welcher Version welche Funktion gilt (Core/Features.cs) -->
+    <Content Update="features.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- Speicher: zerstückelten Speicher (große Blöcke von PDFs, Fotos) aktiv zusammenräumen statt mehr zu belegen - mit einer
+       Speichergrenze im Container und Auslagern (vServer) hingen sonst lange Aufräumläufe die ganze App für Sekunden auf -->
+  <ItemGroup>
+    <RuntimeHostConfigurationOption Include="System.GC.ConserveMemory" Value="7" />
+  </ItemGroup>
+</Project>

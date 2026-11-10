@@ -1,0 +1,4 @@
+numpy>=2.0
+opencv-contrib-python>=4.8
+pillow>=10.0
+rawpy>=0.24
