@@ -34,7 +34,7 @@ export function DmsFileInfo({ fileId }: { fileId: number }) {
       {tags && <span>{t('Tags')}: {tags}</span>}
       {doc.docDate && <span className={s.muted}>{t('Dokumentdatum')}: {new Date(doc.docDate + 'T12:00:00').toLocaleDateString()}</span>}
       {doc.inbox && <span className={s.muted}>{t('In der Inbox')}</span>}
-      <Button size="small" onClick={() => { location.hash = '#/dms' }}>{t('Im DMS öffnen')}</Button>
+      <Button size="small" style={{ flexShrink: 0, alignSelf: 'flex-start' }} icon={<DocumentBulletList20Regular />} onClick={() => { location.hash = '#/dms/doc/' + doc.id }}>{t('Im DMS zeigen')}</Button>
     </>
   )
 }

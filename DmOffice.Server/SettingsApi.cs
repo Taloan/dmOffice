@@ -48,7 +48,7 @@ public static class SettingsApi
         Environment.GetEnvironmentVariable("DMOFFICE_VERSION") is { Length: > 0 } v ? v
         : "dev-" + (typeof(SettingsApi).Assembly.GetName().Version?.ToString(3) ?? "0");
 
-    /// <summary>Versionsnummer dieses Stands ("2.0.2") aus release.txt neben der Assembly; leer, wenn die Datei fehlt.</summary>
+    /// <summary>Name der Version des Zweigs ("1.5", "2.0") aus release.txt neben der Assembly; leer, wenn die Datei fehlt.</summary>
     public static string Release() => ReleaseText.Value;
 
     // Einmal lesen: /api/health fragt ohne Anmeldung und alle 15 s - nicht jedes Mal die Platte
@@ -59,15 +59,15 @@ public static class SettingsApi
     });
 
     /// <summary>Konto ohne Passwoerter - die Oberflaeche sieht nur, ob eines gesetzt ist.</summary>
-    private static object Masked(MailAccount a) => new
+    private static object Masked(MailAccount a, bool isDefault) => new
     {
-        a.Id, a.Name, a.Email, a.DisplayName, a.ImapHost, a.ImapPort, a.ImapSecurity, a.ImapUser,
+        a.Id, isDefault, a.Name, a.Email, a.DisplayName, a.ImapHost, a.ImapPort, a.ImapSecurity, a.ImapUser,
         hasImapPassword = !string.IsNullOrEmpty(a.ImapPassword),
         a.Auth, hasOAuth = !string.IsNullOrEmpty(a.OAuthRefreshToken),
         hasGraph = !string.IsNullOrEmpty(a.GraphRefreshToken), a.GraphCalendars, a.GraphContacts, a.GraphTasks,
         a.SmtpHost, a.SmtpPort, a.SmtpSecurity, a.SmtpUser,
         hasSmtpPassword = !string.IsNullOrEmpty(a.SmtpPassword),
-        a.Signature, a.AcceptAnyCertificate, a.SaveSentCopy, a.SyncMonths, a.MaxCachedMb, a.Storage, a.SlimDays, a.SlimMb, a.Language, a.TrashDays, a.JunkDays, a.FocusedInbox, a.FolderMap
+        a.Signature, a.AcceptAnyCertificate, a.SaveSentCopy, a.SyncMonths, a.MaxCachedMb, a.Storage, a.SlimDays, a.SlimMb, a.Language, a.TrashDays, a.JunkDays, a.FocusedInbox, a.FolderMap, a.InUnified
     };
 
     /// <summary>Zeigt der Host auf den eigenen Container (Loopback, Link-Local, unbestimmt)? Dann kein Verbindungsversuch -
@@ -125,6 +125,7 @@ public static class SettingsApi
         target.SmtpUser = body.SmtpUser.Trim(); target.SmtpPassword = smtp;
         target.Signature = body.Signature; target.AcceptAnyCertificate = body.AcceptAnyCertificate;
         target.SaveSentCopy = body.SaveSentCopy;
+        target.InUnified = body.InUnified;
         target.Language = body.Language == "en" ? "en" : "de";
         target.SyncMonths = Math.Max(0, body.SyncMonths);
         target.MaxCachedMb = Math.Clamp(body.MaxCachedMb, 1, 500);
@@ -198,7 +199,7 @@ public static class SettingsApi
                 s.Theme, s.TimeZone, s.MarkReadDelay, s.OpenOnFolder, s.InviteCalendar, s.SmartCalendar,
                 // Domains, bei denen der Assistent "Mit Microsoft anmelden" anbietet - null: nicht eingerichtet
                 microsoftDomains = http.RequestServices.GetRequiredService<MicrosoftOAuth>().Enabled ? MicrosoftOAuth.Domains.Order() : null,
-                accounts = s.MailAccounts.Select(Masked),
+                accounts = s.MailAccounts.Select(a => Masked(a, s.IsDefault(a))),
                 user = new { space.User.Login, space.User.DisplayName, space.User.IsAdmin }
             };
         });
@@ -268,6 +269,16 @@ public static class SettingsApi
             oauth.Enabled ? Results.Ok(await oauth.StartAsync(http.Space().User.Id, ct)) : Results.NotFound());
         api.MapPost("/accounts/microsoft/poll", async (OAuthPoll body, HttpContext http, MicrosoftOAuth oauth, CancellationToken ct) =>
             oauth.Enabled ? Results.Ok(new { status = await oauth.PollAsync(http.Space().User.Id, body.Flow, ct) }) : Results.NotFound());
+
+        // Standard-Mailkonto festlegen (Features.DefaultAccount): genau eines ist Standard
+        api.MapPut("/accounts/{id}/default", (string id, HttpContext http) =>
+        {
+            if (!Features.On(Features.DefaultAccount)) return Results.NotFound();
+            var space = http.Space();
+            if (space.Settings.MailAccounts.All(a => a.Id != id)) return Results.NotFound();
+            space.UpdateSettings(s => s.DefaultMailAccount = id);
+            return Results.Ok();
+        });
 
         api.MapDelete("/accounts/{id}", (string id, HttpContext http, MailSync sync) =>
         {
@@ -340,7 +351,13 @@ public static class SettingsApi
             using var reader = new StreamReader(request.Body);
             var text = await reader.ReadToEndAsync();
             if (text.Length > 200_000) return Results.BadRequest(new { error = "Zu gross." });
-            using (System.Text.Json.JsonDocument.Parse(text)) { }   // nur gueltiges JSON ablegen
+            // nur ein gueltiges JSON-Objekt ablegen - Chat, Benachrichtigungen und Sprache lesen daraus einzelne Felder
+            try
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(text);
+                if (doc.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object) return Results.BadRequest(new { error = "Ungültige Einstellungen." });
+            }
+            catch (System.Text.Json.JsonException) { return Results.BadRequest(new { error = "Ungültige Einstellungen." }); }
             http.Space().Db.Set("ui.prefs", text);
             return Results.Ok();
         });
@@ -488,17 +505,27 @@ public static class SettingsApi
         // Regeln speichern: als Liste oder { rules, password, code } - neue Weiterleitungsziele nur mit dem Anmelde-Passwort, und gemeldet
         api.MapPut("/rules", async (HttpContext http, UserStore users) =>
         {
-            var el = await http.Request.ReadFromJsonAsync<System.Text.Json.JsonElement>(http.RequestAborted);
             var web = new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web);
             List<MailRule> rules;
             string? password = null, code = null;
-            if (el.ValueKind == System.Text.Json.JsonValueKind.Array) rules = System.Text.Json.JsonSerializer.Deserialize<List<MailRule>>(el, web) ?? [];
-            else
+            try
             {
-                rules = el.TryGetProperty("rules", out var rs) ? System.Text.Json.JsonSerializer.Deserialize<List<MailRule>>(rs, web) ?? [] : [];
-                if (el.TryGetProperty("password", out var pw) && pw.ValueKind == System.Text.Json.JsonValueKind.String) password = pw.GetString();
-                if (el.TryGetProperty("code", out var cd) && cd.ValueKind == System.Text.Json.JsonValueKind.String) code = cd.GetString();
+                var el = await http.Request.ReadFromJsonAsync<System.Text.Json.JsonElement>(http.RequestAborted);
+                if (el.ValueKind == System.Text.Json.JsonValueKind.Array) rules = System.Text.Json.JsonSerializer.Deserialize<List<MailRule>>(el, web) ?? [];
+                else if (el.ValueKind == System.Text.Json.JsonValueKind.Object)
+                {
+                    rules = el.TryGetProperty("rules", out var rs) ? System.Text.Json.JsonSerializer.Deserialize<List<MailRule>>(rs, web) ?? [] : [];
+                    if (el.TryGetProperty("password", out var pw) && pw.ValueKind == System.Text.Json.JsonValueKind.String) password = pw.GetString();
+                    if (el.TryGetProperty("code", out var cd) && cd.ValueKind == System.Text.Json.JsonValueKind.String) code = cd.GetString();
+                }
+                else return Results.BadRequest(new { error = "Ungültige Regel." });
             }
+            catch (System.Text.Json.JsonException) { return Results.BadRequest(new { error = "Ungültige Regel." }); }
+            // Felder mit null (statt Text oder Liste) nicht speichern - Abruf und Weiterleiten lesen sie ungeprüft
+            if (rules.Any(r => r is null || r.Id is null || r.Name is null || r.Match is null || r.Conditions is null || r.Actions is null
+                || r.Conditions.Any(c => c is null || c.Field is null || c.Op is null || c.Value is null)
+                || r.Actions.Any(a => a is null || a.Type is null || a.Value is null)))
+                return Results.BadRequest(new { error = "Ungültige Regel." });
             static HashSet<string> Targets(IEnumerable<MailRule> list) => list.SelectMany(r => r.Actions).Where(a => a.Type == "forward")
                 .SelectMany(a => a.Value.Split(',', ';').Select(x => x.Trim().ToLowerInvariant()).Where(x => x.Contains('@'))).ToHashSet();
             var added = Targets(rules).Except(Targets(http.Space().Settings.Rules)).ToList();
@@ -506,7 +533,7 @@ public static class SettingsApi
             {
                 if (users.ById(http.Space().User.Id) is not { } u) return Results.NotFound();
                 // Mit Zwei-Faktor auch der Code: wer nur das Passwort kennt, soll sich keine Mails umleiten können
-                if (Auth.Confirm(users, u, password, code, needCode: true) is { } refused)
+                if (Auth.Confirm(users, u, password, code, needCode: true, http) is { } refused)
                     return Results.Json(new { error = u.TwoFactor ? "Neue Weiterleitungen nur mit Passwort und Code." : "Neue Weiterleitungen nur mit dem Passwort.", confirm = true }, statusCode: 403);
             }
             foreach (var r in rules)
@@ -579,7 +606,7 @@ public static class SettingsApi
         {
             var space = http.Space();
             if (users.ById(space.User.Id) is not { } u) return Results.NotFound();
-            if (Auth.Confirm(users, u, body.Password, body.Code, needCode: true) is { } refused) return refused;
+            if (Auth.Confirm(users, u, body.Password, body.Code, needCode: true, http) is { } refused) return refused;
             var password = AppPasswords.Create(space.Db, body.Name);
             SecurityNotice.Important(http.RequestServices, u.Id, $"neues App-Passwort „{body.Name}“");
             return Results.Ok(new { password });
@@ -635,7 +662,7 @@ public static class SettingsApi
         {
             var space = http.Space();
             if (users.ById(space.User.Id) is not { } u) return Results.NotFound();
-            if (Auth.Confirm(users, u, body.Password, body.Code, needCode: true) is { } refused) return refused;
+            if (Auth.Confirm(users, u, body.Password, body.Code, needCode: true, http) is { } refused) return refused;
             var origin = $"{http.Request.Scheme}://{http.Request.Host}";
             var url = $"{origin}/dav/files/{Uri.EscapeDataString(space.User.Login)}/{space.Settings.Notizi.Root.Trim('/')}/";
             // Jeder Aufruf: ein weiterer Zugang (ein Geraet je QR-Code); bestehende bleiben gueltig, entfernen unter "Geraete & Sync"

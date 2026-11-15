@@ -66,8 +66,8 @@ export function SpamRulesAdmin() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 820 }}>
       <AdminHeading>{t('Zusätzliche Erkennungsregeln')}</AdminHeading>
-      <Text>{t('Für Bastler: eigene reguläre Ausdrücke (.NET) auf Betreff, Absender, Kopfzeilen, Text oder Links. Ein Treffer geht als Merkmal in den lernenden Filter – wie viel er zählt, lernt der Filter aus den Mails jedes Benutzers. Auf Wunsch macht eine Regel die Mail auch direkt „unsicher“ oder zu Junk. Sichere Absender gehen immer vor.')}</Text>
-      <Text size={200} className={s.muted}>{t('Jeder Ausdruck wird beim Speichern geprüft; ungültige oder zu langsame lassen sich nicht speichern. Braucht eine Regel bei einer Mail länger als 0,1 Sekunden, wird sie dort übersprungen. Mitgeliefert sind nur einige eigene Startregeln. Regeln aus anderen Quellen (etwa SpamAssassin) lassen sich einfügen – auf deren Lizenz achtest du dann selbst.')}</Text>
+      <Text>{t('Eigene reguläre Ausdrücke (.NET) auf Betreff, Absender, Kopfzeilen, Text oder Links. Ein Treffer geht als Merkmal in den lernenden Filter – wie viel er zählt, lernt der Filter aus den Mails jedes Benutzers. Auf Wunsch macht eine Regel die Mail auch direkt „unsicher“ oder zu Junk. Sichere Absender gehen immer vor.')}</Text>
+      <Text size={200} className={s.muted}>{t('Jeder Ausdruck wird beim Speichern geprüft; ungültige oder zu langsame lassen sich nicht speichern. Braucht eine Regel bei einer Mail länger als 0,1 Sekunden, wird sie dort übersprungen. Mitgeliefert sind nur einige eigene Startregeln. Regeln aus anderen Quellen (etwa SpamAssassin) lassen sich einfügen; für deren Lizenz ist der Administrator verantwortlich.')}</Text>
       <Switch label={t('Zusätzliche Erkennungsregeln verwenden')} checked={state.on} onChange={(_, d) => save(d.checked, state.rules)} />
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <Button icon={<Add20Regular />} onClick={() => setEdit({ rule: fresh, index: -1 })}>{t('Regel hinzufügen')}</Button>

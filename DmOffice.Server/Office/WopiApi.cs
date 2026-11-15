@@ -79,6 +79,18 @@ public static class WopiApi
                && (root.FileId == file.FileId || root.IsDir && (root.Path.Length == 0 || file.Path.StartsWith(root.Path + "/", StringComparison.Ordinal)));
     }
 
+    /// <summary>Weist der Office-Server seine Abrufe nach? WOPI: Proof-Keys in der Discovery; ONLYOFFICE-Docs-API: JWT-Geheimnis.
+    /// Nur dann geht der Inhalt nur gezeigter Dateien und begrenzter Links an ihn - sonst liesse er sich mit dem Token
+    /// aus dem Browser abrufen.</summary>
+    internal static bool Attested(Discovery d, ServerConfig config) =>
+        d.Native ? !string.IsNullOrEmpty(config.OfficeJwtSecret()) : d.ProofKey != null;
+
+    /// <summary>Nur gezeigt oder oeffentlicher Link mit Abrufgrenze: Inhalt nur an einen nachgewiesenen Office-Server.</summary>
+    internal static bool Restricted(UserDb db, WopiGrant grant) =>
+        grant.X || grant.L != null && Links.Get(db, grant.L)?.MaxDownloads is > 0;
+
+    internal const string NotAttested = "Nur gezeigte Dateien und Links mit Abrufgrenze lassen sich mit diesem Office-Server nicht öffnen.";
+
     /// <summary>X-WOPI-Proof pruefen, wenn der Office-Server Schluessel veroeffentlicht. Adresse: die WOPISrc-Basis aus dem Token
     /// plus Pfad und Abfrage, wie sie ankommen - so stoeren Proxys nicht, die Host oder Schema umschreiben.</summary>
     private static async Task<bool> ProofOk(HttpContext http, WopiGrant grant, string token)
@@ -169,12 +181,13 @@ public static class WopiApi
          d.View.Keys.Where(e => Discovery.OfficeExtensions.Contains(e) || e == "pdf").Order().ToArray());
 
     /// <summary>Endungen, die die oeffentliche Seite im Office-Betrachter zeigen kann (leer ohne Office-Server).</summary>
-    public static async Task<string[]> PublicExtensions(HttpContext http)
+    public static async Task<string[]> PublicExtensions(HttpContext http, FileLink? link = null)
     {
         var discovery = http.RequestServices.GetRequiredService<OfficeDiscovery>();
         if (!discovery.Configured) return [];
         var d = await discovery.Get(http.RequestAborted);
-        return d == null ? [] : d.View.Keys.Where(Discovery.OfficeExtensions.Contains).Order().ToArray();
+        if (d == null || link?.MaxDownloads is > 0 && !Attested(d, http.RequestServices.GetRequiredService<ServerConfig>())) return [];
+        return d.View.Keys.Where(Discovery.OfficeExtensions.Contains).Order().ToArray();
     }
 
     /// <summary>Ansehen ueber einen oeffentlichen Link (nur "read", nur Office-Arten). Fuer PublicApi.</summary>
@@ -184,6 +197,7 @@ public static class WopiApi
         var ext = Ext(f.Name);
         if (d == null || f.IsDir || !Discovery.OfficeExtensions.Contains(ext) || !d.View.ContainsKey(ext))
             return Status(404, "Hier gibt es keine Office-Ansicht.");
+        if (link.MaxDownloads is > 0 && !Attested(d, http.RequestServices.GetRequiredService<ServerConfig>())) return Status(403, NotAttested);
         if (take() is { } used) return used;
         var grant = new WopiGrant(space.User.Id, f.FileId, false, BaseOf(http), OriginOf(http), space.User.Stamp, link.Id, "Gast");
         return Results.Ok(Session(http, d, grant, f, false));
@@ -215,7 +229,7 @@ public static class WopiApi
                 ["UserCanWrite"] = t.Grant.W,
                 ["ReadOnly"] = !t.Grant.W,
                 // Tresor: kein „Speichern unter“ - neue Dateien im Tresor entstehen nur über dmOffice
-                ["UserCanNotWriteRelative"] = !t.Grant.W || t.Grant.T,
+                ["UserCanNotWriteRelative"] = !t.Grant.W || t.Grant.T || !MayWriteBeside(http.RequestServices, t),
                 ["UserCanRename"] = false,
                 ["SupportsRename"] = false,
                 ["SupportsLocks"] = true,
@@ -238,6 +252,9 @@ public static class WopiApi
             var (t, error) = await Resolve(http, id);
             if (t == null) return error!;
             if (t.File is not { } f) return Closed();
+            // Nur gezeigt bzw. begrenzter Link: die Datei nur gegen gueltigen Proof (ProofOk hat ihn bei vorhandenem Schluessel geprueft)
+            if (Restricted(t.Db, t.Grant) && await http.RequestServices.GetRequiredService<OfficeDiscovery>().Get(http.RequestAborted) is not { ProofKey: not null })
+                return Status(403, NotAttested);
             http.Response.Headers["X-WOPI-ItemVersion"] = f.Etag.Trim('"');
             http.Response.Headers.CacheControl = "no-store";
             return Results.Stream(t.Grant.T ? TresorOffice.OpenRead(t.Grant.U, t.Grant.F) : FileStore.OpenRead(t.Db, f.Path), "application/octet-stream");
@@ -349,6 +366,7 @@ public static class WopiApi
             if (d == null) return Status(503, discovery.Configured ? "Der Office-Server ist gerade nicht erreichbar." : "Kein Office-Server eingestellt.");
             var ext = Ext(f.Name);
             if (!Viewable(ext, d)) return Status(400, "Diese Dateiart kann der Office-Server nicht öffnen.");
+            if (loc.ShowOnly && !Attested(d, http.RequestServices.GetRequiredService<ServerConfig>())) return Status(403, NotAttested);
             var write = body.View != true && Editable(ext, d) && loc.CanWrite;
             // In einem geteilten Ordner arbeitet der Office-Server in der Datei des Besitzers; V ist das Mitglied
             var grant = new WopiGrant(loc.Space.User.Id, f.FileId, write, BaseOf(http), OriginOf(http), space.User.Stamp, null, space.User.DisplayName,
@@ -479,6 +497,15 @@ public static class WopiApi
         catch (Exception) { return s; }
     }
 
+    /// <summary>Darf in den Ordner der Datei geschrieben werden? Eigene Datei: ja. Mit mir geteilt: nur, wenn ein geteilter Ordner
+    /// mit Bearbeitungsrecht ihn enthält - eine einzeln geteilte Datei gibt ihren Ordner nicht frei.</summary>
+    private static bool MayWriteBeside(IServiceProvider services, Target t)
+    {
+        if (t.Grant.V == null) return t.Grant.L == null;
+        if (t.File == null || FileStore.Parent(t.File.Path) is not { } dir || FileStore.Get(t.Db, dir) is not { IsDir: true } folder) return false;
+        return SharedFiles.Allows(services, t.Grant.V, t.Grant.U, folder).Write;
+    }
+
     /// <summary>PutRelativeFile ("Speichern unter", Export): neue Datei neben der alten, Antwort mit eigenem Token dafuer.</summary>
     private static async Task<IResult> PutRelative(HttpContext http, Target t)
     {
@@ -487,6 +514,8 @@ public static class WopiApi
         var relative = h["X-WOPI-RelativeTarget"].ToString();
         if (suggested.Length > 0 == relative.Length > 0) return Status(501);
         var dir = FileStore.Parent(t.File.Path)!;
+        // Neue Datei im Ordner daneben: braucht dort Schreibrecht (wie beim Speichern selbst)
+        if (!MayWriteBeside(http.RequestServices, t)) return Status(401);
         string name;
         if (suggested.Length > 0)
         {

@@ -82,7 +82,11 @@ public static partial class MailHtml
             }
             else if (el.LocalName == "img")
             {
-                var src = (el.GetAttribute("src") ?? "").Trim();
+                // Adresse so lesen, wie der Browser sie liest: Tab, CR und LF fallen überall weg,
+                // Steuerzeichen und Leerzeichen am Anfang und Ende ebenso
+                var raw = el.GetAttribute("src");
+                var src = NormalizeUrl(raw);
+                if (raw != null && raw != src) el.SetAttribute("src", src);
                 if (lockAll && src.Length > 0)
                 {
                     // Junk: kein Bild, auch kein eingebettetes - ein Bild des Absenders ist oft der eigentliche Koeder
@@ -125,6 +129,14 @@ public static partial class MailHtml
         return new Result(clean, remote);
     }
 
+    /// <summary>URL wie im Browser vor dem Auswerten: Tab, CR, LF entfernt, Steuer- und Leerzeichen an den Rändern abgeschnitten.</summary>
+    internal static string NormalizeUrl(string? url)
+    {
+        if (string.IsNullOrEmpty(url)) return "";
+        var s = url.Replace("\t", "").Replace("\r", "").Replace("\n", "");
+        return s.Trim().Trim(Enumerable.Range(0, 0x21).Select(c => (char)c).ToArray());
+    }
+
     /// <summary>Text aus HTML - fuer die Textfassung einer gesendeten Mail.</summary>
     public static string ToText(string html)
     {
@@ -143,6 +155,11 @@ public static partial class MailHtml
         enc = LinkRx().Replace(enc, m => $"<a href=\"{m.Value}\">{m.Value}</a>");
         return "<div style=\"white-space:pre-wrap;font-family:inherit\">" + enc + "</div>";
     }
+
+    /// <summary>Klartext für eine ausgehende HTML-Mail: Zeilen mit &lt;br&gt;, Links anklickbar (etwa Bestätigungs- und Statuslinks).</summary>
+    public static string TextLines(string text) =>
+        LinkRx().Replace(string.Join("<br>", text.Replace("\r", "").Split('\n').Select(System.Net.WebUtility.HtmlEncode)),
+            m => $"<a href=\"{m.Value}\">{m.Value}</a>");
 
     [GeneratedRegex("(src\\s*=\\s*[\"']?)cid:([^\"'\\s>]+)", RegexOptions.IgnoreCase)]
     private static partial Regex CidRx();

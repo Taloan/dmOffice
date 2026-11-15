@@ -87,6 +87,23 @@ public class AlbumTests : IClassFixture<ChatFixture>
     }
 
     [Fact]
+    public async Task Systemordner_kommen_nicht_ins_Album()
+    {
+        var ben = _fx.As("ben");
+        var db = _fx.Space("ben").Db;
+        var media = DmOffice.Dav.FileStore.ReservedRoot + "/2026/11";
+        DmOffice.Dav.FileStore.EnsureDir(db, media);
+        DmOffice.Dav.FileStore.Put(db, media + "/tag.jpg", Jpeg(SKColors.Red), "image/jpeg");
+        await Upload(ben, "AlbSys", "frei.jpg", Jpeg(SKColors.Yellow));
+        var id = (await Json(await ben.PostAsJsonAsync("/api/gallery/albums", new { name = "Ohne System" }))).GetProperty("id").GetInt64();
+        Assert.Equal(1, (await Json(await ben.PostAsJsonAsync($"/api/gallery/albums/{id}/add", new { paths = new[] { media + "/tag.jpg", "AlbSys/frei.jpg" } }))).GetProperty("added").GetInt32());
+
+        // Ein Foto, das später in einen Systemordner wandert, verschwindet aus dem Album
+        DmOffice.Dav.FileStore.MoveOrCopy(db, "AlbSys/frei.jpg", media + "/frei.jpg", false, copy: false);
+        Assert.Empty((await Json(await ben.GetAsync($"/api/gallery/albums/{id}/items"))).GetProperty("items").EnumerateArray());
+    }
+
+    [Fact]
     public async Task Smart_Album_findet_nach_Filter_und_ist_fuer_Mitglieder_nur_zum_Ansehen()
     {
         var dora = _fx.As("dora");

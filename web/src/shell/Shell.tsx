@@ -6,12 +6,12 @@ import {
   bundleIcon, Grid24Filled, Grid24Regular, Mail24Filled, Mail24Regular, CalendarLtr24Filled, CalendarLtr24Regular, People24Filled, People24Regular,
   TaskListSquareLtr24Filled, TaskListSquareLtr24Regular, Note24Filled, Note24Regular, Folder24Filled, Folder24Regular, Image24Filled, Image24Regular,
   Settings24Regular, Settings24Filled, ShieldPersonRegular, ShieldPersonFilled, SignOut20Regular, LockClosed20Regular, WeatherMoon20Regular,
-  ArrowSync20Regular, CloudOff20Regular, Chat24Filled, Chat24Regular, MusicNote224Filled, MusicNote224Regular, DocumentBulletList24Filled, DocumentBulletList24Regular,
+  ArrowSync20Regular, CloudOff20Regular, MoreHorizontal24Regular, Chat24Filled, Chat24Regular, MusicNote224Filled, MusicNote224Regular, DocumentBulletList24Filled, DocumentBulletList24Regular,
 } from '@fluentui/react-icons'
 import { Component, lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { ZoneHint } from './ZoneHint'
 import { e2eForget } from '../e2e'
-import { api, featureOn, setUnlockHandler } from '../api'
+import { api, demoMode, featureOn, setUnlockHandler } from '../api'
 import { useApp } from '../App'
 import { t, tError } from '../i18n'
 import { brandLogo, storedTheme, storeTheme, ThemeChoice } from '../theme'
@@ -112,6 +112,8 @@ const useStyles = makeStyles({
   brand: { display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 600, fontSize: '16px', minWidth: '220px' },
   release: { fontWeight: 400, fontSize: '13px', color: tokens.colorNeutralForeground2, whiteSpace: 'nowrap', cursor: 'pointer' },
   spacer: { flex: 1 },
+  // Bereiche in der linken Leiste: füllen den Platz über Verwaltung und Einstellungen, der Rest steht hinter „…“
+  railTop: { flex: 1, minHeight: 0, width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', overflow: 'hidden' },
   topButton: { color: tokens.colorNeutralForeground2, minWidth: 'auto', ':hover': { color: tokens.colorNeutralForeground1, backgroundColor: tokens.colorNeutralBackground3Hover } },
   body: { flex: 1, display: 'flex', minHeight: 0 },
   rail: {
@@ -194,6 +196,27 @@ export function Shell() {
     updatePrefs({ moduleOrder: keys })
   }
   const mobile = useIsMobile()
+  // Wie viele Bereichsknöpfe (44 px + 4 px Abstand) in die Leiste passen; der Rest kommt ins Menü „…“
+  const railTop = useRef<HTMLDivElement>(null)
+  // Handy: Leiste unten rollt quer - an der Seite mit verborgenen Einträgen blendet ein Verlauf aus (Hinweis aufs Wischen)
+  const railNav = useRef<HTMLElement>(null)
+  const [railFade, setRailFade] = useState({ l: false, r: false })
+  const railEdges = () => {
+    const el = railNav.current
+    if (!el) return
+    const l = el.scrollLeft > 2, r = el.scrollLeft + el.clientWidth < el.scrollWidth - 2
+    setRailFade(f => f.l === l && f.r === r ? f : { l, r })
+  }
+  const [railSlots, setRailSlots] = useState(99)
+  useEffect(() => {
+    const el = railTop.current
+    if (!el || mobile) return
+    const measure = () => setRailSlots(Math.max(1, Math.floor((el.clientHeight + 4) / 48)))
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [mobile])
   const { me, notify } = useApp()
   const [module, setModule] = useState<Module>(currentModule())
   const [theme, setTheme] = useState<ThemeChoice>(storedTheme())
@@ -208,7 +231,31 @@ export function Shell() {
   const dmsInbox = usePoll(() => !moduleOn('dms') ? Promise.resolve({ count: 0 }) : api.get<{ count: number }>('/api/dms/inbox-count'), 60000, 'dmoffice:dmsstatus')?.count ?? 0
 
   useEffect(() => { sessionStorage.removeItem('dmoffice.reloaded') }, [])
+  useEffect(() => {
+    if (!mobile) { setRailFade({ l: false, r: false }); return }
+    const el = railNav.current
+    if (!el) return
+    railEdges()
+    const ro = new ResizeObserver(railEdges)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [mobile]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(installDialogBehaviour, [])
+  // Dateien aus dem Betriebssystem: Wo kein Bereich sie annimmt, öffnet der Browser sie sonst selbst und verlässt dmOffice.
+  // Die Bereiche haben vorher (React, Wurzelelement) entschieden; hier kommt nur an, was keiner angenommen hat.
+  useEffect(() => {
+    const files = (e: DragEvent) => !!e.dataTransfer?.types.includes('Files')
+    const native = (e: DragEvent) => e.target instanceof Element && !!e.target.closest('input, textarea, [contenteditable]:not([contenteditable="false"])')
+    const over = (e: DragEvent) => {
+      if (e.defaultPrevented || !files(e) || native(e)) return
+      e.preventDefault()
+      e.dataTransfer!.dropEffect = 'none'
+    }
+    const drop = (e: DragEvent) => { if (!e.defaultPrevented && files(e) && !(e.target instanceof HTMLInputElement)) e.preventDefault() }
+    window.addEventListener('dragover', over)
+    window.addEventListener('drop', drop)
+    return () => { window.removeEventListener('dragover', over); window.removeEventListener('drop', drop) }
+  }, [])
   // Audiothek ausgeschaltet (Verwaltung): nicht unsichtbar weiterspielen
   const audioQueued = useHasQueue()
   useEffect(() => { if (!me.audio && audioQueued) player.clear() }, [me.audio, audioQueued])
@@ -248,7 +295,7 @@ export function Shell() {
   const version = useVersion()
   // Klick auf die Versionsnummer: Version und Build in die Zwischenablage
   const copyVersion = () => {
-    const text = `v${version.release}${version.build ? ` (${t('Build')} ${version.build})` : ''}`
+    const text = `v${version.release}${version.extra.length ? ' + ' + version.extra.join(', ') : ''}${version.build ? ` (${t('Build')} ${version.build})` : ''}`
     copyText(text).then(ok => ok && notify(t('Version kopiert'), text))
   }
   // Ohne Mailkonto kein Mail-Bereich (Konten legt man in den Einstellungen an); solange der Stand fehlt, bleibt er sichtbar
@@ -270,12 +317,14 @@ export function Shell() {
   }
   const logout = async () => {
     e2eForget()
-    await api.post('/api/auth/logout')
+    const r = await api.post<{ redirect?: string | null }>('/api/auth/logout').catch(() => null)
     // Reste des Benutzers auf einem geteilten Rechner entfernen: Einstellungen, zuletzt geoeffnete Ordner usw.
     try {
       for (const store of [localStorage, sessionStorage])
         for (const k of Object.keys(store)) if (k.startsWith('dmoffice.')) store.removeItem(k)
     } catch { /* privat */ }
+    // Über OIDC angemeldet: auch beim Anbieter abmelden, der leitet danach zur Anmeldeseite zurück
+    if (r?.redirect) { location.href = r.redirect; return }
     location.hash = ''
     location.reload()
   }
@@ -292,12 +341,14 @@ export function Shell() {
           {version.release && (
             <Tooltip content={version.build ? `${t('Build')} ${version.build} – ${t('Klick kopiert die Version')}` : t('Klick kopiert die Version')} relationship="description">
               <span className={s.release} role="button" tabIndex={0} onClick={copyVersion}
-                onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') copyVersion() }}>v{version.release}</span>
+                onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') copyVersion() }}
+                title={version.extra.length ? t('Zusätzlich freigeschaltet: {list}', { list: version.extra.join(', ') }) : undefined}>v{version.release}{version.extra.length ? '+' : ''}</span>
             </Tooltip>
           )}
         </div>
         <div className={s.spacer} />
-        <StorageInfo mobile={mobile} />
+        {/* Demo: das Schild mittig in der Kopfzeile läge über der Speicheranzeige */}
+        {!demoMode.on && <StorageInfo mobile={mobile} />}
         <Tooltip content={!reachable ? t('Server nicht erreichbar') : syncing ? t('Wird synchronisiert …') : t('Jetzt synchronisieren')} relationship="label">
           <Button appearance="transparent" className={s.topButton}
             icon={!reachable ? <CloudOff20Regular style={{ color: tokens.colorPaletteRedForeground1 }} /> : syncing ? <Spinner size="extra-tiny" /> : <ArrowSync20Regular />}
@@ -319,7 +370,7 @@ export function Shell() {
             </MenuList>
           </MenuPopover>
         </Menu>
-        <HelpMenu className={s.topButton} release={version.release} build={version.build} />
+        <HelpMenu className={s.topButton} release={version.release} build={version.build} extra={version.extra} />
         <Menu>
           <MenuTrigger disableButtonEnhancement>
             <Button appearance="transparent" className={s.topButton} aria-label={t('Konto')}>
@@ -342,8 +393,19 @@ export function Shell() {
       <div className={mergeClasses(s.body, mobile && s.bodyMobile)}>
         {/* Audiothek: laufender Titel - auf dem Handy über der Leiste mit den Bereichen */}
         {mobile && me.audio && <PlayerBar mobile />}
-        <nav className={mergeClasses(s.rail, mobile && s.railMobile)}>
-          {ordered.filter(m => ((m.key !== 'files' && m.key !== 'gallery' && m.key !== 'dms') || me.files !== false) && (m.key !== 'mail' || hasMail) && (m.key !== 'audio' || !!me.audio) && moduleOn(m.key)).map(m => (
+        <nav ref={railNav} className={mergeClasses(s.rail, mobile && s.railMobile)} onScroll={mobile ? railEdges : undefined}
+          style={mobile && (railFade.l || railFade.r) ? (m => ({ maskImage: m, WebkitMaskImage: m }))(
+            `linear-gradient(to right, ${railFade.l ? 'transparent 0, #000 32px' : '#000 0'}, ${railFade.r ? '#000 calc(100% - 32px), transparent 100%' : '#000 100%'})`) : undefined}>
+          {/* Bereiche: auf dem PC nur so viele, wie Platz haben - Verwaltung und Einstellungen bleiben unten stehen */}
+          {(() => {
+            const list = ordered.filter(m => ((m.key !== 'files' && m.key !== 'gallery' && m.key !== 'dms') || me.files !== false) && (m.key !== 'mail' || hasMail) && (m.key !== 'audio' || !!me.audio) && moduleOn(m.key))
+            const overflow = !mobile && list.length > railSlots
+            const visible = overflow ? list.slice(0, railSlots - 1) : list
+            const rest = overflow ? list.slice(railSlots - 1) : []
+            const count = (k: string) => k === 'mail' ? mailUnread : k === 'chat' ? (chatStatus?.unread ?? 0) : k === 'dms' ? dmsInbox : 0
+            const restCount = rest.reduce((n, m) => n + count(m.key), 0)
+            const restActive = rest.some(m => m.key === module)
+            const buttons = visible.map(m => (
             <Tooltip key={m.key} content={m.label} relationship="label" positioning={mobile ? 'above' : 'after'}>
               {/* Zaehler neben dem Knopf, nicht darin - sonst wird der Knopf breiter als die Leiste */}
               <div style={{ position: 'relative', boxShadow: dropAt === m.key && dragMod && dragMod !== m.key ? `0 -3px 0 ${tokens.colorBrandStroke1}` : undefined }}
@@ -359,10 +421,32 @@ export function Shell() {
                 {m.key === 'dms' && dmsInbox > 0 && <CounterBadge className={s.badge} count={dmsInbox} size="small" overflowCount={999} />}
               </div>
             </Tooltip>
-          ))}
-          {/* Handy: Lesezeichen und Verwaltung passen nicht in die Leiste unten - Verwaltung steht im Kontomenue */}
-          {!mobile && <Bookmarks />}
-          {!mobile && <div className={s.spacer} />}
+          ))
+            const more = rest.length > 0 && (
+              <Menu positioning="after-bottom">
+                <MenuTrigger disableButtonEnhancement>
+                  <Tooltip content={t('Weitere Bereiche')} relationship="label" positioning="after">
+                    <div style={{ position: 'relative' }}>
+                      <Button appearance="subtle" className={mergeClasses(s.railButton, restActive && s.railActive, s.tinted)} icon={<MoreHorizontal24Regular />}
+                        aria-label={t('Weitere Bereiche')} aria-current={restActive ? 'page' : undefined} />
+                      {restCount > 0 && <CounterBadge className={s.badge} count={restCount} size="small" overflowCount={999} />}
+                    </div>
+                  </Tooltip>
+                </MenuTrigger>
+                <MenuPopover>
+                  <MenuList>
+                    {rest.map(m => (
+                      <MenuItem key={m.key} icon={<m.icon />} onClick={() => go(m.key)} secondaryContent={count(m.key) > 0 ? String(count(m.key)) : undefined}
+                        style={m.key === module ? { fontWeight: 600 } : undefined}>{m.label}</MenuItem>
+                    ))}
+                  </MenuList>
+                </MenuPopover>
+              </Menu>
+            )
+            if (mobile) return buttons
+            // Handy: Lesezeichen und Verwaltung passen nicht in die Leiste unten - Verwaltung steht im Kontomenue
+            return <div ref={railTop} className={s.railTop}>{buttons}{more}{!overflow && <Bookmarks />}</div>
+          })()}
           {me.isAdmin && !mobile && (
             <Tooltip content={t('Verwaltung')} relationship="label" positioning="after">
               <Button appearance="subtle" className={mergeClasses(s.railButton, module === 'admin' && s.railActive, s.tinted)} icon={<AdminIcon />} onClick={() => go('admin')} aria-label={t('Verwaltung')} aria-current={module === 'admin' ? 'page' : undefined} />
@@ -385,10 +469,10 @@ export function Shell() {
             ['contacts', () => <ContactsView />],
             ['tasks', () => moduleOn('tasks') && <TasksView />],
             ['notes', () => moduleOn('notes') && <NotesView />],
-            ['gallery', () => me.files === false ? <NotAvailable text={t('Die Dateiablage ist für dein Konto nicht eingeschaltet.')} /> : moduleOn('gallery') && <FilesView key="gallery" gallery />],
-            ['files', () => me.files === false ? <NotAvailable text={t('Die Dateiablage ist für dein Konto nicht eingeschaltet.')} /> : <FilesView key="files" />],
-            ['audio', () => me.audio ? <AudioView /> : <NotAvailable text={t('Die Audiothek ist für dein Konto nicht eingeschaltet.')} />],
-            ['dms', () => me.files === false ? <NotAvailable text={t('Die Dateiablage ist für dein Konto nicht eingeschaltet.')} /> : moduleOn('dms') && <DmsView />],
+            ['gallery', () => me.files === false ? <NotAvailable text={t('Die Dateiablage ist für dein Konto nicht aktiviert.')} /> : moduleOn('gallery') && <FilesView key="gallery" gallery />],
+            ['files', () => me.files === false ? <NotAvailable text={t('Die Dateiablage ist für dein Konto nicht aktiviert.')} /> : <FilesView key="files" />],
+            ['audio', () => me.audio ? <AudioView /> : <NotAvailable text={t('Die Audiothek ist für dein Konto nicht aktiviert.')} />],
+            ['dms', () => me.files === false ? <NotAvailable text={t('Die Dateiablage ist für dein Konto nicht aktiviert.')} /> : moduleOn('dms') && <DmsView />],
             ['settings', () => <SettingsView />],
             ['admin', () => me.isAdmin ? <AdminView /> : <NotAvailable text={t('Die Verwaltung ist nur für Admins.')} />],
           ] as [Module, () => React.ReactNode][]).filter(([k]) => visited.includes(k)).map(([k, render]) => (

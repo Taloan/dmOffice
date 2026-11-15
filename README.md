@@ -4,15 +4,15 @@
 
 **Website: [dmoffice.de](https://dmoffice.de)** (in German) – features, guides and news · **Source code and issues:** here on GitHub
 
-> ## 🎉 New in 2.0
-> - **Chat** with conversations, groups, voice messages and push – and **Pukki**, the assistant: events, tasks, shopping list, meal plan, reminders and timers from plain sentences
-> - **Gallery:** timeline, filters, RAW, server folders, map, albums and share links, ratings and colour labels, **photo editing**
-> - **Music:** your own music folders with covers, search and playlists
-> - **Vault:** a separately encrypted area per person (own password or passkey) for files and notes
-> - **Documents (DMS)**, **Overview** start page, **external folders**, **core backup** to S3/WebDAV, **data export**, smarter **spam filter**, **Microsoft accounts**
+> ## 🎉 New in 2.1
+> - **Mail:** OpenPGP signatures, catch-all aliases on your own domain, timed removal, default mailbox, ribbon tab “Message” when composing, moving between mailboxes, optional automatic newsletter unsubscribe
+> - **Calendar:** search events without a time limit
+> - **Files and gallery:** categories and tags, SFTP folders, duplicates from storage and gallery folders stacked, “Save to storage” for photos from gallery folders
+> - **DMS:** subfolder names from sources, “Apply and close”, amount, editing in the list, drag to year or month, filing check and AI check
+> - **Sign-in via OIDC** (OpenID Connect), optional **virus scanning with ClamAV**, **SFTP** as storage target, `restore` command
 > - Security audit performed
 >
-> **Update the server first, then the app.** [Release notes](https://github.com/Taloan/dmOffice/releases/tag/v2.0.2) · [Download the Android app](https://github.com/Taloan/dmOffice/releases/latest/download/dmOffice.apk)
+> **Update the server first, then the app.** [Release notes](https://github.com/Taloan/dmOffice/releases/tag/v2.1.0) · [Download the Android app](https://github.com/Taloan/dmOffice/releases/latest/download/dmOffice.apk)
 
 A self-hosted office suite in the browser: mail, calendar, contacts, tasks, notes and files – plus a server of its own. Everything lives in one container, with one encrypted database per user.
 
@@ -50,11 +50,13 @@ DmOffice.Server/        ASP.NET Core (net10.0) – API, background services, DAV
   Office/               WOPI and ONLYOFFICE integration for editing in the browser
   Search/               full-text index and text recognition (OCR)
 web/                    React + Fluent UI 9, FullCalendar
+apps/mobile/            Android app (Kotlin, Jetpack Compose)
 vendor/Notizi.Core/     copy from notizi – tools/notizi-core-holen.ps1 updates it
 DmOffice.Tests/         tests, including notizi as a second device over HTTP
 unraid/dmoffice.xml     Unraid template (Community Applications), icon dmoffice.png
 ca_profile.xml          Community Applications profile
 .github/workflows/      builds the image to ghcr.io/taloan/dmoffice and the Android APK
+.gitea/workflows/       builds the image into the registry of a self-hosted Gitea
 ```
 
 ### Configuration
@@ -70,7 +72,7 @@ dmOffice is configured with environment variables. Only the master key is really
 | `DMOFFICE_TRUSTED_PROXIES` | Optional: comma-separated networks (CIDR) whose `X-Forwarded-*` headers are trusted, e.g. `203.0.113.0/24,2001:db8::/32`. Default: loopback and private networks |
 | `DMOFFICE_ANON_LIMIT` | Optional: rising limit for requests **without** login, per address (IPv6 per /64). Default: 300 at once, then 240 per minute; whoever exceeds it is blocked for 30 s, and every further violation doubles the block (up to 1 hour). Logged-in requests are never limited. A number sets the requests per minute, `off` turns the limit off |
 | `DMOFFICE_INDEX_THREADS` | Optional: parallelism of the full-text indexer and text recognition (1–8). Default 1, or 2 with four or more cores |
-| `DMOFFICE_FCM_CREDENTIALS` | Optional: path to a Firebase service-account key for push notifications to the Android app (default `<data>/keys/fcm.json`). |
+| `DMOFFICE_FCM_CREDENTIALS` | Optional: path to a Firebase service-account key for push notifications to the Android app (default `<data>/keys/fcm.json`). See [apps/mobile/README.md](apps/mobile/README.md) |
 | `DMOFFICE_DAV_LOG` | `1` logs CalDAV/CardDAV requests for troubleshooting (not the file storage, no passwords) |
 | `TZ` | Time zone of the container (logs) |
 
@@ -106,6 +108,16 @@ GitHub Actions builds the image on every push to `master` as `ghcr.io/taloan/dmo
 
 With plain Docker, `compose.yaml` does the same: put `DMOFFICE_MASTER_KEY` in a `.env` file and run `docker compose up -d`.
 
+### Image from your own Gitea
+
+`.gitea/workflows/docker.yml` builds the same image into the container registry of a Gitea on the same server. Docker pulls it via `127.0.0.1`, because a registry without https is only accepted on localhost.
+
+1. **Repository** – create it in Gitea and enable Actions (*Settings* → *Actions*).
+2. **Runner** – an `act_runner` with the label `ubuntu-latest:docker://docker:cli` and the host's Docker socket.
+3. **Token** – in the repository under *Settings* → *Actions* → *Secrets* create `REGISTRY_TOKEN` (an access token with `write:package`).
+4. **Build** – push to `master` or *Actions* → `docker` → *Run*. The package `dmoffice` then appears under *Packages*.
+5. **Template** – as above, but enter `127.0.0.1:<gitea-port>/<owner>/dmoffice:latest` as *Repository*.
+
 ### Reachable from outside
 
 Phones on the move and the Windows Explorer need HTTPS. The easiest way is your existing reverse proxy (Nginx Proxy Manager, SWAG, Traefik) in front of dmOffice's port. dmOffice evaluates `X-Forwarded-Proto` and `X-Forwarded-Host`, so the addresses under *Settings* → *Devices & sync* are correct. For automatic discovery dmOffice redirects `/.well-known/caldav` and `/.well-known/carddav` itself.
@@ -116,7 +128,7 @@ dmOffice is an installable web app (PWA): on Windows, macOS, Linux, Android and 
 
 ### Android app
 
-The native Android app (Android 8 and newer) is published as a signed APK in the [GitHub releases](https://github.com/Taloan/dmOffice/releases) (`dmOffice.apk`) and updates itself from there. In dmOffice, *Settings* → *Account* → *Devices & sync* → *Pair phone app* shows a QR code that sets up the app.
+The native Android app (Android 8 and newer) is published as a signed APK in the [GitHub releases](https://github.com/Taloan/dmOffice/releases) (`dmOffice.apk`) and updates itself from there. In dmOffice, *Settings* → *Account* → *Devices & sync* → *Pair phone app* shows a QR code that sets up the app. Details: [apps/mobile/README.md](apps/mobile/README.md).
 
 ## Outlook.com, Hotmail and Live
 
@@ -157,13 +169,15 @@ The Nextcloud desktop and mobile clients work against `/remote.php/dav/` and `/r
 | Sharing file folders | [docs/geteilte-ordner.md](docs/geteilte-ordner.md) | [docs/geteilte-ordner.de.md](docs/geteilte-ordner.de.md) |
 | External folders | [docs/externe-ordner.md](docs/externe-ordner.md) | [docs/externe-ordner.de.md](docs/externe-ordner.de.md) |
 | Storage Extender and core backup | [docs/speicher-und-sicherung.md](docs/speicher-und-sicherung.md) | [docs/speicher-und-sicherung.de.md](docs/speicher-und-sicherung.de.md) |
-| Restoring and restore-tool | [docs/wiederherstellen.md](docs/wiederherstellen.md) | [docs/wiederherstellen.de.md](docs/wiederherstellen.de.md) |
+| Restoring and restore-tool | [docs/restore.md](docs/restore.md) | [docs/restore.de.md](docs/restore.de.md) |
 | Checksums and duplicates | [docs/duplikate.md](docs/duplikate.md) | [docs/duplikate.de.md](docs/duplikate.de.md) |
+| Catch-all aliases | [docs/catchall-aliase.md](docs/catchall-aliase.md) | [docs/catchall-aliase.de.md](docs/catchall-aliase.de.md) |
 | Nextcloud clients | [docs/nextcloud-clients.md](docs/nextcloud-clients.md) | [docs/nextcloud-clients.de.md](docs/nextcloud-clients.de.md) |
 | Connecting notizi | [docs/notizi-verbinden.md](docs/notizi-verbinden.md) | [docs/notizi-verbinden.de.md](docs/notizi-verbinden.de.md) |
 | Web push | [docs/web-push.md](docs/web-push.md) | [docs/web-push.de.md](docs/web-push.de.md) |
 | Photos: info, location, editing | [docs/galerie-fotos.md](docs/galerie-fotos.md) | [docs/galerie-fotos.de.md](docs/galerie-fotos.de.md) |
 | Music library | [docs/audiothek.md](docs/audiothek.md) | [docs/audiothek.de.md](docs/audiothek.de.md) |
+| Android app | [apps/mobile/README.md](apps/mobile/README.md) | [apps/mobile/README.de.md](apps/mobile/README.de.md) |
 
 ## Development
 

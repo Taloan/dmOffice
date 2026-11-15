@@ -54,6 +54,7 @@ function storeCols(v: { cols: ArcColPref[]; name?: number }) { try { localStorag
 const useStyles = makeStyles({
   root: { flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0 },
   head: { display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 16px', flexWrap: 'wrap' },
+  crumbs: { flex: 1, minWidth: '120px', overflowX: 'auto', scrollbarWidth: 'none', '::-webkit-scrollbar': { display: 'none' } },
   bars: { display: 'flex', flexDirection: 'column', gap: '6px', padding: '0 16px 6px' },
   list: { flex: 1, overflow: 'auto', padding: '0 16px 16px', outline: 'none' },
   drop: { outline: `2px dashed ${tokens.colorBrandStroke1}`, outlineOffset: '-6px' },
@@ -267,7 +268,9 @@ export function ArchiveView({ file, dir, onDir, onLeave, onPending }: {
   // ---------------- Darstellung ----------------
   const folders = parentOf(file) ? parentOf(file).split('/') : []
   const inner = dir ? dir.split('/') : []
+  // Lange Pfade rollen; der aktuelle Ort bleibt rechts sichtbar (wie in Dateien)
   const crumbs = (
+    <div className={s.crumbs} ref={el => { if (el) el.scrollLeft = el.scrollWidth }}>
     <Breadcrumb size="small" aria-label={t('Pfad')}>
       <BreadcrumbItem><BreadcrumbButton onClick={() => onLeave('')}>{t('Meine Dateien')}</BreadcrumbButton></BreadcrumbItem>
       {folders.map((p, n) => (
@@ -285,6 +288,7 @@ export function ArchiveView({ file, dir, onDir, onLeave, onPending }: {
         </span>
       ))}
     </Breadcrumb>
+    </div>
   )
 
   if (error && !data) return (
@@ -413,7 +417,7 @@ export function ArchiveView({ file, dir, onDir, onLeave, onPending }: {
       </div>
 
       {/* Spalten wählen (Rechtsklick auf die Kopfzeile) */}
-      {colMenu && <Menu key={`${colMenu.x},${colMenu.y}`} open onOpenChange={(_, d) => { if (!d.open) setColMenu(null) }} positioning={{ target: at(colMenu), position: 'below', align: 'start', offset: 2 }}>
+      {colMenu && <Menu key={`${colMenu.x},${colMenu.y}`} open onOpenChange={(_, d) => { if (!d.open) setColMenu(null) }} positioning={{ autoSize: 'height', target: at(colMenu), position: 'below', align: 'start', offset: 2 }}>
         <MenuPopover>
           <MenuList checkedValues={{ cols: cfg.cols.map(c => c.key) }}>
             {(Object.keys(ARC_COLS) as ArcCol[]).map(k => (

@@ -3,14 +3,14 @@
 // das Cookie des Tresors ankommt.
 import {
   Button, Checkbox, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Field, FluentProvider, Input, Link,
-  MessageBar, MessageBarBody, Text, tokens,
+  Text, tokens,
 } from '@fluentui/react-components'
 import { LockClosed20Regular } from '@fluentui/react-icons'
 import { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { api } from '../api'
 import { t } from '../i18n'
-import { darkTheme, lightTheme, storedTheme } from '../theme'
+import { activeTheme, storedTheme } from '../theme'
 
 export interface TresorDevice { id: string; name: string; at: string; used: string; app: boolean; mine: boolean }
 export interface TresorState {
@@ -163,7 +163,7 @@ export async function addTresorPasskey(user: string, login: string) {
   if (!cred) return false
   let first = prfOf(cred)?.results?.first
   if (!first) {
-    if (prfOf(cred)?.enabled === false || !prfOf(cred)) throw new Error(t('Dieser Passkey kann den Tresor nicht öffnen: er liefert keinen Schlüssel (WebAuthn-Erweiterung PRF). Windows Hello in einer aktuellen Version, Passkeys von Google oder Apple und viele Sicherheitsschlüssel können das.'))
+    if (prfOf(cred)?.enabled === false || !prfOf(cred)) throw new Error(t('Dieser Passkey kann den Tresor nicht öffnen, weil er keinen Schlüssel liefert (WebAuthn-Erweiterung PRF).'))
     // Manche Passkeys liefern den Schlüssel erst beim ersten Anmelden
     const again = await navigator.credentials.get({
       publicKey: {
@@ -221,7 +221,7 @@ export function requestTresorOpen(): Promise<boolean> {
       const root = createRoot(host)
       const done = (r: boolean) => { root.unmount(); host.remove(); if (r) tresorChanged(); resolve(r) }
       const dark = storedTheme() === 'dark' || (storedTheme() === 'system' && matchMedia('(prefers-color-scheme: dark)').matches)
-      root.render(<FluentProvider theme={dark ? darkTheme : lightTheme}><OpenDialog st={st} done={done} /></FluentProvider>)
+      root.render(<FluentProvider theme={activeTheme(dark)}><OpenDialog st={st} done={done} /></FluentProvider>)
     })
   })().finally(() => { pending = null })
   return pending
@@ -262,9 +262,10 @@ function OpenDialog({ st, done }: { st: TresorState; done: (ok: boolean) => void
           <DialogBody>
             <DialogTitle action={null}><span style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}><LockClosed20Regular />{t('Tresor öffnen')}</span></DialogTitle>
             <DialogContent style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              {error && <MessageBar intent="error"><MessageBarBody>{error}</MessageBarBody></MessageBar>}
               {hasPasskey && <Button appearance="primary" onClick={passkey} disabled={busy}>{t('Mit Passkey oder Windows Hello öffnen')}</Button>}
-              <Field label={useCode ? t('Wiederherstellungscode oder Wiederherstellungsschlüssel') : t('Tresor-Passwort')}>
+              {/* Fehler an festem Platz unter dem Feld: die Zeile ist immer da, das Formular verschiebt sich nicht */}
+              <Field label={useCode ? t('Wiederherstellungscode oder Wiederherstellungsschlüssel') : t('Tresor-Passwort')}
+                validationState={error ? 'error' : 'none'} validationMessage={error || ' '}>
                 <Input type={useCode ? 'text' : 'password'} value={password} onChange={(_, d) => setPassword(d.value)} autoFocus={!hasPasskey} autoComplete="off" />
               </Field>
               {!useCode && never && canRemember() && <Checkbox checked={keep} onChange={(_, d) => setKeep(!!d.checked)}
@@ -303,11 +304,10 @@ function NewPasswordDialog({ codesLeft, done }: { codesLeft: number; done: () =>
             <DialogTitle>{t('Neues Tresor-Passwort festlegen?')}</DialogTitle>
             <DialogContent style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               <Text>{t('Der Tresor ist offen. Der Code ist damit verbraucht, es sind noch {n} Codes übrig.', { n: codesLeft })}</Text>
-              {error && <MessageBar intent="error"><MessageBarBody>{error}</MessageBarBody></MessageBar>}
               <Field label={t('Neues Tresor-Passwort')} hint={t('Mindestens 10 Zeichen, nicht dasselbe wie zum Anmelden.')}>
                 <Input type="password" value={pw} onChange={(_, d) => setPw(d.value)} autoFocus autoComplete="new-password" />
               </Field>
-              <Field label={t('Neues Tresor-Passwort wiederholen')}>
+              <Field label={t('Neues Tresor-Passwort wiederholen')} validationState={error ? 'error' : 'none'} validationMessage={error || ' '}>
                 <Input type="password" value={pw2} onChange={(_, d) => setPw2(d.value)} autoComplete="new-password" />
               </Field>
             </DialogContent>

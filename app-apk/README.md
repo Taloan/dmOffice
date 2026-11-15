@@ -1,2 +1,2 @@
-Optional: the Android app (dmOffice.apk and app.json) can be placed here before the Docker build.
-The server then offers it under /app/dmoffice.apk (see DmOffice.Server/AppDownload.cs). The folder is empty in the repository.
+Hier legt der Build-Ablauf (Gitea, Version 2) vor dem Docker-Build die Android-App ab: dmOffice.apk und app.json.
+Der Server liefert sie unter /app/dmoffice.apk aus (siehe DmOffice.Server/AppDownload.cs). Im Repository bleibt der Ordner leer.

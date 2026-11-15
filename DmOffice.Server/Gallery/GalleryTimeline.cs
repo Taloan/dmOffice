@@ -19,7 +19,7 @@ public static class GalleryTimeline
 {
     /// <summary>Ein Foto oder Video, wie die Galerie es zeigt. Id ist der Pfad in der Galerie (eigene Ablage oder „ext:…“).</summary>
     public sealed record Entry(string Id, string Name, long Size, string? Mime, long Modified, string Etag, long FileId, FileMeta.Row? Meta, string? Description,
-        bool Favorite = false, bool Link = false, bool People = false, string? Owner = null, bool? CanWrite = null, bool ShowOnly = false, List<Entry>? Stack = null)
+        bool Favorite = false, bool Link = false, bool People = false, string? Owner = null, bool? CanWrite = null, bool ShowOnly = false, List<Entry>? Stack = null, bool Dupe = false)
     {
         /// <summary>Aufnahmezeit, sonst Änderungszeit (ms, UTC) - danach sortiert und gruppiert die Galerie.</summary>
         public long Taken => Meta?.Taken ?? Modified;
@@ -55,8 +55,10 @@ public static class GalleryTimeline
         public byte[]? AllJson;
     }
 
-    private sealed class Index(string tag, DateTime at, List<Entry> items, Dictionary<string, string>? sources = null)
+    private sealed class Index(string tag, DateTime at, List<Entry> items, Dictionary<string, string>? sources = null, Dictionary<string, string>? hashes = null)
     {
+        /// <summary>Prüfsummen der Bilddaten möglicher Doppelter (Id → Prüfsumme), siehe <see cref="GalleryDupes"/>.</summary>
+        public Dictionary<string, string> Hashes { get; } = hashes ?? [];
         public string Tag { get; } = tag;
         /// <summary>Galerie-Ordner: Kennung → Name für die Gruppierung nach Quelle.</summary>
         public Dictionary<string, string> Sources { get; } = sources ?? [];
@@ -168,7 +170,9 @@ public static class GalleryTimeline
         {
             // Wer gewartet hat, nimmt, was der andere eben gebaut hat
             if (Cache.TryGetValue(key, out ix) && (ix.Tag == tag || DateTime.UtcNow - ix.At < Grace)) return ix;
-            ix = new Index(tag, DateTime.UtcNow, Build(http, space, config, mounts), SourceNames(space, config));
+            var items = Build(http, space, config, mounts);
+            ix = new Index(tag, DateTime.UtcNow, items, SourceNames(space, config),
+                Features.On(Features.GalleryDupes) ? GalleryDupes.Known(http, config, items) : null);
             Cache[key] = ix;
             return ix;
         }
@@ -245,6 +249,8 @@ public static class GalleryTimeline
         var types = ix.Items.GroupBy(e => e.Ext).ToDictionary(g => g.Key, g => g.Count());
         var list = rule == null ? byExt : byExt.Where(e => Passes(e, rule, zone, int.MaxValue)).ToList();
         if (q.Stack) list = StackPhotos(list);
+        // Doppelte (Ablage und Galerie-Ordner) zusätzlich stapeln, die Ablage oben
+        if (q.Stack && Features.On(Features.GalleryDupes)) list = GalleryDupes.Stack(list, ix.Hashes);
         Func<Entry, Entry, int> by = q.Sort switch
         {
             "name" => (a, b) => Names.Compare(a.Name, b.Name, NameOrder),
@@ -254,7 +260,8 @@ public static class GalleryTimeline
         };
         var dir = q.Desc ? -1 : 1;
         var sorted = list.ToList();
-        // Nach Quelle: die Gruppe zuerst (eigene, Galerie-Ordner nach Name, geteilte), darin wie gewählt
+        // Nach Quelle, Kategorie oder Tag: die Gruppe zuerst (Quelle: eigene, Galerie-Ordner nach Name, geteilte; Kategorie und Tag
+        // nach Name, „Ohne …“ zuletzt), darin wie gewählt
         groupOf ??= q.Group == "source" ? e => SourceOf(ix, e) : null;
         var source = groupOf != null ? sorted.Distinct().ToDictionary(e => e, e => groupOf(e), ReferenceEqualityComparer.Instance) : null;
         sorted.Sort((a, b) =>
@@ -289,7 +296,7 @@ public static class GalleryTimeline
         {
             sb.Append(e.Id).Append('|').Append(e.Etag).Append('|').Append(e.Meta).Append('|').Append(e.Description).Append(e.Favorite ? 'f' : '-').Append(e.Link ? 'l' : '-')
                 .Append(e.People ? 'p' : '-').Append(e.Owner).Append(e.CanWrite).Append(e.ShowOnly ? 's' : '-');
-            if (e.Stack != null) foreach (var x in e.Stack) sb.Append('+').Append(x.Id).Append(x.Etag);
+            if (e.Stack != null) foreach (var x in e.Stack) sb.Append('+').Append(x.Id).Append(x.Etag).Append(x.Dupe ? 'd' : '-');
             sb.Append('\n');
         }
         return "\"" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sb.ToString())))[..16].ToLowerInvariant() + "\"";
@@ -298,20 +305,58 @@ public static class GalleryTimeline
     public static Query ParseQuery(string? sort, bool? desc, bool? stack, string? ext, string? filter, string? group = null) => new(
         sort is "modified" or "name" or "size" ? sort : "taken", desc ?? true, stack ?? true,
         string.IsNullOrWhiteSpace(ext) ? "" : (ext.StartsWith('.') ? ext : "." + ext).ToLowerInvariant(),
-        AlbumApi.ParseRule(filter) is { } r && r.Sel.Any(s => s.Count > 0) ? filter : null, group is "source" ? group : "");
+        AlbumApi.ParseRule(filter) is { } r && r.Sel.Any(s => s.Count > 0) ? filter : null, group is "source" or "category" or "tag" ? group : "");
 
     public static async Task<View> ViewAsync(HttpContext http, ServerConfig config, Query q)
     {
         var ix = await IndexAsync(http, config);
+        if (q.Group is "category" or "tag") return TaxonomyView(http, ix, q);
         return ix.Views.GetOrAdd(q, _ => Compute(ix, q, http.Space().Zone));
+    }
+
+    /// <summary>
+    /// Nach Kategorie bzw. Tag (Kategorien und Tags der eigenen Dateien): je Foto die erste Kategorie (voller Name) bzw. der erste Tag;
+    /// ohne - auch Fotos aus Galerie-Ordnern und geteilte - unter „Ohne Kategorie“ bzw. „Ohne Tag“ zuletzt. Zugeordnet wird ohne neuen
+    /// Index: der Stand der Zuordnungen gehört zum Schlüssel der Ansicht.
+    /// </summary>
+    private static View TaxonomyView(HttpContext http, Index ix, Query q)
+    {
+        var space = http.Space();
+        var db = space.Db;
+        DmOffice.Dav.FileCategories.Ensure(db);
+        var cats = q.Group == "category";
+        var stamp = string.Join(":", db.Query(cats
+                ? "SELECT COUNT(*), COALESCE(MAX(added), 0), COALESCE(SUM(fileid), 0), (SELECT COUNT(*) FROM file_cats) FROM file_cat_items"
+                : "SELECT COUNT(*), COALESCE(SUM(fileid), 0), COALESCE(SUM(LENGTH(tag)), 0), 0 FROM file_tags",
+            r => new[] { r.GetInt64(0), r.GetInt64(1), r.GetInt64(2), r.GetInt64(3) })[0]);
+        return ix.Views.GetOrAdd(q with { Group = q.Group + "@" + stamp }, _ =>
+        {
+            var own = ix.Items.Where(e => e.FileId > 0 && e.Owner == null && !e.Id.StartsWith("ext:", StringComparison.Ordinal)).Select(e => e.FileId).Distinct().ToList();
+            var of = DmOffice.Dav.FileCategories.Of(db, own);
+            var all = cats ? DmOffice.Dav.FileCategories.All(db) : [];
+            var none = cats ? "Ohne Kategorie" : "Ohne Tag";
+            (string, string) GroupOf(Entry e)
+            {
+                if (e.FileId > 0 && e.Owner == null && !e.Id.StartsWith("ext:", StringComparison.Ordinal) && of.TryGetValue(e.FileId, out var x))
+                {
+                    var name = cats
+                        ? x.Cats.Select(c => DmOffice.Dav.FileCategories.FullName(all, c.Id)).Where(n => n.Length > 0).Order(StringComparer.CurrentCultureIgnoreCase).FirstOrDefault()
+                        : x.Tags.Order(StringComparer.CurrentCultureIgnoreCase).FirstOrDefault();
+                    if (!string.IsNullOrEmpty(name)) return ("0" + name.ToLowerInvariant(), name);
+                }
+                return ("1", none);
+            }
+            return Compute(ix, q, space.Zone, GroupOf);
+        });
     }
 
     // ---------------- Antworten ----------------
 
-    internal static void Write(Utf8JsonWriter w, Entry e)
+    internal static void Write(Utf8JsonWriter w, Entry e, string? dupeOf = null)
     {
         w.WriteStartObject();
         w.WriteString("i", e.Id);
+        if (dupeOf != null) w.WriteString("du", dupeOf);
         w.WriteNumber("s", e.Size);
         w.WriteNumber("m", e.Modified);
         if (e.Mime != null) w.WriteString("t", e.Mime);
@@ -344,6 +389,7 @@ public static class GalleryTimeline
         if (e.Owner != null) w.WriteString("ow", e.Owner);
         if (e.CanWrite is bool cw) w.WriteBoolean("cw", cw);
         if (e.ShowOnly) w.WriteNumber("so", 1);
+        if (e.Dupe) w.WriteNumber("dp", 1);
         if (e.Stack is { Count: > 0 })
         {
             w.WriteStartArray("st");
@@ -384,20 +430,32 @@ public static class GalleryTimeline
     });
 
     /// <summary>Alle Fotos auf einmal in derselben kurzen Form (Handy-App: ihr Raster zeichnet ohnehin nur Sichtbares).</summary>
-    public static byte[] AllJson(View v) => v.AllJson ??= Json(w =>
+    public static byte[] AllJson(View v) => v.AllJson ??= AllJson(v, null);
+
+    /// <summary>Wie <see cref="AllJson(View)"/>, Doppelte mit dem Verweis auf das Foto oben in ihrem Stapel („du“).</summary>
+    public static byte[] AllJson(View v, IReadOnlyDictionary<string, string>? dupeOf) => Json(w =>
     {
         w.WriteStartObject();
         w.WriteStartArray("items");
-        foreach (var e in v.Shown) Write(w, e);
+        foreach (var e in v.Shown) Write(w, e, dupeOf?.GetValueOrDefault(e.Id));
         w.WriteEndArray();
         w.WriteEndObject();
     });
+
+    /// <summary>Doppelte einer gestapelten Ansicht: Id → Id des Fotos oben im Stapel.</summary>
+    public static Dictionary<string, string> DupesOf(View stacked)
+    {
+        var map = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var e in stacked.Shown)
+            if (e.Stack != null) foreach (var x in e.Stack) if (x.Dupe) map[x.Id] = e.Id;
+        return map;
+    }
 
     /// <summary>
     /// Suche in der Galerie: eigene Ablage und Galerie-Ordner, nach Name, Titel, Stichwörtern, Beschreibung
     /// (ohne Groß/Klein und Akzente), neueste zuerst, höchstens <paramref name="limit"/>.
     /// </summary>
-    public static byte[] SearchJson(View v, string term, int limit = 5000)
+    public static byte[] SearchJson(View v, string term, int limit = 5000, HashSet<long>? labelled = null)
     {
         var cmp = CultureInfo.InvariantCulture.CompareInfo;
         const CompareOptions o = CompareOptions.IgnoreCase | CompareOptions.IgnoreNonSpace;
@@ -406,7 +464,8 @@ public static class GalleryTimeline
         {
             w.WriteStartObject();
             w.WriteStartArray("items");
-            foreach (var e in v.Shown.Where(e => Hit(e.Name) || Hit(e.Meta?.Title) || Hit(e.Meta?.Keywords) || Hit(e.Description)).Take(limit)) Write(w, e);
+            foreach (var e in v.Shown.Where(e => Hit(e.Name) || Hit(e.Meta?.Title) || Hit(e.Meta?.Keywords) || Hit(e.Description)
+                || (labelled != null && e.FileId > 0 && e.Owner == null && !e.Id.StartsWith("ext:", StringComparison.Ordinal) && labelled.Contains(e.FileId))).Take(limit)) Write(w, e);
             w.WriteEndArray();
             w.WriteEndObject();
         });

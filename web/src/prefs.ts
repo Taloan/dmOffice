@@ -10,6 +10,8 @@ export interface UiPrefs {
   zoneHintDone?: string                             // "Gerät|Konto": zu diesem Unterschied der Zeitzonen wurde schon gefragt
   calendarTasks?: boolean
   virtualClosed?: Record<string, boolean>         // Suchordner/Kategorien im Ordnerbereich eingeklappt
+  showUnified?: boolean                          // „Alle Posteingänge“ in der Ordnerleiste zeigen (Ordnerbereich)
+  searchFolders?: boolean                        // Suchordner in der Ordnerleiste zeigen (Ansicht)
   categoryFolders?: boolean                      // Kategorien als Ordner zeigen                         // Aufgaben mit Faelligkeit im Kalender zeigen                           // Sprache der Oberflaeche
   favorites?: string[]                              // "konto|ordnerpfad"
   folderColors?: Record<string, string>
@@ -23,12 +25,16 @@ export interface UiPrefs {
   pinFavorites?: boolean
   sortFolders?: 'alpha' | 'custom'
   // Nachrichtenliste und Vorschaufenster
-  textSize?: 'small' | 'medium' | 'large'
-  density?: 'compact' | 'normal' | 'roomy'
+  textSize?: 'small' | 'medium' | 'large'              // früher: Textgröße; jetzt nur noch Vorgabe für readZoom
+  readZoom?: number                                  // Zoom des Mailtexts im Lesebereich in Prozent (50-250), wie in Outlook unten rechts
+  density?: 'compact' | 'normal' | 'roomy'           // früher gemeinsam; jetzt Vorgabe für die beiden folgenden
+  folderDensity?: 'compact' | 'normal' | 'roomy'     // Abstände der Ordnerliste
+  listDensity?: 'compact' | 'normal' | 'roomy'       // Abstände der Nachrichtenliste
   showPreview?: boolean
   showAvatars?: boolean
   readingPane?: 'right' | 'bottom' | 'off'
   folderPane?: boolean
+  folderPaneMode?: 'normal' | 'min' | 'off'          // Ordnerbereich: normal, minimiert (schmale Leiste mit Favoriten, wie Outlook) oder aus
   todoBar?: ('calendar' | 'people' | 'tasks')[]
   ribbonTab?: 'start' | 'view'
   // Die anderen Bereiche: Reiter im Menueband und Navigationsbereich je Bereich ("calendar", "people", ...)
@@ -51,7 +57,7 @@ export interface UiPrefs {
   photoSort?: 'name' | 'modified' | 'size' | 'taken'
   photoSortDesc?: boolean
   /** Ansicht Fotos: nach Monat (Vorgabe), Tag oder Jahr gruppieren */
-  photoGroup?: 'none' | 'day' | 'month' | 'year' | 'source'
+  photoGroup?: 'none' | 'day' | 'month' | 'year' | 'source' | 'category' | 'tag'
   /** Galerie: Filterleiste wie in Lightroom offen, und welche Eigenschaft in ihren vier Spalten steht (PhotoFilter) */
   photoFilter?: boolean
   /** Galerie: JPG und RAW gleichen Namens als ein Stapel (Vorgabe an) */

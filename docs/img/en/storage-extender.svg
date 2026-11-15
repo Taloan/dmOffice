@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1600 1080" width="1600" height="1080" font-family="Segoe UI, Helvetica, Arial, sans-serif">
+  <defs>
+    <!-- Datei-Kacheln -->
+    <rect id="f1" width="40" height="15" rx="3" fill="#B98BEA"/>
+    <rect id="f2" width="40" height="15" rx="3" fill="#8FB7E8"/>
+    <rect id="f3" width="40" height="15" rx="3" fill="#F2B880"/>
+    <rect id="f4" width="40" height="15" rx="3" fill="#8CD3A8"/>
+    <rect id="fx" width="40" height="15" rx="3" fill="none" stroke="#B4BBC7" stroke-width="1.5" stroke-dasharray="4 3"/>
+    <!-- 16 Dateien, 4 x 4 -->
+    <g id="all">
+      <use href="#f1" x="0" y="0"/><use href="#f2" x="48" y="0"/><use href="#f3" x="96" y="0"/><use href="#f4" x="144" y="0"/>
+      <use href="#f2" x="0" y="22"/><use href="#f3" x="48" y="22"/><use href="#f4" x="96" y="22"/><use href="#f1" x="144" y="22"/>
+      <use href="#f3" x="0" y="44"/><use href="#f4" x="48" y="44"/><use href="#f1" x="96" y="44"/><use href="#f2" x="144" y="44"/>
+      <use href="#f4" x="0" y="66"/><use href="#f1" x="48" y="66"/><use href="#f2" x="96" y="66"/><use href="#f3" x="144" y="66"/>
+    </g>
+    <!-- Nur die zuletzt verwendeten (6), der Rest lokal bereinigt -->
+    <g id="some">
+      <use href="#f1" x="0" y="0"/><use href="#f2" x="48" y="0"/><use href="#f3" x="96" y="0"/><use href="#f4" x="144" y="0"/>
+      <use href="#f2" x="0" y="22"/><use href="#f3" x="48" y="22"/><use href="#fx" x="96" y="22"/><use href="#fx" x="144" y="22"/>
+      <use href="#fx" x="0" y="44"/><use href="#fx" x="48" y="44"/><use href="#fx" x="96" y="44"/><use href="#fx" x="144" y="44"/>
+      <use href="#fx" x="0" y="66"/><use href="#fx" x="48" y="66"/><use href="#fx" x="96" y="66"/><use href="#fx" x="144" y="66"/>
+    </g>
+    <!-- Server: lokaler Speicherpool -->
+    <g id="server">
+      <rect x="0" y="0" width="240" height="160" rx="14" fill="#EEF0F4" stroke="#8D96A6" stroke-width="2"/>
+      <rect x="0" y="0" width="240" height="30" rx="14" fill="#D9DDE4"/>
+      <rect x="0" y="16" width="240" height="14" fill="#D9DDE4"/>
+      <line x1="0" y1="30" x2="240" y2="30" stroke="#8D96A6" stroke-width="2"/>
+      <circle cx="218" cy="15" r="5" fill="#3BB273"/>
+    </g>
+    <!-- Wolke: Storage Extender -->
+    <g id="cloud">
+      <circle cx="75" cy="85" r="55" fill="#EDE3FB"/>
+      <circle cx="145" cy="58" r="68" fill="#EDE3FB"/>
+      <circle cx="210" cy="88" r="50" fill="#EDE3FB"/>
+      <rect x="10" y="80" width="255" height="95" rx="40" fill="#EDE3FB"/>
+    </g>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#7B1DD3"/>
+    </marker>
+  </defs>
+
+  <rect width="1600" height="1080" fill="#FFFFFF"/>
+
+  <!-- Kopf -->
+  <text x="60" y="88" font-size="48" font-weight="700" fill="#1F2430">Storage Extender</text>
+  <text x="60" y="128" font-size="22" fill="#5A6273">Only needed if the space on the server is not enough.</text>
+
+  <!-- Kernaussage -->
+  <rect x="60" y="160" width="1480" height="96" rx="14" fill="#F3EAFD" stroke="#7B1DD3" stroke-width="2"/>
+  <text x="90" y="200" font-size="24" font-weight="700" fill="#4A1182">When the Storage Extender is enabled, its size determines the total number of files you can store.</text>
+  <text x="90" y="235" font-size="21" fill="#4A1182">The local storage pool is not added to it. It holds an additional copy of the most recently used files.</text>
+
+  <!-- Links: genügend Platz -->
+  <rect x="60" y="285" width="730" height="455" rx="16" fill="#F7F8FA" stroke="#DDE1E7" stroke-width="1.5"/>
+  <text x="90" y="330" font-size="26" font-weight="700" fill="#1F2430">Enough space</text>
+  <text x="90" y="364" font-size="19" fill="#3D4452">The local storage pool is large enough for all files.</text>
+  <text x="90" y="390" font-size="19" fill="#3D4452">All files are in the Storage Extender and also stored locally.</text>
+  <use href="#server" x="100" y="440"/>
+  <use href="#all" x="128" y="490"/>
+  <use href="#cloud" x="470" y="420"/>
+  <use href="#all" x="514" y="502"/>
+  <line x1="352" y1="520" x2="462" y2="520" stroke="#7B1DD3" stroke-width="3" marker-end="url(#arr)"/>
+  <text x="407" y="505" font-size="17" fill="#4A1182" text-anchor="middle">transfers</text>
+  <text x="220" y="635" font-size="20" font-weight="700" fill="#1F2430" text-anchor="middle">Local storage pool</text>
+  <text x="608" y="635" font-size="20" font-weight="700" fill="#1F2430" text-anchor="middle">Storage Extender</text>
+  <text x="90" y="700" font-size="18" fill="#5A6273">Example: 800 GB of files, local storage pool 1 TB, Storage Extender 4 TB</text>
+
+  <!-- Rechts: begrenzter Platz -->
+  <rect x="810" y="285" width="730" height="455" rx="16" fill="#F7F8FA" stroke="#DDE1E7" stroke-width="1.5"/>
+  <text x="840" y="330" font-size="26" font-weight="700" fill="#1F2430">Limited space</text>
+  <text x="840" y="364" font-size="19" fill="#3D4452">The local storage pool is not large enough for all files.</text>
+  <text x="840" y="390" font-size="19" fill="#3D4452">The most recently used are kept locally, all others only in the Storage Extender.</text>
+  <use href="#server" x="850" y="440"/>
+  <use href="#some" x="878" y="490"/>
+  <use href="#cloud" x="1220" y="420"/>
+  <use href="#all" x="1264" y="502"/>
+  <line x1="1102" y1="500" x2="1212" y2="500" stroke="#7B1DD3" stroke-width="3" marker-end="url(#arr)"/>
+  <text x="1157" y="485" font-size="17" fill="#4A1182" text-anchor="middle">transfers</text>
+  <line x1="1212" y1="560" x2="1102" y2="560" stroke="#7B1DD3" stroke-width="3" marker-end="url(#arr)"/>
+  <text x="1157" y="588" font-size="17" fill="#4A1182" text-anchor="middle">loads when</text>
+  <text x="1157" y="608" font-size="17" fill="#4A1182" text-anchor="middle">needed</text>
+  <text x="970" y="635" font-size="20" font-weight="700" fill="#1F2430" text-anchor="middle">Local storage pool</text>
+  <text x="1358" y="635" font-size="20" font-weight="700" fill="#1F2430" text-anchor="middle">Storage Extender</text>
+  <use href="#fx" x="840" y="655"/>
+  <text x="890" y="668" font-size="17" fill="#5A6273">cleaned locally: unused for a long time, kept in the Storage Extender</text>
+  <text x="840" y="700" font-size="18" fill="#5A6273">Example: 3 TB of files, local storage pool 200 GB, Storage Extender 4 TB</text>
+
+  <!-- Unten: Beispiele ohne Addition -->
+  <text x="60" y="800" font-size="26" font-weight="700" fill="#1F2430">How many files fit in total? (Examples)</text>
+  <g font-size="19" fill="#3D4452">
+    <rect x="60" y="825" width="347" height="140" rx="14" fill="#F7F8FA" stroke="#DDE1E7" stroke-width="1.5"/>
+    <text x="82" y="862">Local storage pool 200 GB</text>
+    <text x="82" y="888">Storage Extender 1 TB</text>
+    <text x="82" y="925" font-size="22" font-weight="700" fill="#4A1182">up to 1 TB of files</text>
+    <rect x="437" y="825" width="347" height="140" rx="14" fill="#F7F8FA" stroke="#DDE1E7" stroke-width="1.5"/>
+    <text x="459" y="862">Local storage pool 1 TB</text>
+    <text x="459" y="888">Storage Extender 4 TB</text>
+    <text x="459" y="925" font-size="22" font-weight="700" fill="#4A1182">up to 4 TB of files</text>
+    <rect x="814" y="825" width="347" height="140" rx="14" fill="#F7F8FA" stroke="#DDE1E7" stroke-width="1.5"/>
+    <text x="836" y="862">Local storage pool 1 TB</text>
+    <text x="836" y="888">Storage Extender 1 TB</text>
+    <text x="836" y="925" font-size="22" font-weight="700" fill="#4A1182">up to 1 TB of files</text>
+    <text x="836" y="950" font-size="16" fill="#5A6273">no space gained</text>
+    <rect x="1191" y="825" width="347" height="140" rx="14" fill="#FFF6EC" stroke="#E3A35B" stroke-width="1.5"/>
+    <text x="1213" y="862">Local storage pool 2 TB</text>
+    <text x="1213" y="888">Storage Extender 500 GB</text>
+    <text x="1213" y="925" font-size="22" font-weight="700" fill="#A85A00">not suitable</text>
+    <text x="1213" y="950" font-size="16" fill="#5A6273">It must be able to hold all files.</text>
+  </g>
+
+  <text x="60" y="1010" font-size="18" fill="#5A6273">The Storage Extender must offer enough space for all files. When it is full, new files are only stored locally.</text>
+  <text x="60" y="1038" font-size="18" fill="#5A6273">If the local storage volume fails, all files already transferred remain in the Storage Extender.</text>
+</svg>

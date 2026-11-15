@@ -258,7 +258,7 @@ export function NotesSettings() {
     <>
       <Text size={600} weight="semibold">{t('Notizen (notizi)')}</Text>
       <Text>
-        {t('Mit der kostenlosen App notizi für Windows hast du dieselben Notizen am PC und hier im Browser – verschlüsselt abgeglichen über dmOffice. Eine Android-Version ist in Arbeit.')}{' '}
+        {t('Mit notizi für Windows lassen sich Notizen verschlüsselt über dmOffice zwischen PC und Browser abgleichen.')}{' '}
         <a href="https://notizi.de" target="_blank" rel="noopener noreferrer">{t('Mehr auf notizi.de')}</a>
       </Text>
 
@@ -266,7 +266,7 @@ export function NotesSettings() {
       <Text>{t('Am PC von notizi.de herunterladen und einmal starten – Version 1.5 oder neuer.')}</Text>
 
       <Text weight="semibold">{t('2. In notizi mit dmOffice verbinden')}</Text>
-      <Text>{t('dmOffice legt dafür einen eigenen Zugang an, der nur den Notizen-Ordner sieht – nicht deine anderen Dateien, Mails oder Termine.')}</Text>
+      <Text>{t('dmOffice legt dafür einen eigenen Zugang an, der nur den Notizen-Ordner sieht.')}</Text>
       {!conn ? (
         <div><Button appearance="primary" icon={<Key20Regular />} onClick={connect}>{t('notizi verbinden')}</Button></div>
       ) : (
@@ -286,7 +286,7 @@ export function NotesSettings() {
           </div>
         </Card>
       )}
-      <Text>{t('Dort legst du auch ein E2EE-Passwort fest – damit sind die Notizen verschlüsselt, bevor sie dmOffice erreichen. Merk es dir gut, du brauchst es gleich noch einmal. Dann in notizi einmal abgleichen.')}</Text>
+      <Text>{t('Dort wird auch ein E2EE-Passwort festgelegt; damit sind die Notizen verschlüsselt, bevor sie dmOffice erreichen. Das E2EE-Passwort wird in Schritt 3 noch einmal gebraucht. Danach in notizi einmal abgleichen.')}</Text>
 
       <Text weight="semibold">{t('3. Hier einschalten')}</Text>
       <form className={s.form} onSubmit={e => { e.preventDefault(); save() }}>

@@ -15,13 +15,15 @@ public static class AdminApi
     public record EditUser(string? DisplayName, string? Password, bool? IsAdmin, long? FileQuotaMb = null, bool DefaultFileQuota = false, bool? FilesOff = null, bool? AiAllowed = null);
     /// <summary>Pukki mit KI. ApiKey: null = unveraendert, "" = loeschen.</summary>
     public record ExternalBody(List<DmOffice.Storage.ExternalFolderDef> Folders, bool WebDavForUsers, bool WebDavPrivate, bool? OneDriveForUsers = null,
-        bool? PCloudForUsers = null);
+        bool? PCloudForUsers = null, bool? SftpForUsers = null);
     public record BackupBody(bool Enabled, string? At, int? KeepCount = null, int? EveryHours = null);
     public record FilesBackupBody(bool Enabled, bool Own, int Days, bool Forever, string? Target, string? Endpoint, string? Region, string? Bucket, string? Prefix, string? AccessKey, string? SecretKey,
         string? WebDavUrl, string? WebDavUser, string? WebDavPassword, string? Folder);
     public record BackupTargetBody(bool Own, string? Target, string? Endpoint, string? Region, string? Bucket, string? Prefix, string? AccessKey, string? SecretKey,
         string? WebDavUrl, string? WebDavUser, string? WebDavPassword, string? Folder);
-    public record CacheBody(bool Limited, double TargetGb, double MinFreeGb);
+    public record DbNameBody(string Name);
+    public record DbReplaceBody(string Name, string Stand);
+    public record CacheBody(bool Limited, double TargetGb, double MinFreeGb, string? Usage = null, double? SizeGb = null, bool? SizeLimited = null);
     public record StorageBody(bool Mirror, string? Endpoint, string? Region, string? Bucket, string? Prefix, string? AccessKey, string? SecretKey,
         string? Target = null, string? WebDavUrl = null, string? WebDavUser = null, string? WebDavPassword = null, string? Folder = null);
     public record AiBody(string? Provider, string? Endpoint, string? Model, string? ApiKey, bool WebSearch = false, string? Location = null);
@@ -31,6 +33,8 @@ public static class AdminApi
     public record SpamRulesBody(bool On, List<SpamRule> Rules);
     public record SpamRuleCheckBody(SpamRule Rule, string? Sample);
     public record SpamRuleImportBody(string Text);
+    public record VirusBody(bool ClamAv, string? Host, int Port, int MaxMb, bool Required);
+    public record VirusTestBody(string? Host, int? Port);
     public record PhotoEngineBody(bool On);
     public record SearchBody(string Level, List<string>? Groups, List<string>? Folders, int MaxMb, string? Read, string Check);
     public record ModuleBody(string Id, bool On);
@@ -120,6 +124,7 @@ public static class AdminApi
             fileQuotaMb = u.FileQuotaMb,
             filesOff = u.FilesOff,
             aiAllowed = u.AiAllowed,
+            oidcLinked = u.OidcSubject != null, oidcExpected = Oidc.InviteUntil(u) == null ? u.OidcExpected : null, oidcInvite = Oidc.InviteUntil(u), noOwnPassword = u.NoOwnPassword,
             fileQuota = config.FileQuotaBytes(u),
             files = FilesUsed(spaces, u.Id)
         }));
@@ -128,9 +133,24 @@ public static class AdminApi
 
         // Speicher (Version 2): Kopie der Dateiinhalte in einen S3-kompatiblen Speicher
         // Externe Ordner: Ordner auf dem Server fuer Benutzer freigeben, eigene WebDAV-Ordner erlauben
-        api.MapGet("/external", (ServerConfig config) => new { folders = config.Current.ExternalFolders, webDavForUsers = config.Current.ExternalWebDavForUsers, webDavPrivate = config.Current.ExternalWebDavPrivate,
-            oneDriveForUsers = config.Current.ExternalOneDriveForUsers, microsoft = DmOffice.Storage.ExternalFolders.OAuth?.Enabled == true,
-            pCloudForUsers = config.Current.ExternalPCloudForUsers });
+        api.MapGet("/external", (ServerConfig config, UserStore users, Spaces spaces) =>
+        {
+            // Eingebundene Ordner der Benutzer je Art: für die Rückfrage, bevor ein Schalter sie sperrt
+            var mounts = new Dictionary<string, int>();
+            foreach (var u in users.All())
+                try
+                {
+                    foreach (var m in DmOffice.Storage.ExternalFolders.Own(spaces.Get(u.Id)).Where(m => m.Access == null))
+                    {
+                        var kind = m.KindOrDefault == DmOffice.Storage.UserMount.WebDav && DmOffice.Storage.RemoteDrivers.IsSftp(m.Url) ? "sftp" : m.KindOrDefault;
+                        mounts[kind] = mounts.GetValueOrDefault(kind) + 1;
+                    }
+                }
+                catch (Exception e) when (e is not OutOfMemoryException) { }
+            return new { folders = config.Current.ExternalFolders, webDavForUsers = config.Current.ExternalWebDavForUsers, webDavPrivate = config.Current.ExternalWebDavPrivate,
+                oneDriveForUsers = config.Current.ExternalOneDriveForUsers, microsoft = DmOffice.Storage.ExternalFolders.OAuth?.Enabled == true,
+                pCloudForUsers = config.Current.ExternalPCloudForUsers, sftpForUsers = config.Current.ExternalSftpForUsers, mounts };
+        });
         // Suche in Server-Mounts: Stand und Einstellungen je Mount (die Zählung geht über alle Dateien, daher kurz gemerkt)
         object IndexInfo(DmOffice.Storage.ExternalFolderDef f, DmOffice.Storage.ExternalIndex index, DmOffice.Storage.ExternalIndexer indexer)
         {
@@ -190,7 +210,7 @@ public static class AdminApi
                 var full = Path.GetFullPath(f.Path).TrimEnd(Path.DirectorySeparatorChar);
                 // Nie das Datenverzeichnis selbst (oder etwas darin/darueber) - sonst laege die verschluesselte Ablage offen
                 bool Touches(string dir) { var d = Path.GetFullPath(dir).TrimEnd(Path.DirectorySeparatorChar); return full == d || d.StartsWith(full + Path.DirectorySeparatorChar) || full.StartsWith(d + Path.DirectorySeparatorChar); }
-                if (Touches(paths.Root) || Touches(paths.Blobs) || full == Path.GetPathRoot(full)?.TrimEnd(Path.DirectorySeparatorChar))
+                if (DmOffice.Storage.DataDirGuard.Touches(full, paths) || full == Path.GetPathRoot(full)?.TrimEnd(Path.DirectorySeparatorChar))
                     return Results.BadRequest(new { error = $"„{f.Name}“: das Datenverzeichnis von dmOffice und die oberste Ebene lassen sich nicht freigeben." });
                 // Nie das Programm selbst oder Systemordner (Programmdateien, Prozessangaben, Konfiguration, Geheimnisse)
                 if (Touches(AppContext.BaseDirectory) || SystemDirs.Any(d => full == d || full.StartsWith(d + Path.DirectorySeparatorChar)))
@@ -202,7 +222,8 @@ public static class AdminApi
                 f.Include = (f.Include ?? []).Where(n => n.Length > 0 && n.IndexOfAny(['/', '\\']) < 0 && n is not ("." or "..") && Directory.Exists(Path.Combine(full, n))).Distinct().ToList();
             }
             config.Update(s => { s.ExternalFolders = body.Folders; s.ExternalWebDavForUsers = body.WebDavForUsers; s.ExternalWebDavPrivate = body.WebDavPrivate; if (body.OneDriveForUsers is bool od) s.ExternalOneDriveForUsers = od;
-                if (body.PCloudForUsers is bool pc) s.ExternalPCloudForUsers = pc; });
+                if (body.PCloudForUsers is bool pc) s.ExternalPCloudForUsers = pc;
+                if (body.SftpForUsers is bool sf) s.ExternalSftpForUsers = sf; });
             // Suche geändert: gleich abgleichen statt erst in einer Minute
             indexer.Kick();
             return Results.Ok();
@@ -219,8 +240,7 @@ public static class AdminApi
             bool Blocked(string dir)
             {
                 var full = Norm(dir);
-                bool Touches(string other) { var d = Norm(other); return full == d || d.StartsWith(full + Path.DirectorySeparatorChar) || full.StartsWith(d + Path.DirectorySeparatorChar); }
-                return Touches(paths.Root) || Touches(paths.Blobs) || full == Path.GetPathRoot(full)?.TrimEnd(Path.DirectorySeparatorChar);
+                return DmOffice.Storage.DataDirGuard.Touches(full, paths) || full == Path.GetPathRoot(full)?.TrimEnd(Path.DirectorySeparatorChar);
             }
             if (string.IsNullOrWhiteSpace(path))
                 return Results.Ok(new { path = (string?)null, parent = (string?)null, dirs = MountPoints().Where(Directory.Exists).Select(d => new { name = d, path = d, blocked = Blocked(d) }).ToList() });
@@ -238,8 +258,8 @@ public static class AdminApi
             if (!string.IsNullOrWhiteSpace(body.Endpoint) && !(Uri.TryCreate(body.Endpoint.Trim(), UriKind.Absolute, out var u) && u.Scheme is "http" or "https"))
                 return Results.BadRequest(new { error = "Die Adresse muss mit http:// oder https:// beginnen." });
             var target = body.Target is "webdav" or "folder" ? body.Target : "s3";
-            if (target == "webdav" && !string.IsNullOrWhiteSpace(body.WebDavUrl) && !(Uri.TryCreate(body.WebDavUrl.Trim(), UriKind.Absolute, out var wu) && wu.Scheme is "http" or "https"))
-                return Results.BadRequest(new { error = "Die WebDAV-Adresse muss mit http:// oder https:// beginnen." });
+            if (target == "webdav" && !string.IsNullOrWhiteSpace(body.WebDavUrl) && !DmOffice.Storage.RemoteDrivers.ValidUrl(body.WebDavUrl))
+                return Results.BadRequest(new { error = DmOffice.Storage.RemoteDrivers.UrlProblem });
             if (target == "folder" && !string.IsNullOrWhiteSpace(body.Folder) && (!Path.IsPathFullyQualified(body.Folder.Trim()) || !Directory.Exists(body.Folder.Trim())))
                 return Results.BadRequest(new { error = "Den Ordner gibt es auf dem Server nicht – im Container einbinden (etwa /backup) und den vollen Pfad angeben." });
             var cur = config.Current;
@@ -286,6 +306,7 @@ public static class AdminApi
                     return Results.Json(new { error = only + $" Unter den neuen Angaben fehlen davon {notThere:N0} – nichts geändert." }, statusCode: 409);
             }
             var storageBefore = S3Mirror.LocationOf(config.Current);
+            var settingsBefore = config.Current;
             config.Update(s =>
             {
                 if (s.StorageTarget != target) s.S3Mirror = false;   // neues Ziel: erst pruefen, dann einschalten
@@ -295,16 +316,46 @@ public static class AdminApi
             });
             if (body.SecretKey != null) config.SetS3SecretKey(body.SecretKey.Length == 0 ? null : body.SecretKey);
             if (body.WebDavPassword != null) config.SetStorageWebDavPassword(body.WebDavPassword.Length == 0 ? null : body.WebDavPassword);
+            // Anderer Ort: das bisherige Ziel merken - seine alten Daten lassen sich später löschen
+            FormerTargets.Track(config, "storage", settingsBefore);
             // Das Files-Backup auf diesem Ziel zieht mit um und beginnt dort neu
             if (!config.Current.FilesBackupOwnTarget && S3Mirror.LocationOf(config.Current) != storageBefore) files.TargetChanged();
             // Beim ersten Einschalten die Vorgabe festlegen; aeltere Einstellungen in Prozent bleiben wirksam, bis sie jemand aendert
             config.Update(s =>
             {
                 if (body.Mirror && !s.S3Mirror && s.S3MinFreeGb == null) s.S3MinFreeGb = S3Mirror.DefaultMinFreeGb(mirror.LocalVolume().Total);
+                // Neu eingeschaltet: Optimal; wer ihn schon nutzt, behält Maximal (so verhielt er sich bisher)
+                if (body.Mirror && !s.S3Mirror && s.S3Usage == null && Features.On(Features.ExtenderUsage)) s.S3Usage = S3Mirror.UsageOpt;
                 s.S3Mirror = body.Mirror && S3Mirror.Configured(s, config.S3SecretKey());
             });
             if (config.Current.S3Mirror) mirror.Kick();
             return Results.Ok(StorageState(config, mirror, backup, files));
+        });
+        // Alte Daten an früheren Zielen: anzeigen, zählen, löschen (im Hintergrund) oder vergessen (Daten bleiben)
+        api.MapGet("/storage/former", (ServerConfig config) =>
+            config.Current.FormerTargets.Select(f => new
+            {
+                f.Id, f.Purpose, f.Target, where = FormerTargets.Describe(f), f.Replaced, inUse = FormerTargets.StillUsed(f, config.Current),
+                emptyPrefix = string.IsNullOrWhiteSpace(f.Prefix), run = FormerTargets.RunOf(f.Id),
+            }));
+        api.MapPost("/storage/former/{id}/count", async (string id, ServerConfig config, CancellationToken ct) =>
+        {
+            if (config.Current.FormerTargets.FirstOrDefault(x => x.Id == id) is not { } f) return Results.NotFound();
+            try { var (count, bytes) = await FormerTargets.CountAsync(config, f, ct); return Results.Ok(new { count, bytes }); }
+            catch (Exception e) when (e is not OperationCanceledException) { return Results.BadRequest(new { error = "Das bisherige Ziel ist nicht erreichbar: " + S3Remote.Describe(e) }); }
+        });
+        api.MapPost("/storage/former/{id}/delete", (string id, HttpContext http, ServerConfig config, ILoggerFactory logs) =>
+        {
+            if (config.Current.FormerTargets.FirstOrDefault(x => x.Id == id) is not { } f) return Results.NotFound();
+            try { FormerTargets.StartDelete(config, f, http.User.FindFirstValue(System.Security.Claims.ClaimTypes.NameIdentifier)!, logs.CreateLogger("DmOffice.Storage")); }
+            catch (InvalidOperationException e) { return Results.BadRequest(new { error = e.Message }); }
+            return Results.Accepted();
+        });
+        api.MapDelete("/storage/former/{id}", (string id, ServerConfig config) =>
+        {
+            if (FormerTargets.RunOf(id) is { Busy: true }) return Results.BadRequest(new { error = "Das Löschen läuft gerade." });
+            config.Update(s => s.FormerTargets.RemoveAll(x => x.Id == id));
+            return Results.NoContent();
         });
         api.MapPost("/storage/test", async (ServerConfig config, CancellationToken ct) =>
         {
@@ -330,6 +381,21 @@ public static class AdminApi
         // Systemprotokoll: Warnungen und Fehler seit dem Start, neueste zuerst
         api.MapGet("/log", () => new { since = System.Diagnostics.Process.GetCurrentProcess().StartTime.ToUniversalTime(), entries = SystemLog.All() });
         api.MapPost("/health/run", (DbHealth health) => { health.RunNow(); return Results.Ok(); });
+        // Hilfe für eine beschädigte Datenbank: nur diese eine reparieren oder aus einem Core-Stand ersetzen
+        api.MapGet("/health/stands", async (DbRescue rescue, CancellationToken ct) =>
+            await rescue.StandsAsync(ct) is { } list ? Results.Ok(list.Select(s => new { s.Name, s.Created, s.Bytes })) : Results.Ok(Array.Empty<object>()));
+        api.MapPost("/health/repair", async (DbNameBody body, DbRescue rescue, HttpContext http, CancellationToken ct) =>
+        {
+            var r = await rescue.RepairAsync(body.Name, ct);
+            if (r.Ok && body.Name.StartsWith("user:")) SecurityNotice.ByAdmin(http.RequestServices, body.Name[5..], http.Space().User.Id, "Deine Datenbank wurde repariert");
+            return r.Ok ? Results.Ok(r) : Results.BadRequest(new { error = r.Message });
+        });
+        api.MapPost("/health/replace", async (DbReplaceBody body, DbRescue rescue, HttpContext http, CancellationToken ct) =>
+        {
+            var r = await rescue.ReplaceAsync(body.Name, body.Stand, ct);
+            if (r.Ok && body.Name.StartsWith("user:")) SecurityNotice.ByAdmin(http.RequestServices, body.Name[5..], http.Space().User.Id, "Deine Datenbank wurde aus der Sicherung ersetzt");
+            return r.Ok ? Results.Ok(r) : Results.BadRequest(new { error = r.Message });
+        });
         api.MapPost("/storage/restore", (S3Mirror mirror) => { mirror.RequestRestore(); return Results.Ok(); });
         api.MapPut("/storage/backup", (BackupBody body, ServerConfig config, S3Mirror mirror, S3Backup backup, FilesBackup files) =>
         {
@@ -342,6 +408,7 @@ public static class AdminApi
         api.MapPut("/storage/mode", (CacheBody body, ServerConfig config, S3Mirror mirror, S3Backup backup, FilesBackup files) =>
         {
             if (body.Limited && body.TargetGb < 1) return Results.BadRequest(new { error = "Die Begrenzung braucht mindestens 1 GB." });
+            if (body.SizeLimited == true && (body.SizeGb ?? 0) < 1) return Results.BadRequest(new { error = "Die Speicherbegrenzung braucht mindestens 1 GB." });
             config.Update(s =>
             {
                 s.S3CacheLimited = body.Limited;
@@ -349,6 +416,13 @@ public static class AdminApi
                 // Hoechstens die Haelfte des Volumes, sonst passt dort keine Datei mehr
                 var half = mirror.LocalVolume() is { Total: > 0 } vol ? Math.Max(1, vol.Total / 2.0 / (1024L * 1024 * 1024)) : 1_000_000;
                 s.S3MinFreeGb = Math.Round(Math.Clamp(body.MinFreeGb, 1, half), 1);
+                // Storage Extender: Belegung und Speicherbegrenzung (nur mit dem Schalter extenderusage)
+                if (Features.On(Features.ExtenderUsage))
+                {
+                    if (body.Usage is S3Mirror.UsageStrict or S3Mirror.UsageMin or S3Mirror.UsageOpt or S3Mirror.UsageMax) s.S3Usage = body.Usage;
+                    if (body.SizeLimited == false) s.S3SizeGb = null;
+                    else if (body.SizeLimited == true && body.SizeGb is double gb) s.S3SizeGb = Math.Round(Math.Clamp(gb, 1, 1_000_000_000), 1);
+                }
             });
             // Der naechste Abgleich verdraengt oder holt zurueck, je nachdem, was jetzt passt
             mirror.Kick();
@@ -362,6 +436,7 @@ public static class AdminApi
             {
                 if (TargetProblem(target, body.Endpoint, body.WebDavUrl, body.Folder, config, paths) is { } problem) return Results.BadRequest(new { error = problem });
             }
+            var settingsBefore = config.Current;
             config.Update(s =>
             {
                 s.BackupOwnTarget = body.Own;
@@ -372,6 +447,7 @@ public static class AdminApi
             });
             if (body.Own && body.SecretKey != null) config.SetBackupS3SecretKey(body.SecretKey.Length == 0 ? null : body.SecretKey);
             if (body.Own && body.WebDavPassword != null) config.SetBackupWebDavPassword(body.WebDavPassword.Length == 0 ? null : body.WebDavPassword);
+            FormerTargets.Track(config, "backup", settingsBefore);
             return Results.Ok(StorageState(config, mirror, backup, files));
         });
         // Files-Backup: Schalter, Haltedauer und Ziel (eigenes oder das aus Storage Extender)
@@ -398,6 +474,7 @@ public static class AdminApi
             if (refused != null) return Results.BadRequest(new { error = refused });
             if (body.Own && body.SecretKey != null) config.SetFilesBackupS3SecretKey(body.SecretKey.Length == 0 ? null : body.SecretKey);
             if (body.Own && body.WebDavPassword != null) config.SetFilesBackupWebDavPassword(body.WebDavPassword.Length == 0 ? null : body.WebDavPassword);
+            FormerTargets.Track(config, "files", before);
             if (body.Enabled)
             {
                 if (!config.Current.S3Backup) { config.Update(s => s.FilesBackup = false); return Results.BadRequest(new { error = "Das Files-Backup setzt das Core-Backup voraus." }); }
@@ -488,6 +565,37 @@ public static class AdminApi
             config.SetSpamhausKey(key);
             return Results.Ok(new { hasKey = key.Length > 0 });
         });
+        // Virenprüfung (ClamAV): Einstellung, Test mit EICAR, die letzten Funde
+        object VirusState(ServerConfig config)
+        {
+            var c = config.Current;
+            return new { clamAv = c.ClamAv, host = c.ClamAvHost ?? "", port = c.ClamAvPort, maxMb = c.ClamAvMaxMb, required = c.ClamAvRequired, findings = VirusScan.Findings() };
+        }
+        api.MapGet("/virus", (ServerConfig config) => VirusState(config));
+        api.MapPut("/virus", (VirusBody body, ServerConfig config) =>
+        {
+            var host = body.Host?.Trim() ?? "";
+            if (body.ClamAv && host.Length == 0) return Results.BadRequest(new { error = "Bitte den Rechner des Virenscanners angeben." });
+            if (host.Length > 0 && !System.Text.RegularExpressions.Regex.IsMatch(host, @"^[A-Za-z0-9.\-:\[\]]{1,253}$")) return Results.BadRequest(new { error = "Der Rechnername passt nicht." });
+            config.Update(s =>
+            {
+                s.ClamAv = body.ClamAv; s.ClamAvHost = host.Length > 0 ? host : null; s.ClamAvPort = Math.Clamp(body.Port, 1, 65535);
+                s.ClamAvMaxMb = Math.Clamp(body.MaxMb, 1, 4000); s.ClamAvRequired = body.Required;
+            });
+            return Results.Ok(VirusState(config));
+        });
+        api.MapPost("/virus/test", async (VirusTestBody body, ServerConfig config, CancellationToken ct) =>
+        {
+            var host = string.IsNullOrWhiteSpace(body.Host) ? config.Current.ClamAvHost : body.Host.Trim();
+            var port = body.Port ?? config.Current.ClamAvPort;
+            if (string.IsNullOrEmpty(host)) return Results.BadRequest(new { error = "Bitte den Rechner des Virenscanners angeben." });
+            var (ok, version, error) = await ClamAv.PingAsync(host, port, ct);
+            if (!ok) return Results.Ok(new { ok = false, error });
+            // Die harmlose EICAR-Testdatei muss als Fund gemeldet werden - sonst prüft der Scanner nicht wirklich
+            var eicar = await ClamAv.ScanAsync(host, port, new MemoryStream(VirusScan.Eicar), TimeSpan.FromSeconds(20), ct);
+            return Results.Ok(new { ok = eicar.Verdict == ClamAv.Verdict.Infected, version, eicar = eicar.Name, error = eicar.Verdict == ClamAv.Verdict.Infected ? null
+                : eicar.Error ?? "Der Scanner hat die EICAR-Testdatei nicht erkannt." });
+        });
 
         api.MapGet("/ai", (ServerConfig config) => AiState(config));
         api.MapPut("/ai", (AiBody body, ServerConfig config) =>
@@ -523,7 +631,7 @@ public static class AdminApi
             users.Update(id, u =>
             {
                 if (!string.IsNullOrWhiteSpace(body.DisplayName)) u.DisplayName = body.DisplayName.Trim();
-                if (!string.IsNullOrEmpty(body.Password)) { u.PasswordHash = Passwords.Hash(body.Password); u.NewStamp(); }
+                if (!string.IsNullOrEmpty(body.Password)) { u.PasswordHash = Passwords.Hash(body.Password); u.NoOwnPassword = false; u.NewStamp(); }
                 if (body.IsAdmin is bool a && a != u.IsAdmin) { u.IsAdmin = a; u.NewStamp(); }
                 if (body.DefaultFileQuota) u.FileQuotaMb = null;
                 else if (body.FileQuotaMb is long q) u.FileQuotaMb = Math.Max(0, q);
@@ -613,8 +721,8 @@ public static class AdminApi
     {
         if (target == "s3" && !string.IsNullOrWhiteSpace(endpoint) && !(Uri.TryCreate(endpoint.Trim(), UriKind.Absolute, out var u) && u.Scheme is "http" or "https"))
             return "Die Adresse muss mit http:// oder https:// beginnen.";
-        if (target == "webdav" && !string.IsNullOrWhiteSpace(webDavUrl) && !(Uri.TryCreate(webDavUrl.Trim(), UriKind.Absolute, out var wu) && wu.Scheme is "http" or "https"))
-            return "Die WebDAV-Adresse muss mit http:// oder https:// beginnen.";
+        if (target == "webdav" && !string.IsNullOrWhiteSpace(webDavUrl) && !DmOffice.Storage.RemoteDrivers.ValidUrl(webDavUrl))
+            return DmOffice.Storage.RemoteDrivers.UrlProblem;
         if (target == "folder" && !string.IsNullOrWhiteSpace(folder))
         {
             if (!Path.IsPathFullyQualified(folder.Trim()) || !Directory.Exists(folder.Trim()))
@@ -643,7 +751,7 @@ public static class AdminApi
                 hasSecret = !string.IsNullOrEmpty(config.FilesBackupS3SecretKey()), webDavUrl = s.FilesBackupWebDavUrl, webDavUser = s.FilesBackupWebDavUser, hasWebDavPassword = !string.IsNullOrEmpty(config.FilesBackupWebDavPassword()), folder = s.FilesBackupFolder,
                 configured = FilesBackup.Configured(config), status = files.Status, restore = files.Restore },
             profile = new { at = s.StorageProfileAt, current = s.StorageProfileStamp != null && s.StorageProfileStamp == StorageProfile.Stamp(config) },
-            keepDeletedDays = S3Mirror.KeepDeleted(s) == TimeSpan.MaxValue ? 0 : (int)S3Mirror.KeepDeleted(s).TotalDays, atTargetBytes = mirror.AtTargetTotal().Bytes, limited = S3Mirror.Limited(s), cacheTargetGb = s.S3CacheTargetGb, minFreeGb = Math.Round(S3Mirror.ReserveOf(s, mirror.LocalVolume().Total) / (1024.0 * 1024 * 1024)), rescued = mirror.Rescued,
+            keepDeletedDays = S3Mirror.KeepDeleted(s) == TimeSpan.MaxValue ? 0 : (int)S3Mirror.KeepDeleted(s).TotalDays, atTargetBytes = mirror.AtTargetTotal().Bytes, limited = S3Mirror.Limited(s), cacheTargetGb = s.S3CacheTargetGb, usage = s.S3Usage == null && !s.S3Mirror && Features.On(Features.ExtenderUsage) ? S3Mirror.UsageOpt : S3Mirror.UsageOf(s), sizeGb = s.S3SizeGb, minFreeGb = Math.Round(S3Mirror.ReserveOf(s, mirror.LocalVolume().Total) / (1024.0 * 1024 * 1024)), rescued = mirror.Rescued,
             volume = mirror.LocalVolume() is var (total, free) && total > 0 ? new { total, free } : null,
             targetSpace = mirror.TargetSpace() is { } ext ? new { total = ext.Total, free = ext.Free, ours = mirror.AtTargetTotal().Bytes } : null };
     }

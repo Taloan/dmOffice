@@ -38,6 +38,31 @@ public interface IStorageDriver : IDisposable
     Task SetModifiedAsync(string path, DateTime utc, CancellationToken ct) => Task.CompletedTask;
 }
 
+/// <summary>
+/// Entfernter Speicher nach Adresse: „sftp://…“ öffnet <see cref="SftpDriver"/>, „http(s)://…“ <see cref="WebDavDriver"/>.
+/// Überall, wo eine WebDAV-Adresse eingetragen wird (Storage Extender, Sicherungen, Datenexport, Benutzer-Mounts), geht so auch SFTP.
+/// </summary>
+public static class RemoteDrivers
+{
+    public static bool IsSftp(string? url) => url?.TrimStart().StartsWith("sftp://", StringComparison.OrdinalIgnoreCase) == true;
+
+    /// <summary>Adresse für WebDAV oder SFTP; SFTP nur, wenn freigeschaltet.</summary>
+    public static bool ValidUrl(string? url) => Uri.TryCreate(url?.Trim(), UriKind.Absolute, out var u)
+        && (u.Scheme is "http" or "https" || (u.Scheme == "sftp" && DmOffice.Core.Features.On(DmOffice.Core.Features.Sftp)));
+
+    public static string UrlProblem => DmOffice.Core.Features.On(DmOffice.Core.Features.Sftp)
+        ? "Die Adresse muss mit https://, http:// (WebDAV) oder sftp:// beginnen." : "Die Adresse muss mit http:// oder https:// beginnen.";
+
+    /// <param name="http">Nur WebDAV: eigene Verbindung (etwa mit Adressprüfung für Benutzer-Mounts)</param>
+    /// <param name="allow">Nur SFTP: erlaubte Adressen (Benutzer-Mounts); null: alle</param>
+    public static IStorageDriver Open(string url, string? user, string? password, HttpClient? http = null, Func<IPAddress, bool>? allow = null)
+    {
+        if (!IsSftp(url)) return new WebDavDriver(url.Trim(), user, password, http);
+        if (!DmOffice.Core.Features.On(DmOffice.Core.Features.Sftp)) throw new ArgumentException("SFTP ist in dieser Version nicht freigeschaltet.");
+        return new SftpDriver(url.Trim(), user, password, allow);
+    }
+}
+
 public static class StoragePath
 {
     /// <summary>Relativen Pfad pruefen und vereinheitlichen: keine „..“, keine Laufwerke, keine Steuerzeichen.</summary>
@@ -54,39 +79,73 @@ public static class StoragePath
     public static string Parent(string p) => p.Contains('/') ? p[..p.LastIndexOf('/')] : "";
 }
 
+/// <summary>Treiber, der sagt, wo ein Pfad nach Auflösen aller Verknüpfungen wirklich liegt (zum Erkennen von Kreisen beim Kopieren).</summary>
+public interface IRealPaths
+{
+    /// <summary>Aufgelöster Ort; null, wenn er sich nicht bestimmen lässt.</summary>
+    string? RealPath(string path);
+}
+
 /// <summary>
 /// Ein Ordner auf dem Server. Die Wurzel legt der Admin fest; nichts darf aus ihr heraus - weder ueber „..“ noch
 /// ueber Verknuepfungen (Symlinks), die nach aussen zeigen.
 /// </summary>
-public sealed class FolderDriver : IStorageDriver
+public sealed class FolderDriver : IStorageDriver, IRealPaths
 {
     private readonly string _root;
+    /// <summary>Die Wurzel mit aufgelösten Verknüpfungen - dagegen werden aufgelöste Pfade geprüft.</summary>
+    private readonly string _realRoot;
 
     public FolderDriver(string root)
     {
         _root = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar);
         if (!Directory.Exists(_root)) throw new DirectoryNotFoundException("Den Ordner gibt es auf dem Server nicht.");
+        _realRoot = Resolve(_root) ?? _root;
     }
 
-    /// <summary>Voller Pfad innerhalb der Wurzel; Verknuepfungen auf dem Weg dorthin muessen innerhalb bleiben.</summary>
+    private bool InRealRoot(string? real) =>
+        real != null && (real == _realRoot || real.StartsWith(_realRoot.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar));
+
+    /// <summary>
+    /// Pfad Stufe für Stufe auflösen wie das Betriebssystem: jede Verknüpfung durch ihr Ziel ersetzen, relative Ziele vom
+    /// aufgelösten Ordner aus, „..“ erst danach. Nicht vorhandene Stufen bleiben, wie sie sind. Null bei zu vielen Verknüpfungen (Kreis).
+    /// </summary>
+    internal static string? Resolve(string path)
+    {
+        char[] seps = [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar];
+        var full = Path.GetFullPath(path);
+        var cur = Path.GetPathRoot(full)!;
+        var pending = new Stack<string>(full[cur.Length..].Split(seps, StringSplitOptions.RemoveEmptyEntries).Reverse());
+        var hops = 0;
+        while (pending.Count > 0)
+        {
+            var part = pending.Pop();
+            if (part == ".") continue;
+            if (part == "..") { cur = Path.GetDirectoryName(cur) ?? cur; continue; }
+            var next = Path.Combine(cur, part);
+            string? link;
+            try { link = (Directory.Exists(next) ? new DirectoryInfo(next) : (FileSystemInfo)new FileInfo(next)).LinkTarget; }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { link = null; }
+            if (link == null) { cur = next; continue; }
+            if (++hops > 40) return null;
+            if (link.StartsWith(@"\\?\", StringComparison.Ordinal)) link = link[4..]; // Windows: Abzweigungen mit Präfix
+            if (Path.IsPathRooted(link)) cur = Path.GetPathRoot(Path.GetFullPath(link))!;
+            var rest = Path.IsPathRooted(link) ? Path.GetFullPath(link)[cur.Length..] : link;
+            foreach (var x in rest.Split(seps, StringSplitOptions.RemoveEmptyEntries).Reverse()) pending.Push(x);
+        }
+        return cur;
+    }
+
+    public string? RealPath(string path) => Resolve(Full(path));
+
+    /// <summary>Voller Pfad innerhalb der Wurzel; auch nach Auflösen aller Verknüpfungen auf dem Weg muss er innerhalb bleiben.</summary>
     private string Full(string path)
     {
         var rel = StoragePath.Clean(path);
         var full = rel.Length == 0 ? _root : Path.GetFullPath(Path.Combine(_root, rel.Replace('/', Path.DirectorySeparatorChar)));
         if (full != _root && !full.StartsWith(_root + Path.DirectorySeparatorChar)) throw new UnauthorizedAccessException("Außerhalb des Ordners.");
-        // Jede Stufe pruefen: eine Verknuepfung mitten im Pfad koennte nach draussen zeigen
-        var at = _root;
-        foreach (var part in rel.Split('/', StringSplitOptions.RemoveEmptyEntries))
-        {
-            at = Path.Combine(at, part);
-            FileSystemInfo info = Directory.Exists(at) ? new DirectoryInfo(at) : new FileInfo(at);
-            if (info.Exists && info.LinkTarget != null)
-            {
-                var target = info.ResolveLinkTarget(returnFinalTarget: true)?.FullName;
-                if (target == null || (target != _root && !target.StartsWith(_root + Path.DirectorySeparatorChar)))
-                    throw new UnauthorizedAccessException("Verknüpfung zeigt aus dem Ordner heraus.");
-            }
-        }
+        // Wie das Betriebssystem auflösen: eine Verknüpfung mitten im Pfad (auch hinter einer anderen) könnte nach draußen zeigen
+        if (rel.Length > 0 && !InRealRoot(Resolve(full))) throw new UnauthorizedAccessException("Verknüpfung zeigt aus dem Ordner heraus.");
         return full;
     }
 
@@ -109,11 +168,7 @@ public sealed class FolderDriver : IStorageDriver
         foreach (var i in dir.EnumerateFileSystemInfos())
         {
             // Verknuepfungen nach draussen gar nicht erst zeigen
-            if (i.LinkTarget != null)
-            {
-                var t = i.ResolveLinkTarget(true)?.FullName;
-                if (t == null || (t != _root && !t.StartsWith(_root + Path.DirectorySeparatorChar))) continue;
-            }
+            if (i.LinkTarget != null && !InRealRoot(Resolve(i.FullName))) continue;
             list.Add(Entry(i));
         }
         return Task.FromResult(list);

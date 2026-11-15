@@ -57,6 +57,9 @@ public sealed class MailAccount
     /// selbst tun (Gmail) - sonst liegt jede Mail doppelt da.</summary>
     public bool SaveSentCopy { get; set; } = true;
 
+    /// <summary>Posteingang dieses Kontos in „Alle Posteingänge“ zeigen. Aus etwa für ein Sammelpostfach (Kennung „unifiedpick“).</summary>
+    public bool InUnified { get; set; } = true;
+
     /// <summary>0: alles synchronisieren; sonst so viele Monate zurueck.</summary>
     public int SyncMonths { get; set; } = 12;
     /// <summary>Mails bis zu dieser Groesse kommen vollstaendig in die
@@ -96,9 +99,9 @@ public sealed class RuleCondition
 
 public sealed class RuleAction
 {
-    /// <summary>move | copy | markRead | flag | category | delete | forward | stop</summary>
+    /// <summary>move | copy | markRead | flag | category | delete | forward | trashAfter | destroyAfter | stop</summary>
     public string Type { get; set; } = "move";
-    /// <summary>Ordner bei move/copy, Adressen bei forward.</summary>
+    /// <summary>Ordner bei move/copy, Adressen bei forward, Tage bei trashAfter/destroyAfter.</summary>
     public string Value { get; set; } = "";
 }
 
@@ -213,6 +216,24 @@ public sealed class NotiziSettings
 public sealed class UserSettings
 {
     public List<MailAccount> MailAccounts { get; set; } = new();
+    /// <summary>Kennung des Standard-Mailkontos (neue Mails, Start-Posteingang, Versand aus anderen Bereichen).
+    /// Null oder unbekannt: das erste Konto der Liste. Gilt nur mit Features.DefaultAccount.</summary>
+    public string? DefaultMailAccount { get; set; }
+
+    /// <summary>Das Standard-Mailkonto: das gewählte (Features.DefaultAccount), sonst das erste. Null ohne Konten.</summary>
+    public MailAccount? DefaultAccount() =>
+        (Features.On(Features.DefaultAccount) ? MailAccounts.FirstOrDefault(a => a.Id == DefaultMailAccount) : null)
+        ?? MailAccounts.FirstOrDefault();
+
+    /// <summary>Konten mit dem Standardkonto zuerst, sonst in gespeicherter Reihenfolge.</summary>
+    public IEnumerable<MailAccount> AccountsDefaultFirst()
+    {
+        var d = DefaultAccount();
+        return d == null ? MailAccounts : MailAccounts.Where(a => a == d).Concat(MailAccounts.Where(a => a != d));
+    }
+
+    /// <summary>Ist das Konto das Standardkonto? Nur mit Features.DefaultAccount, sonst immer false (Web und App nehmen dann das erste).</summary>
+    public bool IsDefault(MailAccount a) => Features.On(Features.DefaultAccount) && DefaultAccount() == a;
     public List<MailRule> Rules { get; set; } = new();
     /// <summary>Null: noch nie eingerichtet - dann die Vorgaben. Leere Liste: bewusst keine.</summary>
     public List<MailCategory>? Categories { get; set; }
@@ -235,6 +256,11 @@ public sealed class UserSettings
     /// <summary>Galerie: Sterne, Titel, Beschreibung, Stichwörter, Markierung, Farbe in die Fotos schreiben (XMP im JPEG, Sidecar bei RAW).
     /// Aus (Vorgabe): nur in der eigenen Datenbank (Gallery/PhotoMarks.cs), Dateien bleiben unverändert.</summary>
     public bool PhotoWriteXmp { get; set; }
+    /// <summary>„In Ablage sichern“: Zielordner, Ordnung darunter, schon Vorhandenes überspringen, Hinweis gesehen (Gallery/GallerySave.cs).</summary>
+    public string SaveFolder { get; set; } = "Uploads";
+    public string SaveOrder { get; set; } = "source-month";
+    public bool SaveSkipKnown { get; set; } = true;
+    public bool SaveHintSeen { get; set; }
     /// <summary>Absender (adresse@x.de) oder Domains (@x.de), deren Bilder aus dem Netz immer geladen werden.</summary>
     public List<string> TrustedImageSenders { get; set; } = new();
     public List<SearchFolder> SearchFolders { get; set; } = new();
@@ -244,6 +270,8 @@ public sealed class UserSettings
     public bool SmartInbox { get; set; } = true;
     /// <summary>Neue Mails bekommen lernende Kategorien automatisch (Mail/SmartInbox.cs).</summary>
     public bool SmartCategories { get; set; } = true;
+    /// <summary>In den Junk-Ordner verschoben: von der Verteilerliste abmelden (Mail/AutoUnsubscribe.cs). Standard aus.</summary>
+    public bool AutoUnsubscribe { get; set; }
     /// <summary>Alte Smart Inbox (vor den lernenden Kategorien) - nur noch für die Übernahme gelesen.</summary>
     public List<string> SmartHidden { get; set; } = new();
     public List<DmOffice.Mail.SmartCategory> SmartCustom { get; set; } = new();
@@ -254,6 +282,7 @@ public sealed class UserSettings
     public bool FocusOn(MailAccount a) => SmartInbox && FocusedInbox && a.FocusedInbox;
     public bool CalendarOn(MailAccount a) => SmartInbox && SmartCalendar && a.FocusedInbox;
     public bool CategoriesOn(MailAccount a) => SmartInbox && SmartCategories && a.FocusedInbox;
+    public bool UnsubscribeOn(MailAccount a) => SmartInbox && AutoUnsubscribe && a.FocusedInbox;
     /// <summary>Kalender fuer angenommene Einladungen. Null: der erste Kalender fuer Termine.</summary>
     public long? InviteCalendar { get; set; }
     /// <summary>Volltextsuche in Anhaengen und Dateien, auf Wunsch mit OCR (Search/TextIndex.cs). Standard aus.</summary>

@@ -34,7 +34,10 @@ public class OutgoingInviteTests : IClassFixture<SharedCalendarFixture>
         });
         var anna = _fx.As("anna");
         var cal = Personal();
-        var start = Outbox().Count;
+        // Neue Mails an ihrer Id erkennen, nicht an der Position: andere Tests der Sammlung koennen Zeilen im Postausgang
+        // derselben Benutzerin anlegen oder entfernen, waehrend dieser laeuft
+        var known = Outbox().Select(m => m.Id).ToHashSet();
+        List<MailQueue.Row> Fresh() => Outbox().Where(m => !known.Contains(m.Id)).ToList();
 
         var r = await anna.PostAsJsonAsync("/api/pim/events", new
         {
@@ -51,7 +54,7 @@ public class OutgoingInviteTests : IClassFixture<SharedCalendarFixture>
         Assert.Contains("ORGANIZER;CN=Anna Beispiel:mailto:anna@example.org", ics);
         Assert.Contains("mailto:xaver@example.com", ics);
         Assert.Contains("PARTSTAT=NEEDS-ACTION", ics);
-        var invite = Outbox().Skip(start).Single();
+        var invite = Assert.Single(Fresh(), m => m.Subject.StartsWith("Einladung: Grillabend"));
         Assert.StartsWith("Einladung: Grillabend", invite.Subject);
         Assert.Contains("Xaver", invite.Recipients);
         Assert.Contains("yvonne@example.com", invite.Recipients);
@@ -73,7 +76,7 @@ public class OutgoingInviteTests : IClassFixture<SharedCalendarFixture>
         res = await r.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal(1, res.GetProperty("invited").GetInt32());
         Assert.Equal(1, res.GetProperty("cancelled").GetInt32());
-        var after = Outbox().Skip(start + 1).ToList();
+        var after = Fresh();
         Assert.Contains(after, m => m.Subject.StartsWith("Aktualisiert: Grillabend") && m.Recipients.Contains("Xaver") && !m.Recipients.Contains("yvonne"));
         Assert.Contains(after, m => m.Subject.StartsWith("Abgesagt: Grillabend") && m.Recipients.Contains("yvonne@example.com") && !m.Recipients.Contains("Xaver"));
 
@@ -81,7 +84,7 @@ public class OutgoingInviteTests : IClassFixture<SharedCalendarFixture>
         var del = await anna.DeleteAsync($"/api/pim/events/{cal}/{Uri.EscapeDataString(uri)}");
         del.EnsureSuccessStatusCode();
         Assert.Equal(1, (await del.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("cancelled").GetInt32());
-        Assert.Contains(Outbox().Skip(start + 3), m => m.Subject.StartsWith("Abgesagt: Grillabend") && m.Recipients.Contains("Xaver"));
+        Assert.Contains(Fresh(), m => m.Subject.StartsWith("Abgesagt: Grillabend") && m.Recipients.Contains("Xaver"));
     }
 
     [Fact]

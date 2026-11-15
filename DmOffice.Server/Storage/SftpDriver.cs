@@ -1,0 +1,403 @@
+using System.Net;
+using System.Net.Sockets;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using Renci.SshNet;
+using Renci.SshNet.Common;
+
+namespace DmOffice.Storage;
+
+/// <summary>
+/// Ein Speicher über SFTP (SSH): NAS, Linux-Server, Storage Box. Adresse „sftp://server:port/ordner“, optional
+/// „?connections=4“; „sftp://server/~/ordner“ ist relativ zum Startordner des Kontos. Angemeldet wird mit Passwort oder
+/// SSH-Schlüssel (im Passwortfeld, PEM bzw. OpenSSH). Höchstens <see cref="Connections"/> Verbindungen gleichzeitig - viele
+/// Anbieter begrenzen die Zahl je Konto. Der Schlüssel des Servers wird beim ersten Verbinden gemerkt
+/// (<see cref="KnownHosts"/>); meldet er später einen anderen, bricht der Treiber ab.
+/// </summary>
+public sealed class SftpDriver : IStorageDriver
+{
+    public const int DefaultConnections = 4, MaxConnections = 16;
+
+    private readonly string _host, _connectTo, _user, _root;
+    private readonly int _port;
+    private readonly AuthenticationMethod _auth;
+    private readonly SemaphoreSlim _slots;
+    private readonly Stack<SftpClient> _idle = new();
+    private readonly List<SftpClient> _all = new();
+    private bool _disposed;
+
+    /// <summary>Gleichzeitige Verbindungen dieses Ziels.</summary>
+    public int Connections { get; }
+
+    /// <param name="url">sftp://server[:port]/ordner[?connections=n]</param>
+    /// <param name="secret">Passwort oder privater SSH-Schlüssel (beginnt mit „-----BEGIN“)</param>
+    /// <param name="allowAddress">Prüfung der aufgelösten Adresse (Benutzer-Mounts: kein Heimnetz); null: alles erlaubt</param>
+    public SftpDriver(string url, string? user, string? secret, Func<IPAddress, bool>? allowAddress = null)
+    {
+        if (!TryParse(url, out var host, out var port, out var root, out var connections))
+            throw new ArgumentException("Die Adresse muss die Form sftp://server:port/ordner haben.");
+        if (string.IsNullOrWhiteSpace(user)) throw new ArgumentException("Für SFTP bitte einen Benutzernamen angeben.");
+        _host = host; _port = port; _root = root; _user = user.Trim();
+        Connections = connections;
+        _slots = new SemaphoreSlim(connections, connections);
+        _auth = IsPrivateKey(secret)
+            ? new PrivateKeyAuthenticationMethod(_user, new PrivateKeyFile(new MemoryStream(Encoding.UTF8.GetBytes(secret!.Trim() + "\n"))))
+            : new PasswordAuthenticationMethod(_user, secret ?? "");
+        _connectTo = host;
+        if (allowAddress != null)
+        {
+            // Vorab auflösen und prüfen; verbunden wird mit genau dieser Adresse (kein zweites Auflösen dazwischen)
+            var addresses = IPAddress.TryParse(host, out var ip) ? [ip] : Dns.GetHostAddresses(host);
+            var ok = addresses.FirstOrDefault(allowAddress)
+                ?? throw new UnauthorizedAccessException("Diese Adresse liegt im Heimnetz oder ist nicht erlaubt.");
+            _connectTo = ok.ToString();
+        }
+    }
+
+    public static bool IsPrivateKey(string? secret) => secret != null && secret.TrimStart().StartsWith("-----BEGIN", StringComparison.Ordinal);
+
+    /// <summary>Adresse zerlegen: Server, Port (Vorgabe 22), Startordner, gleichzeitige Verbindungen.</summary>
+    public static bool TryParse(string? url, out string host, out int port, out string root, out int connections)
+    {
+        host = ""; port = 22; root = ""; connections = DefaultConnections;
+        if (!Uri.TryCreate(url?.Trim(), UriKind.Absolute, out var u) || u.Scheme != "sftp" || string.IsNullOrEmpty(u.Host)) return false;
+        host = u.IdnHost.Trim('[', ']');
+        port = u.IsDefaultPort || u.Port <= 0 ? 22 : u.Port;
+        var path = Uri.UnescapeDataString(u.AbsolutePath);
+        // „/~/ordner“: relativ zum Startordner des Kontos; sonst ab der Wurzel des Servers
+        root = path.StartsWith("/~", StringComparison.Ordinal) ? path[2..].Trim('/') : path.TrimEnd('/');
+        foreach (var part in u.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
+            if (part.Split('=', 2) is [var k, var v] && k.Equals("connections", StringComparison.OrdinalIgnoreCase) && int.TryParse(v, out var n))
+                connections = Math.Clamp(n, 1, MaxConnections);
+        return true;
+    }
+
+    /// <summary>Adresse mit gewünschter Zahl gleichzeitiger Verbindungen (für die Formulare).</summary>
+    public static string WithConnections(string url, int connections)
+    {
+        var u = new UriBuilder(url.Trim());
+        var rest = u.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries).Where(p => !p.StartsWith("connections=", StringComparison.OrdinalIgnoreCase));
+        u.Query = string.Join("&", rest.Append("connections=" + Math.Clamp(connections, 1, MaxConnections)));
+        return u.Uri.ToString();
+    }
+
+    // ---------------- Bekannte Server-Schlüssel ----------------
+
+    /// <summary>Datei mit den gemerkten Schlüsseln (Server:Port → SHA256-Fingerabdruck); beim Start gesetzt.</summary>
+    public static string? KnownHosts { get; set; }
+    private static readonly object HostLock = new();
+
+    private static Dictionary<string, string> LoadHosts()
+    {
+        try { return KnownHosts != null && File.Exists(KnownHosts) ? JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(KnownHosts)) ?? new() : new(); }
+        catch (Exception e) when (e is IOException or JsonException) { return new(); }
+    }
+
+    /// <summary>Gemerkten Schlüssel vergessen (der Server hat wirklich einen neuen bekommen).</summary>
+    public static void ForgetHost(string host, int port)
+    {
+        lock (HostLock)
+        {
+            var hosts = LoadHosts();
+            if (hosts.Remove(host.ToLowerInvariant() + ":" + port) && KnownHosts != null) File.WriteAllText(KnownHosts, JsonSerializer.Serialize(hosts));
+        }
+    }
+
+    /// <summary>Fingerabdruck prüfen: unbekannt → merken; bekannt → muss gleich sein.</summary>
+    internal static bool TrustHost(string host, int port, string fingerprint, out string? known)
+    {
+        var key = host.ToLowerInvariant() + ":" + port;
+        lock (HostLock)
+        {
+            var hosts = LoadHosts();
+            if (hosts.TryGetValue(key, out known)) return known == fingerprint;
+            hosts[key] = fingerprint;
+            if (KnownHosts != null) { Directory.CreateDirectory(Path.GetDirectoryName(KnownHosts)!); File.WriteAllText(KnownHosts, JsonSerializer.Serialize(hosts)); }
+            return true;
+        }
+    }
+
+    // ---------------- Verbindungen ----------------
+
+    private async Task<SftpClient> Acquire(CancellationToken ct)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        await _slots.WaitAsync(ct);
+        try
+        {
+            lock (_idle)
+                while (_idle.Count > 0)
+                {
+                    var c = _idle.Pop();
+                    if (c.IsConnected) return c;
+                    lock (_all) _all.Remove(c);
+                    c.Dispose();
+                }
+            var client = new SftpClient(new Renci.SshNet.ConnectionInfo(_connectTo, _port, _user, _auth) { Timeout = TimeSpan.FromSeconds(20) }) { OperationTimeout = TimeSpan.FromMinutes(5) };
+            string? mismatch = null;
+            client.HostKeyReceived += (_, e) =>
+            {
+                var fp = "SHA256:" + e.FingerPrintSHA256;
+                e.CanTrust = TrustHost(_host, _port, fp, out var known);
+                if (!e.CanTrust) mismatch = $"Der Server meldet einen anderen Schlüssel ({fp}) als beim ersten Verbinden ({known}). Wenn er wirklich neu eingerichtet wurde, den gemerkten Schlüssel in der Verwaltung zurücksetzen.";
+            };
+            try { await client.ConnectAsync(ct); }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                client.Dispose();
+                if (mismatch != null) throw new UnauthorizedAccessException(mismatch);
+                // Antwortet dort etwas anderes als ein SSH-Server (etwa ein FTP-Server), das sagen statt „nicht erreichbar“
+                if (e is SshConnectionException or SshOperationTimeoutException && await OtherServer(_connectTo, _port, ct) is { } other) throw new IOException(other);
+                throw Translate(e, "Verbinden");
+            }
+            lock (_all) _all.Add(client);
+            return client;
+        }
+        catch { _slots.Release(); throw; }
+    }
+
+    private void Release(SftpClient c)
+    {
+        if (_disposed) { c.Dispose(); }
+        else lock (_idle) _idle.Push(c);
+        _slots.Release();
+    }
+
+    private async Task<T> Use<T>(string what, Func<SftpClient, Task<T>> work, CancellationToken ct)
+    {
+        var c = await Acquire(ct);
+        try { return await work(c); }
+        catch (Exception e) when (e is not OperationCanceledException && e is not KeyNotFoundException && e is not UnauthorizedAccessException && e is not ArgumentException) { throw Translate(e, what); }
+        finally { Release(c); }
+    }
+
+    /// <summary>Erste Zeile des Servers lesen: ein FTP-Server meldet sich mit „220“, ein SSH-Server mit „SSH-“. Meldung, wenn es kein SSH-Server ist; sonst null.</summary>
+    internal static async Task<string?> OtherServer(string host, int port, CancellationToken ct)
+    {
+        try
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TimeSpan.FromSeconds(5));
+            using var tcp = new TcpClient();
+            await tcp.ConnectAsync(host, port, cts.Token);
+            var buf = new byte[64];
+            var n = await tcp.GetStream().ReadAsync(buf, cts.Token);
+            return OtherServerText(System.Text.Encoding.ASCII.GetString(buf, 0, n));
+        }
+        catch (Exception e) when (e is SocketException or IOException or OperationCanceledException && !ct.IsCancellationRequested) { return null; }
+    }
+
+    internal static string? OtherServerText(string banner) =>
+        banner.Length == 0 || banner.StartsWith("SSH-", StringComparison.Ordinal) ? null
+        : banner.StartsWith("220", StringComparison.Ordinal) ? "Verbinden: Unter dieser Adresse antwortet ein FTP-Server. dmOffice unterstützt nur SFTP (über SSH)."
+        : "Verbinden: Unter dieser Adresse antwortet kein SFTP-Server.";
+
+    private static Exception Translate(Exception e, string what) => e switch
+    {
+        SftpPathNotFoundException => new KeyNotFoundException(what + ": nicht gefunden."),
+        SftpPermissionDeniedException => new UnauthorizedAccessException(what + ": keine Berechtigung."),
+        SshAuthenticationException => new UnauthorizedAccessException(what + ": Anmeldung abgelehnt (Benutzername, Passwort oder Schlüssel)."),
+        SocketException or SshConnectionException or SshOperationTimeoutException or ProxyException => new IOException(what + ": der SFTP-Server ist nicht erreichbar."),
+        IOException io => io,
+        _ => new IOException(what + ": " + e.Message),
+    };
+
+    private string Full(string path)
+    {
+        var rel = StoragePath.Clean(path);
+        if (_root.Length == 0) return rel.Length == 0 ? "." : rel;
+        return rel.Length == 0 ? _root : _root + "/" + rel;
+    }
+
+    private static DriverEntry Entry(string name, Renci.SshNet.Sftp.SftpFileAttributes a) =>
+        new(name, a.IsDirectory, a.IsDirectory ? 0 : a.Size, a.LastWriteTimeUtc, null);
+
+    // ---------------- IStorageDriver ----------------
+
+    public Task<List<DriverEntry>> ListAsync(string path, CancellationToken ct) => Use("Auflisten", async c =>
+    {
+        var list = new List<DriverEntry>();
+        await foreach (var f in c.ListDirectoryAsync(Full(path), ct))
+        {
+            if (f.Name is "." or "..") continue;
+            // Verknüpfungen nicht folgen: sie könnten aus dem freigegebenen Ordner heraus zeigen
+            if (f.IsSymbolicLink || !(f.IsDirectory || f.IsRegularFile)) continue;
+            list.Add(Entry(f.Name, f.Attributes));
+        }
+        return list;
+    }, ct);
+
+    public async Task<DriverEntry?> StatAsync(string path, CancellationToken ct)
+    {
+        try { return await Use("Abfragen", async c => Entry(Path.GetFileName(StoragePath.Clean(path)), await c.GetAttributesAsync(Full(path), ct)), ct); }
+        catch (KeyNotFoundException) { return null; }
+    }
+
+    public async Task<Stream> OpenReadAsync(string path, CancellationToken ct)
+    {
+        var c = await Acquire(ct);
+        try { return new Lease(await c.OpenAsync(Full(path), FileMode.Open, FileAccess.Read, ct), () => Release(c)); }
+        catch (Exception e) when (e is not OperationCanceledException) { Release(c); throw Translate(e, "Lesen"); }
+        catch { Release(c); throw; }
+    }
+
+    public Task<byte[]> ReadRangeAsync(string path, long offset, int count, CancellationToken ct) => Use("Lesen", async c =>
+    {
+        await using var s = await c.OpenAsync(Full(path), FileMode.Open, FileAccess.Read, ct);
+        s.Seek(offset, SeekOrigin.Begin);
+        var buf = new byte[count];
+        var done = 0;
+        while (done < count)
+        {
+            var n = await s.ReadAsync(buf.AsMemory(done, count - done), ct);
+            if (n == 0) break;
+            done += n;
+        }
+        return done == count ? buf : buf[..done];
+    }, ct);
+
+    public async Task WriteAsync(string path, Stream data, CancellationToken ct)
+    {
+        var rel = StoragePath.Clean(path);
+        await MkdirAsync(StoragePath.Parent(rel), ct);
+        await Use("Schreiben", async c =>
+        {
+            // Erst unter vorläufigem Namen, dann umbenennen: Bricht die Übertragung ab, bleibt die alte Datei ganz
+            var target = Full(rel);
+            var temp = Full(StoragePath.Join(StoragePath.Parent(rel), ".dmtmp-" + Convert.ToHexString(RandomNumberGenerator.GetBytes(6)).ToLowerInvariant()));
+            await c.UploadFileAsync(data, temp, ct);
+            try { c.RenameFile(temp, target, true); }
+            catch (SshException)
+            {
+                // Ohne posix-rename: Ziel erst löschen, dann umbenennen
+                try { await c.DeleteFileAsync(target, ct); } catch (SftpPathNotFoundException) { }
+                await c.RenameFileAsync(temp, target, ct);
+            }
+            return true;
+        }, ct);
+    }
+
+    public Task MkdirAsync(string path, CancellationToken ct) => Use("Ordner anlegen", async c =>
+    {
+        var rel = StoragePath.Clean(path);
+        var cur = "";
+        foreach (var part in rel.Split('/', StringSplitOptions.RemoveEmptyEntries))
+        {
+            cur = StoragePath.Join(cur, part);
+            if (!await c.ExistsAsync(Full(cur), ct)) await c.CreateDirectoryAsync(Full(cur), ct);
+        }
+        if (_root.Length > 0 && rel.Length == 0 && !await c.ExistsAsync(_root, ct)) await c.CreateDirectoryAsync(_root, ct);
+        return true;
+    }, ct);
+
+    public Task DeleteAsync(string path, CancellationToken ct) => Use("Löschen", async c =>
+    {
+        async Task Remove(string full)
+        {
+            Renci.SshNet.Sftp.SftpFileAttributes a;
+            try { a = await c.GetAttributesAsync(full, ct); } catch (SftpPathNotFoundException) { return; }
+            if (!a.IsDirectory) { try { await c.DeleteFileAsync(full, ct); } catch (SftpPathNotFoundException) { } return; }
+            var kids = new List<string>();
+            await foreach (var f in c.ListDirectoryAsync(full, ct)) if (f.Name is not ("." or "..")) kids.Add(full + "/" + f.Name);
+            foreach (var k in kids) await Remove(k);
+            try { await c.DeleteDirectoryAsync(full, ct); } catch (SftpPathNotFoundException) { }
+        }
+        if (StoragePath.Clean(path).Length == 0) throw new ArgumentException("Die Wurzel lässt sich nicht löschen.");
+        await Remove(Full(path));
+        return true;
+    }, ct);
+
+    public async Task MoveAsync(string from, string to, CancellationToken ct)
+    {
+        await MkdirAsync(StoragePath.Parent(StoragePath.Clean(to)), ct);
+        await Use("Verschieben", c => { c.RenameFile(Full(from), Full(to), true); return Task.FromResult(true); }, ct);
+    }
+
+    public async Task<DriverSpace?> SpaceAsync(CancellationToken ct)
+    {
+        try
+        {
+            return await Use("Platz abfragen", async c =>
+            {
+                var s = await c.GetStatusAsync(_root.Length == 0 ? "." : _root, ct);
+                var block = (long)s.BlockSize;
+                return (DriverSpace?)new DriverSpace((long)(s.TotalBlocks - s.FreeBlocks) * block, (long)s.AvailableBlocks * block);
+            }, ct);
+        }
+        catch (Exception e) when (e is IOException or NotSupportedException or UnauthorizedAccessException or KeyNotFoundException) { return null; }   // ohne statvfs-Erweiterung
+    }
+
+    public Task SetModifiedAsync(string path, DateTime utc, CancellationToken ct) =>
+        Use("Zeit setzen", c => { c.SetLastWriteTimeUtc(Full(path), DateTime.SpecifyKind(utc, DateTimeKind.Utc)); return Task.FromResult(true); }, ct);
+
+    public void Dispose()
+    {
+        _disposed = true;
+        lock (_all) { foreach (var c in _all) { try { c.Dispose(); } catch (Exception) { } } _all.Clear(); }
+    }
+
+    /// <summary>Lesestrom, der beim Schließen die Verbindung zurückgibt.</summary>
+    private sealed class Lease(Stream inner, Action done) : Stream
+    {
+        private int _closed;
+        public override bool CanRead => true;
+        public override bool CanSeek => inner.CanSeek;
+        public override bool CanWrite => false;
+        public override long Length => inner.Length;
+        public override long Position { get => inner.Position; set => inner.Position = value; }
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count) => inner.Read(buffer, offset, count);
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default) => inner.ReadAsync(buffer, ct);
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct) => inner.ReadAsync(buffer, offset, count, ct);
+        public override long Seek(long offset, SeekOrigin origin) => inner.Seek(offset, origin);
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        protected override void Dispose(bool disposing)
+        {
+            if (Interlocked.Exchange(ref _closed, 1) == 0) { try { inner.Dispose(); } finally { done(); } }
+            base.Dispose(disposing);
+        }
+    }
+
+    // ---------------- Schlüssel erzeugen ----------------
+
+    /// <summary>Neues Schlüsselpaar (RSA 3072): privater Teil als PEM fürs Passwortfeld, öffentlicher im OpenSSH-Format für den Server.</summary>
+    public static (string PrivatePem, string PublicOpenSsh) NewKeyPair(string comment = "dmoffice")
+    {
+        using var rsa = RSA.Create(3072);
+        var p = rsa.ExportParameters(false);
+        static void Str(MemoryStream m, byte[] b) { var len = BitConverter.GetBytes(b.Length); if (BitConverter.IsLittleEndian) Array.Reverse(len); m.Write(len); m.Write(b); }
+        static byte[] MpInt(byte[] b) => b.Length > 0 && (b[0] & 0x80) != 0 ? [0, .. b] : b;
+        using var blob = new MemoryStream();
+        Str(blob, Encoding.ASCII.GetBytes("ssh-rsa"));
+        Str(blob, MpInt(p.Exponent!));
+        Str(blob, MpInt(p.Modulus!));
+        return (rsa.ExportRSAPrivateKeyPem(), "ssh-rsa " + Convert.ToBase64String(blob.ToArray()) + " " + comment);
+    }
+}
+
+/// <summary>SFTP in der Oberfläche: Schlüsselpaar erzeugen, gemerkten Server-Schlüssel zurücksetzen (nur Verwaltung).</summary>
+public static class SftpApi
+{
+    public record HostBody(string Url);
+
+    public static void Map(WebApplication app)
+    {
+        var api = app.MapGroup("/api/sftp").RequireAuthorization();
+        // Neues Schlüsselpaar: der private Teil kommt ins Passwortfeld, den öffentlichen hinterlegt man beim Server
+        api.MapPost("/keypair", () =>
+        {
+            if (!DmOffice.Core.Features.On(DmOffice.Core.Features.Sftp)) return Results.NotFound();
+            var (priv, pub) = SftpDriver.NewKeyPair();
+            return Results.Ok(new { privateKey = priv, publicKey = pub });
+        });
+        // Der Server hat wirklich einen neuen Schlüssel bekommen: den gemerkten vergessen, beim nächsten Verbinden gilt der neue
+        api.MapPost("/forget-host", (HostBody b) =>
+        {
+            if (!SftpDriver.TryParse(b.Url, out var host, out var port, out _, out _)) return Results.BadRequest(new { error = "Die Adresse muss die Form sftp://server:port/ordner haben." });
+            SftpDriver.ForgetHost(host, port);
+            return Results.NoContent();
+        }).RequireAuthorization("admin");
+    }
+}

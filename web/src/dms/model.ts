@@ -58,6 +58,8 @@ export interface Profile {
   inboxFolder?: string
   /** Ziel „external“: externer Ordner; Angaben bei Änderungen neu in die PDF schreiben */
   mount?: string | null; writeMeta?: boolean
+  /** Zielordner unter Dateien ausblenden (Vorgabe an) */
+  hideInFiles?: boolean
 }
 
 /** Externe Ordner der Person (Quellen und Ziel). */
@@ -66,7 +68,13 @@ export interface Mount { id: string; name: string; readOnly: boolean }
 export interface Source {
   id: string; name: string; mount: string; folder: string; profile: string | null; correspondent: string | null; doctype: string | null; tags: string[]
   every: number; active: boolean; lastRun: string | null; error: string | null; lastCount: number; lastDuplicates: number; total: number
+  /** Namen der Unterordner übernehmen; je Unterordner: tag, correspondent, doctype oder none */
+  useFolders?: boolean; folders?: Record<string, FolderRole>
+  /** Wird gerade geprüft oder wartet darauf */
+  busy?: boolean
 }
+
+export type FolderRole = 'tag' | 'correspondent' | 'doctype' | 'none'
 
 export interface State {
   ocr: boolean; ocrReason: string | null; pdfa: boolean; aiAllowed: boolean; aiService: string | null; ai: boolean; inbox: number; queued: number
@@ -76,6 +84,8 @@ export interface State {
   tresor: boolean; tresorOpen: boolean; tresorInbox: number
   /** Anzahl unter „Alle Dokumente“ (Dateiablage bzw. offener Tresor) */
   all: number; tresorAll: number
+  /** Fixierte Dokumente (Dateiablage bzw. offener Tresor) */
+  fixedCount?: number; tresorFixed?: number
   /** Bei geschlossenem Tresor abgelegt, wartet aufs Öffnen */
   tresorWaiting: number
 }
@@ -116,6 +126,8 @@ export interface Filter {
   /** Rolle: das geltende Dokument und die früheren Versionen */
   role?: string; noRole?: boolean
   fixed?: boolean
+  /** Ablage passt nicht zur Vorgabe (dmsplace) */
+  misplaced?: boolean
   /** Warteschlange: noch nicht verarbeitet */
   queued?: boolean
   /** „tresor“: Dokumente im Tresor */
@@ -128,7 +140,7 @@ export const loadDocs = (f: Filter, offset = 0, limit = 200) =>
   api.get<{ items: Doc[]; total: number }>('/api/dms/docs?' + q({
     q: f.q || undefined, correspondent: f.correspondent, doctype: f.doctype, tags: f.tags?.length ? f.tags.join(',') : undefined,
     docFrom: f.docFrom, docTo: f.docTo, importedFrom: f.importedFrom, importedTo: f.importedTo, inbox: f.inbox, profile: f.profile,
-    noCorrespondent: f.noCorrespondent, noDoctype: f.noDoctype, noTags: f.noTags, paperlessDiffers: f.paperlessDiffers, queued: f.queued, area: f.area, role: f.role, noRole: f.noRole, sort: f.sort, desc: f.sort ? f.desc : undefined, offset, limit,
+    noCorrespondent: f.noCorrespondent, noDoctype: f.noDoctype, noTags: f.noTags, paperlessDiffers: f.paperlessDiffers, queued: f.queued, area: f.area, role: f.role, noRole: f.noRole, fixed: f.fixed, sort: f.sort, desc: f.sort ? f.desc : undefined, offset, limit,
   }))
 
 /** Filter für einen Ordner eines virtuellen Baums (samt der Ordner darüber). */

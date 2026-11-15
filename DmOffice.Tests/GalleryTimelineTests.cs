@@ -88,6 +88,20 @@ public class GalleryTimelineTests : IClassFixture<ChatFixture>
             var flat = await Get(c, "/api/gallery/timeline/bucket?stack=false&k=" + now);
             Assert.Contains(dir + "/paar.cr2", Ids(flat));
 
+            // Nach Tag: Abschnitt je Tag (Name vom Server), Fotos ohne Tag unter „Ohne Tag“ zuletzt; eine neue Zuordnung gilt sofort
+            Assert.Equal(HttpStatusCode.NoContent, (await c.PostAsJsonAsync("/api/files/labels", new { paths = new[] { dir + "/neu.jpg" }, addTags = new[] { "Strand" } })).StatusCode);
+            var byTag = (await Get(c, "/api/gallery/timeline/buckets?group=tag")).GetProperty("buckets").EnumerateArray().ToList();
+            Assert.Equal("Strand", byTag[0].GetProperty("l").GetString());
+            Assert.Equal("Ohne Tag", byTag[^1].GetProperty("l").GetString());
+            Assert.Equal([dir + "/neu.jpg"], Ids(await Get(c, "/api/gallery/timeline/bucket?group=tag&k=" + Uri.EscapeDataString(byTag[0].GetProperty("k").GetString()!))));
+            // Die Suche findet Fotos auch über ihren Tag
+            var byLabel = (await Get(c, "/api/gallery/timeline/search?q=strand")).GetProperty("items").EnumerateArray().Select(i => i.GetProperty("i").GetString()).ToList();
+            Assert.Contains(dir + "/neu.jpg", byLabel);
+            var files = (await Get(c, "/api/files/search?photos=true&type=media&q=strand")).GetProperty("items").EnumerateArray().Select(i => i.GetProperty("path").GetString()).ToList();
+            Assert.Contains(dir + "/neu.jpg", files);
+            await c.PostAsJsonAsync("/api/files/labels", new { paths = new[] { dir + "/neu.jpg" }, removeTags = new[] { "Strand" } });
+            Assert.DoesNotContain((await Get(c, "/api/gallery/timeline/buckets?group=tag")).GetProperty("buckets").EnumerateArray(), x => x.GetProperty("l").GetString() == "Strand");
+
             // Unverändert: 304; ein neues Foto: anderer Stand, ein Foto mehr
             var first = await c.GetAsync("/api/gallery/timeline/buckets");
             using (var again = new HttpRequestMessage(HttpMethod.Get, "/api/gallery/timeline/buckets"))

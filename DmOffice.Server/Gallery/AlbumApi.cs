@@ -42,12 +42,14 @@ public static class AlbumApi
         return own.Concat(ext).ToList();
     }
 
-    /// <summary>Ein Foto eines Benutzers nach seinem Verweis; null, wenn es nicht mehr da ist.</summary>
-    public static Photo? Resolve(UserSpace space, ServerConfig config, string reference)
+    /// <summary>Ein Foto eines Benutzers nach seinem Verweis; null, wenn es nicht mehr da ist oder inzwischen in einem Systemordner liegt.</summary>
+    /// <param name="system">Systemordner-Filter (FileStore.SystemFilter); fehlt er, wird er gelesen</param>
+    public static Photo? Resolve(UserSpace space, ServerConfig config, string reference, Func<string, bool>? system = null)
     {
         if (reference.StartsWith("f:") && long.TryParse(reference[2..], out var id))
         {
             if (FileStore.ById(space.Db, id) is not { IsDir: false } f) return null;
+            if ((system ?? FileStore.SystemFilter(space.Db))(f.Path)) return null;
             var meta = FileMeta.List(space.Db, f.Path.Contains('/') ? f.Path[..f.Path.LastIndexOf('/')] : "").FirstOrDefault(m => m.Path == f.Path);
             return new Photo(space.User.Id, reference, f.Name, f.Size, f.Mime, f.Modified, f.Etag, meta, null, f.Path, null);
         }
@@ -140,7 +142,8 @@ public static class AlbumApi
         {
             UserSpace space;
             try { space = spaces.Get(g.Key); } catch (Exception e) when (e is KeyNotFoundException or InvalidOperationException) { continue; }
-            foreach (var i in g) if (Resolve(space, config, i.Ref) is { } p) result.Add(p);
+            var system = FileStore.SystemFilter(space.Db);
+            foreach (var i in g) if (Resolve(space, config, i.Ref, system) is { } p) result.Add(p);
         }
         return result;
     }
@@ -267,10 +270,12 @@ public static class AlbumApi
             var a = Visible(store, id, space.User.Id);
             if (a.Kind != Album.Fixed) return Results.BadRequest(new { error = "In ein Smart-Album lässt sich nichts legen." });
             var refs = new List<string>();
+            // Systemordner (notizi, System-Tresor) gehören wie in der Galerie nicht in Alben
+            var system = FileStore.SystemFilter(space.Db);
             foreach (var p in body.Paths ?? [])
             {
                 if (p.StartsWith("ext:")) { GalleryFolders.Resolve(space, config, p[4..]); refs.Add("x:" + p[4..]); }
-                else if (FileStore.Get(space.Db, p) is { IsDir: false } f && FileKinds.Of(f) is "image" or "video") refs.Add("f:" + f.FileId);
+                else if (FileStore.Get(space.Db, p) is { IsDir: false } f && FileKinds.Of(f) is "image" or "video" && !system(f.Path)) refs.Add("f:" + f.FileId);
             }
             return Results.Ok(new { added = store.Add(id, space.User.Id, refs, space.User.Id) });
         });

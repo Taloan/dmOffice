@@ -778,7 +778,7 @@ export default function AudioView() {
       </div>
       {ctx && (
         <Menu open onOpenChange={(_, d) => !d.open && setCtx(null)}
-          positioning={{ target: { getBoundingClientRect: () => ({ x: ctx.x, y: ctx.y, top: ctx.y, left: ctx.x, bottom: ctx.y, right: ctx.x, width: 0, height: 0 }) } as any }}>
+          positioning={{ autoSize: 'height', target: { getBoundingClientRect: () => ({ x: ctx.x, y: ctx.y, top: ctx.y, left: ctx.x, bottom: ctx.y, right: ctx.x, width: 0, height: 0 }) } as any }}>
           <MenuPopover>
             <MenuList>
               <MenuItem icon={<Play20Filled />} disabled={!ctx.tracks.some(playable)} onClick={() => playFrom(ctx.tracks, null, notify)}>{t('Abspielen')}</MenuItem>

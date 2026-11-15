@@ -77,6 +77,11 @@ export function applyBrand(color?: string) {
 export const lightTheme: Theme = themesFor(SIGNATURE).light
 export const darkTheme: Theme = themesFor(SIGNATURE).dark
 
+/** Das Thema, das die App gerade nutzt (Akzentfarbe) - für Dialoge, die außerhalb des App-Baums gerendert werden */
+let active: { light: Theme; dark: Theme } = { light: lightTheme, dark: darkTheme }
+export const setActiveThemes = (t: { light: Theme; dark: Theme }) => { active = t }
+export const activeTheme = (dark: boolean): Theme => dark ? active.dark : active.light
+
 export type ThemeChoice = 'system' | 'light' | 'dark'
 
 const KEY = 'dmoffice.theme'

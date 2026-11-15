@@ -15,6 +15,11 @@ public class ShownTests
     [InlineData("application/pdf", "x.pdf", true)]
     [InlineData("text/plain", "x.txt", true)]
     [InlineData(null, "x.svg", false)]
+    [InlineData("image/svg+xml; charset=utf-8", "x.svg", false)]
+    [InlineData("IMAGE/SVG+XML", "x.svg", false)]
+    [InlineData(" Image/Svg+Xml ;q=1", "x.svg", false)]
+    [InlineData("Text/HTML; charset=utf-8", "x.html", false)]
+    [InlineData("IMAGE/JPEG", "x.jpg", true)]
     public void Nur_Sicheres_wird_gezeigt(string? mime, string name, bool shown)
     {
         var http = new DefaultHttpContext();
@@ -23,5 +28,17 @@ public class ShownTests
         if (!shown) Assert.Equal("application/octet-stream", m);
         if (shown && m != "application/pdf") Assert.Contains("sandbox", http.Response.Headers.ContentSecurityPolicy.ToString());
         Assert.Equal("nosniff", http.Response.Headers.XContentTypeOptions.ToString());
+    }
+
+    [Theory]
+    [InlineData("image/svg+xml; charset=utf-8", false)]
+    [InlineData("text/html; charset=utf-8", false)]
+    [InlineData("TEXT/HTML", false)]
+    [InlineData("text/plain; charset=utf-8", true)]
+    [InlineData("image/PNG", true)]
+    public void Nur_gezeigt_vergleicht_den_Typ_ohne_Parameter(string mime, bool viewable)
+    {
+        var f = new FileEntry("a/x", false, 1, "\"e\"", mime, DateTime.UtcNow, DateTime.UtcNow, 1);
+        Assert.Equal(viewable, FilesApi.Viewable(f));
     }
 }

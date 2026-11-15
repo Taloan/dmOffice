@@ -71,6 +71,11 @@ export function AlbumLinksDialog({ album, onClose }: { album: AlbumInfo; onClose
             <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>
               {t('Wer den Link hat, sieht die Fotos im Browser, ohne Anmeldung - auch die, die später dazukommen. Ändern oder löschen kann er nichts.')}
             </Text>
+            {album.shared && (
+              <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>
+                {t('Das Album ist geteilt: Der Link zeigt auch die Fotos, die Mitglieder hinzugefügt haben, mit „Originale herunterladen erlauben“ auch deren Originale.')}
+              </Text>
+            )}
             {links == null ? <Spinner size="tiny" /> : links.map(l => (
               <div key={l.id} style={{ display: 'flex', alignItems: 'center', gap: 8, borderBottom: `1px solid ${tokens.colorNeutralStroke2}`, paddingBottom: 6 }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -124,7 +129,10 @@ export function AlbumPicker({ albums, current, onPick, onNew, onNewSmart }: { al
   return (
     <Menu>
       <MenuTrigger disableButtonEnhancement>
-        <Button size="small" appearance={cur ? 'primary' : 'subtle'} icon={<ChevronDown16Regular />} iconPosition="after">{cur ? cur.name : t('Alle Fotos')}</Button>
+        {/* Langer Name: hinten mit „…“ gekürzt, voll im Tooltip */}
+        <Button size="small" appearance={cur ? 'primary' : 'subtle'} icon={<ChevronDown16Regular />} iconPosition="after" title={cur?.name} style={{ maxWidth: 260, minWidth: 0 }}>
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{cur ? cur.name : t('Alle Fotos')}</span>
+        </Button>
       </MenuTrigger>
       <MenuPopover>
         <MenuList checkedValues={{ album: [String(current ?? '')] }} onCheckedValueChange={(_, d) => onPick(d.checkedItems[0] ? Number(d.checkedItems[0]) : null)}>

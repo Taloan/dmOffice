@@ -9,14 +9,16 @@ import {
   Open20Regular, DataBarVertical20Regular, Flag20Regular, Clock20Regular, CalendarClock20Regular,
 } from '@fluentui/react-icons'
 import { useRef, useState } from 'react'
-import { Account, api, Folder } from '../api'
+import { Account, api, featureOn, Folder } from '../api'
 import { cleanupDays, cleanupLabel } from '../settings/AccountsSettings'
 import { useApp } from '../App'
 import { usePrefs } from '../prefs'
 import type { Selection } from './MailView'
 import { locale, t, lang } from '../i18n'
 import { VirtualFolders } from './VirtualFolders'
-import { askConfirm } from '../shell/context'
+import { CatchallSection, isCatchallFolder, useCatchall } from './CatchallFolders'
+import { mailAccountType } from './dragTypes'
+import { askConfirm, askText } from '../shell/context'
 
 const useStyles = makeStyles({
   root: { flex: 1, overflowY: 'auto', padding: '8px 6px' },
@@ -108,7 +110,8 @@ interface Props {
   selection: Selection | null
   status: any
   onSelect: (s: Selection) => void
-  onDrop: (account: string, target: string, ids: number[]) => void
+  /** Mails losgelassen: from = Quellpostfach, copy = mit Strg (kopieren statt verschieben) */
+  onDrop: (account: string, target: string, ids: number[], from: string, copy: boolean) => void
   onChanged: () => void
   onCategoryDrop?: (key: string, ids: number[]) => void
 }
@@ -126,7 +129,9 @@ export function FolderPane({ accounts, folders, selection, status, onSelect, onD
 
   const favorites = prefs.favorites ?? []
   const custom = (prefs.sortFolders ?? 'custom') === 'custom'
-  const trees = Object.fromEntries(accounts.map(a => [a.id, tree(a.id, folders[a.id] || [], prefs.folderOrder, custom)]))
+  // Ordner der Catchall-Aliase zeigt nur ihr eigener Abschnitt - in der Ordnerliste des Postfachs nicht noch einmal
+  const catchall = useCatchall(status)
+  const trees = Object.fromEntries(accounts.map(a => [a.id, tree(a.id, (folders[a.id] || []).filter(f => !isCatchallFolder(catchall, a.id, f)), prefs.folderOrder, custom)]))
 
   const toggle = (key: string) => {
     const next = { ...closed, [key]: !closed[key] }
@@ -135,12 +140,12 @@ export function FolderPane({ accounts, folders, selection, status, onSelect, onD
   }
 
   const create = async (account: string, parent: string) => {
-    const name = prompt(t('Name des neuen Ordners:'))
+    const name = (await askText(t('Neuer Ordner'), '', t('Name des neuen Ordners:')))?.trim()
     if (!name) return
     try { await api.post(`/api/mail/${account}/folders`, { path: parent, newName: name }); setTimeout(onChanged, 1500) } catch (e) { fail(e) }
   }
   const rename = async (account: string, f: Folder) => {
-    const name = prompt(t('Neuer Name:'), f.name)
+    const name = (await askText(t('Umbenennen'), f.name, t('Neuer Name:'), t('Umbenennen')))?.trim()
     if (!name || name === f.name) return
     try { await api.post(`/api/mail/${account}/folders/rename`, { path: f.path, newName: name }); setTimeout(onChanged, 1500) } catch (e) { fail(e) }
   }
@@ -160,7 +165,8 @@ export function FolderPane({ accounts, folders, selection, status, onSelect, onD
     if (!await askConfirm('', permanent
       ? (f.total === 1 ? t('1 Element in „{folder}“ endgültig löschen?', vars) : t('Alle {n} Elemente in „{folder}“ endgültig löschen?', vars))
       : (f.total === 1 ? t('1 Element aus „{folder}“ in die gelöschten Elemente verschieben?', vars)
-        : t('Alle {n} Elemente aus „{folder}“ in die gelöschten Elemente verschieben?', vars)))) return
+        : t('Alle {n} Elemente aus „{folder}“ in die gelöschten Elemente verschieben?', vars)),
+      permanent ? t('Endgültig löschen') : t('Verschieben'))) return
     try {
       const r = await api.post(`/api/mail/${account}/folders/empty`, { path: f.path })
       notify(r.permanent
@@ -173,7 +179,12 @@ export function FolderPane({ accounts, folders, selection, status, onSelect, onD
     const a = accounts.find(x => x.id === account)
     return cleanup[`${account}:${special}`] ?? (special === 'trash' ? a?.trashDays : a?.junkDays) ?? 0
   }
-  const setAutoClean = async (account: string, special: string, days: number) => {
+  const setAutoClean = async (account: string, f: Folder, special: string, days: number) => {
+    // Kürzere Frist (oder vorher aus): ältere Elemente gehen sofort endgültig weg
+    const before = cleanupOf(account, special)
+    if (days > 0 && (before === 0 || days < before) && !await askConfirm('',
+      t('Elemente in „{folder}“, die älter als {n} Tage sind, werden sofort und danach laufend endgültig gelöscht.', { folder: folderLabel(f), n: days }),
+      t('Automatisch leeren'))) return
     try {
       const r = await api.post(`/api/mail/${account}/folders/cleanup`, { special, days })
       setCleanup(c => ({ ...c, [`${account}:${special}`]: days }))
@@ -184,7 +195,11 @@ export function FolderPane({ accounts, folders, selection, status, onSelect, onD
     } catch (e) { fail(e) }
   }
   const remove = async (account: string, f: Folder) => {
-    if (!await askConfirm('', t('Ordner „{name}“ samt Inhalt auf dem Server löschen?', { name: f.name }))) return
+    // Anzahl samt Unterordnern, soweit abgeglichen
+    const n = (folders[account] || []).filter(x => x.path === f.path || x.path.startsWith(f.path + f.delimiter)).reduce((sum, x) => sum + (x.total || 0), 0)
+    if (!await askConfirm('', n === 1 ? t('Ordner „{name}“ mit 1 Element endgültig auf dem Server löschen?', { name: f.name })
+      : n > 1 ? t('Ordner „{name}“ mit {n} Elementen endgültig auf dem Server löschen?', { name: f.name, n })
+      : t('Ordner „{name}“ samt Inhalt endgültig auf dem Server löschen?', { name: f.name }), t('Endgültig löschen'))) return
     try { await api.post(`/api/mail/${account}/folders/delete`, { path: f.path }); setTimeout(onChanged, 1500) } catch (e) { fail(e) }
   }
 
@@ -269,7 +284,7 @@ export function FolderPane({ accounts, folders, selection, status, onSelect, onD
     const color = prefs.folderColors?.[k]
     return (
       <div key={rowKey}
-        className={mergeClasses(s.item, active && s.active, dropTarget === rowKey && s.drop,
+        className={mergeClasses('dm-frow', s.item, active && s.active, dropTarget === rowKey && s.drop,
           insert?.rowKey === rowKey && (insert.after ? s.lineAfter : s.lineBefore))}
         style={{ paddingLeft: 4 + depth * 14 }}
         onClick={() => f.selectable && onSelect({ account, folder: f.path })}
@@ -293,7 +308,13 @@ export function FolderPane({ accounts, folders, selection, status, onSelect, onD
             setInsert({ rowKey, after: e.clientY > r.top + r.height / 2 })
             return
           }
-          if (f.selectable && e.dataTransfer.types.includes('application/x-dmoffice-mail')) { e.preventDefault(); setDropTarget(rowKey) }
+          // Mails: im selben Postfach immer; in andere Postfächer nur mit „mailmove“ (sonst Mauszeiger „nicht erlaubt“). Strg: kopieren
+          if (f.selectable && e.dataTransfer.types.includes('application/x-dmoffice-mail')
+            && (featureOn('mailmove') || e.dataTransfer.types.includes(mailAccountType(account)))) {
+            e.preventDefault()
+            e.dataTransfer.dropEffect = e.ctrlKey && featureOn('mailmove') ? 'copy' : 'move'
+            setDropTarget(rowKey)
+          }
         }}
         onDragLeave={() => { setDropTarget(t => (t === rowKey ? null : t)); setInsert(x => (x?.rowKey === rowKey ? null : x)) }}
         onDrop={e => {
@@ -309,7 +330,8 @@ export function FolderPane({ accounts, folders, selection, status, onSelect, onD
             return
           }
           const data = JSON.parse(e.dataTransfer.getData('application/x-dmoffice-mail') || '{}')
-          if (data.account === account && data.ids?.length) onDrop(account, f.path, data.ids)
+          if (!data.ids?.length || !data.account) return
+          if (data.account === account || featureOn('mailmove')) onDrop(account, f.path, data.ids, data.account, e.ctrlKey && featureOn('mailmove'))
         }}>
         <span className={s.twisty} onClick={e => { if (opts.kids) { e.stopPropagation(); toggle(k) } }}>
           {!!opts.kids && (closed[k] ? <ChevronRight16Regular /> : <ChevronDown16Regular />)}
@@ -338,8 +360,8 @@ export function FolderPane({ accounts, folders, selection, status, onSelect, onD
   }).filter(Boolean)
 
   const favSection = (prefs.showFavorites ?? true) && favoriteRows.length > 0 && (
-    <div style={{ marginBottom: 10 }}>
-      <div className={s.account} onClick={() => toggle('favorites')}>
+    <div className="dm-fsec" style={{ marginBottom: 10 }}>
+      <div className={mergeClasses('dm-fhead', s.account)} onClick={() => toggle('favorites')}>
         {closed.favorites ? <ChevronRight16Regular /> : <ChevronDown16Regular />}
         <Text weight="semibold" style={{ flex: 1 }}>{t('Favoriten')}</Text>
       </div>
@@ -348,15 +370,16 @@ export function FolderPane({ accounts, folders, selection, status, onSelect, onD
   )
 
   // Alle Posteingaenge (ab zwei Konten): die Posteingaenge aller Konten zusammen, ganz oben
-  const inboxes = accounts.map(a => (folders[a.id] || []).find(f => f.special === 'inbox')).filter(Boolean) as Folder[]
+  const inboxes = accounts.filter(a => a.inUnified !== false || !featureOn('unifiedpick'))
+    .map(a => (folders[a.id] || []).find(f => f.special === 'inbox')).filter(Boolean) as Folder[]
   const unifiedUnread = inboxes.reduce((n, f) => n + (f.unread || 0), 0)
   const unifiedActive = selection?.folder === UNIFIED
-  const unifiedRow = accounts.length > 1 && inboxes.length > 1 && (
-    <div style={{ marginBottom: 10 }}>
-      <div className={mergeClasses(s.item, unifiedActive && s.active)} style={{ paddingLeft: 4 }}
+  // Bündig mit den Überschriften (Favoriten, Konten): das Symbol steht dort, wo bei ihnen der Pfeil steht
+  const unifiedRow = (prefs.showUnified ?? true) && accounts.length > 1 && inboxes.length > 1 && (
+    <div className="dm-fsec" style={{ marginBottom: 10 }}>
+      <div className={mergeClasses('dm-frow', s.item, unifiedActive && s.active)} style={{ paddingLeft: 6, gap: 4 }}
         onClick={() => onSelect({ account: accounts[0].id, folder: UNIFIED })}>
-        <span className={s.twisty} />
-        <span className={s.icon}><Mail20Regular /></span>
+        <span className={s.icon} style={{ width: 16, justifyContent: 'center' }}><Mail20Regular /></span>
         <span className={s.name}>{t('Alle Posteingänge')}</span>
         {unifiedUnread > 0 && <CounterBadge count={unifiedUnread} size="small" overflowCount={9999} />}
       </div>
@@ -369,16 +392,18 @@ export function FolderPane({ accounts, folders, selection, status, onSelect, onD
   const countMode = mf ? prefs.folderCount?.[mk] ?? (mf.special === 'drafts' ? 'total' : 'unread') : 'unread'
 
   return (
-    <div className={s.root} onClick={() => setMenu(null)}
+    // Abstände (Ansicht): Zeilenhöhe und Lücken je Stufe (global.css), wie in der Liste
+    <div className={mergeClasses(s.root, 'dm-folders-' + (prefs.folderDensity ?? prefs.density ?? 'normal'))}
+      onClick={() => setMenu(null)}
       onContextMenu={e => { if (e.defaultPrevented || !accounts.length) return; e.preventDefault(); setMenu({ account: (selection?.account && selection.folder !== UNIFIED ? selection.account : accounts[0].id), folder: null, x: e.clientX, y: e.clientY }) }}>
       {unifiedRow}
       {(prefs.pinFavorites ?? true) && favSection}
-      {accounts.map(a => {
+      {accounts.map((a, i) => {
         const list = folders[a.id] || []
         const err = status?.accounts?.[a.id]?.error
         return (
-          <div key={a.id} style={{ marginBottom: 10 }}>
-            <div className={s.account} onClick={() => toggle(a.id)}
+          <div key={a.id} className={i === 0 ? 'dm-fsec dm-facc' : 'dm-fsub dm-facc'} style={{ marginBottom: 10 }}>
+            <div className={mergeClasses('dm-fhead', s.account)} onClick={() => toggle(a.id)}
               onContextMenu={e => { e.preventDefault(); setMenu({ account: a.id, folder: null, x: e.clientX, y: e.clientY }) }}>
               {closed[a.id] ? <ChevronRight16Regular /> : <ChevronDown16Regular />}
               <Text weight="semibold" truncate style={{ flex: 1 }} title={a.email}>{a.name || a.email}</Text>
@@ -393,12 +418,13 @@ export function FolderPane({ accounts, folders, selection, status, onSelect, onD
           </div>
         )
       })}
+      <CatchallSection st={catchall} folders={folders} selection={selection} onSelect={onSelect} />
       <VirtualFolders accounts={accounts} folders={folders} selection={selection} onSelect={onSelect} refresh={status} onCategoryDrop={onCategoryDrop} />
       {!(prefs.pinFavorites ?? true) && favSection}
 
       {menu && (
         <Menu open onOpenChange={(_, d) => !d.open && setMenu(null)}
-          positioning={{ target: { getBoundingClientRect: () => ({ x: menu.x, y: menu.y, top: menu.y, left: menu.x, bottom: menu.y, right: menu.x, width: 0, height: 0 }) } as any }}>
+          positioning={{ autoSize: 'height', target: { getBoundingClientRect: () => ({ x: menu.x, y: menu.y, top: menu.y, left: menu.x, bottom: menu.y, right: menu.x, width: 0, height: 0 }) } as any }}>
           <MenuPopover>
             <MenuList>
               {mf ? (
@@ -439,7 +465,7 @@ export function FolderPane({ accounts, folders, selection, status, onSelect, onD
                       <MenuTrigger disableButtonEnhancement><MenuItem icon={<CalendarClock20Regular />}>{t('Automatisch leeren')}</MenuItem></MenuTrigger>
                       <MenuPopover>
                         <MenuList checkedValues={{ days: [String(cleanupOf(menu.account, mf.special))] }}
-                          onCheckedValueChange={(_, d) => { setAutoClean(menu.account, mf.special!, Number(d.checkedItems[0])); setMenu(null) }}>
+                          onCheckedValueChange={(_, d) => { setAutoClean(menu.account, mf, mf.special!, Number(d.checkedItems[0])); setMenu(null) }}>
                           {cleanupDays.map(d => <MenuItemRadio key={d} name="days" value={String(d)}>{d === 0 ? t('Nie') : t('Elemente älter als {n} Tage', { n: d })}</MenuItemRadio>)}
                         </MenuList>
                       </MenuPopover>

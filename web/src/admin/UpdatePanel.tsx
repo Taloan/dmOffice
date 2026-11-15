@@ -146,17 +146,17 @@ export function UpdatePanel({ gate = false }: { gate?: boolean }) {
           </div>
           {plan.state === 'space' && (
             <MessageBar intent="error"><MessageBarBody>
-              {t('Es fehlen etwa {missing} freier Platz. Bis genug da ist, wird nichts verändert – die Daten bleiben unberührt, dieser Benutzer kommt nur noch nicht an seine Daten. Platz schaffen (Dateien löschen, größeren Datenträger einbinden) und „Erneut prüfen“.', { missing: fmtSize(plan.missingBytes) })}
+              {t('Es fehlen etwa {missing} freier Platz. Bis genug Platz frei ist, wird nichts verändert, und dieser Benutzer kann nicht auf seine Daten zugreifen.', { missing: fmtSize(plan.missingBytes) })}
             </MessageBarBody></MessageBar>
           )}
           {plan.state === 'backup-space' && (
             <MessageBar intent="warning"><MessageBarBody>
-              {t('Für die Sicherung vor dem Umbau fehlen etwa {missing}. Entweder Platz schaffen und „Erneut prüfen“ – oder ausdrücklich ohne Sicherung fortfahren (dann hilft bei einem Fehler nur deine eigene Sicherung des Datenordners).', { missing: fmtSize(plan.backupMissingBytes) })}
+              {t('Für die Sicherung vor dem Umbau fehlen etwa {missing}. Ohne Sicherung fortzufahren ist möglich; bei einem Fehler hilft dann nur eine eigene Sicherung des Datenordners.', { missing: fmtSize(plan.backupMissingBytes) })}
             </MessageBarBody></MessageBar>
           )}
           {plan.state === 'consent' && (
             <MessageBar intent="warning"><MessageBarBody>
-              {t('Dieser Umbau ist groß ({eta}, {size} Platz) und startet nicht von selbst. Der Server läuft währenddessen weiter, dieser Benutzer wartet. Am besten vorher den ganzen Datenordner kopieren.', { eta: minutes(plan.etaSeconds), size: fmtSize(plan.migrationBytes) })}
+              {t('Dieser Umbau ist groß ({eta}, {size} Platz) und startet nicht von selbst. Der Server läuft währenddessen weiter, dieser Benutzer wartet.', { eta: minutes(plan.etaSeconds), size: fmtSize(plan.migrationBytes) })}
             </MessageBarBody></MessageBar>
           )}
           {plan.state === 'error' && (

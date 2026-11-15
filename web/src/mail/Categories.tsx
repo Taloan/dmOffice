@@ -5,7 +5,7 @@ import { api } from '../api'
 import { useApp } from '../App'
 import { t } from '../i18n'
 
-/** Kategorie: auf dem Mailserver ein IMAP-Schlagwort (key), hier Name und Farbe. */
+/** Kategorie: auf dem Mailserver ein IMAP-Tag (key), hier Name und Farbe. */
 /** smart: lernt (neue Mails bekommen sie automatisch); preset: mitgelieferte Kategorie mit Voreinstellung */
 /** quiet: neue Mails dieser Kategorie melden nicht (wenn alle ihre Kategorien so stehen) */
 export interface MailCategory { key: string; name: string; color: string; smart?: boolean; preset?: string | null; quiet?: boolean }
@@ -61,7 +61,8 @@ const useStyles = makeStyles({
     overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '120px',
   },
   dot: { width: '12px', height: '12px', borderRadius: '3px', display: 'inline-block', flexShrink: 0 },
-  row: { display: 'flex', alignItems: 'center', gap: '8px' },
+  // Schmale Fenster: Schalter und Knöpfe rutschen in die nächste Zeile statt abgeschnitten zu werden
+  row: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', rowGap: '4px' },
   swatch: { width: '32px', height: '32px', padding: 0, border: `1px solid ${tokens.colorNeutralStroke1}`, borderRadius: '4px', cursor: 'pointer', backgroundColor: 'transparent' },
   key: { color: tokens.colorNeutralForeground3, fontFamily: 'Consolas, monospace', fontSize: '12px', minWidth: '140px' },
 })
@@ -71,7 +72,7 @@ export function CategoryDot({ color }: { color: string }) {
   return <span className={s.dot} style={{ backgroundColor: color }} />
 }
 
-/** Farbige Kaertchen einer Mail. Unbekannte Schlagworte (z. B. von anderem Rechner) erscheinen grau mit ihrem Namen. */
+/** Farbige Kaertchen einer Mail. Unbekannte Tags (z. B. von anderem Rechner) erscheinen grau mit ihrem Namen. */
 /** onRemove: Klick auf einen Badge nimmt die Kategorie von der Mail (Liste, Lesebereich). */
 export function CategoryChips({ keywords, compact, onRemove }: { keywords?: string[]; compact?: boolean; onRemove?: (key: string) => void }) {
   const s = useStyles()
@@ -138,8 +139,8 @@ export function CategorySettings() {
           <label className={s.swatch} style={{ backgroundColor: c.color }}>
             <input type="color" value={c.color} onChange={e => update(i, { color: e.target.value })} style={{ opacity: 0, width: 0, height: 0 }} />
           </label>
-          <Input value={c.name} onChange={(_, d) => update(i, { name: d.value })} style={{ width: 220 }} />
-          <span className={s.key} title={t('IMAP-Schlagwort auf dem Mailserver')}>{c.key || t('(neu)')}</span>
+          <Input value={c.name} onChange={(_, d) => update(i, { name: d.value })} style={{ width: 220, maxWidth: '100%' }} />
+          <span className={s.key} title={t('IMAP-Tag auf dem Mailserver')}>{c.key || t('(neu)')}</span>
           <Tooltip content={t('Neue Mails bekommen diese Kategorie automatisch. Setzen und Entfernen von Hand trainiert sie.')} relationship="description">
             <Switch checked={!!c.smart} label={t('Lernt')} onChange={(_, d) => update(i, { smart: d.checked })} />
           </Tooltip>
@@ -159,7 +160,7 @@ export function CategorySettings() {
         {dirty && <Button appearance="subtle" onClick={() => { setList(cats); setDirty(false) }}>{t('Verwerfen')}</Button>}
       </div>
       <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>
-        {t('Umbenennen und Umfärben ändert nur die Anzeige – das Schlagwort auf dem Server bleibt, die Mails behalten ihre Kategorie.')}{' '}
+        {t('Umbenennen und Umfärben ändert nur die Anzeige – das Tag auf dem Server bleibt, die Mails behalten ihre Kategorie.')}{' '}
         {t('Eine entfernte Kategorie bleibt an den Mails stehen und erscheint dann grau.')}
       </Text>
     </div>

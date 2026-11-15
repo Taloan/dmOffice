@@ -42,6 +42,17 @@ public sealed class UserRecord
 
     public bool TwoFactor => TotpSecret != null;
 
+    /// <summary>Verknüpftes Konto beim Identitätsanbieter: „Aussteller|sub“ (Oidc); null: keins</summary>
+    public string? OidcSubject { get; set; }
+
+    /// <summary>Von der Verwaltung vorgemerkt: Anmeldename oder bestätigte E-Mail-Adresse beim Identitätsanbieter. Bei der ersten
+    /// Anmeldung über den Anbieter mit diesem Namen wird das Konto verknüpft (danach gilt nur noch <see cref="OidcSubject"/>).</summary>
+    public string? OidcExpected { get; set; }
+
+    /// <summary>Über den Identitätsanbieter angelegt, noch ohne eigenes Passwort (das zufällige kennt niemand): ein eigenes lässt sich
+    /// ohne das bisherige festlegen; die Verknüpfung lässt sich erst danach lösen.</summary>
+    public bool NoOwnPassword { get; set; }
+
     public void NewStamp() => Stamp = Guid.NewGuid().ToString("N");
 }
 

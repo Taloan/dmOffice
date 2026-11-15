@@ -23,6 +23,13 @@ public interface IBlobRemote : IDisposable
     Task<byte[]> ReadRangeAsync(string key, long offset, int count, CancellationToken ct);
     /// <summary>Kopie im selben Speicher, ohne die Bytes zu holen; false: kann dieser Speicher nicht oder nicht für dieses Objekt.</summary>
     Task<bool> TryCopyAsync(string from, string to, CancellationToken ct) => Task.FromResult(false);
+    /// <summary>Diese Schlüssel löschen (alte Daten an einem früheren Ziel); meldet die Zahl der gelöschten.</summary>
+    async Task DeleteManyAsync(string prefix, IReadOnlyList<string> keys, IProgress<int> progress, CancellationToken ct) =>
+        await Parallel.ForEachAsync(keys, new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = ct }, async (k, c) =>
+        {
+            await DeleteAsync(k, c);
+            progress.Report(1);
+        });
 }
 
 /// <summary>S3-kompatibler Speicher ueber das AWS-SDK: pfadbasierte Adressen (Garage, MinIO), Prüfsummen nur wenn noetig.</summary>
@@ -66,6 +73,18 @@ public sealed class S3Remote(AmazonS3Client client, string bucket) : IBlobRemote
     }
 
     public Task DeleteAsync(string key, CancellationToken ct) => client.DeleteObjectAsync(bucket, key, ct);
+
+    /// <summary>In Paketen zu 1000 (DeleteObjects) - 160.000 Objekte in wenigen Minuten statt Stunden.</summary>
+    public async Task DeleteManyAsync(string prefix, IReadOnlyList<string> keys, IProgress<int> progress, CancellationToken ct)
+    {
+        foreach (var chunk in keys.Chunk(1000))
+        {
+            var req = new DeleteObjectsRequest { BucketName = bucket, Quiet = true, Objects = chunk.Select(k => new KeyVersion { Key = k }).ToList() };
+            var res = await client.DeleteObjectsAsync(req, ct);
+            if (res.DeleteErrors is { Count: > 0 } errors) throw new IOException($"{errors.Count} Objekte ließen sich nicht löschen: {errors[0].Code} {errors[0].Message}");
+            progress.Report(chunk.Length);
+        }
+    }
 
     public async Task<long> SizeAsync(string key, CancellationToken ct)
     {
@@ -152,7 +171,8 @@ public sealed class S3Mirror(Spaces spaces, ServerConfig config, DataPaths paths
     /// <summary>Zwischenspeicher: belegt hier, Grenze, verdraengt beim letzten Durchgang, seit dem Start aus S3 geholt.</summary>
     public sealed record CacheState(long Bytes, long Limit, long Evicted, long Fetched, long Remote, long Streamed = 0, long Max = 0, long Waiting = 0,
         long Both = 0, long BothBytes = 0, long RemoteBytes = 0, long FixedBytes = 0, long PendingCount = 0, long PendingBytes = 0,
-        long ThumbBytes = 0, IReadOnlyList<BusyPart>? Busy = null);
+        long ThumbBytes = 0, IReadOnlyList<BusyPart>? Busy = null,
+        string Usage = UsageMax, long Cap = long.MaxValue, long UsedRemote = 0, long ToRemove = 0, bool Full = false);
     /// <summary>Noch nicht Verarbeitetes je Grund (siehe <see cref="UnprocessedWhy"/>), die groessten zuerst.</summary>
     public sealed record BusyPart(string Reason, string? Ext, long Count, long Bytes);
     /// <summary>„Fehlendes aus S3 holen“: lokal fehlend, geholt, in S3 auch nicht da, gescheitert.</summary>
@@ -481,7 +501,7 @@ public sealed class S3Mirror(Spaces spaces, ServerConfig config, DataPaths paths
     public static IBlobRemote RemoteOf(string? target, string? endpoint, string? region, string? bucket, string? accessKey, string? secret,
         string? webDavUrl, string? webDavUser, string? webDavPassword, string? folder) => target switch
     {
-        "webdav" => new DmOffice.Storage.DriverRemote(new DmOffice.Storage.WebDavDriver(webDavUrl!.Trim(), webDavUser, webDavPassword)),
+        "webdav" => new DmOffice.Storage.DriverRemote(DmOffice.Storage.RemoteDrivers.Open(webDavUrl!.Trim(), webDavUser, webDavPassword)),
         "folder" => new DmOffice.Storage.DriverRemote(new DmOffice.Storage.FolderDriver(folder!.Trim())),
         _ => S3Remote.Create(endpoint!.Trim(), region ?? "", bucket!.Trim(), accessKey!.Trim(), secret!),
     };
@@ -632,9 +652,42 @@ public sealed class S3Mirror(Spaces spaces, ServerConfig config, DataPaths paths
         finally { foreach (var w in waiting) w.TrySetResult(); }
     }
 
+    /// <summary>Was ein Benutzer beim Abgleich hat: Ziel (Schluessel und Groesse), lokal, gebraucht, Vorschaubilder, Unverarbeitetes.</summary>
+    private sealed record UserPass(UserSpace Space, BlobStore Blobs, string Prefix, Dictionary<string, long> Sizes, HashSet<string> Here, HashSet<string> Needed,
+        HashSet<string> Thumbs, Dictionary<string, (string Reason, string? Ext)> Why);
+
+    /// <summary>Ein lokaler Inhalt beim Abgleich - Copy: liegt vollstaendig (gleiche Groesse) auch am Ziel.</summary>
+    private sealed class LocalBlob(UserPass user, string id, long size, DateTime used, bool thumb, bool busy)
+    {
+        public UserPass User { get; } = user;
+        public string Id { get; } = id;
+        public long Size { get; } = size;
+        public DateTime Used { get; } = used;
+        public bool Thumb { get; } = thumb;
+        public bool Busy { get; } = busy;
+        public bool Copy { get; set; }
+        public bool Evicted { get; set; }
+        public string Key => User.Prefix + Id[..2] + "/" + Id;
+    }
+
+    /// <summary>Belegung des Storage Extender: strict (Oberflaeche „Minimal“: Kopien von Dateien, die wieder hier liegen, sofort entfernen, kein Vorrat),
+    /// min (Oberflaeche „Sparsam“: dieselben Kopien erst nach der Frist entfernen), opt (moeglichst wenig uebertragen), max (spiegeln, solange Platz ist).</summary>
+    public const string UsageStrict = "strict", UsageMin = "min", UsageOpt = "opt", UsageMax = "max";
+    /// <summary>Die wirksame Belegung - ohne den Schalter extenderusage wie bis 2.0: alles wird uebertragen.</summary>
+    public static string UsageOf(ServerSettings s) =>
+        !Features.On(Features.ExtenderUsage) ? UsageMax : s.S3Usage is UsageStrict or UsageMin or UsageOpt ? s.S3Usage : UsageMax;
+    /// <summary>Speicherbegrenzung des Storage Extender in Bytes - long.MaxValue: unbegrenzt.</summary>
+    public static long SizeLimit(ServerSettings s) =>
+        Features.On(Features.ExtenderUsage) && s.S3SizeGb is double gb && gb > 0 ? (long)(gb * GB) : long.MaxValue;
+    /// <summary>Vorrat bei Optimal und Minimal: Ist der lokale Speicherpool zu mehr als 90 % belegt, haben Dateien im Umfang von 10 % eine Kopie.</summary>
+    internal const double ReserveShare = 0.1;
+    /// <summary>Kopien, die bei Minimal entfallen, liegen hier mit dem Zeitpunkt, seit dem sie ueberzaehlig sind.</summary>
+    public const string SurplusFile = ".s3-surplus.json";
+
     private async Task PassCoreAsync(IBlobRemote remote, CancellationToken ct)
     {
-        var prefix = Prefix(config.Current.S3Prefix);
+        var s = config.Current;
+        var prefix = Prefix(s.S3Prefix);
         long local = 0, mirrored = 0, uploaded = 0, deleted = 0, pending = 0;
         string? error = null;
         // Fortschritt fuer die Aktivitaet: vorab zaehlen, wie viele Inhalte zu pruefen sind; Local/Mirrored zeigen waehrend des
@@ -642,106 +695,210 @@ public sealed class S3Mirror(Spaces spaces, ServerConfig config, DataPaths paths
         long total = 0;
         try { foreach (var sp in spaces.All()) total += sp.Db.Blobs.List().Count(); } catch (IOException) { }
         _state = _state with { Running = true, Local = total, Mirrored = 0, Uploaded = 0 };
-        // Fuer den Zwischenspeicher: was hier liegt und schon sicher in S3 ist (nur das darf verdraengt werden)
-        var cache = new List<(BlobStore Blobs, string Id, long Size, DateTime Used)>();
-        long cacheBytes = 0, remoteOnly = 0, waiting = 0, both = 0, bothBytes = 0, remoteBytes = 0, awayBytes = 0, fixedBytes = 0, pendingCount = 0, pendingBytes = 0, thumbBytes = 0;
-        var busyParts = new Dictionary<(string Reason, string? Ext), (long Count, long Bytes)>();
-        var caching = CacheMode(config.Current);
+        var caching = CacheMode(s);
         // Wird der Storage Extender waehrend des Durchgangs ausgeschaltet, hoert er sofort auf (nicht erst nach dem ganzen Bestand)
-        var wasOn = config.Current.S3Mirror;
+        var wasOn = s.S3Mirror;
         var missingHere = false;
-        var where = LocationOf(config.Current);
+        var where = LocationOf(s);
         if (_inS3Where != where) { _inS3.Clear(); _inS3Where = where; }
         DateTime? other = null;
+        var usage = UsageOf(s);
+        var cap = SizeLimit(s);
+        var hold = S3Backup.HoldDeletes(s, paths, DateTime.UtcNow);
+        long usedRemote = 0, toRemove = 0;
+        var full = false;
+        void Check()
+        {
+            ct.ThrowIfCancellationRequested();
+            // „Fehlendes holen“ angefordert: der Abgleich macht Platz und setzt danach fort
+            if (_restoreWanted) throw new RestoreFirst();
+            if (wasOn && !config.Current.S3Mirror) throw new SwitchedOff();
+        }
+        bool Room(long size) => cap == long.MaxValue || usedRemote + size <= cap;
+        async Task<bool> Upload(LocalBlob c)
+        {
+            Check();
+            var path = c.User.Blobs.PathOf(c.Id);
+            try
+            {
+                await remote.UploadAsync(path, c.Key, ct);
+                c.User.Sizes[c.Key] = c.Size; usedRemote += c.Size; c.Copy = true; uploaded++; mirrored++;
+                _state = _state with { Uploaded = uploaded, Mirrored = mirrored };
+                return true;
+            }
+            // Gerade geloescht (der Bestand wurde am Anfang gelesen): kein Fehler - S3 meldet das als ArgumentException, nicht als FileNotFoundException
+            catch (Exception e) when (e is not OperationCanceledException && !File.Exists(path)) { return false; }
+            catch (Exception e) when (e is not OperationCanceledException) { pending++; error ??= S3Remote.Describe(e); return false; }
+        }
+        // Kopie eines Inhalts entfernen, der hier liegt - die Datei bleibt lokal
+        async Task<bool> DropCopy(LocalBlob c)
+        {
+            try
+            {
+                await remote.DeleteAsync(c.Key, ct);
+                if (c.User.Sizes.Remove(c.Key, out var was)) usedRemote -= was;
+                c.Copy = false; mirrored--; deleted++;
+                return true;
+            }
+            catch (Exception e) when (e is not OperationCanceledException) { error ??= S3Remote.Describe(e); return false; }
+        }
         try
         {
-            other = await OtherServerAsync(remote, config.Current.S3Prefix, ServerId(paths), KeepDeleted(config.Current), ct);
+            other = await OtherServerAsync(remote, s.S3Prefix, ServerId(paths), KeepDeleted(s), ct);
             if (other != null) log.LogWarning("Storage Extender: am selben Ziel arbeitet auch ein anderer dmOffice-Server (zuletzt {At:u}) - dort wird nichts gelöscht", other);
+            // 1. Bestand lesen: am Ziel, lokal, gebraucht; lange Verschwundenes am Ziel nach der Frist loeschen
+            var users = new List<UserPass>();
             foreach (var space in spaces.All())
             {
-                ct.ThrowIfCancellationRequested();
+                Check();
                 var blobs = space.Db.Blobs;
                 var userPrefix = prefix + space.User.Id + "/";
                 var sizes = (await remote.ListSizesAsync(userPrefix, ct)).ToDictionary(x => x.Key, x => x.Size, StringComparer.Ordinal);
-                var there = sizes.Keys.ToHashSet(StringComparer.Ordinal);
                 var here = blobs.List().Select(b => b.Id).ToHashSet(StringComparer.Ordinal);
-                // Gebraucht ist, worauf die Datenbank zeigt - auch was im Zwischenspeicher-Betrieb hier gerade fehlt
+                // Gebraucht ist, worauf die Datenbank zeigt - auch was hier gerade fehlt
                 var needed = Referenced(space.Db);
                 local += here.Count;
-                foreach (var id in here)
-                {
-                    ct.ThrowIfCancellationRequested();
-                    // „Fehlendes holen“ angefordert: der Abgleich macht Platz und setzt danach fort
-                    if (_restoreWanted) throw new RestoreFirst();
-                    if (wasOn && !config.Current.S3Mirror) throw new SwitchedOff();
-                    var key = userPrefix + id[..2] + "/" + id;
-                    if (there.Contains(key)) { mirrored++; _state = _state with { Mirrored = mirrored }; continue; }
-                    try { await remote.UploadAsync(blobs.PathOf(id), key, ct); uploaded++; mirrored++; there.Add(key); sizes[key] = new FileInfo(blobs.PathOf(id)).Length; _state = _state with { Uploaded = uploaded, Mirrored = mirrored }; }
-                    // Gerade geloescht (der Bestand wurde am Anfang gelesen): kein Fehler - S3 meldet das als ArgumentException, nicht als FileNotFoundException
-                    catch (Exception e) when (e is not OperationCanceledException && !File.Exists(blobs.PathOf(id))) { }
-                    catch (Exception e) when (e is not OperationCanceledException) { pending++; error ??= S3Remote.Describe(e); }
-                }
-                // Lokal verschwunden: Zeitpunkt merken, nach der Frist auch in S3 loeschen
-                var sweep = await SweepAsync(remote, blobs.Dir, GoneFile, there, here, needed, KeepDeleted(config.Current), other != null, S3Backup.HoldDeletes(config.Current, paths, DateTime.UtcNow), space.User.Login, log, ct);
+                var there = sizes.Keys.ToHashSet(StringComparer.Ordinal);
+                var sweep = await SweepAsync(remote, blobs.Dir, GoneFile, there, here, needed, KeepDeleted(s), other != null, hold, space.User.Login, log, ct);
                 deleted += sweep.Deleted;
                 error ??= sweep.Error;
-                _inS3[space.User.Id] = sizes.ToDictionary(x => x.Key[(x.Key.LastIndexOf('/') + 1)..], x => x.Value, StringComparer.Ordinal);
-                // Fehlt hier etwas, das am Ziel liegt (verdraengt, Plattenfehler, nach einer Wiederherstellung): siehe unten, ob es zurueckkommt
-                foreach (var id in needed)
-                    if (!here.Contains(id) && sizes.TryGetValue(userPrefix + id[..2] + "/" + id, out var absent)) { missingHere = true; awayBytes += absent; }
-                if (caching)
-                {
-                    var thumbs = Thumbs(space.Db);
-                    var why = UnprocessedWhy(space.Db, space.Settings.TextIndex.Enabled);
-                    // Fuer die Anzeige zaehlen Dateien, nicht ihre Vorschaubilder (die bleiben immer hier)
-                    foreach (var id in needed)
-                        if (!here.Contains(id) && !thumbs.Contains(id) && sizes.TryGetValue(userPrefix + id[..2] + "/" + id, out var away)) { remoteOnly++; remoteBytes += away; }
-                    foreach (var id in here)
-                    {
-                        var fi = new FileInfo(blobs.PathOf(id));
-                        if (!fi.Exists) continue;
-                        // Der lokale Speicherpool zaehlt nur Dateien, Vorschaubilder liegen zusaetzlich auf dem Volume
-                        if (!thumbs.Contains(id)) cacheBytes += fi.Length;
-                        if (!thumbs.Contains(id) && sizes.TryGetValue(userPrefix + id[..2] + "/" + id, out var atBoth)) { both++; bothBytes += atBoth; }
-                        else if (!thumbs.Contains(id)) { pendingCount++; pendingBytes += fi.Length; }
-                        // Wird (noch) nicht bereinigt: noch nicht Verarbeitetes
-                        if (thumbs.Contains(id)) thumbBytes += fi.Length;
-                        if (!thumbs.Contains(id) && why.ContainsKey(id)) fixedBytes += fi.Length;
-                        // Nur was sicher in S3 liegt und fertig verarbeitet ist, kein Vorschaubild
-                        if (why.TryGetValue(id, out var cause))
-                        {
-                            waiting += fi.Length;
-                            busyParts.TryGetValue(cause, out var part);
-                            busyParts[cause] = (part.Count + 1, part.Bytes + fi.Length);
-                            continue;
-                        }
-                        // Nur was am Ziel vollstaendig liegt (gleiche Groesse) - ein halb geschriebenes Objekt zaehlt nicht
-                        if (thumbs.Contains(id) || !sizes.TryGetValue(userPrefix + id[..2] + "/" + id, out var atTarget) || atTarget != fi.Length) continue;
-                        cache.Add((blobs, id, fi.Length, fi.LastAccessTimeUtc > fi.LastWriteTimeUtc ? fi.LastAccessTimeUtc : fi.LastWriteTimeUtc));
-                    }
-                }
+                foreach (var k in sizes.Keys.Where(k => !there.Contains(k)).ToList()) sizes.Remove(k);
+                users.Add(new UserPass(space, blobs, userPrefix, sizes, here, needed, Thumbs(space.Db), UnprocessedWhy(space.Db, space.Settings.TextIndex.Enabled)));
             }
-            // Ueber dem Zielwert: in Ruhe die am laengsten nicht gelesenen, fertig verarbeiteten Inhalte hier loeschen
-            // (in S3 bleiben sie), bis der Zielwert erreicht ist
+            usedRemote = users.Sum(u => u.Sizes.Values.Sum());
+            var locals = new List<LocalBlob>();
+            foreach (var u in users)
+                foreach (var id in u.Here)
+                {
+                    var fi = new FileInfo(u.Blobs.PathOf(id));
+                    if (!fi.Exists) continue;
+                    var c = new LocalBlob(u, id, fi.Length, fi.LastAccessTimeUtc > fi.LastWriteTimeUtc ? fi.LastAccessTimeUtc : fi.LastWriteTimeUtc, u.Thumbs.Contains(id), u.Why.ContainsKey(id));
+                    // Nur was am Ziel vollstaendig liegt (gleiche Groesse) - ein halb geschriebenes Objekt zaehlt nicht
+                    c.Copy = u.Sizes.TryGetValue(c.Key, out var atTarget) && atTarget == c.Size;
+                    locals.Add(c);
+                }
+            mirrored = locals.Count(c => c.Copy);
+            _state = _state with { Mirrored = mirrored };
+            // Bereinigen kommt nur fuer fertig Verarbeitetes in Frage, nie fuer Vorschaubilder; die am laengsten nicht verwendeten zuerst
+            var movable = locals.Where(c => !c.Thumb && !c.Busy).OrderBy(c => c.Used).ToList();
+            // Der lokale Speicherpool zaehlt nur Dateien, Vorschaubilder liegen zusaetzlich auf dem Volume
+            long cacheBytes = locals.Where(c => !c.Thumb).Sum(c => c.Size);
+
+            // 2. Bei Maximal zuerst spiegeln, solange am Ziel Platz ist (nie eine Kopie gegen eine andere tauschen)
+            if (usage == UsageMax)
+                foreach (var c in locals.Where(c => !c.Copy).OrderBy(c => c.Used))
+                    if (Room(c.Size)) await Upload(c);
+                    else full = true;
+
+            // 3. Ueber dem Zielwert: in Ruhe die am laengsten nicht verwendeten Inhalte hier loeschen - was noch keine Kopie hat,
+            // vorher uebertragen; fehlt dafuer am Ziel Platz, weicht die Kopie der zuletzt verwendeten Datei, die hier liegt
+            long limit = long.MaxValue, evicted = 0;
             if (caching)
             {
-                var limit = Target(config.Current);
+                limit = Target(s);
                 // Reserve unterschritten: auch unter die Zielgroesse bereinigen
                 var deficit = -Headroom();
                 if (deficit > 0) limit = Math.Max(0, Math.Min(limit, cacheBytes - deficit));
-                long evicted = 0;
-                if (cacheBytes > limit)
-                    foreach (var c in cache.OrderBy(c => c.Used))
+                for (var i = 0; i < movable.Count && cacheBytes > limit; i++)
+                {
+                    var c = movable[i];
+                    if (!c.Copy)
                     {
-                        if (cacheBytes <= limit) break;
-                        try { lock (_evictLock) c.Blobs.Delete(c.Id); cacheBytes -= c.Size; evicted++; remoteOnly++; remoteBytes += c.Size; awayBytes += c.Size; both--; bothBytes -= c.Size; }
-                        catch (IOException) { }   // gerade geoeffnet - beim naechsten Mal
+                        for (var j = movable.Count - 1; j > i && !Room(c.Size); j--)
+                            if (movable[j] is { Copy: true, Evicted: false } hot) await DropCopy(hot);
+                        if (!Room(c.Size)) { full = true; break; }
+                        if (!await Upload(c)) continue;
                     }
+                    try { lock (_evictLock) c.User.Blobs.Delete(c.Id); c.Evicted = true; cacheBytes -= c.Size; evicted++; }
+                    catch (IOException) { }   // gerade geoeffnet - beim naechsten Mal
+                }
+            }
+
+            // 4. Vorrat bei Optimal und Minimal: Ist der lokale Speicherpool fast voll, haben die am laengsten nicht verwendeten Dateien
+            // schon eine Kopie - so muss beim Bereinigen nichts unter Zeitdruck uebertragen werden. Vorhandene Kopien zaehlen zuerst.
+            var keep = new HashSet<LocalBlob>();
+            var pool = Math.Min(Target(s), Headroom() is var room && room == long.MaxValue ? long.MaxValue : cacheBytes + Math.Max(0, room));
+            if (caching && usage is not (UsageMax or UsageStrict) && pool != long.MaxValue && cacheBytes > pool * (1 - ReserveShare))
+            {
+                var want = (long)(pool * ReserveShare);
+                long have = 0;
+                foreach (var c in movable.Where(c => !c.Evicted && c.Copy))
+                {
+                    if (have >= want) break;
+                    keep.Add(c); have += c.Size;
+                }
+                foreach (var c in movable.Where(c => !c.Evicted && !c.Copy))
+                {
+                    if (have >= want) break;
+                    if (!Room(c.Size)) { full = true; break; }
+                    if (await Upload(c)) { keep.Add(c); have += c.Size; }
+                }
+            }
+
+            // 5. Speicherbegrenzung ueberschritten (verkleinert): Kopien von Dateien, die hier liegen, entfernen - die zuletzt verwendeten zuerst,
+            // den Vorrat zuletzt. Was nur am Ziel liegt, bleibt; reicht das nicht, bleibt es ueber der Begrenzung (Anzeige).
+            if (cap != long.MaxValue && usedRemote > cap)
+                foreach (var c in locals.Where(c => c.Copy && !c.Evicted).OrderBy(c => keep.Contains(c)).ThenByDescending(c => c.Used))
+                {
+                    if (usedRemote <= cap) break;
+                    await DropCopy(c);
+                }
+
+            // 6. Sparsam (min): Kopien von Dateien, die (wieder) hier liegen und nicht zum Vorrat gehoeren, nach der Frist entfernen;
+            //    Minimal (strict): sofort - wer den Storage Extender leeren will, muss nicht warten (Aufbewahrung: Papierkorb und Versionen)
+            foreach (var u in users)
+            {
+                var surplus = Gone.Load(u.Blobs.Dir, SurplusFile);
+                var now = usage is UsageMin or UsageStrict && other == null
+                    ? locals.Where(c => c.User == u && c.Copy && !c.Evicted && !keep.Contains(c)).ToDictionary(c => c.Key)
+                    : new Dictionary<string, LocalBlob>();
+                foreach (var k in surplus.Keys.Where(k => !now.ContainsKey(k)).ToList()) surplus.Remove(k);
+                foreach (var (k, c) in now)
+                {
+                    if (!surplus.TryGetValue(k, out var since)) { since = surplus[k] = DateTime.UtcNow; if (usage != UsageStrict) { toRemove += c.Size; continue; } }
+                    if (hold || (usage != UsageStrict && DateTime.UtcNow - since < DeleteAfter)) { toRemove += c.Size; continue; }
+                    if (await DropCopy(c)) surplus.Remove(k); else toRemove += c.Size;
+                }
+                Gone.Save(u.Blobs.Dir, SurplusFile, surplus);
+                // Was lokal geloescht wurde und am Ziel nach der Frist entfernt wird
+                foreach (var k in Gone.Load(u.Blobs.Dir, GoneFile).Keys)
+                    if (u.Sizes.TryGetValue(k, out var size)) toRemove += size;
+                _inS3[u.Space.User.Id] = u.Sizes.ToDictionary(x => x.Key[(x.Key.LastIndexOf('/') + 1)..], x => x.Value, StringComparer.Ordinal);
+            }
+
+            // 7. Anzeige: Dateien (ohne Vorschaubilder) nur hier, an beiden Orten, nur am Ziel
+            long remoteOnly = 0, remoteBytes = 0, awayBytes = 0, both = 0, bothBytes = 0, pendingCount = 0, pendingBytes = 0, waiting = 0, fixedBytes = 0, thumbBytes = 0;
+            var busyParts = new Dictionary<(string Reason, string? Ext), (long Count, long Bytes)>();
+            foreach (var u in users)
+            {
+                var stillHere = locals.Where(c => c.User == u && !c.Evicted).Select(c => c.Id).ToHashSet(StringComparer.Ordinal);
+                foreach (var id in u.Needed)
+                    if (!stillHere.Contains(id) && u.Sizes.TryGetValue(u.Prefix + id[..2] + "/" + id, out var away))
+                    {
+                        // Fehlt hier etwas, das am Ziel liegt (verdraengt, Plattenfehler, nach einer Wiederherstellung): siehe unten, ob es zurueckkommt
+                        missingHere = true; awayBytes += away;
+                        if (!u.Thumbs.Contains(id)) { remoteOnly++; remoteBytes += away; }
+                    }
+            }
+            foreach (var c in locals.Where(c => !c.Evicted))
+            {
+                if (c.Thumb) { thumbBytes += c.Size; continue; }
+                if (c.Copy) { both++; bothBytes += c.Size; } else { pendingCount++; pendingBytes += c.Size; }
+                if (c.User.Why.TryGetValue(c.Id, out var cause))
+                {
+                    fixedBytes += c.Size; waiting += c.Size;
+                    busyParts.TryGetValue(cause, out var part);
+                    busyParts[cause] = (part.Count + 1, part.Bytes + c.Size);
+                }
+            }
+            if (caching)
+            {
                 Interlocked.Exchange(ref _cacheBytes, cacheBytes);
                 // Passt alles in die Grenzen, liegt alles auch hier: von selbst zurueckholen. Sonst bleibt es beim Nachladen beim Oeffnen.
                 if (missingHere && !Fits(cacheBytes, awayBytes, Target(config.Current), Headroom())) missingHere = false;
-                _state = _state with { Cache = new CacheState(cacheBytes, limit, evicted, Interlocked.Read(ref _fetched), remoteOnly, Interlocked.Read(ref _streamed), Headroom() is var room && room == long.MaxValue ? long.MaxValue : cacheBytes + Math.Max(0, room), waiting, both, bothBytes, remoteBytes, fixedBytes, pendingCount, pendingBytes,
-                    thumbBytes, busyParts.Select(x => new BusyPart(x.Key.Reason, x.Key.Ext, x.Value.Count, x.Value.Bytes)).OrderByDescending(x => x.Bytes).Take(12).ToList()) };
+                _state = _state with { Cache = new CacheState(cacheBytes, limit, evicted, Interlocked.Read(ref _fetched), remoteOnly, Interlocked.Read(ref _streamed), Headroom() is var r2 && r2 == long.MaxValue ? long.MaxValue : cacheBytes + Math.Max(0, r2), waiting, both, bothBytes, remoteBytes, fixedBytes, pendingCount, pendingBytes,
+                    thumbBytes, busyParts.Select(x => new BusyPart(x.Key.Reason, x.Key.Ext, x.Value.Count, x.Value.Bytes)).OrderByDescending(x => x.Bytes).Take(12).ToList(),
+                    usage, cap, usedRemote, toRemove, full) };
             }
             else _state = _state with { Cache = null };
         }
@@ -750,6 +907,7 @@ public sealed class S3Mirror(Spaces spaces, ServerConfig config, DataPaths paths
         catch (SwitchedOff) { _state = _state with { Running = false }; log.LogInformation("Storage Extender ausgeschaltet - Abgleich angehalten"); return; }
         catch (Exception e) { error = S3Remote.Describe(e); }
         if (error != null) log.LogWarning("S3-Kopie: {Error}", error);
+        if (full) log.LogWarning("Storage Extender: die Speicherbegrenzung ist erreicht");
         if (missingHere && !_restoreWanted && _state.Restore is not { Running: true }) { log.LogWarning("Storage Extender: hier fehlen Dateiinhalte - werden vom Ziel zurückgeholt"); RequestRestore(); }
         _state = new State(false, DateTime.UtcNow, error, local, mirrored, uploaded, deleted, pending, _state.Restore, _state.Cache, other, Headroom() < 0);
         if (_state.LowSpace) log.LogWarning("Storage Extender: der frei zu lassende Speicherplatz ist erreicht – lokal sind nur noch {Free} frei", FreeHere());
@@ -784,7 +942,7 @@ public sealed class S3Mirror(Spaces spaces, ServerConfig config, DataPaths paths
         {
             if (!gone.TryGetValue(k, out var since)) { gone[k] = DateTime.UtcNow; continue; }
             if (hold || DateTime.UtcNow - since < keep) continue;
-            try { await remote.DeleteAsync(k, ct); gone.Remove(k); deleted++; }
+            try { await remote.DeleteAsync(k, ct); gone.Remove(k); there.Remove(k); deleted++; }
             catch (Exception e) when (e is not OperationCanceledException) { error ??= S3Remote.Describe(e); }
         }
         Gone.Save(dir, goneFile, gone);
@@ -980,7 +1138,7 @@ public sealed class S3Mirror(Spaces spaces, ServerConfig config, DataPaths paths
     }
 
     /// <summary>Einen geretteten Inhalt als Datei ablegen - Vorschaubilder (WebP in deren Groessen) nicht. true: abgelegt.</summary>
-    private static async Task<bool> RescueOne(UserSpace space, string id, int n, CancellationToken ct)
+    internal static async Task<bool> RescueOne(UserSpace space, string id, int n, CancellationToken ct)
     {
         var blobs = space.Db.Blobs;
         var head = new byte[64];

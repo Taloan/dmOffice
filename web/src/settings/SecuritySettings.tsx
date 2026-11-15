@@ -4,11 +4,11 @@ import {
 } from '@fluentui/react-components'
 import QRCode from 'qrcode'
 import { useEffect, useState } from 'react'
-import { api } from '../api'
+import { api, featureOn } from '../api'
 import { useApp } from '../App'
 import { askConfirm, askPassword } from '../shell/context'
 import { copyText, saveText } from '../shell/browser'
-import { t, locale } from '../i18n'
+import { t, tError, locale } from '../i18n'
 
 const useStyles = makeStyles({
   form: { display: 'flex', flexDirection: 'column', gap: '12px', maxWidth: '420px' },
@@ -25,10 +25,43 @@ export function SecuritySettings() {
   const [code, setCode] = useState('')
   const [codes, setCodes] = useState<string[] | null>(null)
   const [disable, setDisable] = useState(false)
+  // Anmeldung über einen Identitätsanbieter (OIDC): verknüpfen oder lösen
+  type Sso = { available: boolean; name: string | null; linked: boolean; allowUnlink: boolean; confirm?: 'password' | 'password+code' | 'code' | 'provider'; confirmed?: boolean; hasPassword?: boolean; passwordLogin?: boolean }
+  const [sso, setSso] = useState<Sso | null>(null)
+  const loadSso = () => { if (featureOn('oidc')) api.get<Sso>('/api/auth/oidc/me').then(x => { setSso(x); if (x.confirmed) setUnlinking(true) }).catch(() => setSso(null)) }
+  useEffect(loadSso, [])
+  // Lösen: dabei das Passwort festlegen, das ab jetzt gilt
+  const [unlinking, setUnlinking] = useState(false)
+  const [newPw, setNewPw] = useState({ a: '', b: '' })
+  // Bestätigung beim Lösen: bisheriges Passwort und/oder Code (ohne eigenes Passwort und ohne 2FA: neue Anmeldung beim Anbieter)
+  const [unOld, setUnOld] = useState('')
+  const [unCode, setUnCode] = useState('')
+  const needOld = sso?.confirm === 'password' || sso?.confirm === 'password+code'
+  const needCode = sso?.confirm === 'password+code' || sso?.confirm === 'code'
+  const needProvider = sso?.confirm === 'provider' && !sso.confirmed
+  const unlinkSso = async () => {
+    if (newPw.a !== newPw.b) { notify(t('Die Passwörter sind verschieden'), undefined, 'warning'); return }
+    try {
+      await api.post('/api/auth/oidc/unlink', { password: newPw.a, old: unOld || undefined, code: unCode || undefined })
+      setUnlinking(false); setNewPw({ a: '', b: '' }); setUnOld(''); setUnCode(''); notify(t('Verknüpfung gelöst')); refreshMe(); loadSso()
+    } catch (e) { fail(e); loadSso() }
+  }
 
   const change = async () => {
     if (pw !== pw2) { notify(t('Die Passwörter sind verschieden'), undefined, 'warning'); return }
-    try { await api.post('/api/auth/password', { old, new: pw }); setOld(''); setPw(''); setPw2(''); notify(t('Passwort geändert')) } catch (e) { fail(e) }
+    try { await api.post('/api/auth/password', { old, new: pw, code: pwCode || undefined }); setOld(''); setPw(''); setPw2(''); setPwCode(''); notify(t('Passwort geändert')); loadSso() } catch (e) { fail(e); loadSso() }
+  }
+  // Ohne eigenes Passwort (über OIDC angelegt): statt des bisherigen Passworts der Code bzw. eine Bestätigung beim Anbieter
+  const [pwCode, setPwCode] = useState('')
+  const noOwn = sso?.linked && sso.hasPassword === false
+  // Verknüpfen: zuerst mit Passwort (und Code) bestätigen, dann frisch beim Anbieter anmelden
+  const linkSso = async () => {
+    const c = await askPassword(t('Verknüpfen bestätigen'), !!me.twoFactor)
+    if (!c) return
+    try {
+      const r = await api.post<{ url: string }>('/api/auth/oidc/link', { password: c.password, code: c.code })
+      window.location.href = r.url
+    } catch (e) { fail(e) }
   }
   const begin = async () => {
     const c = await askPassword(t('Zwei-Faktor-Anmeldung einrichten'), false)
@@ -62,11 +95,11 @@ export function SecuritySettings() {
       const info = await api.get<{ twoFactor: boolean; lastAdmin: boolean; shares: number; members: string[] }>('/api/auth/delete-account/impact')
       if (info.lastAdmin) { notify(t('Du bist der einzige Admin. Lege zuerst einen weiteren Admin an.'), undefined, 'warning'); return }
       const parts = [
-        t('Dein Konto und deine Daten in dmOffice werden sofort gelöscht, dazu deine Kopien im Storage Extender und im Files-Backup. Das lässt sich nicht rückgängig machen. Sichere vorher, was du behalten möchtest.'),
+        t('Dein Konto und deine Daten in dmOffice werden sofort gelöscht, dazu deine Kopien im Storage Extender und im Files-Backup. Das lässt sich nicht rückgängig machen.'),
         t('Von dir im Chat gesendete Dateien sind danach nicht mehr verfügbar. Mails bei deinem Anbieter bleiben dort.'),
         t('Vorhandene Core-Backups bleiben bestehen, bis neuere sie ersetzen. Bis dahin enthalten sie deine Daten verschlüsselt.'),
       ]
-      if (info.shares > 0) parts.push(t('Du hast {n} Freigaben für {names}. Diese Personen verlieren den Zugriff, auch auf alles, was sie dort abgelegt haben. Sag ihnen vorher Bescheid.', { n: info.shares, names: info.members.join(', ') }))
+      if (info.shares > 0) parts.push(t('Du hast {n} Freigaben für {names}. Diese Personen verlieren den Zugriff, auch auf alles, was sie dort abgelegt haben.', { n: info.shares, names: info.members.join(', ') }))
       if (!await askConfirm(t('Konto löschen'), parts.join(' '), t('Weiter'))) return
       const r = await askPassword(t('Zum Löschen bestätigen'), info.twoFactor, t('Konto endgültig löschen'))
       if (!r) return
@@ -83,16 +116,21 @@ export function SecuritySettings() {
   return (
     <>
       <Text size={600} weight="semibold">{t('Sicherheit')}</Text>
-      <Text weight="semibold">{t('Passwort ändern')}</Text>
-      <form className={s.form} onSubmit={e => { e.preventDefault(); change() }}>
-        <Field label={t('Bisheriges Passwort')}><Input type="password" value={old} onChange={(_, d) => setOld(d.value)} autoComplete="current-password" /></Field>
-        <Field label={t('Neues Passwort')} hint={t('mindestens 8 Zeichen')}><Input type="password" value={pw} onChange={(_, d) => setPw(d.value)} autoComplete="new-password" /></Field>
-        <Field label={t('password|Wiederholen')}><Input type="password" value={pw2} onChange={(_, d) => setPw2(d.value)} autoComplete="new-password" /></Field>
-        <div><Button type="submit" appearance="primary" disabled={!old || !pw}>{t('Ändern')}</Button></div>
-      </form>
+      {/* Auch mit OIDC verknüpft: Das Passwort gilt zum Bestätigen und - wenn erlaubt - für die Anmeldung mit Anmeldename und Passwort */}
+      <Text weight="semibold">{noOwn ? t('Passwort festlegen') : t('Passwort ändern')}</Text>
+      {noOwn && <Text>{t('Dein Konto wurde über {name} angelegt und hat noch kein eigenes Passwort.', { name: sso?.name ?? 'OIDC' })}</Text>}
+      {noOwn && sso?.confirm === 'provider' && !sso.confirmed
+        ? <div><Button onClick={() => { window.location.href = '/api/auth/oidc/start?reauth=1&back=' + encodeURIComponent('#/settings/security') }}>{t('Bei {name} bestätigen', { name: sso?.name ?? 'OIDC' })}</Button></div>
+        : <form className={s.form} onSubmit={e => { e.preventDefault(); change() }}>
+          {!noOwn && <Field label={t('Bisheriges Passwort')}><Input type="password" value={old} onChange={(_, d) => setOld(d.value)} autoComplete="current-password" /></Field>}
+          {noOwn && sso?.confirm === 'code' && <Field label={t('Code aus der Authenticator-App')}><Input value={pwCode} onChange={(_, d) => setPwCode(d.value)} autoComplete="one-time-code" inputMode="numeric" /></Field>}
+          <Field label={t('Neues Passwort')} hint={t('mindestens 8 Zeichen')}><Input type="password" value={pw} onChange={(_, d) => setPw(d.value)} autoComplete="new-password" /></Field>
+          <Field label={t('password|Wiederholen')}><Input type="password" value={pw2} onChange={(_, d) => setPw2(d.value)} autoComplete="new-password" /></Field>
+          <div><Button type="submit" appearance="primary" disabled={(!noOwn && !old) || (noOwn && sso?.confirm === 'code' && !pwCode) || !pw}>{noOwn ? t('Festlegen') : t('Ändern')}</Button></div>
+        </form>}
 
       <Text weight="semibold" style={{ marginTop: 16 }}>{t('Sitzungen')}</Text>
-      <Text>{t('Browser, in denen du angemeldet bist. Einzelne lassen sich abmelden, etwa nach einer Anmeldung an einem fremden Rechner. Programme mit App-Passwort stehen unter Geräte & Sync.')}</Text>
+      <Text>{t('Browser, in denen du angemeldet bist. Einzelne lassen sich abmelden. Programme mit App-Passwort stehen unter Geräte & Sync.')}</Text>
       {sessions && sessions.length > 0 && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: '6px 16px', alignItems: 'center', maxWidth: 640 }}>
           {sessions.map(x => [
@@ -104,9 +142,39 @@ export function SecuritySettings() {
       )}
       <div><Button onClick={logoutAll}>{t('Überall abmelden')}</Button></div>
 
+      {sso?.available && <>
+        <Text weight="semibold" style={{ marginTop: 16 }}>{t('Anmeldung über {name}', { name: sso.name ?? 'SSO' })}</Text>
+        <Text>{sso.linked
+          ? (sso.passwordLogin
+            ? t('Dein Konto ist mit {name} verknüpft: Du meldest dich mit „Anmelden mit {name}“ an. Anmeldename und Passwort gelten weiterhin.', { name: sso.name ?? 'SSO' })
+            : t('Dein Konto ist mit {name} verknüpft: Du meldest dich mit „Anmelden mit {name}“ an.', { name: sso.name ?? 'SSO' }))
+          : t('Verknüpfe dein Konto, um dich künftig über {name} anzumelden. Du bestätigst mit deinem Passwort und meldest dich danach beim Anbieter an.', { name: sso.name ?? 'SSO' })}</Text>
+        {sso.linked && !sso.allowUnlink && <Text size={200}>{t('Die Verknüpfung kann nur die Verwaltung lösen.')}</Text>}
+        {sso.linked && sso.allowUnlink && !unlinking && <div><Button onClick={() => setUnlinking(true)}>{t('Verknüpfung lösen')}</Button></div>}
+        {sso.linked && unlinking && needProvider && <div className={s.form}>
+          <Text>{t('Bestätige zuerst mit einer neuen Anmeldung bei {name}. Danach legst du hier dein Passwort fest.', { name: sso.name ?? 'SSO' })}</Text>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Button appearance="primary" onClick={() => { window.location.href = '/api/auth/oidc/start?reauth=1&back=' + encodeURIComponent('#/settings/security') }}>{t('Bei {name} bestätigen', { name: sso.name ?? 'SSO' })}</Button>
+            <Button onClick={() => setUnlinking(false)}>{t('Abbrechen')}</Button>
+          </div>
+        </div>}
+        {sso.linked && unlinking && !needProvider && <form className={s.form} onSubmit={e => { e.preventDefault(); unlinkSso() }}>
+          <Text>{t('Ab jetzt meldest du dich mit Anmeldename und diesem Passwort an.')}</Text>
+          {needOld && <Field label={t('Bisheriges Passwort')}><Input type="password" value={unOld} onChange={(_, d) => setUnOld(d.value)} autoComplete="current-password" /></Field>}
+          {needCode && <Field label={t('Code aus der Authenticator-App')}><Input value={unCode} onChange={(_, d) => setUnCode(d.value)} autoComplete="one-time-code" inputMode="numeric" /></Field>}
+          <Field label={t('Neues Passwort')} hint={t('mindestens 8 Zeichen')}><Input type="password" value={newPw.a} onChange={(_, d) => setNewPw(x => ({ ...x, a: d.value }))} autoComplete="new-password" /></Field>
+          <Field label={t('password|Wiederholen')}><Input type="password" value={newPw.b} onChange={(_, d) => setNewPw(x => ({ ...x, b: d.value }))} autoComplete="new-password" /></Field>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Button type="submit" appearance="primary" disabled={newPw.a.length < 8 || !newPw.b || (needOld && !unOld) || (needCode && !unCode)}>{t('Verknüpfung lösen')}</Button>
+            <Button onClick={() => { setUnlinking(false); setNewPw({ a: '', b: '' }); setUnOld(''); setUnCode('') }}>{t('Abbrechen')}</Button>
+          </div>
+        </form>}
+        {!sso.linked && <div><Button appearance="primary" onClick={linkSso}>{t('Verknüpfen')}</Button></div>}
+      </>}
+
       <Text weight="semibold" style={{ marginTop: 16 }}>{t('Zwei-Faktor-Anmeldung')}</Text>
       <Text>
-        {t('Beim Anmelden im Browser zusätzlich ein Code aus einer Authenticator-App (Microsoft/Google Authenticator, Aegis, 1Password …). Programme mit App-Passwort (Handy-Kalender, notizi) sind davon nicht betroffen.')}
+        {t('Beim Anmelden im Browser zusätzlich ein Code aus einer Authenticator-App. Programme mit App-Passwort (Handy-Kalender, notizi) sind davon nicht betroffen.')}
       </Text>
       {me.twoFactor ? (
         <div style={{ display: 'flex', gap: 8 }}>
@@ -134,7 +202,7 @@ export function SecuritySettings() {
             <DialogBody>
               <DialogTitle>{t('Wiederherstellungscodes')}</DialogTitle>
               <DialogContent>
-                <Text block style={{ marginBottom: 12 }}>{t('Jeder Code gilt einmal, falls das Handy fehlt. Jetzt ausdrucken oder im Passwortmanager ablegen – sie werden nicht noch einmal gezeigt.')}</Text>
+                <Text block style={{ marginBottom: 12 }}>{t('Jeder Code gilt einmal, falls das Handy fehlt. Die Codes werden nicht noch einmal angezeigt.')}</Text>
                 <div className={s.codes}>{codes.map(c => <span key={c}>{c}</span>)}</div>
               </DialogContent>
               <DialogActions>
@@ -203,7 +271,14 @@ function logText(what: string) {
   if (m) return t('neuer Zugang für „{name}“ (Dateien, Kalender, Kontakte)', { name: m[1] })
   m = /^Mail-Weiterleitung an (.*)$/.exec(what)
   if (m) return t('Mail-Weiterleitung an {to}', { to: m[1] })
-  return t(what)
+  m = /^Anmeldung über OIDC vorgemerkt für „(.*)“$/.exec(what)
+  if (m) return t('Anmeldung über OIDC vorgemerkt für „{name}“', { name: m[1] })
+  m = /^Anmeldung über (.+) verknüpft$/.exec(what)
+  if (m) return t('Anmeldung über {name} verknüpft', { name: m[1] })
+  m = /^angemeldet über (.+)$/.exec(what)
+  if (m) return t('angemeldet über {name}', { name: m[1] })
+  // Feste Texte, auch mit wechselndem Teil nach „: “ („Für WebDAV und Nextcloud ausgeblendet: /Pfad“)
+  return tError(what)
 }
 
 /** Sicherheitsprotokoll (Tresor Stufe 1): Änderungen durch einen Administrator (mit Name) und eigene. */

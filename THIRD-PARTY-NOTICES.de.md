@@ -90,6 +90,7 @@ Die Symbole sind die Fluent UI System Icons, von Microsoft unter der MIT-Lizenz 
 | SharpCompress | 0.50.7 | MIT | https://github.com/adamhathcock/sharpcompress |
 | SkiaSharp (4 Pakete) | 4.150.1 | MIT | https://go.microsoft.com/fwlink/?linkid=868515 |
 | SQLitePCLRaw.bundle_e_sqlcipher (4 Pakete) | 2.1.11 | Apache-2.0 | https://github.com/ericsink/SQLitePCL.raw |
+| SSH.NET | 2026.0.0 | MIT | https://github.com/sshnet/SSH.NET |
 | Ude.NetStandard | 1.2.0 | MPL-1.1 OR GPL-2.0-or-later OR LGPL-2.1-or-later | https://github.com/yinyue200/ude |
 | XmpCore | 6.1.10.1 | BSD-3-Clause | https://github.com/drewnoakes/xmp-core-dotnet |
 | z440.atl.core | 7.19.0 | MIT | https://github.com/Zeugma440/atldotnet |
@@ -225,6 +226,7 @@ Optional. dmOffice spricht über das Netzwerk mit ihnen; sie werden nicht mit dm
 
 | Bestandteil | Version | Lizenz | Quelle |
 |---|---|---|---|
+| ClamAV – Virenprüfung über clamd | – | GPL-2.0-only | https://www.clamav.net |
 | Collabora Online (CODE) – Office-Server über WOPI | – | MPL-2.0 | https://www.collaboraonline.com |
 | ONLYOFFICE Docs – Office-Server | – | AGPL-3.0-only | https://github.com/ONLYOFFICE/DocumentServer |
 | OpenStreetMap – Kartendaten und Kacheln, © OpenStreetMap-Mitwirkende | – | ODbL-1.0 | https://www.openstreetmap.org/copyright |

@@ -1,5 +1,5 @@
-import { Avatar, makeStyles, tokens, Tag, TagGroup } from '@fluentui/react-components'
-import { useEffect, useRef, useState } from 'react'
+import { Avatar, makeStyles, Portal, tokens, Tag, TagGroup } from '@fluentui/react-components'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { api, q } from '../api'
 import { useDebounced } from '../shell/hooks'
 import { t } from '../i18n'
@@ -10,8 +10,9 @@ const useStyles = makeStyles({
     flex: 1, minWidth: '140px', border: 'none', outline: 'none', background: 'transparent', color: tokens.colorNeutralForeground1,
     fontSize: '14px', fontFamily: 'inherit', padding: '4px 2px',
   },
+  // Über dem Fenster (Portal, fest positioniert): ein rollender Dialog schneidet die Liste nicht ab
   list: {
-    position: 'absolute', top: '100%', left: 0, zIndex: 20, minWidth: 'min(320px, 80vw)', maxHeight: '280px', overflowY: 'auto',
+    position: 'fixed', zIndex: 1000000, minWidth: 'min(320px, 80vw)', maxWidth: '95vw', overflowY: 'auto', boxSizing: 'border-box',
     backgroundColor: tokens.colorNeutralBackground1, boxShadow: tokens.shadow16, borderRadius: tokens.borderRadiusMedium, padding: '4px',
   },
   item: { display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 8px', borderRadius: tokens.borderRadiusMedium, cursor: 'pointer' },
@@ -32,7 +33,27 @@ export function AddressInput({ value, onChange, autoFocus, people, fieldName }: 
   const [items, setItems] = useState<Suggestion[]>([])
   const [active, setActive] = useState(0)
   const input = useRef<HTMLInputElement>(null)
+  const root = useRef<HTMLDivElement>(null)
   const term = useDebounced(text, 150)
+  // Lage der Vorschlagsliste: unter dem Feld, bei wenig Platz darüber; folgt beim Rollen und bei Größenänderung
+  const [place, setPlace] = useState<React.CSSProperties | null>(null)
+  const open = items.length > 0
+  useLayoutEffect(() => {
+    if (!open) { setPlace(null); return }
+    const update = () => {
+      const r = root.current?.getBoundingClientRect()
+      if (!r) return
+      const below = window.innerHeight - r.bottom - 8, above = r.top - 8
+      const left = Math.max(4, Math.min(r.left, window.innerWidth - 324))
+      setPlace(below >= 200 || below >= above
+        ? { top: r.bottom, left, maxHeight: Math.min(280, below) }
+        : { bottom: window.innerHeight - r.top, left, maxHeight: Math.min(280, above) })
+    }
+    update()
+    window.addEventListener('scroll', update, true)
+    window.addEventListener('resize', update)
+    return () => { window.removeEventListener('scroll', update, true); window.removeEventListener('resize', update) }
+  }, [open])
 
   useEffect(() => {
     if (term.trim().length < 2) { setItems([]); return }
@@ -62,20 +83,23 @@ export function AddressInput({ value, onChange, autoFocus, people, fieldName }: 
   }
 
   return (
-    <div className={s.root} onClick={() => input.current?.focus()}>
+    <div ref={root} className={s.root} onClick={() => input.current?.focus()}>
       {value.length > 0 && (
-        <TagGroup onDismiss={(_, d) => onChange(value.filter(v => v !== d.value))} size="small">
+        // Viele oder lange Adressen: Kärtchen brechen um und werden gekürzt (ganze Adresse im Tooltip), statt das Feld zu sprengen
+        <TagGroup onDismiss={(_, d) => onChange(value.filter(v => v !== d.value))} size="small" style={{ flexWrap: 'wrap', minWidth: 0, maxWidth: '100%', rowGap: 4 }}>
           {value.map(v => (
             <Tag key={v} value={v} dismissible title={v} media={<Avatar name={label(v)} size={20} color="colorful" />}
-              appearance={/@/.test(v) ? 'filled' : 'outline'}>{label(v)}</Tag>
+              appearance={/@/.test(v) ? 'filled' : 'outline'} style={{ maxWidth: 280 }}
+              primaryText={{ style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 } }}>{label(v)}</Tag>
           ))}
         </TagGroup>
       )}
       <input ref={input} className={s.input} value={text} autoFocus={autoFocus} aria-label={fieldName}
         onChange={e => setText(e.target.value)} onKeyDown={onKey}
         onBlur={() => setTimeout(() => { if (text.includes('@')) add(text); setItems([]) }, 150)} />
-      {items.length > 0 && (
-        <div className={s.list} onMouseDown={e => e.preventDefault()}>
+      {open && place && (
+        <Portal>
+        <div className={s.list} style={place} onMouseDown={e => e.preventDefault()}>
           {items.map((x, i) => (
             <div key={x.address} className={`${s.item} ${i === active ? s.active : ''}`} onMouseEnter={() => setActive(i)} onClick={() => add(fmt(x))}>
               <Avatar name={x.name || x.address} size={28} color="colorful" />
@@ -95,6 +119,7 @@ export function AddressInput({ value, onChange, autoFocus, people, fieldName }: 
             </div>
           ))}
         </div>
+        </Portal>
       )}
     </div>
   )

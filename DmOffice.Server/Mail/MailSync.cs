@@ -156,6 +156,25 @@ public sealed class MailSync : BackgroundService
                         _log.LogWarning("Mail-Sync {Account}, Erneut erinnern: {Error}", LogNames.Of(space, account), ex.Message);
                     }
                 }
+                // Entfernen nach Zeit (in den Papierkorb, vernichten) - derselbe Weg wie die Wiedervorlage
+                if (Features.On(Features.MailExpiry) && MailExpiry.All(space.Db).Any(e => e.Account == account.Id && e.At <= DateTime.UtcNow))
+                {
+                    state.Phase = "Entfernen nach Zeit";
+                    try
+                    {
+                        var touched = new HashSet<string>();
+                        if (await MailExpiry.RunAsync(new MailExpiry.Imap(client), space, account, e => e.At <= DateTime.UtcNow, touched, stop) > 0)
+                        {
+                            lock (state) state.KickFolders.UnionWith(touched);
+                            Touch(space.User.Id);
+                        }
+                    }
+                    catch (Exception ex) when (Skippable(client, ex) || ex is InvalidOperationException)
+                    {
+                        folderError = "Entfernen nach Zeit: " + ex.Message;
+                        _log.LogWarning("Mail-Sync {Account}, Entfernen nach Zeit: {Error}", LogNames.Of(space, account), ex.Message);
+                    }
+                }
 
                 List<FolderRow> folders;
                 if (full || MailStore.Folders(space.Db, account.Id).Count == 0)
@@ -356,14 +375,20 @@ public sealed class MailSync : BackgroundService
         var user = space.User.Id;
         var fresh = server.Where(u => !local.Contains(u.Id) && !MailPending.Removing(user, account.Id, row.Path, u.Id))
             .OrderByDescending(u => u.Id).ToList();
+        // Postfach der Catchall-Aliase: die Kopfzeilen mit dem eigentlichen Empfänger mitholen (CatchallAliases)
+        var aliases = CatchallAliases.Load(db);
+        var aliasOn = CatchallAliases.ActiveFor(aliases, account.Id);
         const MessageSummaryItems items = MessageSummaryItems.UniqueId | MessageSummaryItems.Envelope |
             MessageSummaryItems.Flags | MessageSummaryItems.InternalDate | MessageSummaryItems.Size |
             MessageSummaryItems.BodyStructure | MessageSummaryItems.References;
         foreach (var batch in fresh.Chunk(250))
         {
             ct.ThrowIfCancellationRequested();
-            var summaries = await f.FetchAsync(batch, items, ct);
+            var summaries = aliasOn
+                ? await f.FetchAsync(batch, new FetchRequest(items, CatchallAliases.FetchHeaders), ct)
+                : await f.FetchAsync(batch, items, ct);
             MailStore.Insert(db, account.Id, row.Path, summaries);
+            if (aliasOn) CatchallAliases.Record(db, aliases, summaries);
             // Gerade von hier gesendet: den Inhalt hat der Server schon - gleich ablegen statt spaeter vom Anbieter zu holen
             foreach (var s in summaries)
                 if (SentCache.Take(user, account.Id, row.Path, s.Envelope?.MessageId) is { } raw)
@@ -461,7 +486,8 @@ public sealed class MailSync : BackgroundService
         if (open.Count == 0) return false;
 
         // Nichts zu tun: trotzdem merken, sonst liefen sie spaeter doch noch (Regel neu, Rueckkehr)
-        if (rules.Count == 0 && !spamActive && !settings.Spam.Enabled && !learnKnown && settings.Spam.Lists.Count == 0 && !settings.FocusOn(account) && !settings.CategoriesOn(account))
+        if (rules.Count == 0 && !spamActive && !settings.Spam.Enabled && !learnKnown && settings.Spam.Lists.Count == 0 && !settings.FocusOn(account) && !settings.CategoriesOn(account)
+            && !CatchallAliases.ActiveFor(db, account))
         {
             MailStore.SetProcessed(db, account.Id, open.Select(k => k.Value).Distinct(), MailStore.StageDone);
             return false;
@@ -527,6 +553,31 @@ public sealed class MailSync : BackgroundService
         var settings = space.Settings;
         var message = await Fetch(inbox, space, account, uid, ct);
         if (message == null) return;
+        // Virenprüfung (wenn eingeschaltet): Mails mit Anhang einmal beim Eingang
+        try { await MailVirus.CheckAsync(space, account, inbox.FullName, uid.Id, message, ct); }
+        catch (Exception e) when (e is IOException or System.Net.Sockets.SocketException) { _log.LogWarning("Virenscanner: {Error}", e.Message); }
+
+        // Gesperrter Catchall-Alias (oder unbekannte bei „Junk“): gleich in Junk oder Papierkorb - vor allem anderen, auch vor
+        // sicheren Absendern (die Adresse ist ja gerade deshalb gesperrt, weil sie weitergegeben wurde)
+        if (CatchallAliases.Judge(space.Db, account, message) is { } alias)
+        {
+            if (message.MessageId is { } mid) CatchallAliases.Hit(space.Db, CatchallAliases.Load(space.Db), alias.Alias, mid,
+                message.From.Mailboxes.FirstOrDefault()?.Address, message.From.Mailboxes.FirstOrDefault()?.Name, message.Date);
+            if (await Special(c, space, account, alias.Action == "delete" ? "trash" : "junk", ct) is { } target)
+            {
+                if (alias.Action == "junk")
+                {
+                    MailStore.SetSpamScore(space.Db, account.Id, inbox.FullName, uid.Id, Math.Max(0.99, settings.Spam.SpamCutoff));
+                    JunkLearn.MarkMoved(space.Db, message);
+                }
+                await inbox.MoveToAsync(uid, target, ct);
+                MailStore.Delete(space.Db, account.Id, inbox.FullName, new[] { uid.Id });
+                lock (StateOf(space.User.Id, account.Id)) StateOf(space.User.Id, account.Id).KickFolders.Add(target.FullName);
+                Touch(space.User.Id);
+                return;
+            }
+        }
+
         // Sichere Absender (Adressbuch, selbst angeschrieben): nie Junk, auf Wunsch als gut lernen
         var spam = settings.Spam;
         // Nie mit nachweislich gefälschter Absenderadresse (DMARC gescheitert) - sonst käme Chef-Betrug mit der Adresse eines Kontakts
@@ -602,6 +653,22 @@ public sealed class MailSync : BackgroundService
                 if (outcome.Delete || outcome.MoveTo != null && outcome.MoveTo != inbox.FullName) return;
             }
         }
+
+        // Catchall-Aliase: in den Ordner des Alias, Unbekannte in den Ordner der Domain (CatchallFolders)
+        var aliases = CatchallAliases.Load(space.Db);
+        if (CatchallAliases.ActiveFor(aliases, account.Id) && CatchallAliases.Of(aliases, message) is { } to
+            && await CatchallFolders.TargetAsync(c, space.Db, to, ct) is { } aliasFolder && aliasFolder.FullName != inbox.FullName)
+        {
+            if (!MailStore.Folders(space.Db, account.Id).Any(f => f.Path == aliasFolder.FullName)) await RefreshFolders(c, space, account, ct);
+            var moved = await inbox.MoveToAsync(uid, aliasFolder, ct);
+            MailStore.Delete(space.Db, account.Id, inbox.FullName, new[] { uid.Id });
+            // Entfernen nach Zeit, wie am Alias eingestellt (gefunden wird die Mail dann über die Message-ID)
+            if (CatchallAliases.Get(space.Db, to) is { } toAlias
+                && CatchallAliases.ExpiryFor(toAlias, account.Id, aliasFolder.FullName, moved?.Id ?? 0, message, DateTime.UtcNow) is { } expiry)
+                await MailExpiry.ScheduleAsync(space.Db, [expiry]);
+            lock (StateOf(space.User.Id, account.Id)) StateOf(space.User.Id, account.Id).KickFolders.Add(aliasFolder.FullName);
+            Touch(space.User.Id);
+        }
     }
 
     private async Task Apply(ImapClient c, UserSpace space, MailAccount account, IMailFolder inbox, UniqueId uid,
@@ -658,16 +725,25 @@ public sealed class MailSync : BackgroundService
         }
 
         string? moveTo = o.Delete ? (await Special(c, space, account, "trash", ct))?.FullName : o.MoveTo;
+        var (where, whereUid) = (inbox.FullName, uid.Id);
         if (moveTo != null && moveTo != inbox.FullName)
         {
             try
             {
-                await inbox.MoveToAsync(uid, await c.GetFolderAsync(moveTo, ct), ct);
+                var moved = await inbox.MoveToAsync(uid, await c.GetFolderAsync(moveTo, ct), ct);
                 MailStore.Delete(space.Db, account.Id, inbox.FullName, new[] { uid.Id });
                 lock (StateOf(space.User.Id, account.Id)) StateOf(space.User.Id, account.Id).KickFolders.Add(moveTo);
+                (where, whereUid) = (moveTo, moved?.Id ?? 0);
             }
             catch (FolderNotFoundException) { _log.LogWarning("Regel: Zielordner gibt es nicht"); }
         }
+        // In den Papierkorb / vernichten nach X Tagen: gezaehlt ab dem Eingang, gefunden spaeter ueber die Message-ID
+        var expiries = new List<MailExpiry.Entry>();
+        if (o.TrashAfterDays is int td && !o.Delete)
+            expiries.Add(new() { Account = account.Id, Folder = where, Uid = whereUid, MessageId = message.MessageId, At = DateTime.UtcNow.AddDays(td), Kind = MailExpiry.Trash, Subject = message.Subject ?? "" });
+        if (o.DestroyAfterDays is int dd)
+            expiries.Add(new() { Account = account.Id, Folder = where, Uid = whereUid, MessageId = message.MessageId, At = DateTime.UtcNow.AddDays(dd), Kind = MailExpiry.Destroy, Subject = message.Subject ?? "" });
+        if (expiries.Count > 0) await MailExpiry.ScheduleAsync(space.Db, expiries);
         Touch(space.User.Id);
     }
 

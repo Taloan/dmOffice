@@ -39,10 +39,10 @@ export function ServerFolderDialog({ title, start, onPick, onClose }: { title: s
           <DialogTitle>{title}</DialogTitle>
           <DialogContent>
             {path === null
-              ? <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>{t('Im Container eingebundene Ordner – weitere bindest du in der Container-Vorlage ein (Regel: im Container unter /external/<Name>, etwa die Unraid-Freigabe /mnt/user/musik nach /external/musik).')}</Text>
+              ? <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>{t('Im Container unter /external/<Name> eingebundene Ordner.')}</Text>
               : (
                 <div className={s.path}>
-                  <Button size="small" appearance="subtle" icon={<ArrowUp20Regular />} onClick={() => setPath(data?.parent && data.parent !== data.path ? data.parent : null)} aria-label={t('Nach oben')} />
+                  <Button size="small" appearance="subtle" icon={<ArrowUp20Regular />} onClick={() => setPath(data?.parent && data.parent !== data.path ? data.parent : null)} aria-label={t('folder|Nach oben')} />
                   <Folder20Regular /><span>{path}</span>
                 </div>
               )}

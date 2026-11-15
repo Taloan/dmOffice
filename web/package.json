@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "node ../tools/lizenzen/erzeugen.mjs && tsc --noEmit && vite build",
     "lizenzen": "node ../tools/lizenzen/erzeugen.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "i18n-kollisionen": "node ../tools/i18n/kollisionen.mjs"
   },
   "dependencies": {
     "@fluentui/react-components": "9.74.9",

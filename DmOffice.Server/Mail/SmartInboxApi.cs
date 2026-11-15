@@ -7,7 +7,7 @@ namespace DmOffice.Mail;
 public static class SmartInboxApi
 {
     public record AccountOn(string Id, bool On);
-    public record SettingsBody(bool? Enabled, bool? Focus, bool? Calendar, bool? Categories, List<AccountOn>? Accounts);
+    public record SettingsBody(bool? Enabled, bool? Focus, bool? Calendar, bool? Categories, List<AccountOn>? Accounts, bool? Unsubscribe = null);
 
     public static void Map(WebApplication app)
     {
@@ -24,11 +24,17 @@ public static class SmartInboxApi
                 if (body.Focus is bool f) s.FocusedInbox = f;
                 if (body.Calendar is bool c) s.SmartCalendar = c;
                 if (body.Categories is bool k) s.SmartCategories = k;
+                if (body.Unsubscribe is bool u && Features.On(Features.AutoUnsubscribe)) s.AutoUnsubscribe = u;
                 foreach (var a in body.Accounts ?? [])
                     if (s.MailAccounts.FirstOrDefault(x => x.Id == a.Id) is { } acc) acc.FocusedInbox = a.On;
             });
             return Results.Ok(State(space));
         });
+
+        // Automatisch abgemeldet: die letzten Versuche, neueste zuerst
+        api.MapGet("/smart/unsubscribed", (HttpContext http) => Features.On(Features.AutoUnsubscribe)
+            ? Results.Ok(AutoUnsubscribe.Log(http.Space().Db).Select(e => new { at = e.At, account = e.Account, sender = e.Sender, subject = e.Subject, result = e.Result, how = e.How }))
+            : Results.NotFound());
 
         // Frühere Smart-Kategorien des Posteingangs: gibt es nicht mehr (ältere Apps blenden sie damit aus)
         api.MapGet("/{acc}/smart-inbox", () => Results.Ok(new { enabled = false, categories = Array.Empty<object>() }));
@@ -43,6 +49,7 @@ public static class SmartInboxApi
             focus = s.FocusedInbox,
             calendar = s.SmartCalendar,
             categories = s.SmartCategories,
+            unsubscribe = s.AutoUnsubscribe,
             accounts = s.MailAccounts.Select(a => new { id = a.Id, name = a.Name, email = a.Email, on = a.FocusedInbox }),
         };
     }

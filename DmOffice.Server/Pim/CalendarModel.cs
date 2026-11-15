@@ -104,15 +104,79 @@ public static class CalendarModel
             Component cal;
             try { cal = Ics.Parse(obj.Data).First(r => r.Name == "VCALENDAR"); }
             catch { continue; }
+            ObjectEvents(obj, cal, zone, from, to, result);
+        }
+        return result.OrderBy(e => e.Start).ToList();
+    }
+
+    /// <summary>
+    /// Terminsuche ohne Zeitgrenze: Alle Wörter müssen in Titel, Ort, Beschreibung, Kategorien, Teilnehmern oder Organisator
+    /// stehen. Je Termin ein Treffer; bei einer Serie das nächste Vorkommen ab jetzt, sonst das letzte.
+    /// </summary>
+    public static List<EventDto> Search(UserSpace space, IEnumerable<long> calendars, string query, DateTime now, int limit = 200)
+    {
+        var words = query.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (words.Length == 0) return new();
+        var zone = space.Zone;
+        var hits = new List<EventDto>();
+        foreach (var obj in PimStore.InRange(space.Db, calendars, "VEVENT", null, null))
+        {
+            // Schneller Vorfilter auf dem Rohtext (Zeilen entfaltet), genau geprüft wird an den Feldern
+            var raw = obj.Data.Replace("\r\n ", "").Replace("\n ", "").Replace("\r\n\t", "").Replace("\n\t", "");
+            if (!words.All(w => raw.Contains(w, StringComparison.OrdinalIgnoreCase))) continue;
+            Component cal;
+            try { cal = Ics.Parse(obj.Data).First(r => r.Name == "VCALENDAR"); }
+            catch { continue; }
             var events = cal.Of("VEVENT").ToList();
+            if (!events.Any(e => Matches(e, words))) continue;
             var master = events.FirstOrDefault(e => e.Get("RECURRENCE-ID") == null) ?? events.FirstOrDefault();
             if (master == null) continue;
+            if (master.Get("RRULE") == null && master.Get("RDATE") == null)
+            {
+                foreach (var e in events)
+                    if (Matches(e, words) && Dto(obj, e, zone, null, null, false) is { } d) hits.Add(d);
+                continue;
+            }
+            var next = new List<EventDto>();
+            ObjectEvents(obj, cal, zone, now, now.AddYears(5), next);
+            var hit = next.Where(e => ParseIso(e.End, out _) > now).OrderBy(e => e.Start).FirstOrDefault();
+            if (hit == null)
+            {
+                var past = new List<EventDto>();
+                ObjectEvents(obj, cal, zone, now.AddYears(-5), now, past);
+                hit = past.OrderBy(e => e.Start).LastOrDefault();
+            }
+            hit ??= Dto(obj, master, zone, null, null, true);
+            if (hit != null) hits.Add(hit);
+        }
+        // Kommende zuerst (aufsteigend), dann Vergangene (neueste zuerst)
+        var upcoming = hits.Where(e => ParseIso(e.End, out _) > now).OrderBy(e => e.Start, StringComparer.Ordinal);
+        var earlier = hits.Where(e => ParseIso(e.End, out _) <= now).OrderByDescending(e => e.Start, StringComparer.Ordinal);
+        return upcoming.Concat(earlier).Take(limit).ToList();
+    }
+
+    private static bool Matches(Component e, string[] words)
+    {
+        var text = string.Join("\n", new[] { e.Text("SUMMARY"), e.Text("LOCATION"), e.Text("DESCRIPTION"),
+                string.Join(",", e.All("CATEGORIES").Select(p => Ics.Unescape(p.Value))) }
+            .Concat(e.All("ATTENDEE").Concat(e.All("ORGANIZER")).SelectMany(a => new[] { a.Param("CN"), Mail.Invites.Mailto(a) }))
+            .Where(x => !string.IsNullOrEmpty(x)));
+        return words.All(w => text.Contains(w, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>Vorkommen eines gespeicherten Termins im Zeitraum (Serien ausgerechnet).</summary>
+    private static void ObjectEvents(DavObject obj, Component cal, TimeZoneInfo zone, DateTime from, DateTime to, List<EventDto> result)
+    {
+        {
+            var events = cal.Of("VEVENT").ToList();
+            var master = events.FirstOrDefault(e => e.Get("RECURRENCE-ID") == null) ?? events.FirstOrDefault();
+            if (master == null) return;
 
             if (master.Get("RRULE") == null && master.Get("RDATE") == null)
             {
                 foreach (var e in events)
                     if (Dto(obj, e, zone, null, null, false) is { } d && Overlaps(d, from, to)) result.Add(d);
-                continue;
+                return;
             }
 
             // Serie: Vorkommen mit Ical.Net ausrechnen, Felder aus dem eigenen Leser
@@ -140,7 +204,6 @@ public static class CalendarModel
                 if (Dto(obj, master, zone, null, null, true) is { } d) result.Add(d);
             }
         }
-        return result.OrderBy(e => e.Start).ToList();
     }
 
     /// <summary>Ganztaegiges als Mitternacht UTC - einen Tag Spielraum, die Oberflaeche schneidet selbst.</summary>

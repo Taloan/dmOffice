@@ -35,7 +35,8 @@ public sealed class Vault
     /// <summary>So viele Werte hat der Umstieg neu eingepackt.</summary>
     public int Migrated { get; }
 
-    public Vault(DataPaths paths, string? environmentKey)
+    /// <param name="readOnly">Nur lesen (Werkzeug neben dem laufenden Server): nichts umpacken, keine Schlüsseldatei anlegen.</param>
+    public Vault(DataPaths paths, string? environmentKey, bool readOnly = false)
     {
         KeyFile = Path.Combine(paths.Root, "master.key");
         byte[]? fileKey = File.Exists(KeyFile) ? Convert.FromHexString(File.ReadAllText(KeyFile).Trim()) : null;
@@ -46,7 +47,7 @@ public sealed class Vault
             Previous = fileKey;
             KeyInDataDir = false;
             // Gleich hier, bevor irgendein anderer Teil die Dateien liest und mit alten Werten zurueckschreibt
-            if (fileKey != null)
+            if (fileKey != null && !readOnly)
             {
                 try { Migrated = Migrate(paths, fileKey); }
                 catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException or System.Xml.XmlException) { MigrationError = e.Message; }
@@ -56,6 +57,7 @@ public sealed class Vault
         {
             if (fileKey == null)
             {
+                if (readOnly) throw new InvalidOperationException("Kein Hauptschlüssel: DMOFFICE_MASTER_KEY ist nicht gesetzt, und im Datenverzeichnis liegt keine Schlüsseldatei.");
                 fileKey = RandomNumberGenerator.GetBytes(32);
                 File.WriteAllText(KeyFile, Convert.ToHexString(fileKey));
                 if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(KeyFile, UnixFileMode.UserRead | UnixFileMode.UserWrite);

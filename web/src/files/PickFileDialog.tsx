@@ -56,7 +56,7 @@ export function PickFileDialog({ title, accept, start = '', onPick, onClose }: {
             <Input contentBefore={<Search20Regular />} placeholder={t('In der Dateiablage suchen')} value={query} onChange={(_, d) => setQuery(d.value)} style={{ width: '100%' }} />
             {!query.trim() && (
               <div className={s.path}>
-                <Button size="small" appearance="subtle" icon={<ArrowUp20Regular />} disabled={!path} onClick={() => setPath(parentOf(path))} aria-label={t('Nach oben')} />
+                <Button size="small" appearance="subtle" icon={<ArrowUp20Regular />} disabled={!path} onClick={() => setPath(parentOf(path))} aria-label={t('folder|Nach oben')} />
                 <Folder20Regular /> <span>{path || t('Dateien')}</span>
               </div>
             )}

@@ -44,7 +44,7 @@ public static class SecurityCenterApi
         {
             var sb = new StringBuilder("Zeit (UTC)\tAdresse\tArt\tMethode\tPfad\tUser-Agent\tHinweis\n");
             foreach (var e in Sc.Events(q, 5000))
-                sb.Append(e.At.ToString("yyyy-MM-dd HH:mm:ss")).Append('\t').Append(e.Key).Append('\t').Append(e.Kind).Append('\t').Append(e.Method).Append('\t')
+                sb.Append(e.At.ToString("yyyy-MM-dd HH:mm:ss")).Append('\t').Append(e.Key).Append('\t').Append(Clean(e.Kind)).Append('\t').Append(Clean(e.Method)).Append('\t')
                   .Append(Clean(e.Path)).Append('\t').Append(Clean(e.Agent)).Append('\t').Append(Clean(e.Detail)).Append('\n');
             return Results.File(Encoding.UTF8.GetPreamble().Concat(Encoding.UTF8.GetBytes(sb.ToString())).ToArray(), "text/tab-separated-values; charset=utf-8",
                 $"sicherheit-{DateTime.UtcNow:yyyy-MM-dd}.tsv");
@@ -77,5 +77,11 @@ public static class SecurityCenterApi
             await Sc.VerifyAbuseKeyAsync(body.Key, ct) is { } error ? Results.BadRequest(new { error }) : Results.Ok());
     }
 
-    private static string Clean(string? s) => (s ?? "").Replace('\t', ' ').Replace('\n', ' ').Replace('\r', ' ');
+    /// <summary>Eine Zelle der TSV-Datei: ohne Tabulator und Zeilenumbruch, und was ein Tabellenprogramm als Formel liest
+    /// (=, +, -, @ am Anfang), mit vorangestelltem ' als Text (wie CsvCell in den Finanzen).</summary>
+    internal static string Clean(string? s)
+    {
+        var text = (s ?? "").Replace('\t', ' ').Replace('\n', ' ').Replace('\r', ' ');
+        return text.Length > 0 && "=+-@".Contains(text[0]) ? "'" + text : text;
+    }
 }

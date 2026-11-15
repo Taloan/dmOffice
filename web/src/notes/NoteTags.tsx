@@ -3,7 +3,7 @@ import { Tag16Regular } from '@fluentui/react-icons'
 import { useState } from 'react'
 import { t } from '../i18n'
 
-/** Anzeige eines Schlagworts: das Rezept-Kennzeichen aus notizi heisst in der Oberflaeche „Rezept“. */
+/** Anzeige eines Tags: das Rezept-Kennzeichen aus notizi heisst in der Oberflaeche „Rezept“. */
 export const tagLabel = (tag: string) => (tag.toLowerCase() === 'recipe' ? t('Rezept') : tag)
 
 /**
@@ -24,15 +24,15 @@ export function NoteTags({ tags, known, readOnly, onChange }: {
   if (readOnly && tags.length === 0) return null
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', padding: '2px 8px 6px', color: tokens.colorNeutralForeground3 }}>
-      <Tag16Regular aria-label={t('Schlagwörter')} />
+      <Tag16Regular aria-label={t('Tags')} />
       {tags.length > 0 && (
-        <TagGroup size="small" onDismiss={readOnly ? undefined : (_, d) => onChange(tags.filter(x => x !== d.value))} aria-label={t('Schlagwörter')}>
+        <TagGroup size="small" onDismiss={readOnly ? undefined : (_, d) => onChange(tags.filter(x => x !== d.value))} aria-label={t('Tags')}>
           {tags.map(x => <Tag key={x} value={x} dismissible={!readOnly} shape="circular" appearance="brand"
             dismissIcon={{ 'aria-label': t('Entfernen') }}>{tagLabel(x)}</Tag>)}
         </TagGroup>
       )}
       {!readOnly && (
-        <Combobox size="small" appearance="underline" freeform style={{ minWidth: 140, width: 160 }} placeholder={t('Schlagwort hinzufügen')}
+        <Combobox size="small" appearance="underline" freeform style={{ minWidth: 140, width: 160 }} placeholder={t('Tag hinzufügen')}
           value={text} selectedOptions={[]}
           onChange={e => { const v = e.target.value; if (v.endsWith(',')) add(v.slice(0, -1)); else setText(v) }}
           onOptionSelect={(_, d) => { if (d.optionValue) add(d.optionValue) }}

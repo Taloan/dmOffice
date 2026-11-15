@@ -183,7 +183,7 @@ export function NotificationSettings() {
   const ask = async () => {
     const r = await Notification.requestPermission()
     setPermission(r)
-    if (r === 'granted') new Notification('dmOffice', { body: t('Desktop-Benachrichtigungen sind eingeschaltet.'), icon: '/icon-128.png' })
+    if (r === 'granted') new Notification('dmOffice', { body: t('Desktop-Benachrichtigungen sind aktiviert.'), icon: '/icon-128.png' })
   }
   return (
     <>
@@ -198,7 +198,7 @@ export function NotificationSettings() {
         {!desktopPossible() ? (
           <MessageBar intent="warning">
             <MessageBarBody>
-              {t('Der Browser erlaubt Desktop-Benachrichtigungen nur über HTTPS. dmOffice läuft hier über http://{host} – dafür einen Eintrag im Reverse-Proxy (Nginx Proxy Manager) mit Zertifikat anlegen. Bis dahin erscheinen Hinweise nur innerhalb von dmOffice.', { host: location.host })}
+              {t('Der Browser erlaubt Desktop-Benachrichtigungen nur über HTTPS. dmOffice läuft hier über http://{host}, Hinweise erscheinen deshalb nur innerhalb von dmOffice.', { host: location.host })}
             </MessageBarBody>
           </MessageBar>
         ) : (
@@ -260,7 +260,7 @@ export function InstallSettings() {
   return (
     <>
       <PageTitle>{t('Apps installieren')}</PageTitle>
-      <Section title={t('Als PWA installieren')} hint={t('dmOffice läuft dann in einem eigenen Fenster mit eigenem Symbol – ohne Adressleiste, wie ein installiertes Programm. Daten bleiben auf dem Server, Updates kommen von selbst.')}>
+      <Section title={t('Als PWA installieren')} hint={t('dmOffice läuft dann in einem eigenen Fenster mit eigenem Symbol und ohne Adressleiste.')}>
         {installed ? (
           <>
             <MessageBar intent="success"><MessageBarBody>{t('dmOffice läuft bereits als installierte App.')}</MessageBarBody></MessageBar>
@@ -268,7 +268,7 @@ export function InstallSettings() {
           </>
         ) : !pwaPossible() ? (
           <MessageBar intent="warning">
-            <MessageBarBody>{t('Installieren erlaubt der Browser nur über HTTPS. dmOffice läuft hier über http://{host} – dafür einen Eintrag im Reverse-Proxy mit Zertifikat anlegen.', { host: location.host })}</MessageBarBody>
+            <MessageBarBody>{t('Installieren erlaubt der Browser nur über HTTPS. dmOffice läuft hier über http://{host}.', { host: location.host })}</MessageBarBody>
           </MessageBar>
         ) : canInstall ? (
           <div><Button appearance="primary" onClick={go}>{t('Installieren')}</Button></div>
@@ -282,7 +282,6 @@ export function InstallSettings() {
               <li>{t('Safari auf dem Mac: Ablage → „Zum Dock hinzufügen“.')}</li>
               <li>{t('iPhone und iPad: in Safari „Teilen“ → „Zum Home-Bildschirm“.')}</li>
               <li>{t('Android: Menü ⋮ → „App installieren“ oder „Zum Startbildschirm hinzufügen“.')}</li>
-              <li>{t('Firefox kann Web-Apps auf dem Desktop nicht installieren – dafür Chrome, Edge oder Safari nehmen.')}</li>
             </ul>
           </>
         )}
@@ -290,7 +289,7 @@ export function InstallSettings() {
       {/* Demo-Server: die App gibt es dort nur über den Play-Test */}
       {!demoMode.on && <>
       <Section title={t('Android-App (APK)')} hint={own?.available
-        ? t('Die eigene dmOffice-App für Android 8 und neuer. Sie kommt direkt von diesem Server und gehört zu ihm – den Link kannst du an alle weitergeben, die hier ein Konto haben. Updates holt sich die App ebenfalls von hier.')
+        ? t('Die dmOffice-App für Android 8 und neuer, direkt von diesem Server. Updates holt sich die App ebenfalls von hier.')
         : t('Die eigene dmOffice-App für Android 8 und neuer: Kalender und Aufgaben mit Widgets auf dem Startbildschirm. Sie liegt nicht im Play Store, sondern als APK-Datei auf GitHub.')} last>
         {own?.available && <Text size={200} style={{ display: 'block', marginBottom: 8 }}>{own.matches
           ? t('Version {version} · {size} · passt zu diesem Server', { version: own.version ?? '?', size: fmtSize(own.size ?? 0) })
@@ -313,7 +312,6 @@ export function InstallSettings() {
                 </div>
               </li>
             </ol>
-            <Hint>{t('Updates: die neue APK genauso herunterladen und über die alte installieren – Kopplung und Einstellungen bleiben erhalten.')}</Hint>
           </div>
         </div>
       </Section>

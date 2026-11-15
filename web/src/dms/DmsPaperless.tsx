@@ -29,7 +29,7 @@ const useStyles = makeStyles({
   table: { display: 'grid', gridTemplateColumns: 'minmax(140px, 2fr) repeat(4, minmax(60px, 1fr))', gap: '2px 12px', alignItems: 'center' },
   th: { fontSize: '12px', color: tokens.colorNeutralForeground3 },
   entries: { maxHeight: '320px', overflowY: 'auto', display: 'flex', flexDirection: 'column' },
-  diffs: { maxHeight: '320px', overflowY: 'auto', display: 'grid', gridTemplateColumns: 'minmax(140px, 2fr) 110px 1fr 1fr', gap: '2px 12px', fontSize: '13px' },
+  diffs: { maxHeight: '320px', overflowY: 'auto', display: 'grid', gridTemplateColumns: 'minmax(140px, 2fr) 110px minmax(0, 1fr) minmax(0, 1fr)', gap: '2px 12px', fontSize: '13px' },
 })
 
 const pct = (n: number, total: number) => total ? `${Math.round(n * 100 / total)} %` : '–'

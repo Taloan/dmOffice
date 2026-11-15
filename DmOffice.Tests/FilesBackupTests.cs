@@ -238,6 +238,27 @@ public class FilesBackupTests : IClassFixture<ChatFixture>
                 Assert.Contains("Inhalt fehlt am Ziel", err.ToString());
                 Directory.Delete(empty, recursive: true);
 
+                // Neue Schreibweise wie rclone, Stand über die Zugangsdaten für den Notfall (wenn der Server weg ist)
+                // Präfix des Core-Backups: der Ordner über „backups/“
+                var standPrefix = Path.GetRelativePath(coreRoot, Path.GetDirectoryName(Path.GetDirectoryName(stand)!)!).Replace(Path.DirectorySeparatorChar, '/');
+                if (standPrefix == ".") standPrefix = null;
+                var profile = Path.Combine(outDir, "zugang.txt");
+                File.WriteAllText(profile, "Zugangsdaten\n" + StorageProfile.Seal(services.GetRequiredService<Vault>(),
+                    new StorageProfile.Places(null, new StorageProfile.Data("folder", null, null, null, standPrefix, null, null, null, null, null, coreRoot))));
+                o = new StringWriter(); e = new StringWriter();
+                Assert.Equal(0, await RestoreTool.RunAsync(["stands", "--key", profile], o, e, CancellationToken.None));
+                Assert.Contains(Path.GetFileNameWithoutExtension(stand), o.ToString());
+                o = new StringWriter();
+                Assert.True(await RestoreTool.RunAsync(["ls", "--key", profile, "anna:/werkzeug"], o, e, CancellationToken.None) == 0, e.ToString());
+                Assert.Contains("werkzeug/probe.txt", o.ToString());
+                var outNew = Path.Combine(outDir, "neu");
+                Directory.CreateDirectory(outNew);
+                code = await RestoreTool.RunAsync(["copy", "--key", profile, "--files", root, "--prefix", "fb", "anna:/werkzeug/probe.txt", outNew], new StringWriter(), e, CancellationToken.None);
+                Assert.True(code == 0, e.ToString());
+                Assert.Equal(text, File.ReadAllText(Path.Combine(outNew, "probe.txt")));
+                // Kein Stand bis zu diesem Tag
+                Assert.Equal(2, await RestoreTool.RunAsync(["ls", "--key", profile, "--at", "2001-01-01", "anna:/"], new StringWriter(), new StringWriter(), CancellationToken.None));
+
                 // Am Ziel unverändert
                 var after = Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories).Select(f => (f, File.GetLastWriteTimeUtc(f))).OrderBy(x => x.f).ToList();
                 Assert.Equal(before, after);

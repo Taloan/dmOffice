@@ -230,6 +230,27 @@ public static class FileMeta
     private static T? N<T>(Microsoft.Data.Sqlite.SqliteDataReader r, int i) where T : struct => r.IsDBNull(i) ? null : (T)Convert.ChangeType(r.GetValue(i), typeof(T), CultureInfo.InvariantCulture);
 
     /// <summary>Aufnahmedaten aus einem Foto oder Video (EXIF, XMP, IPTC, QuickTime); null, wenn nichts lesbar ist.</summary>
+    /// <summary>Den XMP-Block (x:xmpmeta) im Anfang der Datei suchen und mit dem Leser für Sidecar-Dateien auswerten; null, wenn keiner da ist.</summary>
+    internal static Gallery.Sidecar.Data? OwnXmp(Stream stream)
+    {
+        if (!stream.CanSeek) return null;
+        try
+        {
+            stream.Position = 0;
+            var buf = new byte[(int)Math.Min(stream.Length, 8L * 1024 * 1024)];
+            var n = 0;
+            while (n < buf.Length && stream.Read(buf, n, buf.Length - n) is var k && k > 0) n += k;
+            var data = buf.AsSpan(0, n);
+            var start = data.IndexOf("<x:xmpmeta"u8);
+            if (start < 0) return null;
+            const string endTag = "</x:xmpmeta>";
+            var end = data[start..].IndexOf("</x:xmpmeta>"u8);
+            if (end < 0) return null;
+            return Gallery.Sidecar.Read(data.Slice(start, end + endTag.Length).ToArray());
+        }
+        catch (Exception e) when (e is IOException or NotSupportedException or ObjectDisposedException or System.Xml.XmlException or InvalidDataException) { return null; }
+    }
+
     public static Row? Read(string path, Stream stream, TimeZoneInfo zone)
     {
         IReadOnlyList<MetadataExtractor.Directory> dirs;
@@ -299,6 +320,13 @@ public static class FileMeta
             keywords.AddRange(xmp.Where(p => p.Key.StartsWith("dc:subject[", StringComparison.Ordinal)).Select(p => p.Value));
             label = ColorLabel.FromXmp(xmp);
             if (xmp.TryGetValue("xmpDM:pick", out var pv) && int.TryParse(pv, NumberStyles.Integer, CultureInfo.InvariantCulture, out var pp) && pp != 0) pick = Math.Sign(pp);
+        }
+        // XMP, an dem die Bibliothek scheitert (etwa Namensräume nur an x:xmpmeta, wie manche Programme schreiben): selbst lesen wie eine
+        // Sidecar-Datei - sonst fehlten Bewertung und Farbe, obwohl sie in der Datei stehen
+        if (dirs.OfType<XmpDirectory>().FirstOrDefault() is { HasError: true } && OwnXmp(stream) is { } own)
+        {
+            rating = own.Rating; pick = own.Pick; label = own.Label; title = own.Title; description = own.Description;
+            keywords.AddRange(own.Keywords);
         }
         // Bewertung aus Windows (EXIF „Rating“), wenn XMP keine hat
         if (rating == null && ifd0 != null && ifd0.TryGetInt32(0x4746, out var wr) && wr is >= 1 and <= 5) rating = wr;

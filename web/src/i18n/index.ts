@@ -45,7 +45,7 @@ export function tError(message: string): string {
   // Meldungen mit wechselndem Teil am Ende: "Adresse in An ungültig: xyz"
   const i = message.indexOf(': ')
   if (i > 0 && en[message.slice(0, i)]) return en[message.slice(0, i)] + message.slice(i)
-  // Wechselnder Teil vorn: "Einkauf: Fassung aus dmOffice verworfen, …" (Titel, Name)
+  // Wechselnder Teil vorn: "Einkauf: Version aus dmOffice verworfen, …" (Titel, Name)
   const j = message.lastIndexOf(': ')
   if (j > 0 && en[message.slice(j + 2)]) return tError(message.slice(0, j)) + ': ' + en[message.slice(j + 2)]
   return message

@@ -26,7 +26,7 @@ export function SpamListsAdmin() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 640 }}>
       <AdminHeading>{t('Spamlisten')}</AdminHeading>
-      <Text>{t('Spamhaus beantwortet Anfragen über öffentliche DNS-Server nicht. Mit einem Zugangsschlüssel (Data Query Service) funktionieren Spamhaus ZEN und DBL zuverlässig – für private Nutzung kostenlos nach Registrierung bei Spamhaus.')}</Text>
+      <Text>{t('Spamhaus beantwortet Anfragen über öffentliche DNS-Server nicht. Mit einem Zugangsschlüssel fragt dmOffice Spamhaus ZEN und DBL über den Data Query Service ab.')}</Text>
       <Field label={t('Spamhaus-Zugangsschlüssel')} hint={hasKey ? t('Ein Schlüssel ist hinterlegt.') : t('Kein Schlüssel hinterlegt.')}>
         <Input type="password" value={key} onChange={(_, d) => setKey(d.value)} placeholder={hasKey ? '••••••••' : ''} autoComplete="off" />
       </Field>
@@ -36,7 +36,7 @@ export function SpamListsAdmin() {
       </div>
       <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>{t('Welche Listen gefragt werden, stellt jeder Benutzer unter Einstellungen → E-Mail → Junk-E-Mail ein.')}</Text>
       <AdminHeading>{t('Gemeinsames Junk-Wissen')}</AdminHeading>
-      <Text>{t('Klickt jemand auf diesem Server „Junk“, merkt sich dmOffice unlesbare Prüfsummen von Betreff, Absenderdomain, Links und Textabschnitten – keine Inhalte. Kommt dieselbe Mail (auch leicht verändert) bei anderen an, gilt sie dort ab einer Meldung als unsicher, ab zwei als Junk. Gute Mails werden nie geteilt. Meldungen gelten 30 Tage; jeder kann in seinen Junk-Einstellungen aussteigen.')}</Text>
+      <Text>{t('Klickt jemand auf diesem Server „Junk“, merkt sich dmOffice unlesbare Prüfsummen von Betreff, Absenderdomain, Links und Textabschnitten. Kommt dieselbe Mail (auch leicht verändert) bei anderen an, gilt sie dort ab einer Meldung als unsicher, ab zwei als Junk. Meldungen gelten 30 Tage; jeder kann in seinen Junk-Einstellungen aussteigen.')}</Text>
       <Switch label={t('Gemeinsames Junk-Wissen einschalten')} checked={shared} onChange={(_, d) => share(d.checked)} />
     </div>
   )

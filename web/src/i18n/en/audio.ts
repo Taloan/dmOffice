@@ -1,5 +1,7 @@
 // Englische Texte: Audiothek (audio/*, settings/ModuleSettings.tsx, Meldungen aus Audio/*.cs)
 export const audio: Record<string, string> = {
+  // Korrekturen 2.1
+  'Pause': 'Pause',
   // Bereich und Navigation
   'Audiothek': 'Music library',
   'Bibliothek': 'Library',

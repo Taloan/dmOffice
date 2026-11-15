@@ -21,6 +21,9 @@ body { font-family: 'Segoe UI', 'Segoe UI Web (West European)', -apple-system, B
 /* Menüs nie höher als das Fenster, auch nicht auf dem Handy: der untere Teil bleibt erreichbar */
 .fui-MenuPopover { max-height: calc(100dvh - 16px); overflow-y: auto; }
 
+/* Lange Namen ohne Leerzeichen (Datei, Kalender, Ordner) brechen in Dialogtitel und -text um, statt über den Rand zu laufen */
+.fui-DialogTitle, .fui-DialogContent { overflow-wrap: anywhere; }
+
 /* FullCalendar an Fluent anpassen */
 .fc { --fc-border-color: var(--colorNeutralStroke2); --fc-page-bg-color: var(--colorNeutralBackground1);
       --fc-neutral-bg-color: var(--colorNeutralBackground3); --fc-today-bg-color: color-mix(in srgb, var(--colorBrandForeground1) 12%, transparent);
@@ -83,3 +86,21 @@ body { font-family: 'Segoe UI', 'Segoe UI Web (West European)', -apple-system, B
 
 /* Felder mit Hinweis darunter: die Eingabezeile bleibt oben, auch wenn die Nachbarzelle hoeher ist */
 .fui-Field { align-content: start; }
+
+/* Ordnerleiste der Mail nach „Abstände“ (Ansicht, wie in der Liste): kompakt 24 px je Zeile mit Linien statt Lücken zwischen den
+   Abschnitten, normal 28 px mit kleinen Lücken, geräumig 32 px (ohne Klasse). Die Schriftgröße folgt „Textgröße“ (zoom in FolderPane).
+   Konten untereinander und Suchordner/Kategorien bilden je einen Block (dm-fsub) ohne eigene Linie. */
+/* Ordnerliste: Geräumig = frühere Normal-Werte, Normal liegt zwischen Kompakt und Geräumig */
+.dm-folders-roomy .dm-frow { height: 30px !important; min-height: 30px; padding-top: 0 !important; padding-bottom: 0 !important; }
+.dm-folders-roomy .dm-fhead { min-height: 30px; padding-top: 2px !important; padding-bottom: 2px !important; }
+.dm-folders-roomy .dm-fsec, .dm-folders-roomy .dm-fsub { margin-bottom: 6px !important; }
+.dm-folders-normal .dm-frow { height: 26px !important; min-height: 26px; padding-top: 0 !important; padding-bottom: 0 !important; }
+.dm-folders-normal .dm-fhead { min-height: 26px; padding-top: 1px !important; padding-bottom: 1px !important; }
+.dm-folders-normal .dm-fsec, .dm-folders-normal .dm-fsub { margin-bottom: 4px !important; }
+.dm-folders-compact .dm-frow { height: 22px !important; min-height: 22px; padding-top: 0 !important; padding-bottom: 0 !important; font-size: 13px; }
+.dm-folders-compact .dm-frow svg { width: 16px; height: 16px; }
+.dm-folders-compact .dm-fhead { min-height: 22px; font-size: 13px; padding-top: 1px !important; padding-bottom: 1px !important; }
+.dm-folders-compact .dm-fhead .fui-Button { min-width: 22px; height: 22px; padding: 0; }
+.dm-folders-compact .dm-fsec, .dm-folders-compact .dm-fsub { margin-bottom: 0 !important; }
+.dm-folders-compact .dm-fsec, .dm-folders-compact .dm-facc + .dm-fsub:not(.dm-facc) { border-top: 1px solid var(--colorNeutralStroke2); margin-top: 3px; padding-top: 3px; }
+.dm-folders-compact > .dm-fsec:first-child { border-top: none; margin-top: 0; padding-top: 0; }

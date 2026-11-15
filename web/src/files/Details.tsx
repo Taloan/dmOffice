@@ -3,12 +3,13 @@ import { rightLabel, rightOf } from '../calendar/ShareDialog'
 import { ChatShared } from '../chat/ChatShared'
 import { Button, Dialog, DialogBody, DialogContent, DialogSurface, DialogTitle, Divider, Field, Input, Spinner, Text, Textarea, Tooltip, makeStyles, tokens } from '@fluentui/react-components'
 import {
-  ArrowDownload20Regular, Dismiss20Regular, FullScreenMaximize16Regular, History20Regular, Link20Regular, Open20Regular, People20Regular, Share20Regular, Star20Filled, Star20Regular,
+  ArrowDownload20Regular, Dismiss20Regular, Edit20Regular, FullScreenMaximize16Regular, History20Regular, Link20Regular, Open20Regular, People20Regular, Share20Regular, Star20Filled, Star20Regular,
 } from '@fluentui/react-icons'
 import { Suspense, lazy, useCallback, useEffect, useState } from 'react'
 import { api, featureOn, fmtSize, q } from '../api'
 import { DmsFileInfo } from '../dms/DmsFileInfo'
 import { locale, t } from '../i18n'
+import { failedText } from './failedText'
 import { Item, KindIcon, Thumb, hasThumb, kindLabel, kindOf, ownSource, parentOf } from './common'
 import { Link, copyText, linkStatus } from './Dialogs'
 import { extPlace, gallerySource, isExt } from './GalleryFolders'
@@ -64,7 +65,9 @@ interface Info {
   showOnly?: boolean
 }
 
-export function Details({ item, selection, onClose, onOpen, onOpenFolder, onShare, onFavorite, onDownload, version, fail, notify, onChanged, meta, metaOf, width, onFilter, inViewer }: {
+export function Details({ item, selection, onClose, onOpen, onOpenFolder, onShare, onFavorite, onDownload, version, fail, notify, onChanged, meta, metaOf, width, labels, onLabelsMany, onFilter, inViewer, onMark }: {
+  /** Galerie: Sterne, Markierung, Farbe sofort zeigen, im Hintergrund schreiben */
+  onMark?: (body: { pick?: number; rating?: number; label?: string }, items: Item[]) => void
   item: Item | null; selection: Item[]; onClose: () => void; onOpen: (i: Item) => void; onOpenFolder: (path: string, focus?: string) => void
   onShare: (i: Item) => void; onFavorite: (i: Item, on: boolean) => void; onDownload?: (list: Item[]) => void
   version: number; fail: (e: unknown) => void; notify: (m: string) => void; onChanged: () => void
@@ -74,6 +77,10 @@ export function Details({ item, selection, onClose, onOpen, onOpenFolder, onShar
   onFilter?: (pick: [FilterAttr, string?][]) => void
   /** Aufnahmedaten beliebiger Fotos (Mehrfachauswahl: Sterne, Titel, Beschreibung für alle) */
   metaOf?: (i: Item) => Meta | undefined
+  /** Kategorien und Tags der Datei (eigene Dateien) */
+  labels?: React.ReactNode
+  /** Mehrere markiert: Kategorien und Tags für alle (öffnet den Dialog) */
+  onLabelsMany?: (items: Item[]) => void
   /** Im Betrachter: Vorschau und Knöpfe (Öffnen, Herunterladen, Teilen, Favorit) stehen dort schon - hier weglassen */
   inViewer?: boolean
   /** Verstellte Breite (Desktop) */
@@ -88,7 +95,7 @@ export function Details({ item, selection, onClose, onOpen, onOpenFolder, onShar
     if (!await askConfirm(t('Aufnahmeort setzen'), t('Aufnahmeort von „{name}“ an diese Stelle setzen?', { name: p.name }), t('Setzen'))) return
     try {
       const r = await api.post<{ failed: { name: string; error: string }[] }>('/api/gallery/info', { items: [p.path], lat, lon })
-      if (r.failed?.length) fail(r.failed.map(f => `${f.name}: ${f.error}`).join(', '))
+      if (r.failed?.length) fail(new Error(failedText(r.failed)))
       else notify(t('Aufnahmeort gesetzt'))
       onChanged()
     } catch (e) { fail(e) }
@@ -117,7 +124,7 @@ export function Details({ item, selection, onClose, onOpen, onOpenFolder, onShar
           {/* Mehrere Fotos markiert: Sterne, Titel und Beschreibung für alle */}
           {(() => {
             const photos = selection.filter(x => !x.isDir && kindOf(x) === 'image')
-            return photos.length > 1 && metaOf && <PhotoInfoEditor key={photos.map(x => x.path).join('|')} items={photos} metas={photos.map(metaOf)} fail={fail} notify={notify} onChanged={onChanged} />
+            return photos.length > 1 && metaOf && <PhotoInfoEditor key={photos.map(x => x.path).join('|')} items={photos} metas={photos.map(metaOf)} fail={fail} notify={notify} onChanged={onChanged} onMark={onMark} />
           })()}
           {/* Verorten: Ort suchen, Rechtsklick in die Karte setzt den Aufnahmeort für alle markierten Fotos */}
           {(() => {
@@ -132,7 +139,7 @@ export function Details({ item, selection, onClose, onOpen, onOpenFolder, onShar
                   const r = await api.post<{ failed: { name: string; error: string }[] }>('/api/gallery/info', { items: photos.slice(k, k + 50).map(x => x.path), lat, lon })
                   failed.push(...(r.failed ?? []))
                 }
-                if (failed.length) fail(failed.map(f => `${f.name}: ${f.error}`).join(', '))
+                if (failed.length) fail(new Error(failedText(failed)))
                 else notify(t('Aufnahmeort gesetzt'))
                 onChanged()
               } catch (e) { fail(e) }
@@ -143,6 +150,12 @@ export function Details({ item, selection, onClose, onOpen, onOpenFolder, onShar
               <Suspense fallback={<div style={{ height: 220 }} />}><PlacePickMap key={photos.map(x => x.path).join('|')} points={points} onPick={place} /></Suspense>
             </>
           })()}
+          {/* Kategorien und Tags für alle markierten Dateien (Ordner zählen nicht) */}
+          {onLabelsMany && selection.some(x => !x.isDir) && <>
+            <Divider style={{ flexGrow: 0 }} />
+            <Text weight="semibold">{t('Kategorien und Tags')}</Text>
+            <Button icon={<Edit20Regular />} style={{ alignSelf: 'flex-start' }} onClick={() => onLabelsMany(selection.filter(x => !x.isDir))}>{t('Kategorien und Tags …')}</Button>
+          </>}
         </div>
       </aside>
     )
@@ -156,7 +169,8 @@ export function Details({ item, selection, onClose, onOpen, onOpenFolder, onShar
     <aside className={s.root} style={width ? { width } : undefined}>
       <div className={s.head}>
         <KindIcon item={i} />
-        <span className={s.title} title={i.name}>{i.name || t('Meine Dateien')}</span>
+        {/* Wurzel des Tresors heißt intern „tresor:“ */}
+        <span className={s.title} title={i.name}>{/^tresor:\/?$/.test(i.name) ? t('Tresor') : i.name || t('Meine Dateien')}</span>
         <Button appearance="subtle" icon={<Dismiss20Regular />} onClick={onClose} aria-label={t('Schließen')} />
       </div>
       <div className={s.body}>
@@ -197,11 +211,11 @@ export function Details({ item, selection, onClose, onOpen, onOpenFolder, onShar
         </div>
         {/* Titel und Beschreibung wie in Lightroom (dc:title, dc:description): gleich hier bearbeiten */}
         {!i.isDir && kindOf(i) === 'image' && <PhotoInfoEditor key={i.path + '|' + (meta?.title ?? '') + '|' + (meta?.description ?? '') + '|' + (meta?.rating ?? 0)}
-          items={[i]} metas={[meta]} fail={fail} notify={notify} onChanged={onChanged} />}
+          items={[i]} metas={[meta]} fail={fail} notify={notify} onChanged={onChanged} onMark={onMark} />}
         {meta && (meta.keywords || meta.rating || meta.taken || meta.camera || meta.label || meta.width) && <>
           <Divider style={{ flexGrow: 0 }} />
           <div className={s.props}>
-            {meta.keywords && <><span className={s.key}>{t('Stichwörter')}</span><span className={s.val}>
+            {meta.keywords && <><span className={s.key}>{t('Tags')}</span><span className={s.val}>
               {meta.keywords.split('\n').map((k, n) => <span key={k}>{n > 0 && ', '}{pick([['keyword', k]], k)}</span>)}</span></>}
             {meta.label && <><span className={s.key}>{t('Farbmarkierung')}</span><span className={s.val}>
               <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 5, marginRight: 6, background: labelColor(meta.label) }} />{pick([['label']], labelName(meta.label))}</span></>}
@@ -236,6 +250,11 @@ export function Details({ item, selection, onClose, onOpen, onOpenFolder, onShar
               </DialogSurface>
             </Dialog>}
           </>}
+        </>}
+        {labels && <>
+          <Divider style={{ flexGrow: 0 }} />
+          <span className={s.section}>{t('Kategorien und Tags')}</span>
+          {labels}
         </>}
         {!i.isDir && (kindOf(i) === 'image' || /\.(heic|arw|cr[23]|nef|raf|dng|orf|rw2)$/i.test(i.name)) && !i.path.startsWith('alb:') && <AllTags item={i} />}
         {info?.people && info.people.length > 0 && <>
@@ -313,7 +332,9 @@ function AllTags({ item }: { item: Item }) {
  * Lightroom: dc:title, dc:description, xmp:Rating). Bei mehreren: gemeinsame Werte vorbelegt; Unterschiedliches bleibt, solange
  * das Feld nicht geändert wird. Sterne werden gleich gespeichert, Titel und Beschreibung mit „Speichern“.
  */
-function PhotoInfoEditor({ items, metas, fail, notify, onChanged }: { items: Item[]; metas: (Meta | undefined)[]; fail: (e: unknown) => void; notify: (m: string) => void; onChanged: () => void }) {
+function PhotoInfoEditor({ items, metas, fail, notify, onChanged, onMark }: { items: Item[]; metas: (Meta | undefined)[]; fail: (e: unknown) => void; notify: (m: string) => void; onChanged: () => void
+  /** Sterne, Markierung, Farbe sofort zeigen und im Hintergrund schreiben (Galerie) */
+  onMark?: (body: { pick?: number; rating?: number; label?: string }, items: Item[]) => void }) {
   const common = (f: (m: Meta | undefined) => string) => { const v = metas.map(f); return v.every(x => x === v[0]) ? v[0] : null }
   const title0 = common(m => m?.title ?? ''), desc0 = common(m => m?.description ?? '')
   const ratings = metas.map(m => m?.rating ?? 0)
@@ -333,6 +354,9 @@ function PhotoInfoEditor({ items, metas, fail, notify, onChanged }: { items: Ite
   useEffect(() => { setLabel(label0) }, [label0])
   const titleChanged = title !== (title0 ?? ''), descChanged = desc !== (desc0 ?? '')
   const send = async (body: object, done: string) => {
+    // Nur Sterne, Markierung oder Farbe: gleich zeigen, geschrieben wird im Hintergrund
+    const keys = Object.keys(body)
+    if (onMark && keys.length > 0 && keys.every(k => k === 'rating' || k === 'pick' || k === 'label')) { onMark(body as { pick?: number; rating?: number; label?: string }, items); return }
     setBusy(true)
     try {
       // Der Server nimmt höchstens 50 Fotos je Anfrage - größere Auswahl in Teilen
@@ -341,7 +365,7 @@ function PhotoInfoEditor({ items, metas, fail, notify, onChanged }: { items: Ite
         const r = await api.post<{ failed: { name: string; error: string }[] }>('/api/gallery/info', { items: items.slice(k, k + 50).map(i => i.path), ...body })
         failed.push(...(r.failed ?? []))
       }
-      if (failed.length) fail(failed.map(f => `${f.name}: ${f.error}`).join(', '))
+      if (failed.length) fail(new Error(failedText(failed)))
       else notify(done)
       onChanged()
     } catch (e) { fail(e) } finally { setBusy(false) }

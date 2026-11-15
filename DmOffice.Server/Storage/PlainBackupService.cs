@@ -170,8 +170,10 @@ public sealed class PlainBackupService(Spaces spaces, ServerConfig config, DataP
         }
         if (s.Target != PlainBackup.External)
         {
-            if (!config.Current.ExternalWebDavForUsers) throw new UnauthorizedAccessException("WebDAV ist auf diesem Server für Benutzer nicht freigegeben.");
-            return new WebDavDriver(s.Url, s.User, s.Password, ExternalFolders.ClientFor(config)) { RememberDirs = true };
+            if (!ExternalFolders.KindAllowed(config.Current, s.Url)) throw new UnauthorizedAccessException("WebDAV ist auf diesem Server für Benutzer nicht freigegeben.");
+            var remote = RemoteDrivers.Open(s.Url, s.User, s.Password, ExternalFolders.ClientFor(config), ExternalFolders.AllowFor(config.Current));
+            if (remote is WebDavDriver webDav) webDav.RememberDirs = true;
+            return remote;
         }
         // Eigener externer Ordner: Zugangsdaten und Grenzen von dort, nur wenn er beschreibbar ist. Serverordner nie - sonst
         // schriebe jede Person die Platte des Servers voll
@@ -388,7 +390,7 @@ public sealed class PlainBackupService(Spaces spaces, ServerConfig config, DataP
                 var users = http.RequestServices.GetRequiredService<UserStore>();
                 if (users.ById(space.User.Id) is not { } u) return Results.NotFound();
                 // Mit Zwei-Faktor auch der Code: wer nur das Passwort kennt, soll die Daten nicht anderswohin sichern lassen können
-                if (Auth.Confirm(users, u, body.AccountPassword, body.Code, needCode: true) is { } refused) return refused;
+                if (Auth.Confirm(users, u, body.AccountPassword, body.Code, needCode: true, http) is { } refused) return refused;
             }
             if (body.Confirm) s.Confirmed = PlainBackup.ConfirmKey(s);
             // Neues Ziel: die Sprache der Ordnernamen gilt ab dem ersten Lauf dorthin neu

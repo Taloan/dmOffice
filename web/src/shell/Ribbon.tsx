@@ -152,7 +152,7 @@ export function RibbonHeader({ area, start, view, before, after, onMenu }: {
       <div style={{ display: 'flex', alignItems: 'center', minWidth: 0 }}>
         {before}
         <div style={{ flex: 1, minWidth: 0 }}>
-          <RibbonTabs tabs={[['start', t('Start')], ['view', t('Ansicht')]]} value={tab}
+          <RibbonTabs tabs={[['start', t('ribbon|Start')], ['view', t('Ansicht')]]} value={tab}
             onChange={v => setTab(v as 'start' | 'view')} />
         </div>
         {after}

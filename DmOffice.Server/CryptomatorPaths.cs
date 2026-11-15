@@ -288,6 +288,24 @@ public static class CryptomatorPaths
         UserStorage.Refresh(http.Space().Db);
     }
 
+    /// <summary>Textdatei im Cryptomator-Tresor speichern (Texteditor, neue Textdatei); etag = Änderungszeit in Ticks, wie die Liste sie zeigt.</summary>
+    public static async Task<IResult> SaveText(HttpContext http, string path, byte[] data, string? etag, bool create, CancellationToken ct)
+    {
+        var (o, inner) = Writable(http, path);
+        if (inner.Length == 0) throw new ArgumentException("Ungültiger Pfad.");
+        CryptomatorVault.Entry? now = null;
+        try { now = EntryAt(o, inner); } catch (KeyNotFoundException) { }
+        if (create && now != null) return Results.Conflict(new { error = "Gibt es schon.", conflict = true });
+        if (!create)
+        {
+            if (now is not { IsDir: false }) throw new KeyNotFoundException("Nicht gefunden.");
+            if (etag != null && etag != now.Modified.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture))
+                return Results.Conflict(new { error = "Die Datei wurde inzwischen geändert.", conflict = true });
+        }
+        await o.Vault.WriteAsync(Abs(inner), new MemoryStream(data), ct);
+        return Results.Ok(new { path = Show(o.Root, inner), etag = EntryAt(o, inner).Modified.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture) });
+    }
+
     public static async Task<(object? Entry, IResult? Error)> StoreOne(HttpContext http, string dirPath, string fileName, Stream body, string? conflict, CancellationToken ct)
     {
         var (o, dir) = Writable(http, dirPath);
@@ -345,11 +363,22 @@ public static class CryptomatorPaths
             {
                 if (conflict == "skip") return Results.Ok(new { path = to, skipped = true });
                 if (conflict == "rename") name = FreeName(a, dir, name);
-                else if (conflict == "replace") a.Vault.Delete(Abs(bi));
+                else if (conflict == "replace")
+                {
+                    // Ziel = Quelle oder ein Ordner, der die Quelle enthält: Ersetzen würde die Quelle selbst löschen
+                    if (TresorPaths.SelfOrAncestor(bi, ai))
+                        return Results.BadRequest(new { error = "Quelle und Ziel sind dieselbe Datei oder der Zielordner enthält die Quelle. Nichts ersetzt." });
+                    a.Vault.Delete(Abs(bi));
+                }
                 else return Results.Conflict(new { error = "Am Ziel gibt es das schon.", conflict = true, path = to });
             }
             var target = Join(dir, name);
-            if (copy) await CopyWithin(a, ai, target, ct); else a.Vault.Move(Abs(ai), Abs(target));
+            if (copy)
+            {
+                try { await CopyWithin(a, ai, target, ct); }
+                catch (Exception) { RemovePartial(a, target); throw; }
+            }
+            else a.Vault.Move(Abs(ai), Abs(target));
             return Results.Ok(new { path = Show(a.Root, target), skipped = false, replaced = (long?)null, copied = false });
         }
         if (Is(from))
@@ -365,7 +394,14 @@ public static class CryptomatorPaths
                 else if (conflict == "replace") FileStore.Delete(loc.Db, at);
                 else return Results.Conflict(new { error = "Am Ziel gibt es das schon.", conflict = true, path = to });
             }
-            await CopyOut(o, inner, loc.Db, at, ct);
+            try { await CopyOut(o, inner, loc.Db, at, ct); }
+            catch (Exception)
+            {
+                // Teilkopie am Ziel wieder weg, endgültig - sie kam aus dem Tresor
+                try { if (FileStore.Delete(loc.Db, at, out var partial) && partial > 0) FileStore.PurgeTrash(loc.Db, [partial]); }
+                catch (Exception) { /* der ursprüngliche Fehler zählt */ }
+                throw;
+            }
             if (!copy) o.Vault.Delete(Abs(inner));
             UserStorage.Refresh(http.Space().Db);
             return Results.Ok(new { path = loc.Show(at), skipped = false, replaced = (long?)null, copied = false });
@@ -386,11 +422,19 @@ public static class CryptomatorPaths
                 else return Results.Conflict(new { error = "Am Ziel gibt es das schon.", conflict = true, path = to });
             }
             var target = Join(dir, name);
-            await CopyIn(o, src.Db, entry, target, ct);
+            try { await CopyIn(o, src.Db, entry, target, ct); }
+            catch (Exception) { RemovePartial(o, target); throw; }
             if (!copy && FileStore.Delete(src.Db, src.Path, out var trash) && trash > 0) FileStore.PurgeTrash(src.Db, [trash]);
             UserStorage.Refresh(http.Space().Db);
             return Results.Ok(new { path = Show(o.Root, target), skipped = false, replaced = (long?)null, copied = false });
         }
+    }
+
+    /// <summary>Teilkopie im Cryptomator-Tresor nach einem Abbruch entfernen (der Name war vorher frei). Wirft nie.</summary>
+    private static void RemovePartial(Open o, string target)
+    {
+        try { if (o_Exists(o, target)) o.Vault.Delete(Abs(target)); }
+        catch (Exception) { /* der ursprüngliche Fehler zählt */ }
     }
 
     private static bool o_Exists(Open o, string inner)

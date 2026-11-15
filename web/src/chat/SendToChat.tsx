@@ -100,6 +100,7 @@ function SendToChatDialog({ refs, initialText, onClose }: { refs: ChatRefInput[]
             <div className={s.list}>
               {targets == null && <Spinner size="small" />}
               {targets?.length === 0 && <Text className={s.sub}>{t('Keine weiteren Personen auf diesem Server.')}</Text>}
+              {!!targets?.length && shown.length === 0 && <Text className={s.sub}>{t('Keine Treffer.')}</Text>}
               {shown.map(x => (
                 <label key={x.key} className={s.row}>
                   <Checkbox checked={chosen.includes(x.key)} onChange={() => setChosen(c => (c.includes(x.key) ? c.filter(k => k !== x.key) : [...c, x.key]))} />

@@ -90,7 +90,7 @@ Dateien bereinigt dmOffice automatisch.
 | nächste | 11 | Feste Dateinummern für Nextcloud-Clients | schreibt jede Dateizeile samt Inhalt neu, solange der noch in der Datenbank liegt: braucht etwa die Größe der Dateiinhalte an zusätzlichem Platz, bei GB Minuten |
 | nächste | 12–15 | Bereich der App-Passwörter, Papierkorb und Versionen der Dateiablage, Volltextsuche, Abrufgrenze der Links | klein |
 | nächste | 16 | Dateiinhalte als eigene verschlüsselte Dateien | Schemaschritt klein; das Auslagern danach braucht die Größe der Dateiinhalte am Blob-Ort; die Datenbank schrumpft erst mit *Verdichten* |
-| nächste | 17 | Schlagwörter der Notizen (Rezepte) | klein |
+| nächste | 17 | Tags der Notizen (Rezepte) | klein |
 | nächste | 18 | SHA-256-Prüfsumme je Datei | klein; die Berechnung im Hintergrund liest jede Datei einmal |
 
 Die Aktualisierung von 1.0 oder 1.1 führt die Schritte 11 bis 18 in einem Zug aus; ein automatischer Test deckt das mit

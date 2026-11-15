@@ -186,6 +186,13 @@ public static partial class DavServer
                 DateTime? mtime = double.TryParse(Header(http, "X-OC-Mtime"), NumberStyles.Float, CultureInfo.InvariantCulture, out var secs) && secs > 0
                     ? DateTime.UnixEpoch.AddSeconds(Math.Floor(secs)) : null;
                 var loc = SharedFiles.Resolve(http, dest.FilePath).Creatable();
+                // Ziel wie bei PUT und MOVE: ausgeblendete Ordner (notizi, nicht bereitgestellter Tresor, „Für WebDAV ausblenden“) nicht beschreiben
+                if (loc.Db == space.Db && HiddenFor(http, space, loc.Path, destSegs!.Value.Item1 != Flavor.Dav)
+                    || FileStore.Contains(loc.Path, FileStore.ProtectedRoot(loc.Db)))
+                {
+                    http.Response.StatusCode = 403;
+                    return;
+                }
                 var ids = Ordered(u).Where(c => c.Blob != null).Select(c => c.Blob!).ToList();
                 (string Etag, bool Created) result;
                 await using (var body = FilesApi.OpenBlobs(db, ids))

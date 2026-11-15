@@ -47,7 +47,7 @@ const useStyles = makeStyles({
   main: { flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, padding: '20px 28px', gap: '6px', overflowY: 'auto', '& > *': { flexShrink: 0 }, outline: 'none',
     '@media (max-width: 767px)': { padding: '12px', gap: '8px' } },
   doneHead: { display: 'flex', alignItems: 'center', gap: '6px', alignSelf: 'flex-start', fontWeight: 600, marginTop: '8px' },
-  add: { display: 'flex', gap: '8px' },
+  add: { display: 'flex', gap: '8px', alignItems: 'center' },
   task: {
     display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 8px 4px 12px', minHeight: '40px', borderRadius: tokens.borderRadiusMedium, userSelect: 'none',
     backgroundColor: tokens.colorNeutralBackground2, cursor: 'pointer', ':hover': { backgroundColor: tokens.colorNeutralBackground2Hover },
@@ -55,7 +55,8 @@ const useStyles = makeStyles({
   sel: { outline: `2px solid ${tokens.colorBrandStroke1}` },
   multi: { backgroundColor: tokens.colorBrandBackground2, ':hover': { backgroundColor: tokens.colorBrandBackground2Hover } },
   done: { textDecoration: 'line-through', color: tokens.colorNeutralForeground3 },
-  title: { flex: 1, minWidth: 0 },
+  // Lange Titel umbrechen, der Stern bleibt rechts stehen
+  title: { flex: 1, minWidth: 0, overflowWrap: 'anywhere' },
   due: { fontSize: '12px', color: tokens.colorNeutralForeground3, display: 'flex', alignItems: 'center', gap: '4px' },
   late: { color: tokens.colorPaletteRedForeground1 },
   detail: { width: '340px', flexShrink: 0, borderLeft: `1px solid ${tokens.colorNeutralStroke2}`, padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px', overflowY: 'auto',
@@ -77,7 +78,7 @@ const dueDay = (due: string) => {
 export default function TasksView() {
   const s = useStyles()
   const detailW = usePaneWidth('tasks.detail', 340, 260, 720)
-  const { fail, me } = useApp()
+  const { fail, me, notify } = useApp()
   // Zugewiesen an (Version 2): Namen aller Benutzer fuer die Zeilen
   const [names, setNames] = useState<Record<string, string>>({})
   useEffect(() => {
@@ -85,9 +86,11 @@ export default function TasksView() {
   }, [me.id, me.displayName])
   const [lists, setLists] = useState<Collection[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
+  // Liste aus der Adresse (#/tasks/<id>): gibt es sie nicht, kommt ein Hinweis statt einer stillen Umleitung
+  const wanted = useRef<number | null>(null)
   const [view, setView] = useState<View>(() => {
     const m = location.hash.match(/^#\/tasks\/(-?\d+)$/)
-    if (m) return Number(m[1])
+    if (m) return wanted.current = Number(m[1])
     // Wie in der Mail: beim Zurueckwechseln die zuletzt gewaehlte Liste
     try { const last = JSON.parse(sessionStorage.getItem('dmoffice.tasks.view') || 'null'); if (last != null) return last as View } catch { /* egal */ }
     return 'all'
@@ -96,9 +99,12 @@ export default function TasksView() {
   useEffect(() => {
     const open = () => {
       const m = location.hash.match(/^#\/tasks\/(-?\d+)$/)
-      if (!m) return
+      if (!m) {
+        if (/^#\/tasks\/./.test(location.hash)) { history.replaceState(null, '', '#/tasks'); notify(t('Liste nicht gefunden.'), undefined, 'warning') }
+        return
+      }
       history.replaceState(null, '', '#/tasks')
-      setView(Number(m[1]))
+      setView(wanted.current = Number(m[1]))
     }
     open()
     window.addEventListener('hashchange', open)
@@ -107,8 +113,18 @@ export default function TasksView() {
   const [title, setTitle] = useState('')
   const parsed = useMemo(() => parseNaturalDate(title), [title])
   const [selected, setSelected] = useState<Task | null>(null)
+  // Detailbereich mit Änderungen: vor dem Verlassen nachfragen (andere Aufgabe, Esc in der Liste, Schließen, Zurück)
+  const detailDirty = useRef(false)
+  const mayLeave = (): boolean | Promise<boolean> => !selected || !detailDirty.current || askConfirm('', t('Änderungen verwerfen?'), t('Verwerfen'))
+  /** Andere Aufgabe rechts zeigen bzw. schließen - ein geänderter Detailbereich erst nach Rückfrage */
+  const select = async (next: Task | null) => {
+    if (next && next.id === selected?.id) return true
+    if (!await mayLeave()) return false
+    setSelected(next)
+    return true
+  }
   // Handy: Zurueck-Taste schliesst die Aufgabe im Vollbild
-  useBackClose(!!selected, () => setSelected(null))
+  useBackClose(!!selected, () => { select(null) })
   const [showDone, setShowDone] = useState(false)
   const [listDialog, setListDialog] = useState<Collection | 'new' | null>(null)
   const { prefs, update } = usePrefs()
@@ -132,7 +148,7 @@ export default function TasksView() {
   }
   const listAction = async (what: 'reset' | 'clear') => {
     if (!curList) return
-    if (what === 'clear' && !await askConfirm('', t('Alle abgehakten Einträge löschen?'))) return
+    if (what === 'clear' && !await askConfirm('', t('Alle abgehakten Einträge löschen?'), t('Löschen'))) return
     try { await api.post(`/api/pim/lists/${curList.id}/${what}`); load() } catch (e) { fail(e) }
   }
   const newTask = () => {
@@ -143,9 +159,16 @@ export default function TasksView() {
   const loadLists = () => api.get<Collection[]>('/api/pim/collections/calendars').then(l => {
     const todo = l.filter(c => c.components.includes('VTODO'))
     setLists(todo)
-    // Gemerkte Liste gibt es nicht mehr: zurueck auf "Alle"
-    setView(v => typeof v === 'number' && !todo.some(c => c.id === v) ? 'all' : v)
+    setListsLoaded(true)
   }).catch(fail)
+  // Gemerkte Liste gibt es nicht mehr: zurueck auf "Alle"; kam sie aus der Adresse, mit Hinweis
+  const [listsLoaded, setListsLoaded] = useState(false)
+  useEffect(() => {
+    if (!listsLoaded || typeof view !== 'number' || lists.some(c => c.id === view)) return
+    if (wanted.current === view) notify(t('Liste nicht gefunden.'), undefined, 'warning')
+    wanted.current = null
+    setView('all')
+  }, [view, lists, listsLoaded]) // eslint-disable-line react-hooks/exhaustive-deps
   const load = () => api.get<Task[]>('/api/pim/tasks').then(setTasks).catch(fail)
   const followUps = useFollowUps()
   const noteTasks = useNotiziTasks()
@@ -191,10 +214,11 @@ export default function TasksView() {
   const isImportant = (x: Task) => x.priority > 0 && x.priority <= 4
   const dayIn = (n: number) => { const d = new Date(); d.setDate(d.getDate() + n); return d.toLocaleDateString('sv-SE') }
   const nextMonday = () => { const d = new Date(); d.setDate(d.getDate() + ((8 - d.getDay()) % 7 || 7)); return d.toLocaleDateString('sv-SE') }
-  const clickRow = (e: React.MouseEvent, task: Task) => {
-    ms.click(e, task.id)
+  const clickRow = async (e: React.MouseEvent, task: Task) => {
+    const mods = { ctrlKey: e.ctrlKey, metaKey: e.metaKey, shiftKey: e.shiftKey }
     // Einfacher Klick oeffnet die Aufgabe rechts, Strg/Umschalt waehlt nur aus
-    setSelected(e.ctrlKey || e.metaKey || e.shiftKey ? null : task)
+    if (!await select(mods.ctrlKey || mods.metaKey || mods.shiftKey ? null : task)) return
+    ms.click(mods, task.id)
     mainRef.current?.focus({ preventScroll: true })
   }
   const rowMenu = (e: React.MouseEvent, task: Task) => {
@@ -244,16 +268,21 @@ export default function TasksView() {
     const id = ms.selected[ms.selected.length - 1]
     if (id != null) mainRef.current?.querySelector(`[data-task="${CSS.escape(String(id))}"]`)?.scrollIntoView({ block: 'nearest' })
   }, [ms.selected]) // eslint-disable-line react-hooks/exhaustive-deps
-  const onListKey = (e: React.KeyboardEvent) => {
+  const onListKey = async (e: React.KeyboardEvent) => {
     if (isTyping(e) || system) return
     const k = e.key
     if (k === 'Delete') { e.preventDefault(); removeMany(picked) }
-    else if (k === 'Escape') { ms.clear(); setSelected(null) }
+    else if (k === 'Escape') { if (await select(null)) ms.clear() }
     else if (e.ctrlKey && k.toLowerCase() === 'a') { e.preventDefault(); ms.all() }
     else if (e.ctrlKey && k.toLowerCase() === 'n') { e.preventDefault(); newTask() }
-    else if ((k === 'Enter' || k === 'F2') && picked.length) { e.preventDefault(); setSelected(picked[0]) }
+    else if ((k === 'Enter' || k === 'F2') && picked.length) { e.preventDefault(); select(picked[0]) }
     else if (k === ' ' && picked.length) { e.preventDefault(); const to = !picked.every(x => x.completed); patchMany(picked, () => ({ completed: to, percent: to ? 100 : 0 })) }
-    else if (k === 'ArrowDown' || k === 'ArrowUp') { e.preventDefault(); ms.step(k === 'ArrowDown' ? 1 : -1, e.shiftKey) }
+    else if (k === 'ArrowDown' || k === 'ArrowUp') {
+      e.preventDefault()
+      const dir = k === 'ArrowDown' ? 1 : -1, shift = e.shiftKey
+      // Die Aufgabe rechts folgt der Auswahl - geänderte erst nach Rückfrage verlassen
+      if (await mayLeave()) { detailDirty.current = false; ms.step(dir, shift) }
+    }
   }
   const renameList = async (l: Collection) => {
     const name = await askText(t('Umbenennen'), l.name)
@@ -264,7 +293,9 @@ export default function TasksView() {
     try { await api.put(`/api/pim/collections/${l.id}`, { color }); loadLists() } catch (err) { fail(err) }
   }
   const deleteList = async (l: Collection) => {
-    try { if (await removeCollection(l, 'calendars', true)) { if (view === l.id) setView('all'); loadLists(); load() } } catch (err) { fail(err) }
+    // Letzte eigene Liste: in der Rückfrage sagen, dass danach erst wieder eine anzulegen ist
+    const note = ownLists.length === 1 && ownLists[0].id === l.id ? t('Es ist deine letzte Aufgabenliste. Für neue Aufgaben musst du danach erst wieder eine anlegen.') : undefined
+    try { if (await removeCollection(l, 'calendars', true, note)) { if (view === l.id) setView('all'); loadLists(); load() } } catch (err) { fail(err) }
   }
   // Mit Microsoft verbundene Listen stehen je Konto in einem eigenen Abschnitt
   const ownLists = lists.filter(l => !l.owner && !l.graph)
@@ -274,7 +305,7 @@ export default function TasksView() {
     if (!x) return null
     if (x.kind === 'side') return <MenuItem icon={<TaskListAdd20Regular />} onClick={() => setListDialog('new')}>{t('Neue Liste')}</MenuItem>
     if (x.kind === 'main') return <>
-      {!system && <MenuItem icon={<TaskListAdd20Regular />} onClick={newTask}>{listType === 'tasks' ? t('Neue Aufgabe') : t('Neuer Eintrag')}</MenuItem>}
+      {!system && <MenuItem icon={<TaskListAdd20Regular />} onClick={newTask}>{listType === 'tasks' ? t('Neue Aufgabe') : t('list|Neuer Eintrag')}</MenuItem>}
       {!system && order.length > 0 && <MenuItem icon={<CheckboxChecked20Regular />} onClick={ms.all}>{t('Alle auswählen')}</MenuItem>}
       <MenuItem icon={showDone ? <EyeOff20Regular /> : <Eye20Regular />} onClick={() => setShowDone(v => !v)}>{showDone ? t('Erledigte ausblenden') : t('Erledigte zeigen')}</MenuItem>
     </>
@@ -282,7 +313,7 @@ export default function TasksView() {
       const l = x.l
       return <>
         <MenuItem icon={<Open20Regular />} onClick={() => setView(l.id)}>{t('Öffnen')}</MenuItem>
-        <MenuItem icon={<TaskListAdd20Regular />} onClick={() => { setView(l.id); setTimeout(() => addInput.current?.focus(), 50) }}>{l.listType === 'tasks' || !l.listType ? t('Neue Aufgabe') : t('Neuer Eintrag')}</MenuItem>
+        <MenuItem icon={<TaskListAdd20Regular />} onClick={() => { setView(l.id); setTimeout(() => addInput.current?.focus(), 50) }}>{l.listType === 'tasks' || !l.listType ? t('Neue Aufgabe') : t('list|Neuer Eintrag')}</MenuItem>
         <MenuDivider />
         {!l.owner && <>
           <MenuItem icon={<Edit20Regular />} onClick={() => setListDialog(l)}>{t('Bearbeiten …')}</MenuItem>
@@ -318,7 +349,7 @@ export default function TasksView() {
     const lists1 = new Set(sel.map(y => y.list))
     return <>
       {sel.length > 1 && <MenuItem disabled>{t('{n} Aufgaben ausgewählt', { n: sel.length })}</MenuItem>}
-      {one && <MenuItem icon={<Open20Regular />} onClick={() => setSelected(one)}>{t('Öffnen')}</MenuItem>}
+      {one && <MenuItem icon={<Open20Regular />} onClick={() => select(one)}>{t('Öffnen')}</MenuItem>}
       <MenuDivider />
       <MenuItem icon={<CheckmarkCircle20Regular />} onClick={() => patchMany(sel, () => ({ completed: !allDone, percent: allDone ? 0 : 100 }))}>
         {allDone ? t('Als nicht erledigt markieren') : t('Als erledigt markieren')}
@@ -355,11 +386,12 @@ export default function TasksView() {
     moveTo: task.moveTo, assignee: task.assignee,
     item: task.item, qty: task.qty, unit: task.unit, section: task.section,
   })
-  const save = async (task: Partial<Task> & { list: number; title: string }) => {
+  const save = async (task: Partial<Task> & { list: number; title: string }): Promise<boolean> => {
     try {
       await api.post('/api/pim/tasks', body(task))
       await load()
-    } catch (e) { fail(e) }
+      return true
+    } catch (e) { fail(e); return false }
   }
   /** Mehrere Aufgaben auf einmal aendern (Rechtsklick, Ziehen) - danach einmal neu laden. */
   const patchMany = async (list: Task[], patch: (x: Task) => Partial<Task> & { moveTo?: number }) => {
@@ -376,21 +408,32 @@ export default function TasksView() {
   }
   const removeMany = async (list: Task[]) => {
     if (!list.length) return
-    if (!await askConfirm('', list.length === 1 ? t('Aufgabe löschen?') : t('{n} Aufgaben löschen?', { n: list.length }))) return
+    if (!await askConfirm('', list.length === 1 ? t('Aufgabe löschen?') : t('{n} Aufgaben löschen?', { n: list.length }), t('Löschen'))) return
     try { for (const x of list) await api.del(`/api/pim/tasks/${x.list}/${encodeURIComponent(x.uri)}`) } catch (e) { fail(e) }
     setSelected(null); ms.clear(); load()
   }
 
+  // Anlegen nur einmal, solange die Anfrage läuft (zweimal schnell Enter)
+  const adding = useRef(false)
   const add = async () => {
-    if (!title.trim()) return
-    const list = typeof view === 'number' ? view : lists[0]?.id
-    if (!list) return
+    if (!title.trim() || adding.current) return
+    const list = typeof view === 'number' ? view : lists.find(l => l.canWrite !== false && !l.showOnly)?.id
+    if (!list) {
+      notify(t('Es gibt noch keine Aufgabenliste. Lege zuerst eine an.'), undefined, 'warning')
+      setListDialog('new')
+      return
+    }
     // Datum aus dem Text ("morgen Nachmittag") - ausser es wurde weggeklickt
     const nd = ignoreDate ? null : parseNaturalDate(title)
     const when = nd ? taskDue(nd) : { due: view === 'today' ? today() : null, dueAllDay: true }
-    await save({ list, title: nd?.title ?? title.trim(), ...when, priority: view === 'important' ? 1 : 0 })
+    // Feld sofort leeren: was während des Speicherns schon weitergetippt wird, bleibt stehen; schlägt es fehl, kommt der Text zurück
+    const typed = title
     setTitle('')
     setIgnoreDate(false)
+    adding.current = true
+    try {
+      if (!await save({ list, title: nd?.title ?? typed.trim(), ...when, priority: view === 'important' ? 1 : 0 })) setTitle(x => x || typed)
+    } finally { adding.current = false }
   }
 
   const toggle = (task: Task) => {
@@ -457,7 +500,7 @@ export default function TasksView() {
       {/* Menueband ueber die ganze Breite wie in Office - auch ueber dem Navigationsbereich */}
       <RibbonHeader area="tasks" onMenu={toggleSide}
         start={<>
-          <RibbonButton primary icon={<TaskListAdd20Regular />} label={listType === 'tasks' ? t('Neue Aufgabe') : t('Neuer Eintrag')} onClick={newTask} />
+          <RibbonButton primary icon={<TaskListAdd20Regular />} label={listType === 'tasks' ? t('Neue Aufgabe') : t('list|Neuer Eintrag')} onClick={newTask} />
           <RibbonDivider />
           {listType === 'shop' && <RibbonButton icon={<Broom20Regular />} label={t('Abgehakte löschen')} onClick={() => listAction('clear')} />}
           {listType === 'check' && <RibbonButton icon={<ArrowReset20Regular />} label={t('Zurück\u00ADsetzen')} title={t('Alle Haken entfernen – für das nächste Mal')} onClick={() => listAction('reset')} />}
@@ -544,7 +587,7 @@ export default function TasksView() {
         {curList && listType !== 'tasks' && meta && (
           <ShoppingList listId={curList.id} meta={meta} tasks={shown} showHidden={showDone} selectedId={selected?.id} inputRef={addInput} color={curList.color}
             onAdd={async x => { await save({ list: curList.id, ...x }); loadMeta() }}
-            onToggle={toggle} onEdit={setSelected} onContext={rowMenu} onDragStart={dragRow}
+            onToggle={toggle} onEdit={x => { select(x) }} onContext={rowMenu} onDragStart={dragRow}
             onForget={async item => { try { await api.post(`/api/pim/lists/${curList.id}/forget`, { item }); loadMeta() } catch (e) { fail(e) } }}
             onPhoto={async (item, file) => {
               const f = new FormData(); f.append('file', file)
@@ -554,9 +597,10 @@ export default function TasksView() {
         )}
         {!system && listType === 'tasks' && <form className={s.add} onSubmit={e => { e.preventDefault(); add() }}>
           <Input ref={addInput} style={{ flex: 1 }} placeholder={t('Aufgabe hinzufügen – z. B. „Zahnarzt morgen Nachmittag“')} value={title} onChange={(_, d) => { setTitle(d.value); if (!d.value) setIgnoreDate(false) }} contentBefore={<Add20Regular />} />
+          {/* Erkanntes Datum in der Eingabezeile, damit die Liste darunter nicht springt */}
+          {!ignoreDate && parsed && <DateHint nd={parsed} onIgnore={() => setIgnoreDate(true)} />}
           <Button appearance="primary" type="submit" disabled={!title.trim()}>{t('Hinzufügen')}</Button>
         </form>}
-        {!system && listType === 'tasks' && !ignoreDate && parsed && <DateHint nd={parsed} onIgnore={() => setIgnoreDate(true)} />}
         {!system && listType === 'tasks' && open.map(row)}
         {!system && listType === 'tasks' && done.length > 0 && (
           <>
@@ -568,7 +612,7 @@ export default function TasksView() {
       </div>
       {selected && detailW.handle('left')}
       {selected && (
-        <TaskDetail width={detailW.width} key={selected.id} task={selected} lists={lists} sections={meta?.sections} check={listType === 'check'} me={me.id} onClose={() => setSelected(null)}
+        <TaskDetail width={detailW.width} key={selected.id} task={selected} lists={lists} sections={meta?.sections} check={listType === 'check'} me={me.id} onClose={() => { select(null) }} dirtyRef={detailDirty}
           onSave={async x => { await save(x); setSelected(null) }} onDelete={() => remove(selected)} />
       )}
       </div>
@@ -585,9 +629,11 @@ export default function TasksView() {
   )
 }
 
-function TaskDetail({ task, lists, sections, check, me, onSave, onClose, onDelete, width }: {
+function TaskDetail({ task, lists, sections, check, me, onSave, onClose, onDelete, width, dirtyRef }: {
   task: Task; lists: Collection[]; sections?: string[]; check?: boolean; me: string; onSave: (x: any) => void; onClose: () => void; onDelete: () => void
   width?: number
+  /** true, sobald etwas geändert ist - für die Rückfrage beim Verlassen */
+  dirtyRef: React.MutableRefObject<boolean>
 }) {
   const s = useStyles()
   // Einkaufs-/Checkliste: Titel aus Menge, Einheit und Artikel
@@ -595,6 +641,9 @@ function TaskDetail({ task, lists, sections, check, me, onSave, onClose, onDelet
   const [cur, setCur] = useState(() => typed ? { ...task, ...itemOf(task), section: task.section ?? '' } : task)
   const [moveTo, setMoveTo] = useState(task.list)
   const set = (p: Partial<Task>) => setCur(x => ({ ...x, ...p }))
+  const [start] = useState(() => JSON.stringify(cur))
+  dirtyRef.current = JSON.stringify(cur) !== start || moveTo !== task.list
+  useEffect(() => () => { dirtyRef.current = false }, [dirtyRef])
   // Zugewiesen an (Version 2): die Leute der Liste - nur bei geteilten Listen gibt es mehr als einen
   const [people, setPeople] = useState<{ id: string; displayName: string }[]>([])
   useEffect(() => { api.get<{ id: string; displayName: string }[]>(`/api/pim/lists/${moveTo}/people`).then(setPeople).catch(() => setPeople([])) }, [moveTo])
@@ -659,6 +708,8 @@ function SectionsDialog({ sections, check, onClose }: { sections: string[]; chec
   const [grab, setGrab] = useState<number | null>(null)   // nur am Griff ziehen, damit man im Feld Text markieren kann
   const [added, setAdded] = useState('')
   const nextId = useRef(sections.length)
+  const dirty = added.trim() !== '' || rows.length !== sections.length || rows.some((r, i) => r.name !== sections[i])
+  const askClose = async () => { if (!dirty || await askConfirm('', t('Änderungen verwerfen?'), t('Verwerfen'))) onClose(null) }
   const move = (from: number, to: number) => setRows(r => {
     if (to < 0 || to >= r.length || from === to) return r
     const x = [...r]; const [it] = x.splice(from, 1); x.splice(to, 0, it); return x
@@ -669,7 +720,7 @@ function SectionsDialog({ sections, check, onClose }: { sections: string[]; chec
     setRows(r => [...r, { id: nextId.current++, name }]); setAdded('')
   }
   return (
-    <Dialog open onOpenChange={(_, d) => !d.open && onClose(null)}>
+    <Dialog open onOpenChange={(_, d) => { if (!d.open) askClose() }}>
       <DialogSurface style={{ maxWidth: 440 }}>
         <DialogBody>
           <DialogTitle>{words.many}</DialogTitle>
@@ -727,7 +778,7 @@ function ImportDialog({ listId, onClose }: { listId: number; onClose: (changed: 
     } catch (e) { fail(e) } finally { setBusy(false) }
   }
   return (
-    <Dialog open onOpenChange={(_, d) => !d.open && onClose(false)}>
+    <Dialog open onOpenChange={async (_, d) => { if (!d.open && (!text.trim() || await askConfirm('', t('Eingaben verwerfen?'), t('Verwerfen')))) onClose(false) }}>
       <DialogSurface style={{ maxWidth: 520 }}>
         <DialogBody>
           <DialogTitle>{t('Vorschläge importieren')}</DialogTitle>

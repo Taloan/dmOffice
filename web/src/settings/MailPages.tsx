@@ -24,13 +24,17 @@ export function MessageListSettings() {
   return (
     <>
       <PageTitle>{t('Nachrichtenliste')}</PageTitle>
-      <Section title={t('Textgröße und -abstand')} hint={t('Ändert nur die Anzeige hier, nicht die Mails selbst.')}>
-        <RadioGroup value={prefs.textSize ?? 'medium'} onChange={(_, d) => update({ textSize: d.value as any })}>
-          <Radio value="small" label={t('Klein')} /><Radio value="medium" label={t('Mittel')} /><Radio value="large" label={t('Groß')} />
-        </RadioGroup>
-        <RadioGroup value={prefs.density ?? 'normal'} onChange={(_, d) => update({ density: d.value as any })} layout="horizontal">
-          <Radio value="compact" label={t('Kompakt')} /><Radio value="normal" label={t('Normal')} /><Radio value="roomy" label={t('Geräumig')} />
-        </RadioGroup>
+      <Section title={t('Abstände')} hint={t('Zeilenhöhe getrennt für Ordnerliste und Nachrichtenliste. Die Schrift des Mailtexts lässt sich im Lesebereich unten rechts zoomen.')}>
+        <Field label={t('Ordnerliste')}>
+          <RadioGroup value={prefs.folderDensity ?? prefs.density ?? 'normal'} onChange={(_, d) => update({ folderDensity: d.value as any })} layout="horizontal">
+            <Radio value="compact" label={t('Kompakt')} /><Radio value="normal" label={t('Normal')} /><Radio value="roomy" label={t('Geräumig')} />
+          </RadioGroup>
+        </Field>
+        <Field label={t('Nachrichtenliste')}>
+          <RadioGroup value={prefs.listDensity ?? prefs.density ?? 'normal'} onChange={(_, d) => update({ listDensity: d.value as any })} layout="horizontal">
+            <Radio value="compact" label={t('Kompakt')} /><Radio value="normal" label={t('Normal')} /><Radio value="roomy" label={t('Geräumig')} />
+          </RadioGroup>
+        </Field>
       </Section>
       <Section title={t('Anzeige')} last>
         <Checkbox label={t('Vorschautext anzeigen')} checked={prefs.showPreview ?? true} onChange={(_, d) => update({ showPreview: !!d.checked })} />
@@ -78,7 +82,7 @@ export function PreviewPaneSettings() {
         {server && (
           <RadioGroup value={delay < 0 ? 'never' : delay === 0 ? 'now' : 'delay'}
             onChange={(_, d) => saveServer({ markReadDelay: d.value === 'never' ? -1 : d.value === 'now' ? 0 : 2 })}>
-            <Radio value="delay" label={t('Nach kurzer Anzeige im Lesebereich (wie Outlook)')} />
+            <Radio value="delay" label={t('Nach kurzer Anzeige im Lesebereich')} />
             <Radio value="now" label={t('Sofort beim Auswählen')} />
             <Radio value="never" label={t('Nie automatisch')} />
           </RadioGroup>

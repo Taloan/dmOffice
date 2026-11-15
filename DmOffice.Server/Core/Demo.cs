@@ -12,7 +12,7 @@ namespace DmOffice.Core;
 /// Demo-Server (DMOFFICE_DEMO=1, z. B. play.dmoffice.de für Play-Tester und die Prüfung durch Google): ein gemeinsames
 /// Demo-Konto mit erfundenen Mails, Terminen, Aufgaben, Notizen, Bildern und DMS-Dokumenten. Gesperrt ist alles, was nach außen
 /// geht oder andere betrifft: Mailkonten, Mailversand, Freigabelinks, Einladungen, Freigaben, externe Ordner, Datensicherung,
-/// Kalender-Abos, Rezeptimport, Mail-Quellen und Paperless-Import des DMS, dazu Passwort, Zwei-Faktor und der Tresor
+/// Kalender-Abos, Rezeptimport, Mail-Quellen und Paperless-Import des DMS, Schreiben in Fotodateien (XMP, Ort), Dateien und Bilder im Chat (Hochladen, Ziehen), dazu Passwort, Zwei-Faktor und der Tresor
 /// (<see cref="FeaturesOff"/>). Gezeigt wird nur, was die Version enthält (features.json) - DMOFFICE_FEATURES bleibt leer. Zurückgesetzt wird von außen: Container stoppen,
 /// Datenordner leeren, starten - beim Start legt <see cref="Seed"/> alles neu an, mit Daten rund um den heutigen Tag.
 /// </summary>
@@ -31,7 +31,7 @@ public static class Demo
         @"mail/accounts.*", @"mail/[^/]+/send", @"mail/[^/]+/invite",
         @"files/links.*", @"files/shares", @"gallery/albums/\d+/links.*",
         @"files/external(/.*)?", @"plainbackup(/.*)?", @"pim/subscriptions(/.*)?", @"notes/recipes/(import|scan/ai)",
-        @"dms/(mail-sources|paperless)(/.*)?", @"gallery/imports(/.*)?", @"tresor(/.*)?",
+        @"dms/(mail-sources|paperless)(/.*)?", @"gallery/imports(/.*)?", @"gallery/settings", @"chat/rooms/\d+/(upload|stage)", @"chat/uploads/.*", @"notes/(.*/)?attachments(/.*)?", @"tresor(/.*)?",
         @"(pim|notes|lists|tasks|calendar)/.*shares.*") + ")$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     /// <summary>
@@ -40,10 +40,36 @@ public static class Demo
     /// </summary>
     public static readonly string[] FeaturesOff = [Features.Vault, Features.ImportProfiles];
 
+    /// <summary>Höchstens so groß darf eine schreibende Anfrage in der Demo sein (Texte, Einstellungen - keine Dateien).</summary>
+    private const long MaxBody = 256 * 1024;
+
+    /// <summary>
+    /// Bringt die Anfrage eine Datei mit? In der Demo teilen sich alle Besucher ein Konto - was einer hochlädt, könnten alle
+    /// herunterladen. Darum keine Dateien, auf keinem Weg: Upload-Pfade (Dateien, Chat, DMS, Notizen, Mail, Galerie), Inhalte als
+    /// multipart oder Rohdaten, WebDAV/Nextcloud-Schreibbefehle und alles über <see cref="MaxBody"/> (auch Base64 in JSON).
+    /// </summary>
+    internal static bool CarriesFile(HttpRequest r)
+    {
+        var path = r.Path.Value ?? "";
+        // Verschlüsselter Umschlag von Web und App: Er wird ausgepackt und als eigene Anfrage an diesen Server gestellt - die prüft
+        // dieselbe Sperre. Den Umschlag selbst (Rohdaten) nicht sperren, sonst ginge in der Demo gar nichts mehr.
+        if (path.StartsWith("/api/e2e/", StringComparison.OrdinalIgnoreCase)) return false;
+        if (path.Contains("upload", StringComparison.OrdinalIgnoreCase)) return true;
+        if (r.ContentLength is > MaxBody || r.ContentLength == null && r.Headers.TransferEncoding.Count > 0) return true;
+        var type = r.ContentType ?? "";
+        if (type.StartsWith("multipart/", StringComparison.OrdinalIgnoreCase) || type.StartsWith("application/octet-stream", StringComparison.OrdinalIgnoreCase)
+            || type.StartsWith("image/", StringComparison.OrdinalIgnoreCase) || type.StartsWith("audio/", StringComparison.OrdinalIgnoreCase)
+            || type.StartsWith("video/", StringComparison.OrdinalIgnoreCase)) return true;
+        // WebDAV, CalDAV/CardDAV, Nextcloud-Clients: keine schreibenden Befehle (PROPFIND/REPORT lesen nur)
+        var dav = !path.StartsWith("/api/", StringComparison.OrdinalIgnoreCase);
+        return dav && r.Method is "PUT" or "MKCOL" or "MOVE" or "COPY" or "DELETE" or "PROPPATCH" or "LOCK" or "POST" or "PATCH";
+    }
+
     /// <summary>Gesperrte Aufrufe mit 403 und einer kurzen Meldung beantworten.</summary>
     public static async Task Guard(HttpContext http, Func<Task> next)
     {
-        if (!HttpMethods.IsGet(http.Request.Method) && !HttpMethods.IsHead(http.Request.Method) && Blocked.IsMatch(http.Request.Path.Value ?? ""))
+        if (!HttpMethods.IsGet(http.Request.Method) && !HttpMethods.IsHead(http.Request.Method) && !HttpMethods.IsOptions(http.Request.Method)
+            && (Blocked.IsMatch(http.Request.Path.Value ?? "") || CarriesFile(http.Request)))
         {
             http.Response.StatusCode = StatusCodes.Status403Forbidden;
             await http.Response.WriteAsJsonAsync(new { error = "In der Demo nicht möglich." });

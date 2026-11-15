@@ -1,6 +1,7 @@
 import { importedText } from '../dms/model'
 import { closeTresor, CMV, cmvRoots, isCmv, isEncrypted, isTresor, OPEN_COLOR, requestTresorOpen, TRESOR, TRESOR_EVENT, useTresor } from '../tresor/tresor'
-import { Cart20Regular, CloudOff16Regular, CloudOff20Regular, LockClosed20Regular, LockOpen20Regular } from '@fluentui/react-icons'
+import { Cart20Regular, CloudArrowUp20Regular, CloudOff16Regular, CloudOff20Regular, LockClosed20Regular, LockOpen20Regular } from '@fluentui/react-icons'
+import { onlyInFolder, useSaveToAblage, useSaving } from './SaveToAblage'
 import {
   Breadcrumb, BreadcrumbButton, BreadcrumbDivider, BreadcrumbItem, Button, Checkbox, Dialog, DialogActions, DialogBody, DialogContent,
   DialogSurface, DialogTitle, Input, Menu, MenuDivider, MenuItem, MenuList, MenuPopover, MenuTrigger, MenuItemRadio, MenuItemCheckbox,
@@ -13,9 +14,9 @@ import {
   Chat20Regular,   Share20Regular, Link20Regular, Info20Regular, Cut20Regular, ClipboardPaste20Regular, ArrowUndo20Regular, Search20Regular,
   Dismiss20Regular, DocumentAdd20Regular, ArrowCounterclockwise20Regular, DeleteDismiss20Regular, ArrowReset20Regular, ArrowSync20Regular,
   Filter20Regular, LinkSquare20Regular, DocumentEdit20Regular, Star16Filled, Link16Regular, ChevronDown20Regular, DocumentSearch20Regular, GroupList20Regular, ZoomIn20Regular, Eye20Regular, EyeOff20Regular, People16Regular, People20Regular,
-  ImageOff20Regular, ArrowImport20Regular, Globe20Regular, HardDrive20Regular, Cloud20Regular, Add16Regular, ImageMultiple20Regular,
+  ImageOff20Regular, ArrowImport20Regular, Globe20Regular, Server20Regular, HardDrive20Regular, Cloud20Regular, Add16Regular, ImageMultiple20Regular,
   Folder20Filled,
-  ColumnTriple20Regular, FullScreenMaximize20Regular, FullScreenMinimize20Regular, TextBulletListSquare20Regular, Stack20Regular, Sparkle20Regular, ScaleFit20Regular, ScaleFill20Regular, DocumentBulletList20Regular, Wand20Regular, Edit20Regular, Edit16Regular, Prohibited16Filled, } from '@fluentui/react-icons'
+  ColumnTriple20Regular, FullScreenMaximize20Regular, FullScreenMinimize20Regular, TextBulletListSquare20Regular, Stack20Regular, Sparkle20Regular, ScaleFit20Regular, ScaleFill20Regular, Tag20Regular, DocumentBulletList20Regular, DocumentBulletList16Filled, Wand20Regular, Edit20Regular, Edit16Regular, Prohibited16Filled, } from '@fluentui/react-icons'
 import { ExcludeFolderDialog, PhotoExcludesDialog } from './PhotoExcludes'
 import { RibbonButton, RibbonDivider, RibbonHeader, useSidePane } from '../shell/Ribbon'
 import { SidePane, useBackClose, useHistoryClose, useIsMobile } from '../shell/mobile'
@@ -27,10 +28,12 @@ import { useApp } from '../App'
 import { useDebounced } from '../shell/hooks'
 import { STORAGE_CHANGED, storageLimit, type Storage } from '../shell/StorageInfo'
 import { lang, locale, t } from '../i18n'
+import { failedText } from './failedText'
 import {
-  FILTERS, Item, Kind, KindIcon, Thumb, WITH_ME, extOf, fmtWhen, hasThumb, inWithMe, inside, join, kindLabel, kindOf, nameOf, ownSource, parentOf, viewKind, stackPhotos, unstack,
+  FILTERS, Item, Kind, KindIcon, Thumb, WITH_ME, extOf, fmtWhen, hasThumb, inWithMe, inside, join, kindLabel, kindOf, nameOf, ownSource, parentOf, viewKind, stackPhotos, unstack, stackLabel, openStacks,
 } from './common'
-import { BindExternalDialog, ExternalMount, ExternalMountDialog, ExternalView } from './ExternalView'
+import { SourceCloud } from './SourceCloud'
+import { BindExternalDialog, ExternalMount, ExternalMountDialog, ExternalView, type ExtRibbon } from './ExternalView'
 import { ExtPickerTree, extTarget, parseExtTarget } from './ExtPickerTree'
 import { useFileClip } from './clip'
 import { useTransfer } from './TransferDialog'
@@ -47,6 +50,7 @@ import { Fresh, freshenPhoto, freshenTiles } from './GalleryFreshen'
 import { AlbumInfo, AlbumNameDialog, AlbumPicker, AlbumShareDialog, albumKey, albumsApi, isAlb, loadAlbum, AlbumLinksDialog } from './Albums'
 import { Viewer } from './Viewer'
 import { Details } from './Details'
+import { AutoBadge, CategoryNav, LabelsDetail, LabelsDialog, ManageCategories, below, catsApi, catsLoaded, fullName, reloadCats, useFileCats, type Labels } from './FileCategories'
 import { sendToChat } from '../chat/SendToChat'
 import { Choice, NameDialog, ShareDialog, ShareManyDialog, copyText, linkUrl, useConflict, Link } from './Dialogs'
 import { LinksList, TrashList, useLinks, useTrash } from './Lists'
@@ -72,7 +76,8 @@ const useStyles = makeStyles({
   outer: { display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 },
   root: { flex: 1, display: 'flex', minWidth: 0, minHeight: 0, position: 'relative' },
   side: { width: '240px', flexShrink: 0, borderRight: `1px solid ${tokens.colorNeutralStroke2}`, padding: '12px 8px', display: 'flex', flexDirection: 'column', gap: '1px', overflowY: 'auto' },
-  nav: { display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 8px', borderRadius: tokens.borderRadiusMedium, cursor: 'pointer', ':hover': { backgroundColor: tokens.colorNeutralBackground1Hover } },
+  nav: { display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 8px', borderRadius: tokens.borderRadiusMedium, cursor: 'pointer', ':hover': { backgroundColor: tokens.colorNeutralBackground1Hover },
+    '& > svg': { flexShrink: 0 }, ':focus-visible': { outline: `2px solid ${tokens.colorStrokeFocus2}`, outlineOffset: '-2px' } },
   navName: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   navSep: { height: '1px', backgroundColor: tokens.colorNeutralStroke2, margin: '8px 4px' },
   twisty: { width: '16px', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' },
@@ -116,13 +121,19 @@ const useStyles = makeStyles({
     background: 'linear-gradient(to bottom, rgba(0,0,0,0) 0, rgba(0,0,0,0.25) 8px, rgba(0,0,0,0.35) 100%)',
   },
   // Galerie: Markierung, Farbe, Sterne auf der Kachel (wie Lightroom); abgelehnte blass
-  marks: { position: 'absolute', right: '4px', top: '4px', display: 'flex', alignItems: 'center', gap: '4px', padding: '1px 5px', borderRadius: '8px',
+  // Bildinfos unter dem Bild: unten am Bildrand; Bildinfos auf dem Bild: als Zeile über den Infozeilen (marksRow)
+  marks: { position: 'absolute', left: '4px', bottom: '4px', display: 'flex', alignItems: 'center', gap: '4px', padding: '1px 5px', borderRadius: '8px',
     backgroundColor: 'rgba(0,0,0,0.55)', color: '#fff', fontSize: '11px', lineHeight: '16px', pointerEvents: 'none' },
+  marksRow: { display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '2px', fontSize: '12px', lineHeight: '15px' },
   markDot: { width: '9px', height: '9px', borderRadius: '50%', display: 'inline-block' },
   rejected: { opacity: 0.4 },
   thumb: { position: 'relative', width: '100%', aspectRatio: '4 / 3', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', borderRadius: tokens.borderRadiusSmall },
   thumbImg: { width: '100%', height: '100%' },
-  tileName: { fontSize: '12px', textAlign: 'center', wordBreak: 'break-word', lineHeight: '16px', maxHeight: '32px', overflow: 'hidden', width: '100%' },
+  // Nach zwei Zeilen mit „…“ kürzen (voller Name im Tooltip der Kachel)
+  tileName: {
+    fontSize: '12px', textAlign: 'center', overflowWrap: 'anywhere', lineHeight: '16px', maxHeight: '32px', overflow: 'hidden', width: '100%',
+    display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+  },
   tileSnippet: {
     fontSize: '11px', lineHeight: '14px', color: tokens.colorNeutralForeground3, overflow: 'hidden', display: '-webkit-box',
     WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflowWrap: 'anywhere', textAlign: 'center', padding: '0 4px',
@@ -141,11 +152,13 @@ const useStyles = makeStyles({
   tileBadge: { position: 'absolute', top: '6px', right: '6px', display: 'flex', gap: '2px', color: tokens.colorNeutralForeground2 },
   editedBadge: { color: '#fff', background: 'rgba(0,0,0,.55)', borderRadius: '50%', padding: '2px' },
   // Foto aus einem Galerie-Ordner, dessen externer Ordner gerade nicht erreichbar ist: rotes Stoppschild unten links
+  dmsMark: { position: 'absolute', right: '-6px', bottom: '-4px', color: tokens.colorBrandForeground1, backgroundColor: tokens.colorNeutralBackground1, borderRadius: '3px' },
   offBadge: { position: 'absolute', left: '6px', bottom: '6px', zIndex: 2, display: 'flex', color: '#E5484D', background: '#fff', borderRadius: '50%' },
   // Stapel JPG+RAW: Kennzeichen unten rechts auf dem Bild
   // Oben rechts im Bild: unten liegen Uhrzeit und Name (Angaben auf dem Bild)
   stackBadge: { position: 'absolute', right: '6px', top: '6px', zIndex: 1, fontSize: '10px', fontWeight: 700, padding: '1px 5px', borderRadius: '4px', backgroundColor: 'rgba(0,0,0,0.6)', color: '#fff', pointerEvents: 'none' },
   stackBadgeLow: { top: '28px' },
+  stackBadgeClick: { pointerEvents: 'auto', cursor: 'pointer', ':hover': { backgroundColor: 'rgba(0,0,0,0.85)' } },
   groupCheck: { marginLeft: 'auto', cursor: 'pointer' },
   picker: { maxHeight: '50vh', overflowY: 'auto', border: `1px solid ${tokens.colorNeutralStroke2}`, borderRadius: tokens.borderRadiusMedium, padding: '4px' },
   undo: {
@@ -162,7 +175,8 @@ const useStyles = makeStyles({
 const DRAG = 'application/x-dmoffice-files'
 
 type Special = 'recent' | 'favorites' | 'photos' | 'shared' | 'trash'
-type View = { kind: 'folder'; path: string } | { kind: Special }
+/** cat/tag: Kategorie bzw. Tag als virtueller Ordner (docs/datei-kategorien-konzept.md) */
+type View = { kind: 'folder'; path: string } | { kind: Special } | { kind: 'cat'; id: string } | { kind: 'tag'; tag: string }
 
 /** #/files/a/b = Ordner; #/files/:trash usw. = besondere Ansichten (":" steht in echten Namen kodiert als %3A). */
 function parseHash(): View {
@@ -175,6 +189,11 @@ function parseHash(): View {
   // #/files/:arc/... - geöffnetes Archiv: darunter liegt sein Ordner
   const arc = parseArc()
   if (arc) return { kind: 'folder', path: parentOf(arc.file) }
+  // #/files/:cat/<Kennung>, #/files/:tag/<Tag>
+  const cat = rest.match(/^:cat\/([^/]+)$/)
+  if (cat) return { kind: 'cat', id: decodeURIComponent(cat[1]) }
+  const tag = rest.match(/^:tag\/(.+)$/)
+  if (tag) try { return { kind: 'tag', tag: decodeURIComponent(tag[1]) } } catch { /* kaputte Adresse: Ordner */ }
   if (rest.startsWith(':')) {
     const v = rest.slice(1) as Special
     if (['recent', 'favorites', 'photos', 'shared', 'trash'].includes(v)) return { kind: v }
@@ -202,7 +221,7 @@ function parseArc(): { file: string; dir: string } | null {
 const arcHash = (a: { file: string; dir: string }) => '#/files/:arc/' + encodeURIComponent(a.file) + (a.dir ? '/' + a.dir.split('/').map(encodeURIComponent).join('/') : '')
 const extHash = (e: { mount: string; path: string }) => '#/files/:ext/' + encodeURIComponent(e.mount) + (e.path ? '/' + e.path.split('/').map(encodeURIComponent).join('/') : '')
 const hashOf = (v: View) => '#/files/' + (v.kind === 'folder' ? v.path.split('/').map(encodeURIComponent).join('/')
-  : ':' + v.kind)
+  : v.kind === 'cat' ? ':cat/' + encodeURIComponent(v.id) : v.kind === 'tag' ? ':tag/' + encodeURIComponent(v.tag) : ':' + v.kind)
 
 const TILE_STEP = 300
 /** Ein Stück der fensterweise gezeichneten Galerie: Abschnittskopf, Kacheln oder (Zeitleiste) ein noch nicht geladener Monat. */
@@ -282,6 +301,10 @@ function FolderTree({ current, onOpen, onDropOn, onContext, version, exclude, li
   const render = (p: string, depth: number): JSX.Element[] => (kids[p] ?? []).filter(f => (showHidden || !isHidden(f, false)) && !exclude?.some(x => inside(x, f.path))).flatMap(f => [
     <div key={f.path} className={mergeClasses(s.nav, current === f.path && s.active, over === f.path && s.target)}
       style={{ paddingLeft: 8 + depth * 14 }} onClick={() => onOpen(f.path)} {...dropProps(f.path)}
+      title={f.name} role="button" tabIndex={0} aria-expanded={open[f.path] ? true : false}
+      onKeyDown={e => { if (e.target !== e.currentTarget) return
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(f.path) }
+        else if ((e.key === 'ArrowRight' && !open[f.path]) || (e.key === 'ArrowLeft' && open[f.path])) { e.preventDefault(); toggle(f.path) } }}
       onContextMenu={onContext ? e => { e.preventDefault(); e.stopPropagation(); onContext(e, f.path) } : undefined}>
       <span className={s.twisty} onClick={e => { e.stopPropagation(); toggle(f.path) }}>
         {kids[f.path] && kids[f.path].filter(k => showHidden || !isHidden(k, false)).length === 0 ? null : open[f.path] ? <ChevronDown16Regular /> : <ChevronRight16Regular />}
@@ -305,8 +328,8 @@ function FolderTree({ current, onOpen, onDropOn, onContext, version, exclude, li
 /** Datei, die nach dem Öffnen ihres Ordners markiert wird - außerhalb der Komponente, weil die Galerie dafür zum Bereich Dateien wechselt. */
 let pendingFocus: string | null = null
 
-/** Zielordner waehlen fuer Verschieben/Kopieren. */
-function FolderPicker({ title, exclude, onPick, onClose, externals, start = '' }: {
+/** Zielordner waehlen fuer Verschieben/Kopieren (auch für den Zielordner von „In Ablage sichern“). */
+export function FolderPicker({ title, exclude, onPick, onClose, externals, start = '' }: {
   title: string; exclude: string[]; onPick: (path: string) => void; onClose: () => void
   /** Externe Ordner als weitere Ziele (Übertragung zwischen Ablage und extern) */
   externals?: ExternalMount[]
@@ -501,6 +524,9 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
   const upload = useRef<HTMLInputElement>(null)
   const uploadDir = useRef<HTMLInputElement>(null)
   const mainRef = useRef<HTMLDivElement>(null)
+  // Externer Ordner: seine Befehle für das Menüband
+  const extRibbon = useRef<ExtRibbon | null>(null)
+  const [, setExtRibbonKey] = useState('')
   // Gewählte Einträge bleiben beim Wechsel in einen anderen Bereich und zurück (je Ordner, in diesem Fenster)
   const [selected, setSelected] = useState<string[]>(() => { try { return JSON.parse(sessionStorage.getItem('dm.files.sel') ?? '[]') } catch { return [] } })
   useEffect(() => { try { sessionStorage.setItem('dm.files.sel', JSON.stringify(selected.slice(0, 200))) } catch { /* ohne Speicher */ } }, [selected])
@@ -516,6 +542,7 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
   const [atlas, setAtlas] = useState(false)
   const [geo, setGeo] = useState<{ items: Item[]; meta: Map<string, Meta> } | null>(null)
   const photosView = view.kind === 'photos'
+  const toAblage = useSaveToAblage()
   const photoDesc = prefs.photoSortDesc ?? true
   const sort = photosView ? prefs.photoSort ?? 'taken' : prefs.fileSort ?? 'name'
   const desc = photosView ? prefs.photoSortDesc ?? true : prefs.fileSortDesc ?? false
@@ -667,7 +694,7 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
   // Nicht in Alben (klein) und nicht bei der Suche (Serversuche wie bisher).
   const tlOn = photosView && album == null && !searching
   const tlQuery = { sort, desc, stack: prefs.photoStack ?? true, ext: photoExt, filter: baseOn || quick ? JSON.stringify({ cols: ruleCols, sel: ruleSel }) : null,
-    group: prefs.photoGroup === 'source' ? prefs.photoGroup : undefined }
+    group: prefs.photoGroup === 'source' || prefs.photoGroup === 'category' || prefs.photoGroup === 'tag' ? prefs.photoGroup : undefined }
   const tl = useGalleryTimeline(tlOn, tlQuery, fail)
   const facets = useFacets(tlOn && !!prefs.photoFilter, filterCols, photoExt, tlQuery.filter, tl.stamp, fail)
   // Suche in der Galerie: über den Index der Zeitleiste (eigene Fotos und Galerie-Ordner), Bildangaben kommen mit
@@ -821,9 +848,18 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
   const req = useRef(0)
   // Ordnerkacheln: die neuesten vier Bilder aus dem Ordner (und darunter) als Collage
   const [covers, setCovers] = useState<Record<string, Item[]>>({})
+  // Kategorien und Tags: Baum, Zuordnungen der Dateien im virtuellen Ordner, Dialoge
+  const fileCats = useFileCats()
+  const [catLabels, setCatLabels] = useState<Record<string, Labels>>({})
+  // Die gezeigte Kategorie wurde gelöscht: zu „Meine Dateien“ statt „?“ und einer Fehlermeldung
+  useEffect(() => {
+    if (view.kind === 'cat' && catsLoaded() && !fileCats.cats.some(c => c.id === view.id)) go({ kind: 'folder', path: '' })
+  }, [fileCats.cats]) // eslint-disable-line react-hooks/exhaustive-deps
+  const [labelsFor, setLabelsFor] = useState<string[] | null>(null)
   // Markierte Fotos automatisch verbessern (Engine oder KI)
   const [autoFor, setAutoFor] = useState<Item[] | null>(null)
   const [infoFor, setInfoFor] = useState<Item[] | null>(null)
+  const [manageCats, setManageCats] = useState(false)
   const load = useCallback(async () => {
     const n = ++req.current
     try {
@@ -857,6 +893,14 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
         // Zeitleiste vom Server: hier nur die Monate (klein, unverändert 304) - die Fotos holt der Bildausschnitt
         void tl.refresh()
         return
+      }
+      else if (view.kind === 'cat' || view.kind === 'tag') {
+        // Gerade gelöschte Kategorie: nicht laden (der Effekt unten wechselt zu „Meine Dateien“)
+        if (view.kind === 'cat' && catsLoaded() && !fileCats.cats.some(c => c.id === view.id)) return
+        const r = await api.get<{ items: Item[]; labels: Record<string, Labels> }>(view.kind === 'cat'
+          ? '/api/files/categories/' + encodeURIComponent(view.id) + '/items' : '/api/files/tags/items?' + q({ tag: view.tag }))
+        if (n === req.current) setCatLabels(r.labels)
+        d = { items: r.items }
       }
       else d = { items: [] }
       if (n === req.current) { setData(d); if (view.kind === 'folder' && !searching) setListed({ path: view.path, items: d.items }) }
@@ -962,6 +1006,9 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
   // still nachladen - Auswahl und Ansicht bleiben
   const refresh = useRef<() => void>(() => {})
   refresh.current = () => { if (view.kind !== 'trash' && view.kind !== 'shared') load(); setTreeVersion(v => v + 1) }
+  // In Ablage sichern: Zwischensymbol, solange der Server kopiert; danach neu laden (Wolke mit Haken)
+  const savingDone = useCallback(() => refresh.current(), [])
+  const savingIds = useSaving(savingDone)
   useEffect(() => {
     const on = () => { if (!document.hidden) refresh.current() }
     const iv = setInterval(on, 20000)
@@ -998,12 +1045,15 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
         : by === 'ext' ? extOf(a.name).localeCompare(extOf(b.name)) || a.name.localeCompare(b.name, locale, { sensitivity: 'base', numeric: true })
         : a.name.localeCompare(b.name, locale, { sensitivity: 'base', numeric: true })))
   }, [data, filter, searching, view.kind, sort, desc, recentSort, photosView, photoExt, favTop, folderTop, metaOf, showHidden, flatList, tlOn])
+  // Aufgeklappte Stapel (Klick auf „2ד): ihre Fotos als einzelne Kacheln, ein Klick auf „1/3“ usw. klappt sie wieder zu
+  const [stacksOpen, setStacksOpen] = useState<Set<string>>(new Set())
+  const toggleStack = (lead: string) => setStacksOpen(o => { const n = new Set(o); if (n.has(lead)) n.delete(lead); else n.add(lead); return n })
   const items = useMemo(() => {
     if (tlOn) return sortedItems
     const list = filterOn ? filterPhotos(sortedItems, metaOf, ruleCols, ruleSel) : sortedItems
     // Galerie: JPG + RAW als Stapel
-    return photosView && (prefs.photoStack ?? true) ? stackPhotos(list) : list
-  }, [sortedItems, filterOn, metaOf, ruleCols.join(), JSON.stringify(ruleSel), photosView, prefs.photoStack, tlOn]) // eslint-disable-line react-hooks/exhaustive-deps
+    return photosView && (prefs.photoStack ?? true) ? openStacks(stackPhotos(list), stacksOpen) : list
+  }, [sortedItems, filterOn, metaOf, ruleCols.join(), JSON.stringify(ruleSel), photosView, prefs.photoStack, tlOn, stacksOpen]) // eslint-disable-line react-hooks/exhaustive-deps
   // Gruppieren nach Art oder Aenderungsdatum (wie im Explorer); die Liste bleibt in Anzeigereihenfolge
   const groupBy = prefs.fileGroup ?? 'none'
   // Kachelgröße stufenlos (Schieberegler); ab OVERLAY_PX stehen die Bildinfos auf dem Bild statt darunter
@@ -1015,7 +1065,7 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
   const photoGroup = prefs.photoGroup ?? 'month'
   // Zeitleiste nach Name oder Größe: Seiten, keine Abschnitte nach Datum
   const tlTime = sort === 'taken' || sort === 'modified'
-  const grouping = photosView ? photoGroup !== 'none' && (!tlOn || tlTime || photoGroup === 'source') : groupBy !== 'none' && !(view.kind === 'recent' && !searching)
+  const grouping = photosView ? photoGroup !== 'none' && (!tlOn || tlTime || photoGroup === 'source' || photoGroup === 'category' || photoGroup === 'tag') : groupBy !== 'none' && !(view.kind === 'recent' && !searching)
   const groupOf = useCallback((i: Item): [number, string] => {
     if (photosView) {
       const d = new Date(takenOf(i, metaOf(i)))
@@ -1125,12 +1175,14 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
       const yearCount = new Map<string, number>()
       for (const b of buckets) yearCount.set(b.k.slice(0, 4), (yearCount.get(b.k.slice(0, 4)) ?? 0) + b.n)
       // Nach Quelle: Name vom Server je Abschnitt, Anzahl über alle Abschnitte der Quelle
-      const bySource = photoGroup === 'source'
+      // Nach Quelle, Kategorie oder Tag: Name der Gruppe vom Server
+      const bySource = photoGroup === 'source' || photoGroup === 'category' || photoGroup === 'tag'
       const sourceCount = new Map<string, number>()
       if (bySource) for (const b of buckets) sourceCount.set(t(b.l ?? ''), (sourceCount.get(t(b.l ?? '')) ?? 0) + b.n)
       const monthName = (k: string) => new Date(+k.slice(0, 4), +k.slice(5) - 1, 1).toLocaleDateString(locale, { month: 'long', year: 'numeric' })
       for (const b of buckets) {
-        const its = tl.loaded(b.k)
+        const loaded = tl.loaded(b.k)
+        const its = loaded && openStacks(loaded, stacksOpen)
         if (!its) {
           const label = !grouping ? '' : bySource ? t(b.l ?? '') : photoGroup === 'year' ? b.k.slice(0, 4) : monthName(b.k)
           const head = !!label && label !== last
@@ -1175,7 +1227,7 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
       start += g.items.length
     }
     return { list, total: off }
-  }, [windowed, groups, listW, mobile, tilePx, dims, tileInfo.length, infoOnImage, tlOn, tl.state, tl.loaded, grouping, photoGroup, groupOf])
+  }, [windowed, groups, listW, mobile, tilePx, dims, tileInfo.length, infoOnImage, tlOn, tl.state, tl.loaded, grouping, photoGroup, groupOf, stacksOpen])
   const blocksRef = useRef(blocks)
   blocksRef.current = blocks
   const [range, setRange] = useState<[number, number]>([0, 12])
@@ -1279,13 +1331,11 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
   // Ergebnis aus, verschwinden die Fotos sofort und das nächste sichtbare wird gewählt.
   // Nacheinander: schnell hintereinander gedrückte Tasten träfen sonst auf einen Stand der Datei, der gerade neu geschrieben wird
   const markQueue = useRef<Promise<void>>(Promise.resolve())
+  // Sterne, Farbe, Markierung: sofort zeigen (Kacheln, Betrachter, rechte Leiste), die Dateien schreibt der Server danach.
+  // Schlägt das Schreiben fehl, kommt der vorige Stand zurück und eine Meldung
   const markPhotos = (body: { pick?: number; rating?: number; label?: string }, list: Item[] = sel) => {
-    markQueue.current = markQueue.current.then(() => markNow(body, list))
-    return markQueue.current
-  }
-  const markNow = async (body: { pick?: number; rating?: number; label?: string }, list: Item[]) => {
     const photos = list.filter(i => !i.isDir)
-    if (!photos.length) return
+    if (!photos.length) return Promise.resolve()
     const q = prefs.photoQuick
     const hides = !!q && (body.pick != null && q.flags.length > 0 && !q.flags.includes(body.pick === 1 ? 'P' : body.pick === -1 ? 'X' : 'U')
       || body.rating != null && q.stars > 0 && body.rating < q.stars
@@ -1293,38 +1343,52 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
     const paths = new Set(photos.map(i => i.path))
     const last = Math.max(...photos.map(i => items.findIndex(x => x.path === i.path)))
     const next = hides ? items.slice(last + 1).find(i => !paths.has(i.path)) ?? [...items.slice(0, last)].reverse().find(i => !paths.has(i.path)) : undefined
+    const change = { ...(body.pick != null ? { pick: body.pick } : {}), ...(body.rating != null ? { rating: body.rating } : {}), ...(body.label != null ? { label: body.label || null } : {}) }
+    let before: typeof marked = {}
+    setMarked(m => {
+      before = m
+      const n = { ...m }
+      for (const i of photos) n[i.path] = { ...n[i.path], ...change, at: Date.now() }
+      return n
+    })
+    if (hides) setSelected(next ? [next.path] : [])
+    markQueue.current = markQueue.current.then(() => markNow(body, photos, before))
+    return markQueue.current
+  }
+  const markNow = async (body: { pick?: number; rating?: number; label?: string }, photos: Item[], before: typeof marked) => {
+    let failed: { name: string; error: string }[] = []
     try {
-      const failed: { name: string; error: string }[] = []
       for (let k = 0; k < photos.length; k += 50) {
         const r = await api.post<{ failed: { name: string; error: string }[] }>('/api/gallery/info', { items: photos.slice(k, k + 50).map(i => i.path), ...body })
         failed.push(...(r.failed ?? []))
       }
-      if (failed.length) fail(failed.map(f => `${f.name}: ${f.error}`).join(', '))
-      if (hides) setSelected(next ? [next.path] : [])
-      // Gespeichertes gleich zeigen (Kopf des Betrachters, rechte Leiste, Kacheln)
-      const ok = photos.filter(i => !failed.some(f => f.name === i.name))
-      if (ok.length) setMarked(m => {
+    } catch (e) { fail(e); failed = photos.map(i => ({ name: i.name, error: '' })) }
+    if (failed.length) {
+      if (failed.some(f => f.error)) fail(new Error(failedText(failed.filter(f => f.error))))
+      // Nicht gespeichert: den vorigen Stand wieder zeigen
+      const back = photos.filter(i => failed.some(f => f.name === i.name))
+      setMarked(m => {
         const n = { ...m }
-        const change = { ...(body.pick != null ? { pick: body.pick } : {}), ...(body.rating != null ? { rating: body.rating } : {}), ...(body.label != null ? { label: body.label || null } : {}) }
-        for (const i of ok) n[i.path] = { ...n[i.path], ...change, at: Date.now() }
+        for (const i of back) { if (before[i.path]) n[i.path] = before[i.path]; else delete n[i.path] }
         return n
       })
-      if (tlOn) await tl.refresh(); else changed()
-      setDetailsVersion(v => v + 1)
-    } catch (e) { fail(e) }
+    }
+    // Stand vom Server nachholen, ohne dass jemand darauf wartet
+    if (tlOn) tl.refresh(); else changed()
+    setDetailsVersion(v => v + 1)
   }
   // Atlas: sind Fotos markiert, nur diese - und für sie lässt sich der Ort von Hand setzen
   const placeSelected = async (list: Item[], lat: number, lon: number) => {
     const has = list.filter(i => metaOf(i)?.lat != null).length
     if (!await askConfirm('', (list.length === 1 ? t('Ort für „{name}“ hier setzen?', { name: list[0].name }) : t('Ort für {n} Fotos hier setzen?', { n: list.length }))
       + (has ? ' ' + t('{n} davon haben schon einen Ort - er wird ersetzt.', { n: has }) : ''))) return
-    const bad: string[] = []
+    const bad: { name: string; error: string }[] = []
     try {
       for (let k = 0; k < list.length; k += 50) {
         const r = await api.post<{ failed: { name: string; error: string }[] }>('/api/gallery/info', { items: list.slice(k, k + 50).map(i => i.path), lat, lon })
-        bad.push(...r.failed.map(f => `${f.name}: ${f.error}`))
+        bad.push(...r.failed)
       }
-      if (bad.length) fail(new Error(bad.slice(0, 5).join('\n')))
+      if (bad.length) fail(new Error(failedText(bad)))
       else notify(t('Ort gesetzt.'))
     } catch (e) { fail(e) }
     changed()
@@ -1389,7 +1453,8 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
   const sendOne = async (file: File, rel: string, dir: string, mode: string, onBytes: (n: number) => void) => {
     const id = await uploadChunked(file, rel, onBytes, x => { xhr.current = x })
     if (cancelled.current) { dropUpload(id); throw new Error('abort') }
-    try { await finishToFiles(id, dir, mode, x => { xhr.current = x }) }
+    // Änderungsdatum der Datei mitschicken: sonst gilt der Zeitpunkt des Hochladens (auch als Dokumentdatum im DMS)
+    try { await finishToFiles(id, dir, mode, x => { xhr.current = x }, file.lastModified) }
     catch (e) {
       if (e instanceof UploadError && e.status === 0) throw new Error(t('Verbindung unterbrochen'))
       throw e instanceof UploadError && e.status === 507 ? new Error(e.message || 'Speicher voll (507)') : e
@@ -1500,9 +1565,9 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
       // Gemischt: beides nennen, sonst klingt es, als würden nur die Dateien der Galerie-Ordner gelöscht
       const files = (n: number) => n === 1 ? t('1 Datei') : t('{n} Dateien', { n })
       const question = own.length
-        ? t('{own} in den Papierkorb verschieben und {ext} aus Galerie-Ordnern endgültig löschen? Für Galerie-Ordner gibt es keinen Papierkorb. Zugehörige .xmp-Dateien werden mitgelöscht.', { own: files(own.length), ext: files(ext.length) })
-        : ext.length === 1 ? t('„{name}“ endgültig aus dem Ordner löschen? Eine zugehörige .xmp-Datei wird mitgelöscht.', { name: ext[0].name })
-        : t('{n} Dateien endgültig aus dem Ordner löschen? Zugehörige .xmp-Dateien werden mitgelöscht.', { n: ext.length })
+        ? t('{own} in den Papierkorb verschieben und {ext} aus Galerie-Ordnern löschen? Zugehörige .xmp-Dateien werden mitgelöscht.', { own: files(own.length), ext: files(ext.length) })
+        : ext.length === 1 ? t('„{name}“ aus dem Ordner löschen? Eine zugehörige .xmp-Datei wird mitgelöscht.', { name: ext[0].name })
+        : t('{n} Dateien aus dem Ordner löschen? Zugehörige .xmp-Dateien werden mitgelöscht.', { n: ext.length })
       if (!asked && !await askConfirm('', question)) return false
       try {
         await api.post('/api/gallery/external/delete', { ids: ext.map(extId) })
@@ -1510,6 +1575,21 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
         setSelected([])
       } catch (e) { fail(e); changed(); return false }
       if (!own.length) { changed(); return true }
+    }
+    // Im Tresor und in Cryptomator-Tresoren gibt es keinen Papierkorb: endgültig löschen nur nach Rückfrage
+    const enc = own.filter(i => isEncrypted(i.path))
+    if (enc.length && !asked && !await askConfirm('', enc.length === 1
+      ? t('„{name}“ endgültig löschen? Im Tresor gibt es keinen Papierkorb, das lässt sich nicht rückgängig machen.', { name: enc[0].name })
+      : t('{n} Elemente endgültig löschen? Im Tresor gibt es keinen Papierkorb, das lässt sich nicht rückgängig machen.', { n: enc.length }),
+      t('Endgültig löschen'))) return false
+    // In einem mit mir geteilten Ordner: landet im Papierkorb des Besitzers, ohne Rückgängig
+    const foreign = own.filter(i => !isEncrypted(i.path) && mountOf(i.path))
+    if (foreign.length && !asked) {
+      const owner = [...new Set(foreign.map(i => mountOf(i.path)!.owner))].join(', ')
+      if (!await askConfirm(t('Löschen'), foreign.length === 1
+        ? t('„{name}“ löschen? Es landet im Papierkorb von {owner} und lässt sich nur dort wiederherstellen.', { name: foreign[0].name, owner })
+        : t('{n} Elemente löschen? Sie landen im Papierkorb von {owner} und lassen sich nur dort wiederherstellen.', { n: foreign.length, owner }),
+        t('Löschen'))) return false
     }
     try {
       const r = await api.post<{ trash: number[] }>('/api/files/delete', { paths: own.map(i => i.path) })
@@ -1541,8 +1621,8 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
     const files = (n: number) => n === 1 ? t('1 Datei') : t('{n} Dateien', { n })
     const question = [list.length === 1 ? t('1 abgelehnte Datei löschen?') : t('{n} abgelehnte Dateien löschen?', { n: list.length }),
       !ext ? t('Gelöschte Dateien kommen in den Papierkorb.')
-        : own ? t('{own} kommen in den Papierkorb, {ext} aus Galerie-Ordnern werden endgültig gelöscht.', { own: files(own), ext: files(ext) })
-        : t('Die Dateien liegen in Galerie-Ordnern und werden endgültig gelöscht. Dafür gibt es keinen Papierkorb.'),
+        : own ? t('{own} kommen in den Papierkorb, {ext} aus Galerie-Ordnern werden gelöscht.', { own: files(own), ext: files(ext) })
+        : t('Die Dateien in Galerie-Ordnern werden gelöscht.'),
       ext ? t('Zugehörige .xmp-Dateien werden mitgelöscht.') : '',
       all.length > list.length ? t('{n} weitere lassen sich nicht löschen und bleiben.', { n: all.length - list.length }) : ''].filter(Boolean).join(' ')
     if (!await askConfirm(t('Abgelehnte löschen'), question, t('Löschen'))) return
@@ -1564,7 +1644,7 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
   /** Verschieben oder kopieren in einen Ordner; fragt bei belegten Namen; ueberspringt Unsinniges (in sich selbst, schon dort). */
   const transfer = async (picked: string[], target: string, copy: boolean) => {
     // Stapel: die RAW-Dateien gehen mit
-    const paths = picked.flatMap(p => [p, ...(items.find(i => i.path === p)?.stack ?? []).map(x => x.path)])
+    const paths = picked.flatMap(p => [p, ...(items.find(i => i.path === p)?.stack ?? []).filter(x => !x.dupe).map(x => x.path)])
     const todo = paths.filter(p => !inside(p, target) && (copy || parentOf(p) !== target))
     if (!todo.length) return
     if (copy && todo.some(shownAt)) { notShown(); return }
@@ -1939,6 +2019,19 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
     </Menu>
   )
 
+  /** Herkunft (Wolke) auf der Kachel: nur in der Galerie, nicht bei Ordnern und nicht neben „nicht erreichbar“ */
+  /** Markierung (P/X), Farbe und Sterne eines Fotos; null, wenn nichts gesetzt ist. */
+  const marksOf = (i: Item) => {
+    const m = photosView ? metaOf(i) : undefined
+    if (!m?.pick && !m?.label && !m?.rating) return null
+    return <>
+      {m.pick === 1 && <span style={{ color: '#4CC38A', fontWeight: 600 }} title={t('Ausgewählt')}>P</span>}
+      {m.pick === -1 && <span style={{ color: '#FF6369', fontWeight: 600 }} title={t('Abgelehnt')}>X</span>}
+      {m.label && <span className={s.markDot} style={{ background: labelColor(m.label) }} />}
+      {m.rating ? <span>{'★'.repeat(m.rating)}</span> : null}
+    </>
+  }
+  const cloudOn = (i: Item) => photosView && !i.isDir && featureOn('galdupes') && !extOffline(i)
   // ---------------- Menues ----------------
   const [ctx, setCtx] = useState<{ x: number; y: number; kind: 'items' | 'empty' | 'folder' | 'nav'; folder?: string; nav?: Special | 'chat' | 'withme' | 'tresor' } | null>(null)
   const menuItems = (list: Item[]) => {
@@ -1948,10 +2041,12 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
       <MenuList>
         {single && <MenuItem icon={<FolderOpen20Regular />} onClick={() => open(single)}>{t('Öffnen')}</MenuItem>}
         <MenuItem icon={<ArrowDownload20Regular />} onClick={() => download(list)}>{t('Herunterladen')}</MenuItem>
+        {toAblage.available && list.some(onlyInFolder) && <MenuItem icon={<CloudArrowUp20Regular />} onClick={() => toAblage.save(list)}>{t('In Ablage sichern')}</MenuItem>}
         {album != null && list.every(isAlb) && albums.find(a => a.id === album)?.kind === 'fixed' && (albums.find(a => a.id === album)?.mine || list.every(i => albumMine[i.path])) &&
           <MenuItem icon={<Delete20Regular />} onClick={() => takeFromAlbum(list)}>{t('Aus dem Album nehmen')}</MenuItem>}
         {album == null && addToAlbumMenu(list)}
         {list.every(extWritable) && list.some(isPhoto) && <MenuItem icon={<Wand20Regular />} onClick={() => setAutoFor(list)}>{t('Automatisch verbessern …')}</MenuItem>}
+        {deletable(list) && <MenuDivider />}
         {deletable(list) && <MenuItem icon={<Delete20Regular />} secondaryContent={t('Entf')} onClick={() => remove(list)}>{t('Löschen')}</MenuItem>}
       </MenuList>
     )
@@ -1969,8 +2064,9 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
         {single && view.kind === 'photos' && !single.isDir && <MenuItem icon={<ImageOff20Regular />} onClick={() => setExcludeFrom(single.path)}>{t('Ordner aus der Galerie ausschließen …')}</MenuItem>}
         {view.kind === 'photos' && album == null && list.every(i => !i.isDir) && addToAlbumMenu(list)}
         {change && list.some(isPhoto) && <MenuItem icon={<Wand20Regular />} onClick={() => setAutoFor(list)}>{t('Automatisch verbessern …')}</MenuItem>}
-        {infoable(list) && <MenuItem icon={<Edit20Regular />} onClick={() => setInfoFor(list)}>{t('Titel, Stichwörter, Bewertung …')}</MenuItem>}
+        {infoable(list) && <MenuItem icon={<Edit20Regular />} onClick={() => setInfoFor(list)}>{t('Titel, Tags, Bewertung …')}</MenuItem>}
         {single && officeMode(single, office) === 'edit' && !isCmv(single.path) && <MenuItem icon={<DocumentEdit20Regular />} onClick={() => setEditing({ path: single.path, name: single.name })}>{t('Im Browser bearbeiten')}</MenuItem>}
+        {single && change && <MenuItem icon={<Rename20Regular />} secondaryContent="F2" onClick={() => rename(single)}>{t('Umbenennen')}</MenuItem>}
         {single && flat && <MenuItem icon={<Folder20Regular />} onClick={() => { openFolder(parentOf(single.path)); setTimeout(() => setSelected([single.path]), 300) }}>{t('Speicherort öffnen')}</MenuItem>}
         {keep && <MenuItem icon={<ArrowDownload20Regular />} onClick={() => download(list)}>{list.length > 1 || single?.isDir ? t('Als ZIP herunterladen') : t('Herunterladen')}</MenuItem>}
         {keep && !list.some(isAlb) && <MenuItem icon={<Cart20Regular />} onClick={() => basket.add(list)}>{t('In den Downloadkorb')}</MenuItem>}
@@ -1984,19 +2080,20 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
           <MenuItem icon={single.davHidden ? <Cloud20Regular /> : <CloudOff20Regular />} onClick={() => davHide(single, !single.davHidden)}>
             {single.davHidden ? t('In WebDAV und Nextcloud zeigen') : t('In WebDAV und Nextcloud ausblenden')}</MenuItem>
         )}
-        {featureOn('dms') && mine && canChange(list) && list.some(i => !i.isDir) && !list.some(isAlb) && <MenuItem icon={<DocumentBulletList20Regular />} onClick={() => toDms(list.filter(i => !i.isDir))}>{t('Ins DMS aufnehmen')}</MenuItem>}
+        {featureOn('filecats') && mine && list.some(i => !i.isDir) && !list.some(isAlb) && <MenuItem icon={<Tag20Regular />} onClick={() => setLabelsFor(list.filter(i => !i.isDir).map(i => i.path))}>{t('Kategorien und Tags …')}</MenuItem>}
+        {featureOn('dms') && mine && canChange(list) && list.some(i => !i.isDir) && !list.some(isAlb) && <ToDmsItem files={list.filter(i => !i.isDir)} onPick={toDms} />}
         <MenuDivider />
         {change && <MenuItem icon={<Cut20Regular />} secondaryContent={t('Strg+X')} onClick={() => toClip(list, true)}>{t('Ausschneiden')}</MenuItem>}
         {keep && <MenuItem icon={<Copy20Regular />} secondaryContent={t('Strg+C')} onClick={() => toClip(list, false)}>{t('Kopieren')}</MenuItem>}
         {single?.isDir && clip && writableAt(single.path) && <MenuItem icon={<ClipboardPaste20Regular />} onClick={() => paste(single.path)}>{t('Hier einfügen')}</MenuItem>}
-        {single && change && <MenuItem icon={<Rename20Regular />} secondaryContent="F2" onClick={() => rename(single)}>{t('Umbenennen')}</MenuItem>}
         {change && <MenuItem icon={<FolderArrowRight20Regular />} onClick={() => setPicker({ mode: 'move', paths: list.map(i => i.path) })}>{t('Verschieben nach …')}</MenuItem>}
         {keep && <MenuItem icon={<Copy20Regular />} onClick={() => setPicker({ mode: 'copy', paths: list.map(i => i.path) })}>{t('Kopieren nach …')}</MenuItem>}
-        {change && <MenuDivider />}
-        {change && <MenuItem icon={<Delete20Regular />} secondaryContent={t('Entf')} onClick={() => remove(list)}>{t('Löschen')}</MenuItem>}
+        <MenuItem icon={<Info20Regular />} onClick={() => { setSelected(list.map(i => i.path)); setDetails(true) }}>{t('Details')}</MenuItem>
         {/* Mit mir Geteiltes: das Geteilte selbst, in der Galerie auch aus einem Foto eines geteilten Ordners heraus */}
         {list.every(i => isMountRoot(i.path) || (photosView && mountOf(i.path))) && <MenuItem icon={<EyeOff20Regular />} onClick={() => leaveShared(list)}>{list.every(i => isMountRoot(i.path)) ? t('Nicht mehr anzeigen') : t('Geteilten Ordner nicht mehr anzeigen')}</MenuItem>}
-        <MenuItem icon={<Info20Regular />} onClick={() => { setSelected(list.map(i => i.path)); setDetails(true) }}>{t('Details')}</MenuItem>
+        {/* Löschen zuletzt, mit Strich davor */}
+        {change && <MenuDivider />}
+        {change && <MenuItem icon={<Delete20Regular />} secondaryContent={t('Entf')} onClick={() => remove(list)}>{t('Löschen')}</MenuItem>}
       </MenuList>
     )
   }
@@ -2033,6 +2130,9 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
         <MenuItem icon={<Rename20Regular />} onClick={() => rename(folderItem(f))}>{t('Umbenennen')}</MenuItem>
         <MenuItem icon={<FolderArrowRight20Regular />} onClick={() => setPicker({ mode: 'move', paths: [f] })}>{t('Verschieben nach …')}</MenuItem>
         <MenuItem icon={<Copy20Regular />} onClick={() => setPicker({ mode: 'copy', paths: [f] })}>{t('Kopieren nach …')}</MenuItem>
+      </>}
+      {/* Löschen zuletzt, mit Strich davor */}
+      {f && <>
         <MenuDivider />
         <MenuItem icon={<Delete20Regular />} onClick={() => remove([folderItem(f)])}>{t('Löschen')}</MenuItem>
       </>}
@@ -2061,6 +2161,28 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
   useBackClose(!!editing, closeEditor)
 
   // ---------------- Menueband ----------------
+  // Externer Ordner: dieselben Befehle wie in „Meine Dateien“, ausgeführt im externen Ordner; was es dort nicht gibt, bleibt grau
+  const xr = extRibbon.current
+  const extStart = xr && <>
+    {!xr.readOnly && <>
+      <Menu>
+        <MenuTrigger disableButtonEnhancement><RibbonButton primary icon={<DocumentAdd20Regular />} label={t('Neu')} /></MenuTrigger>
+        <MenuPopover><MenuList><MenuItem icon={<FolderAdd20Regular />} onClick={() => xr.newFolder()}>{t('Ordner')}</MenuItem></MenuList></MenuPopover>
+      </Menu>
+      <RibbonButton icon={xr.busy ? <Spinner size="tiny" /> : <ArrowUpload20Regular />} label={t('Hochladen')} disabled={xr.busy} onClick={() => xr.uploadFiles()} />
+      <RibbonDivider />
+    </>}
+    <RibbonButton icon={<FolderOpen20Regular />} label={t('Öffnen')} disabled={!xr.one} onClick={() => xr.open()} />
+    <RibbonButton icon={<ArrowDownload20Regular />} label={t('Herunterladen')} disabled={!xr.anyFile} onClick={() => xr.download()} />
+    <RibbonButton icon={<Share20Regular />} label={t('Teilen')} disabled onClick={() => {}} />
+    <RibbonButton icon={<Rename20Regular />} label={t('Umbenennen')} disabled={!xr.one || xr.readOnly} onClick={() => xr.rename()} />
+    <RibbonButton icon={<Delete20Regular />} label={t('Löschen')} disabled={!xr.count || xr.readOnly || xr.busy} onClick={() => xr.remove()} />
+    <RibbonDivider />
+    <RibbonButton icon={<Cut20Regular />} label={t('Ausschneiden')} disabled={!xr.count || xr.readOnly} onClick={() => xr.cut()} />
+    <RibbonButton icon={<Copy20Regular />} label={t('Kopieren')} disabled={!xr.count} onClick={() => xr.copy()} />
+    <RibbonButton icon={<ClipboardPaste20Regular />} label={t('Einfügen')} disabled={!xr.canPaste || xr.busy} onClick={() => xr.paste()} />
+    <RibbonButton icon={<FolderArrowRight20Regular />} label={t('Verschieben nach')} disabled={!xr.count || xr.readOnly || xr.busy} onClick={() => xr.moveTo()} />
+  </>
   const inFiles = view.kind !== 'trash' && view.kind !== 'shared'
   const start = view.kind === 'trash' ? <>
     <RibbonButton primary icon={<ArrowReset20Regular />} label={t('Wiederherstellen')} disabled={!trash.selected.length} onClick={() => trash.restore()} />
@@ -2099,7 +2221,7 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
     <RibbonButton icon={<Share20Regular />} label={t('Teilen')} disabled={!sel.length || sel.some(i => inWithMe(i.path, anyShared) || isEncrypted(i.path))} onClick={() => one ? setShare(one) : setShareMany(sel)} />
     <RibbonButton icon={<Rename20Regular />} label={t('Umbenennen')} disabled={!one || !canChange([one])} onClick={() => one && rename(one)} />
     <RibbonButton icon={<Delete20Regular />} label={t('Löschen')} disabled={!deletable(sel)} onClick={() => remove(sel)} />
-    {photosView && <RibbonButton icon={<DeleteDismiss20Regular />} label={t('Abgelehnte löschen')} disabled={!tlOn} onClick={removeRejected} />}
+    {photosView && <RibbonButton icon={<DeleteDismiss20Regular />} label={t('Abgelehnte löschen')} disabled={!tlOn || tl.state?.total === 0} onClick={removeRejected} />}
     <RibbonDivider />
     <RibbonButton icon={<Cut20Regular />} label={t('Ausschneiden')} disabled={!sel.length || !canChange(sel)} onClick={() => toClip(sel, true)} />
     <RibbonButton icon={<Copy20Regular />} label={t('Kopieren')} disabled={!sel.length || !keepable(sel)} onClick={() => toClip(sel, false)} />
@@ -2109,7 +2231,10 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
     <RibbonDivider />
     <RibbonButton icon={one?.favorite ? <Star20Filled color="#E8A33D" /> : <Star20Regular />} label={t('Favorit')} disabled={!one || inWithMe(one.path, anyShared)} pressed={!!one?.favorite}
       onClick={() => one && favorite(one, !one.favorite)} />
+    {toAblage.available && photosView && <RibbonButton icon={<CloudArrowUp20Regular />} label={t('In Ablage sichern')} disabled={!sel.some(onlyInFolder)} onClick={() => toAblage.save(sel)} />}
     <RibbonButton icon={<Wand20Regular />} label={t('Verbessern')} disabled={!sel.some(isPhoto) || !(canChange(sel) || sel.every(extWritable))} onClick={() => setAutoFor(sel)} />
+    {featureOn('filecats') && <RibbonButton icon={<Tag20Regular />} label={t('Kategorien')} disabled={!sel.some(i => !i.isDir) || sel.some(i => inWithMe(i.path, anyShared) || isAlb(i) || isExt(i))}
+      onClick={() => setLabelsFor(sel.filter(i => !i.isDir).map(i => i.path))} />}
     <RibbonButton icon={<Info20Regular />} label={t('Details')} pressed={detailsOpen} onClick={() => setDetails(!detailsOpen)} />
     <RibbonDivider />
     <RibbonButton icon={<DocumentSearch20Regular />} label={t('Inhalte durchsuchen')} onClick={() => setContentSearch(true)} />
@@ -2132,10 +2257,7 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
     </>}
   </>
   const viewRibbon = <>
-    {view.kind !== 'photos' && <RibbonButton icon={<AppsList20Regular />} label={t('Details')} pressed={viewMode === 'details'} onClick={() => update({ fileView: 'details' })} />}
-    {view.kind !== 'photos' && <RibbonButton icon={<Grid20Regular />} label={t('Kacheln')} pressed={viewMode === 'tiles'} onClick={() => update({ fileView: 'tiles' })} />}
-    {view.kind !== 'photos' && !extMount && <ColumnMenu cols={colCfg} onChange={c => saveCols(c)} labels={view.kind === 'recent' && !searching ? { modified: t('Verwendet') } : undefined}
-      trigger={<MenuTrigger disableButtonEnhancement><RibbonButton icon={<ColumnTriple20Regular />} label={t('Spalten')} disabled={viewMode !== 'details'} /></MenuTrigger>} />}
+    {/* Sortieren und Gruppieren nebeneinander, dann die Ansichtsmodi, dann die Einstellungen */}
     <Menu>
       <MenuTrigger disableButtonEnhancement><RibbonButton icon={<ArrowSort20Regular />} label={t('Sortieren')} /></MenuTrigger>
       <MenuPopover>
@@ -2157,6 +2279,33 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
         </MenuList>
       </MenuPopover>
     </Menu>
+    {!extMount && <Menu>
+      <MenuTrigger disableButtonEnhancement><RibbonButton icon={<GroupList20Regular />} label={t('Gruppieren')} /></MenuTrigger>
+      <MenuPopover>
+        {photosView ? (
+          <MenuList checkedValues={{ group: [photoGroup] }} onCheckedValueChange={(_, d) => update({ photoGroup: d.checkedItems[0] as any })}>
+            <MenuItemRadio name="group" value="day">{t('Nach Datum')}</MenuItemRadio>
+            <MenuItemRadio name="group" value="month">{t('Nach Monat')}</MenuItemRadio>
+            <MenuItemRadio name="group" value="year">{t('Nach Jahr')}</MenuItemRadio>
+            <MenuItemRadio name="group" value="source">{t('Nach Quelle')}</MenuItemRadio>
+            {featureOn('filecats') && <MenuItemRadio name="group" value="category">{t('Nach Kategorie')}</MenuItemRadio>}
+            {featureOn('filecats') && <MenuItemRadio name="group" value="tag">{t('Nach Tag')}</MenuItemRadio>}
+            <MenuItemRadio name="group" value="none">{t('Nicht gruppieren')}</MenuItemRadio>
+          </MenuList>
+        ) : (
+        <MenuList checkedValues={{ group: [groupBy] }} onCheckedValueChange={(_, d) => update({ fileGroup: d.checkedItems[0] as any })}>
+          <MenuItemRadio name="group" value="none">{t('Nicht gruppieren')}</MenuItemRadio>
+          <MenuItemRadio name="group" value="kind">{t('Art')}</MenuItemRadio>
+          <MenuItemRadio name="group" value="date">{t('Änderungsdatum')}</MenuItemRadio>
+        </MenuList>
+        )}
+      </MenuPopover>
+    </Menu>}
+    <RibbonDivider />
+    {view.kind !== 'photos' && <RibbonButton icon={<AppsList20Regular />} label={t('Details')} pressed={viewMode === 'details'} onClick={() => update({ fileView: 'details' })} />}
+    {view.kind !== 'photos' && <RibbonButton icon={<Grid20Regular />} label={t('Kacheln')} pressed={viewMode === 'tiles'} onClick={() => update({ fileView: 'tiles' })} />}
+    {view.kind !== 'photos' && !extMount && <ColumnMenu cols={colCfg} onChange={c => saveCols(c)} labels={view.kind === 'recent' && !searching ? { modified: t('Verwendet') } : undefined}
+      trigger={<MenuTrigger disableButtonEnhancement><RibbonButton icon={<ColumnTriple20Regular />} label={t('Spalten')} disabled={viewMode !== 'details'} /></MenuTrigger>} />}
     {photosView && <RibbonButton icon={prefs.photoFit ? <ScaleFit20Regular /> : <ScaleFill20Regular />} label={t('Eingepasst')} pressed={!!prefs.photoFit} onClick={() => update({ photoFit: !prefs.photoFit })} />}
     {photosView && <RibbonButton icon={<Stack20Regular />} label={t('Stapeln')} pressed={prefs.photoStack ?? true} onClick={() => update({ photoStack: !(prefs.photoStack ?? true) })} />}
     {photosView && <Menu>
@@ -2186,29 +2335,10 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
       </MenuPopover>
     </Menu>
     {!photosView && <RibbonButton icon={showHidden ? <Eye20Regular /> : <EyeOff20Regular />} label={t('Versteckte Dateien')} pressed={showHidden} onClick={() => update({ fileHidden: !showHidden })} />}
-    {!extMount && <Menu>
-      <MenuTrigger disableButtonEnhancement><RibbonButton icon={<GroupList20Regular />} label={t('Gruppieren')} /></MenuTrigger>
-      <MenuPopover>
-        {photosView ? (
-          <MenuList checkedValues={{ group: [photoGroup] }} onCheckedValueChange={(_, d) => update({ photoGroup: d.checkedItems[0] as any })}>
-            <MenuItemRadio name="group" value="day">{t('Nach Datum')}</MenuItemRadio>
-            <MenuItemRadio name="group" value="month">{t('Nach Monat')}</MenuItemRadio>
-            <MenuItemRadio name="group" value="year">{t('Nach Jahr')}</MenuItemRadio>
-            <MenuItemRadio name="group" value="source">{t('Nach Quelle')}</MenuItemRadio>
-            <MenuItemRadio name="group" value="none">{t('Nicht gruppieren')}</MenuItemRadio>
-          </MenuList>
-        ) : (
-        <MenuList checkedValues={{ group: [groupBy] }} onCheckedValueChange={(_, d) => update({ fileGroup: d.checkedItems[0] as any })}>
-          <MenuItemRadio name="group" value="none">{t('Nicht gruppieren')}</MenuItemRadio>
-          <MenuItemRadio name="group" value="kind">{t('Art')}</MenuItemRadio>
-          <MenuItemRadio name="group" value="date">{t('Änderungsdatum')}</MenuItemRadio>
-        </MenuList>
-        )}
-      </MenuPopover>
-    </Menu>}
-    {photosView && <RibbonButton icon={<Edit20Regular />} label={t('Angaben')} disabled={!infoable(sel)} onClick={() => setInfoFor(sel)} />}
     {photosView && <RibbonButton icon={<Globe20Regular />} label={t('Atlas')} pressed={atlas} onClick={() => setAtlas(a => !a)} />}
     {photosView && <RibbonButton icon={<Filter20Regular />} label={t('Filterleiste')} pressed={!!prefs.photoFilter} onClick={() => update({ photoFilter: !prefs.photoFilter })} />}
+    {photosView && <RibbonButton icon={<Edit20Regular />} label={t('Angaben')} disabled={!infoable(sel)} onClick={() => setInfoFor(sel)} />}
+    {photosView && <RibbonDivider />}
     {photosView && <RibbonButton icon={<ImageMultiple20Regular />} label={t('Galerie-Ordner')} onClick={() => setGalleryFolders(true)} />}
     {photosView && <RibbonButton icon={<ImageOff20Regular />} label={t('Ausgeschlossene Ordner')} onClick={() => setExcludes(true)} />}
     {photosView && featureOn('importprofiles') && <RibbonButton icon={<ArrowImport20Regular />} label={t('Importprofile')} onClick={() => setImportProfiles(true)} />}
@@ -2247,6 +2377,23 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
       {i.owner && <Tooltip content={i.showOnly ? t('Von {owner} gezeigt – nur ansehen', { owner: i.owner }) : i.canWrite ? t('Von {owner} geteilt – du darfst bearbeiten', { owner: i.owner }) : t('Von {owner} geteilt – nur lesen', { owner: i.owner })} relationship="label"><People16Regular /></Tooltip>}
     </span>
   )
+  // Im virtuellen Ordner einer Kategorie: automatisch Eingeordnetes mit Bestätigen/Entfernen
+  const autoIn = (i: Item) => view.kind === 'cat' ? (catLabels[i.path]?.cats ?? []).filter(a => a.auto && below(fileCats.cats, view.id).has(a.id)).map(a => a.id) : []
+  const badges = (i: Item) => {
+    const a = autoIn(i)
+    return a.length ? <>{markBadges(i)}<AutoBadge path={i.path} ids={a} onChanged={load} /></> : markBadges(i)
+  }
+  const dropOnCat = async (e: React.DragEvent, id: string) => {
+    let paths: string[]
+    try { paths = JSON.parse(e.dataTransfer.getData(DRAG)) } catch { return }
+    try {
+      await catsApi.setLabels({ paths, add: [id] })
+      await reloadCats()
+      notify(t('In „{name}“ eingeordnet.', { name: fullName(fileCats.cats, id) }))
+      if (view.kind === 'cat' || view.kind === 'tag') load()
+      setDetailsVersion(v => v + 1)
+    } catch (err) { fail(err) }
+  }
   const recentView = view.kind === 'recent' && !searching
   const sortable = !(view.kind === 'photos' && !searching)
   const headSort: SortKey = recentView ? recentSort?.key ?? ('' as SortKey) : sort
@@ -2281,7 +2428,12 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
   const emptyText = () => searching ? t('Nichts gefunden.')
     : view.kind === 'recent' ? t('Noch nichts verwendet.')
       : view.kind === 'favorites' ? t('Noch keine Favoriten. Rechtsklick auf eine Datei oder einen Ordner → „Zu Favoriten hinzufügen“.')
-        : view.kind === 'photos' ? (filterOn ? t('Keine Bilder passen zum Filter.') : t('Noch keine Fotos. Fotos, die du unter Dateien hochlädst, erscheinen hier.'))
+        : view.kind === 'photos' ? (filterOn ? t('Keine Bilder passen zum Filter.')
+          : albumNow?.kind === 'smart' ? t('Keine Fotos passen zur Regel dieses Albums.')
+          : albumNow ? t('Noch keine Fotos in diesem Album. Rechtsklick auf ein Foto → „Zu Album hinzufügen“.')
+          : t('Noch keine Fotos. Fotos, die du unter Dateien hochlädst, erscheinen hier.'))
+          : view.kind === 'cat' ? t('Noch keine Dateien in dieser Kategorie. Dateien links auf die Kategorie ziehen oder Rechtsklick auf eine Datei → „Kategorien und Tags …“.')
+          : view.kind === 'tag' ? t('Keine Dateien mit diesem Tag.')
           : filter ? t('Keine Einträge dieser Art in diesem Ordner.')
           : inChat ? t('Noch nichts gespeichert. Hier landen Fotos und Dateien, die du im Chat mit „Speichern“ ablegst.')
           : t('Leer. Dateien hierher ziehen oder „Hochladen“.')
@@ -2306,7 +2458,7 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
               <span data-tilecheck className={mergeClasses(s.tileCheck, photosView && !touch && !isSel && selected.length === 0 && s.tileCheckQuiet)} onClick={e => { e.stopPropagation(); anchor.current = i.path; setSelected(sl => isSel ? sl.filter(p => p !== i.path) : [...sl, i.path]) }}>
                 <Checkbox checked={isSel} aria-label={t('Auswählen')} />
               </span>
-              {(i.favorite || i.shared || i.sharedWith || i.owner || (photosView && i.etag?.includes('~e'))) && <span className={s.tileBadge}>
+              {(i.favorite || i.shared || i.sharedWith || i.owner || (photosView && i.etag?.includes('~e'))) && <span className={s.tileBadge} style={cloudOn(i) ? { right: 28 } : undefined}>
                 {/* Bearbeitet (nicht-destruktiv): das Original ist unverändert */}
                 {photosView && i.etag?.includes('~e') && <Tooltip content={t('Bearbeitet')} relationship="label"><Edit16Regular className={s.editedBadge} /></Tooltip>}
                 {i.favorite && <Star16Filled color="#E8A33D" />}{i.shared && <Link16Regular />}{(i.sharedWith || i.owner) && <People16Regular />}</span>}
@@ -2319,21 +2471,21 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
                     <Folder20Filled className={s.collageMark} />
                   </div>
                 ) : hasThumb(i) ? <Thumb item={i} source={galleryTileSource} size={thumbPxFor(tileNum, extOffline(i))} className={s.thumbImg} fallbackLarge={!extOffline(i)} fit={photosView && prefs.photoFit ? 'contain' : 'cover'} /> : <KindIcon item={i} large />}
-                {i.stack?.length ? <span className={mergeClasses(s.stackBadge, (i.favorite || i.shared || i.sharedWith || i.owner || (photosView && i.etag?.includes('~e'))) && s.stackBadgeLow)} title={i.stack.map(x => x.name).join(', ')}>{[...new Set(i.stack.map(x => extOf(x.name).slice(1).toUpperCase()))].join('+')}</span> : null}
-                {photosView && (() => {
-                  const m = metaOf(i)
-                  if (!m?.pick && !m?.label && !m?.rating) return null
-                  return <span className={s.marks} style={i.stack?.length ? { top: 24 } : undefined}>
-                    {m.pick === 1 && <span style={{ color: '#4CC38A', fontWeight: 600 }} title={t('Ausgewählt')}>P</span>}
-                    {m.pick === -1 && <span style={{ color: '#FF6369', fontWeight: 600 }} title={t('Abgelehnt')}>X</span>}
-                    {m.label && <span className={s.markDot} style={{ background: labelColor(m.label) }} />}
-                    {m.rating ? <span>{'★'.repeat(m.rating)}</span> : null}
-                  </span>
-                })()}
+                {i.stack?.length || i.stackPos ? <span className={mergeClasses(s.stackBadge, s.stackBadgeClick, (i.favorite || i.shared || i.sharedWith || i.owner || (photosView && i.etag?.includes('~e'))) && s.stackBadgeLow)} style={cloudOn(i) ? { right: 26 } : undefined}
+                  title={i.stackPos ? t('Stapel zuklappen') : t('Stapel aufklappen') + ': ' + (i.stack ?? []).map(x => x.dupe ? t('Kopie: {name}', { name: x.name }) : x.name).join(', ')}
+                  onClick={e => { e.stopPropagation(); toggleStack(i.stackPos?.lead ?? i.path) }} onDoubleClick={e => e.stopPropagation()}>
+                  {i.stackPos ? `${i.stackPos.n}/${i.stackPos.of}` : stackLabel(i)}</span> : null}
+                {/* Markierung, Farbe, Sterne: ohne Bildinfos auf dem Bild unten am Bildrand */}
+                {photosView && !(infoOnImage && tileInfo.length > 0) && marksOf(i) && <span className={s.marks} style={extOffline(i) ? { left: 28 } : undefined}>{marksOf(i)}</span>}
+                {/* Herkunft: Ablage in dmOffice oder Galerie-Ordner (nicht mit dem Hinweis „nicht erreichbar“ an derselben Stelle) */}
+                {cloudOn(i) && <SourceCloud path={i.path} saving={savingIds.has(i.path)}
+                  onSave={toAblage.available ? () => toAblage.save(selected.includes(i.path) ? sel : [i]) : undefined} />}
                 {extOffline(i) && <Tooltip content={t('Der externe Ordner ist gerade nicht erreichbar – nur die Vorschau ist da.')} relationship="label">
                   <span className={s.offBadge}><Prohibited16Filled /></span></Tooltip>}
                 {/* Große Kacheln: Bildinfos auf dem Bild, unten in einer hellen Leiste */}
                 {infoOnImage && tileInfo.length > 0 && <div className={s.tileOverlay}>
+                  {/* Markierung, Farbe, Sterne als eigene Zeile über den Bildinfos */}
+                  {marksOf(i) && <div className={s.marksRow}>{marksOf(i)}</div>}
                   {tileInfo.map(k => {
                     const [l, r] = TILE_INFOS[k].value(i, metaOf(i))
                     return <div key={k} className={s.tileInfo} title={[l, r].filter(Boolean).join(' · ')}>
@@ -2430,10 +2582,11 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
                   <Checkbox checked={isSel} aria-label={t('Auswählen')} />
                 </TableCell>
                 <TableCell style={{ minWidth: 0, overflow: 'hidden' }}>
-                  <TableCellLayout truncate title={i.name} media={<span className={s.rowIcon}>{hasThumb(i) && kindOf(i) === 'image' ? <Thumb item={i} source={gallerySource} className={s.rowThumb} /> : <KindIcon item={i} />}</span>}
+                  <TableCellLayout truncate title={i.name} media={<span style={{ position: 'relative', display: 'inline-flex' }}><span className={s.rowIcon}>{hasThumb(i) && kindOf(i) === 'image' ? <Thumb item={i} source={gallerySource} className={s.rowThumb} /> : <KindIcon item={i} />}</span>
+                    {i.dms && <Tooltip content={t('Dokument im DMS')} relationship="label"><DocumentBulletList16Filled className={s.dmsMark} /></Tooltip>}</span>}
                     description={i.snippet ? <span title={t('Im Inhalt gefunden')}><Snippet text={i.snippet} /></span>
                       : cols < 2 ? [flat ? '/' + parentOf(i.path) : null, fmtWhen(when, locale), i.isDir ? null : fmtSize(i.size)].filter(Boolean).join(' · ') : undefined}>
-                    {i.name}{markBadges(i)}
+                    {i.name}{badges(i)}
                   </TableCellLayout>
                 </TableCell>
                 {shownCols.map(c => (
@@ -2549,7 +2702,7 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
   return (
     <div className={s.outer}>
       {/* Menueband ueber die ganze Breite wie in Office - auch ueber dem Navigationsbereich */}
-      {!full && <RibbonHeader area="files" onMenu={toggleSide} start={extMount ? null : start} view={viewRibbon} />}
+      {!full && <RibbonHeader area="files" onMenu={toggleSide} start={extMount ? extStart : start} view={viewRibbon} />}
       {contentSearch && <ContentSearch under={path ?? ''} onGo={p => { setContentSearch(false); openFolder(p) }} onClose={() => setContentSearch(false)} />}
       <div className={s.root}>
         {!gallery && <SidePane as="aside" className={s.side} open={sidePane} onClose={closeSide} width={{ key: 'files.side', def: 240 }}>
@@ -2613,6 +2766,12 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
               </div>
             ))}
           </>}
+          {/* Release-Liste: Datei-Kategorien erst mit ihrer Version */}
+          {featureOn('filecats') && <><div className={s.navSep} />
+          <CategoryNav cls={{ nav: s.nav, active: s.active, target: s.target, twisty: s.twisty, navName: s.navName }}
+            current={!ext && view.kind === 'cat' ? view.id : null} currentTag={!ext && view.kind === 'tag' ? view.tag : null}
+            onOpen={id => { go({ kind: 'cat', id }); if (mobile) closeSide() }} onOpenTag={tag => { go({ kind: 'tag', tag }); if (mobile) closeSide() }}
+            accepts={e => e.dataTransfer.types.includes(DRAG)} onDrop={dropOnCat} onManage={() => setManageCats(true)} /></>}
           {(extMounts.length > 0 || extCanAdd) && <>
             <div className={s.navSep} />
             <div style={{ display: 'flex', alignItems: 'center', padding: '2px 8px', color: tokens.colorNeutralForeground3, fontSize: tokens.fontSizeBase200, cursor: 'pointer' }}
@@ -2623,10 +2782,10 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
             </div>
             {!extFolded && extMounts.map(m => (
               <div key={m.id} className={mergeClasses(s.nav, ext?.mount === m.id && s.active)} style={m.available === false ? { opacity: 0.5 } : undefined}
-                title={m.available === false ? t('Gerade nicht erreichbar') : m.kind === 'webdav' ? t('WebDAV-Ordner – Rechtsklick: umbenennen, Ordner auswählen oder entfernen') : m.kind === 'onedrive' ? t('OneDrive-Ordner – Rechtsklick: umbenennen, Ordner auswählen oder entfernen') : m.kind === 'pcloud' ? t('pCloud-Ordner – Rechtsklick: umbenennen, Ordner auswählen oder entfernen') : t('Ordner auf dem Server')}
+                title={m.available === false ? t('Gerade nicht erreichbar') : m.kind === 'webdav' ? (m.sftp ? t('SFTP-Ordner – Rechtsklick: umbenennen, Ordner auswählen oder entfernen') : t('WebDAV-Ordner – Rechtsklick: umbenennen, Ordner auswählen oder entfernen')) : m.kind === 'onedrive' ? t('OneDrive-Ordner – Rechtsklick: umbenennen, Ordner auswählen oder entfernen') : m.kind === 'pcloud' ? t('pCloud-Ordner – Rechtsklick: umbenennen, Ordner auswählen oder entfernen') : t('Ordner auf dem Server')}
                 onClick={() => { if (m.available === false) { notify(t('Ordner nicht erreichbar'), t('{name} ist gerade nicht erreichbar.', { name: m.name })); return } setSearch(''); setExt({ mount: m.id, path: '' }); if (mobile) closeSide() }}
                 onContextMenu={m.kind !== 'folder' ? e => { e.preventDefault(); setExtSetup({ mount: m }) } : undefined}>
-                <span className={s.twisty} />{m.kind === 'webdav' ? <Globe20Regular /> : m.kind === 'onedrive' || m.kind === 'pcloud' ? <Cloud20Regular /> : <HardDrive20Regular />}<span className={s.navName}>{m.name}</span>
+                <span className={s.twisty} />{m.sftp ? <Server20Regular /> : m.kind === 'webdav' ? <Globe20Regular /> : m.kind === 'onedrive' || m.kind === 'pcloud' ? <Cloud20Regular /> : <HardDrive20Regular />}<span className={s.navName}>{m.name}</span>
                 {m.available === false && <Prohibited16Filled color="#E5484D" style={{ flexShrink: 0 }} />}
               </div>
             ))}
@@ -2650,7 +2809,7 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
         </SidePane>}
         {arc ? <ArchiveView key={arc.file} file={arc.file} dir={arc.dir} onDir={d => setArc({ file: arc.file, dir: d })}
               onLeave={folder => { setArc(null); openFolder(folder) }} onPending={n => { arcPending.current = { file: arc.file, n } }} />
-          : extMount && ext ? <ExternalView key={ext.mount} mount={extMount} path={ext.path} onPath={p => setExt({ mount: ext.mount, path: p })}
+          : extMount && ext ? <ExternalView key={ext.mount} mount={extMount} path={ext.path} onPath={p => setExt({ mount: ext.mount, path: p })} ribbon={extRibbon} onRibbonState={setExtRibbonKey}
             vaultPanel={(root, raw) => <VaultUnlock path={root} onOpen={p => { cmvRoots.add(root); setExt(null); openFolder(p) }} onRaw={raw} />}
             onVaultOpen={root => { cmvRoots.add(root); setExt(null); openFolder(CMV + '/' + root) }} />
           : lockedVault && path && !lockedVault.unlocked ? <VaultUnlock path={path} onOpen={p => { cmvRoots.add(path); openFolder(p) }} onRaw={() => setRawVaults(r => [...r, path])} /> : (
@@ -2686,7 +2845,7 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
           <div className={s.head}>
             <div className={s.crumbs}>
               {searching ? <span className={s.viewTitle}>{t('Suchergebnisse für „{q}“', { q: term })}</span>
-                : view.kind !== 'folder' ? <div style={{ display: 'flex', alignItems: 'center', gap: 16, minWidth: 0, flexWrap: 'wrap' }}>{!photosView && <span className={s.viewTitle}>{viewTitle(view.kind)}</span>}
+                : view.kind !== 'folder' ? <div style={{ display: 'flex', alignItems: 'center', gap: 16, minWidth: 0, flexWrap: 'wrap' }}>{!photosView && <span className={s.viewTitle}>{(view.kind === 'cat' ? fullName(fileCats.cats, view.id) : view.kind === 'tag' ? '#' + view.tag : viewTitle(view.kind))}</span>}
                   {photosView && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
                     <AlbumPicker albums={albums} current={album} onPick={setAlbum} onNew={() => setAlbumDialog({ kind: 'new' })}
                       onNewSmart={() => setSmartDialog({ id: null })} />{albumMenu}</span>}
@@ -2835,7 +2994,7 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
             onLabel={l => markPhotos({ label: l })} onDelete={deletable(sel) ? () => remove(sel) : undefined} />}
           {/* Rechtsklick-Menue an der Mausposition */}
           {ctx && (ctx.kind !== 'items' || sel.length > 0) && (
-            <Menu open onOpenChange={(_, d) => !d.open && setCtx(null)} positioning={{ target: { getBoundingClientRect: () => ({ x: ctx.x, y: ctx.y, top: ctx.y, left: ctx.x, bottom: ctx.y, right: ctx.x, width: 0, height: 0 }) } as any }}>
+            <Menu open onOpenChange={(_, d) => !d.open && setCtx(null)} positioning={{ autoSize: 'height', target: { getBoundingClientRect: () => ({ x: ctx.x, y: ctx.y, top: ctx.y, left: ctx.x, bottom: ctx.y, right: ctx.x, width: 0, height: 0 }) } as any }}>
               <MenuPopover onClick={() => setCtx(null)}>
                 {ctx.kind === 'items' ? menuItems(sel) : ctx.kind === 'empty' ? emptyMenu : ctx.kind === 'nav' && ctx.nav ? navMenu(ctx.nav) : folderMenu(ctx.folder ?? '')}
               </MenuPopover>
@@ -2845,15 +3004,22 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
         )}
         {detailsOpen && inFiles && !extMount && !mobile && detailsW.handle('left')}
         {detailsOpen && inFiles && !extMount && (
-          <Details width={mobile ? undefined : detailsW.width} item={detailItem} meta={detailItem ? metaOf(detailItem) : undefined} metaOf={metaOf}
+          <Details onMark={photosView ? (b, list) => { markPhotos(b, list) } : undefined} width={mobile ? undefined : detailsW.width} item={detailItem} meta={detailItem ? metaOf(detailItem) : undefined} metaOf={metaOf}
             onFilter={photosView && detailItem && (!prefs.photoFilter || (pickNext != null && pickNext < 4)) ? what => pickFilter(detailItem, metaOf(detailItem), what) : undefined} selection={sel} version={detailsVersion} onClose={() => setDetails(false)}
             onOpen={open} onOpenFolder={(p, f) => { openPlace(p, f); if (mobile) setDetails(false) }} onShare={setShare}
-            onFavorite={favorite} onDownload={keepable(detailItem ? [detailItem, ...sel] : sel) ? download : undefined} fail={fail} notify={m => notify(m)} onChanged={changed} />
+            onFavorite={favorite} onDownload={keepable(detailItem ? [detailItem, ...sel] : sel) ? download : undefined} fail={fail} notify={m => notify(m)} onChanged={changed}
+            onLabelsMany={featureOn('filecats') ? items => { const own = items.filter(i => !inWithMe(i.path, anyShared) && !isAlb(i) && !isExt(i)); if (own.length) setLabelsFor(own.map(i => i.path)); else notify(t('Kategorien und Tags gibt es nur für eigene Dateien, nicht für Ordner.')) } : undefined}
+            labels={featureOn('filecats') && detailItem && !detailItem.isDir && !inWithMe(detailItem.path, anyShared) && !isAlb(detailItem) && !isExt(detailItem)
+              ? <LabelsDetail path={detailItem.path} version={detailsVersion} onEdit={() => setLabelsFor([detailItem.path])}
+                  onOpenCat={id => go({ kind: 'cat', id })} onOpenTag={tag => go({ kind: 'tag', tag })} /> : undefined} />
         )}
       </div>
+      {labelsFor && <LabelsDialog paths={labelsFor} onClose={() => setLabelsFor(null)} onDone={changed} />}
+      {toAblage.dialog}
       {autoFor && <PhotoAutoDialog items={autoFor}
         onClose={() => setAutoFor(null)} onStarted={changed} />}
       {infoFor && <PhotoInfoDialog items={infoFor} metaOf={metaOf} onClose={() => setInfoFor(null)} onDone={changed} />}
+      {manageCats && <ManageCategories onClose={() => setManageCats(false)} />}
       {arcLeave && (
         <Dialog open onOpenChange={(_, d) => { if (!d.open) setArcLeave(null) }}>
           <DialogSurface style={{ maxWidth: 460 }}>
@@ -2890,6 +3056,7 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
         <ViewerWithEdit viewer={viewer} startEdit={startEdit} onIndex={i => setViewer(v => v && { ...v, index: i })}
           onSeen={i => { if (!isExt(i) && !isTresor(i.path)) api.post('/api/files/used', { path: i.path }).catch(() => {}) }}
           groupOf={grouping ? (i => groupOf(i)[1]) : undefined}
+          onSaveToAblage={toAblage.available ? (i => toAblage.save([i])) : undefined}
           onClose={() => { setViewer(null); setStartEdit(false); mainRef.current?.focus() }}
           onDownload={keepable(viewer.list) ? (i => download([i])) : undefined} onDetails={i => { setViewer(null); setSelected([i.path]); setViewerDetail(i); setDetails(true) }}
           onPhotoEdit={async (i, rotate, crop, overwrite, adjust) => {
@@ -2925,7 +3092,7 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
               changed()
             } catch (e) { fail(e); throw e }
           }}
-          side={mobile ? undefined : (i, close) => <Details inViewer item={i} meta={metaOf(i)} selection={[]} version={detailsVersion} onClose={close}
+          side={mobile ? undefined : (i, close) => <Details inViewer onMark={photosView ? (b, list) => { markPhotos(b, list) } : undefined} item={i} meta={metaOf(i)} selection={[]} version={detailsVersion} onClose={close}
             onOpen={() => { }} onOpenFolder={(p, f) => { setViewer(null); openPlace(p, f) }} onShare={setShare}
             onFavorite={favorite} onDownload={keepable([i]) ? download : undefined} fail={fail} notify={m => notify(m)} onChanged={changed} />}
           onChat={i => i.fileId && sendToChat([{ type: 'file', fileId: i.fileId }])} onSave={saveText}
@@ -3009,6 +3176,28 @@ function ViewerWithEdit({ viewer, startEdit, ...rest }: {
   onMark?: (i: Item, body: { pick?: number; rating?: number; label?: string }) => void
   onShare?: (i: Item) => void; onFavorite?: (i: Item) => void; onDelete?: (i: Item) => void
   groupOf?: (i: Item) => string
+  onSaveToAblage?: (i: Item) => void
 }) {
   return <Viewer items={viewer.list} index={viewer.index} source={gallerySource} startEdit={startEdit} {...rest} />
+}
+
+/**
+ * „Ins DMS aufnehmen“ nur für Dateien, die noch kein Dokument sind (fragt beim Öffnen des Menüs nach). Ist eine einzelne Datei
+ * schon ein Dokument: „Im DMS zeigen“; sind mehrere schon im DMS, entfällt der Eintrag.
+ */
+function ToDmsItem({ files, onPick }: { files: Item[]; onPick: (list: Item[]) => void }) {
+  const [docs, setDocs] = useState<Map<string, number> | null>(null)
+  const key = files.map(i => i.path).join('|')
+  useEffect(() => {
+    let live = true
+    api.post<{ docs: { path: string; id: number }[] }>('/api/dms/doc-paths', { paths: files.map(i => i.path) })
+      .then(r => { if (live) setDocs(new Map(r.docs.map(d => [d.path, d.id]))) }).catch(() => { if (live) setDocs(new Map()) })
+    return () => { live = false }
+  }, [key]) // eslint-disable-line react-hooks/exhaustive-deps
+  if (!docs) return null
+  const rest = files.filter(i => !docs.has(i.path))
+  if (rest.length) return <MenuItem icon={<DocumentBulletList20Regular />} onClick={() => onPick(rest)}>{t('Ins DMS aufnehmen')}</MenuItem>
+  if (featureOn('dmsmark') && files.length === 1 && docs.get(files[0].path) != null)
+    return <MenuItem icon={<DocumentBulletList20Regular />} onClick={() => { location.hash = '#/dms/doc/' + docs.get(files[0].path) }}>{t('Im DMS zeigen')}</MenuItem>
+  return null
 }

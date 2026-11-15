@@ -28,6 +28,14 @@ public static class TresorPaths
 
     public static string Show(string rel) => rel.Length == 0 ? Prefix : Prefix + "/" + rel;
 
+    /// <summary>Ist target die Quelle selbst oder ein Ordner darüber? (Pfade im Tresor, ohne führenden Schrägstrich)</summary>
+    public static bool SelfOrAncestor(string target, string source)
+    {
+        string N(string x) => x.Trim('/');
+        var t = N(target); var s = N(source);
+        return t == s || t.Length == 0 || s.StartsWith(t + "/", StringComparison.Ordinal);
+    }
+
     private static string Join(string dir, string name) => dir.Length == 0 ? name : dir + "/" + name;
     private static string? ParentOf(string rel) => rel.Length == 0 ? null : rel.Contains('/') ? rel[..rel.LastIndexOf('/')] : "";
     private static string NameOf(string rel) => rel[(rel.LastIndexOf('/') + 1)..];
@@ -184,6 +192,32 @@ public static class TresorPaths
         UserStorage.Refresh(http.Space().Db);
     }
 
+    /// <summary>Textdatei im Tresor speichern (Texteditor, neue Textdatei); etag = Änderungszeit, wie die Liste sie zeigt.</summary>
+    public static async Task<IResult> SaveText(HttpContext http, string path, byte[] data, string? etag, bool create, CancellationToken ct)
+    {
+        var files = Files(http);
+        var rel = Rel(path);
+        var parent = ParentOf(rel) ?? throw new ArgumentException("Ungültiger Pfad.");
+        var id = IdOf(files, rel);
+        string tag;
+        if (create)
+        {
+            if (id != null) return Results.Conflict(new { error = "Gibt es schon.", conflict = true });
+            var (_, error) = await StoreOne(http, Show(parent), NameOf(rel), new MemoryStream(data), "text/plain", "fail", ct);
+            if (error != null) return error;
+            tag = files.Find(IdOf(files, rel)!.Value)!.Modified.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+        else
+        {
+            var e = id is { } i && files.Find(i) is { IsDir: false } f ? f : throw new KeyNotFoundException("Diese Datei gibt es im Tresor nicht.");
+            if (etag != null && etag != e.Modified.ToString(System.Globalization.CultureInfo.InvariantCulture))
+                return Results.Conflict(new { error = "Die Datei wurde inzwischen geändert.", conflict = true });
+            tag = (await files.ReplaceAsync(e.Id, new MemoryStream(data), null, null, ct)).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+        UserStorage.Refresh(http.Space().Db);
+        return Results.Ok(new { path = Show(rel), etag = tag });
+    }
+
     /// <summary>
     /// Hochladen in einen Ordner des Tresors. Namen mit „/“ (Ordner hochladen) legen die Unterordner an. conflict: replace
     /// (Vorgabe), rename, skip, fail - wie in der Dateiablage.
@@ -271,6 +305,9 @@ public static class TresorPaths
                     else { var l = FilesApi.Loc(http, to); var free = FileStore.FreeName(l.Db, l.Path); toName = free[(free.LastIndexOf('/') + 1)..]; }
                     break;
                 case "replace":
+                    // Ziel = Quelle oder ein Ordner, der die Quelle enthält: Ersetzen würde die Quelle selbst löschen
+                    if (fromTresor && toTresor && SelfOrAncestor(Join(toDir, toName), Rel(from)))
+                        return Results.BadRequest(new { error = "Quelle und Ziel sind dieselbe Datei oder der Zielordner enthält die Quelle. Nichts ersetzt." });
                     if (toTresor) files.Delete(IdOf(files, Join(toDir, toName))!.Value);
                     else { var l = FilesApi.Loc(http, to).Changeable(); FileStore.Delete(l.Db, l.Path); }
                     break;
@@ -287,12 +324,14 @@ public static class TresorPaths
             return Results.Ok(new { path = Show(Join(toDir, name)), skipped = false, replaced = (long?)null, copied = false });
         }
 
-        // Sonst Inhalt für Inhalt kopieren, danach (beim Verschieben) die Quelle entfernen
+        // Sonst Inhalt für Inhalt kopieren, danach (beim Verschieben) die Quelle entfernen. Bricht das Kopieren ab,
+        // kommt die schon geschriebene Teilkopie am Ziel wieder weg; die Quelle bleibt unverändert.
         string result;
         if (fromTresor)
         {
             var e = EntryAt(files, Rel(from));
-            result = toTresor ? Show(await CopyWithin(files, e, toDir, toName, ct)) : await CopyOut(http, files, e, toDir, toName, ct);
+            try { result = toTresor ? Show(await CopyWithin(files, e, toDir, toName, ct)) : await CopyOut(http, files, e, toDir, toName, ct); }
+            catch (Exception) { RemovePartial(http, files, toTresor, toDir, toName); throw; }
             if (!copy) files.Delete(e.Id);
         }
         else
@@ -300,7 +339,8 @@ public static class TresorPaths
             var src = FilesApi.Loc(http, from);
             if (copy) src.NotShowOnly("kopieren"); else src.Changeable();
             var entry = FileStore.Get(src.Db, src.Path) ?? throw new KeyNotFoundException("Nicht gefunden.");
-            result = Show(await CopyIn(files, src.Db, entry, toDir, toName, ct));
+            try { result = Show(await CopyIn(files, src.Db, entry, toDir, toName, ct)); }
+            catch (Exception) { RemovePartial(http, files, true, toDir, toName); throw; }
             if (!copy)
             {
                 // Endgültig, nicht in den Papierkorb: dort läge das Original unverschlüsselt
@@ -309,6 +349,28 @@ public static class TresorPaths
         }
         UserStorage.Refresh(space.Db);
         return Results.Ok(new { path = result, skipped = false, replaced = (long?)null, copied = false });
+    }
+
+    /// <summary>
+    /// Teilkopie nach einem Abbruch entfernen: der Eintrag, den das Kopieren unter diesem Namen angelegt hat (vorher war der Name
+    /// frei, siehe Konfliktprüfung). In der Ablage endgültig - eine Teilkopie aus dem Tresor gehört nicht in den Papierkorb.
+    /// </summary>
+    private static void RemovePartial(HttpContext http, TresorFileStore files, bool inTresor, string toDir, string toName)
+    {
+        try
+        {
+            if (inTresor)
+            {
+                if (IdOf(files, Join(toDir, toName)) is long id) files.Delete(id);
+            }
+            else
+            {
+                var target = FilesApi.Loc(http, toDir.Length == 0 ? toName : toDir + "/" + toName);
+                if (FileStore.Get(target.Db, target.Path) != null && FileStore.Delete(target.Db, target.Path, out var trash) && trash > 0)
+                    FileStore.PurgeTrash(target.Db, [trash]);
+            }
+        }
+        catch (Exception) { /* Aufräumen ist Zugabe - der ursprüngliche Fehler zählt */ }
     }
 
     private static async Task<string> CopyWithin(TresorFileStore files, TresorFiles.Entry e, string toDir, string toName, CancellationToken ct)

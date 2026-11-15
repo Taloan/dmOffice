@@ -145,6 +145,130 @@ public class DmsTests
     }
 
     [Fact]
+    public void Unterordner_der_Quelle_werden_zu_Tag_Korrespondent_und_Dokumenttyp()
+    {
+        var (space, _) = NewSpace();
+        var db = space.Db;
+        D.Ensure(db);
+        var huk = D.Create(db, D.Correspondent, "HUK", null, null, null, null, false);
+        var s = new DmsSource
+        {
+            Folder = "Import", UseFolders = true, Tags = [],
+            Folders = new() { ["Versicherungen"] = D.Tag, ["Versicherungen/HUK"] = D.Correspondent, ["Versicherungen/HUK/Policen"] = D.Doctype, ["Ablage"] = DmsSources.RoleNone },
+        };
+        var p = DmsSources.PresetsFor(db, s, "Import/Versicherungen/HUK/Policen/a.pdf", true);
+        // Vorhandener Korrespondent wird verwendet, fehlende Einträge legt das DMS an
+        Assert.Equal(huk.Id, p.Correspondent);
+        var all = D.Entries(db);
+        Assert.Equal("Policen", all.Single(e => e.Id == p.Doctype).Name);
+        Assert.Equal(["Versicherungen"], p.Tags!.Select(t => all.Single(e => e.Id == t).Name));
+        // Nicht genannte Ordner: Tag, Jahreszahl nichts; „nicht übernehmen“ zählt nicht
+        var q = DmsSources.PresetsFor(db, s, "Import/Steuer/2022/b.pdf", true);
+        Assert.Equal(["Steuer"], q.Tags!.Select(t => D.Entries(db).Single(e => e.Id == t).Name));
+        Assert.Empty(DmsSources.PresetsFor(db, s, "Import/Ablage/c.pdf", true).Tags!);
+        Assert.Empty(DmsSources.PresetsFor(db, s, "Import/d.pdf", true).Tags!);
+        // Schalter aus (nicht freigegeben) oder Quelle ohne Ordnernamen: nur die Vorgaben der Quelle
+        Assert.Null(DmsSources.PresetsFor(db, s, "Import/Versicherungen/HUK/e.pdf", false).Correspondent);
+        Assert.Null(DmsSources.PresetsFor(db, new DmsSource { Folder = "Import" }, "Import/Versicherungen/HUK/e.pdf", true).Correspondent);
+        var sub = DmsSources.Subfolders("Import", [new("Import/x.pdf", "x.pdf", 1, "e", default), new("Import/A/B/y.pdf", "y.pdf", 1, "e", default)]);
+        Assert.Equal([("A", 0), ("A/B", 1)], sub);
+    }
+
+    [Fact]
+    public async Task Jahr_oder_Monat_setzen_behaelt_den_Tag()
+    {
+        var (space, host) = NewSpace();
+        var a = await Import(space, host, "a.txt", "Brief");
+        var b = await Import(space, host, "b.txt", "Anderer Brief");
+        D.Apply(space.Db, [a.Id], new D.Change(DocDate: "2026-11-09"));
+        D.Apply(space.Db, [b.Id], new D.Change(DocDate: "2024-02-29"));
+        D.Apply(space.Db, [a.Id, b.Id], new D.Change(DocPeriod: "2018"));
+        Assert.Equal("2018-11-09", D.Get(space.Db, a.Id).DocDate);
+        // 29.02. gibt es 2018 nicht: letzter Tag des Monats
+        Assert.Equal("2018-02-28", D.Get(space.Db, b.Id).DocDate);
+        D.Apply(space.Db, [a.Id], new D.Change(DocPeriod: "2017-03"));
+        Assert.Equal("2017-03-09", D.Get(space.Db, a.Id).DocDate);
+        Assert.Throws<ArgumentException>(() => D.Apply(space.Db, [a.Id], new D.Change(DocPeriod: "2017-13")));
+        Assert.Throws<ArgumentException>(() => D.Apply(space.Db, [a.Id], new D.Change(DocPeriod: "18")));
+    }
+
+    [Fact]
+    public async Task Gleiches_Datum_ordnet_der_Import()
+    {
+        var (space, host) = NewSpace();
+        var a = await Import(space, host, "a.txt", "Erster");
+        var b = await Import(space, host, "b.txt", "Zweiter");
+        D.Apply(space.Db, [a.Id, b.Id], new D.Change(DocDate: "2026-11-09"));
+        // b früher importiert als a, obwohl die Kennung größer ist
+        space.Db.Exec("UPDATE dms_docs SET imported = 1000 WHERE id = $i", ("$i", b.Id));
+        space.Db.Exec("UPDATE dms_docs SET imported = 2000 WHERE id = $i", ("$i", a.Id));
+        Assert.Equal([a.Id, b.Id], D.Docs(space.Db, new D.Filter()).Items.Select(d => d.Id));
+        Assert.Equal([a.Id, b.Id], D.Docs(space.Db, new D.Filter(Sort: "date", Desc: true)).Items.Select(d => d.Id));
+        Assert.Equal([b.Id, a.Id], D.Docs(space.Db, new D.Filter(Sort: "date", Desc: false)).Items.Select(d => d.Id));
+    }
+
+    [Fact]
+    public async Task Von_Hand_entfernte_Tags_kommen_in_der_Inbox_nicht_wieder()
+    {
+        var (space, host) = NewSpace();
+        // Regel „irgendein Wort“: passt auf den Text, das Neu-Einordnen nach jeder Änderung würde den Tag wieder setzen
+        var rule = D.Create(space.Db, D.Tag, "Rechnungen", null, null, D.Any, "Gebühr", false);
+        var keep = D.Create(space.Db, D.Tag, "Gewerbe", null, null, D.None, null, false);
+        var doc = await Import(space, host, "bescheid.txt", "Gebühr Bescheid");
+        Assert.True(D.Get(space.Db, doc.Id).Inbox);
+        Assert.Contains(D.Get(space.Db, doc.Id).Tags, x => x.Id == rule.Id);
+        // Wie die App: alle Tags auf einmal, ohne den Regel-Tag
+        DmsApi.Change(space, [doc.Id], new DmsApi.DocBody(null, null, null, null, [keep.Id], null, null, null));
+        Assert.Equal([keep.Id], D.Get(space.Db, doc.Id).Tags.Select(x => x.Id));
+        // Auch nach einer weiteren Änderung nicht
+        DmsApi.Change(space, [doc.Id], new DmsApi.DocBody("Neuer Titel", null, null, null, null, null, null, null));
+        Assert.Equal([keep.Id], D.Get(space.Db, doc.Id).Tags.Select(x => x.Id));
+        // Wieder gesetzt: gilt wieder
+        DmsApi.Change(space, [doc.Id], new DmsApi.DocBody(null, null, null, null, [keep.Id, rule.Id], null, null, null));
+        Assert.Equal(2, D.Get(space.Db, doc.Id).Tags.Count);
+    }
+
+    [Fact]
+    public async Task Suche_findet_auch_die_Dateiendung()
+    {
+        var (space, host) = NewSpace();
+        var doc = await Import(space, host, "dimes_elster_2026.pfx", "Zertifikat");
+        Assert.DoesNotContain("pfx", doc.Title);
+        Assert.Equal([doc.Id], D.Docs(space.Db, new D.Filter(Query: "pfx")).Items.Select(d => d.Id));
+        Assert.Single(D.Docs(space.Db, new D.Filter(Query: "*.PFX")).Items);
+        Assert.Single(D.Docs(space.Db, new D.Filter(Query: "elster")).Items);
+        // Platzhalter im Suchbegriff gelten wörtlich
+        Assert.Empty(D.Docs(space.Db, new D.Filter(Query: "p%x")).Items);
+    }
+
+    [Fact]
+    public async Task Quelle_loescht_leer_gewordene_Unterordner()
+    {
+        var (space, host) = NewSpace();
+        var db = space.Db;
+        foreach (var d in new[] { "Scanner/A/B", "Scanner/C", "Scanner/Leer" }) FileStore.EnsureDir(db, d);
+        FileStore.Put(db, "Scanner/A/B/x.txt", Encoding.UTF8.GetBytes("Brief x"), "text/plain");
+        FileStore.Put(db, "Scanner/A/y.txt", Encoding.UTF8.GetBytes("Brief y"), "text/plain");
+        FileStore.Put(db, "Scanner/C/z.txt", Encoding.UTF8.GetBytes("Brief z"), "text/plain");
+        // Wird nie übernommen: der Ordner bleibt
+        FileStore.Put(db, "Scanner/C/.notiz", Encoding.UTF8.GetBytes("bleibt"), "text/plain");
+        var s = DmsSources.Save(space, new DmsSource { Name = "Scanner", Folder = "Scanner", UseFolders = true }, host);
+        var before = Features.InReleaseOff.ToList();
+        try
+        {
+            Features.Set([]);
+            Assert.Equal((3, 0), await DmsSources.RunAsync(space, host, s.Id, default));
+        }
+        finally { Features.Set(before); }
+        Assert.Null(FileStore.Get(db, "Scanner/A/B"));
+        Assert.Null(FileStore.Get(db, "Scanner/A"));
+        Assert.NotNull(FileStore.Get(db, "Scanner/C"));
+        // Schon vorher leer: nicht durch diesen Lauf geleert, bleibt; der Quellordner bleibt immer
+        Assert.NotNull(FileStore.Get(db, "Scanner/Leer"));
+        Assert.NotNull(FileStore.Get(db, "Scanner"));
+    }
+
+    [Fact]
     public async Task Quelle_auf_fehlendem_Ordner_nennt_den_Grund()
     {
         var (space, host) = NewSpace();
@@ -323,8 +447,11 @@ public class DmsTests
         var now = D.Get(space.Db, doc.Id);
         Assert.Equal("Privat/strom.txt", now.Path);
         Assert.True(now.Manual);
+        // Abweichung von der Vorgabe wird erkannt (dmsplace): wohin es gehört; nach dem Ablegen keine mehr
+        Assert.Equal("Dokumente/Stadtwerke/2026/2026-01-02 Unbekannt Strom 2025.txt", DmsImport.Misplaced(space, space.Db, now));
         DmsImport.Refile(space, host, doc.Id, force: true);
         Assert.Equal("Dokumente/Stadtwerke/2026/2026-01-02 Unbekannt Strom 2025.txt", D.Get(space.Db, doc.Id).Path);
+        Assert.Null(DmsImport.Misplaced(space, space.Db, D.Get(space.Db, doc.Id)));
 
         // Papierkorb: unsichtbar, nach endgültigem Löschen vergessen
         FileStore.Delete(space.Db, D.Get(space.Db, doc.Id).Path!);
@@ -363,29 +490,103 @@ public class DmsTests
     }
 
     [Fact]
-    public async Task Gelerntes_faellt_weg_wenn_nicht_mehr_gestuetzt()
+    public async Task Gelernte_Tags_fallen_weg_Betrag_wird_erkannt()
+    {
+        var before = Features.InReleaseOff.ToList();
+        try
+        {
+            Features.Set([]);
+            var (space, host) = NewSpace();
+            var a = await Import(space, host, "beleg1.txt", "Beispiel GmbH\nNettobetrag 29,24 €\nzzgl. 19 % MwSt 5,56 €\nSumme brutto 34,80 €");
+            var b = await Import(space, host, "beleg2.txt", "Beispiel GmbH\nRechnung");
+            Assert.Equal(3480, D.Get(space.Db, a.Id).Amount);
+            Assert.Null(D.Get(space.Db, b.Id).Amount);
+            var tag = D.Create(space.Db, D.Tag, "Altes Thema", null, null, D.Auto, null, false);
+            // Früher gelernt, jetzt nicht mehr gestützt: fällt weg; bei einem Vorschlag der KI bleibt er
+            space.Db.Exec("INSERT INTO dms_doc_tags(doc, tag, auto) VALUES($a, $t, 1), ($b, $t, 1)", ("$a", a.Id), ("$b", b.Id), ("$t", tag.Id));
+            space.Db.Exec("UPDATE dms_docs SET by_ai = 1 WHERE id = $b", ("$b", b.Id));
+            // Ebenso ein gelernter Korrespondent und Dokumenttyp
+            var corr = D.Create(space.Db, D.Correspondent, "Beispiel", null, null, D.Auto, null, false);
+            var type = D.Create(space.Db, D.Doctype, "Beleg", null, null, D.Auto, null, false);
+            space.Db.Exec("UPDATE dms_docs SET correspondent = $c, auto_correspondent = 1, doctype = $y, auto_doctype = 1 WHERE id = $a",
+                ("$c", corr.Id), ("$y", type.Id), ("$a", a.Id));
+            // Ohne Freischaltung (vor 2.1): bleibt wie bisher
+            Features.Set([Features.DmsRelearn]);
+            D.Reassess(space.Db);
+            Assert.Single(D.Get(space.Db, a.Id).Tags);
+            Assert.Equal(corr.Id, D.Get(space.Db, a.Id).Correspondent);
+            Features.Set([]);
+            D.Reassess(space.Db);
+            var now = D.Get(space.Db, a.Id);
+            Assert.Empty(now.Tags);
+            Assert.Null(now.Correspondent);
+            Assert.Null(now.Doctype);
+            Assert.Single(D.Get(space.Db, b.Id).Tags);
+            // Von Hand gesetzt bleibt
+            D.Apply(space.Db, [a.Id], new D.Change(Correspondent: corr.Id));
+            D.Reassess(space.Db);
+            Assert.Equal(corr.Id, D.Get(space.Db, a.Id).Correspondent);
+            // Von Hand geleert: die Erkennung trägt ihn nicht wieder ein
+            D.Apply(space.Db, [a.Id], new D.Change(Amount: ""));
+            D.Reassess(space.Db);
+            Assert.Null(D.Get(space.Db, a.Id).Amount);
+        }
+        finally { Features.Set(before); }
+    }
+
+    [Fact]
+    public async Task Abgewaehlter_Tag_faellt_auch_bei_KI_Vorschlag_weg()
+    {
+        var before = Features.InReleaseOff.ToList();
+        try
+        {
+            Features.Set([]);
+            var (space, host) = NewSpace();
+            var a = await Import(space, host, "ki1.txt", "Beispiel GmbH\nRechnung Domain");
+            var b = await Import(space, host, "ki2.txt", "Beispiel GmbH\nRechnung Zusatzdomain vom 01.02.2026");
+            var tag = D.Create(space.Db, D.Tag, "Altes Projekt", null, null, D.Auto, null, false);
+            var other = D.Create(space.Db, D.Tag, "Anderes", null, null, D.Auto, null, false);
+            space.Db.Exec("INSERT INTO dms_doc_tags(doc, tag, auto) VALUES($a, $t, 1), ($b, $t, 1), ($b, $o, 1)", ("$a", a.Id), ("$b", b.Id), ("$t", tag.Id), ("$o", other.Id));
+            space.Db.Exec("UPDATE dms_docs SET by_ai = 1 WHERE id IN ($a, $b)", ("$a", a.Id), ("$b", b.Id));
+            // Vorschlag der KI bleibt zunächst
+            D.Reassess(space.Db);
+            Assert.Equal(2, D.Get(space.Db, b.Id).Tags.Count);
+            // Bei a von Hand abgewählt: bei b fällt derselbe Tag weg, der andere Vorschlag der KI bleibt
+            D.Apply(space.Db, [a.Id], new D.Change(RemoveTags: [tag.Id]));
+            D.Reassess(space.Db);
+            Assert.Equal([other.Id], D.Get(space.Db, b.Id).Tags.Select(x => x.Id));
+        }
+        finally { Features.Set(before); }
+    }
+
+    [Fact]
+    public async Task Einzelnen_Tag_entfernen_bestaetigt_die_anderen_nicht()
     {
         var (space, host) = NewSpace();
-        var a = await Import(space, host, "beleg1.txt", "Beispiel GmbH\nRechnung");
-        var b = await Import(space, host, "beleg2.txt", "Beispiel GmbH\nZahlungsbeleg vom 01.02.2026");
-        var tag = D.Create(space.Db, D.Tag, "Altes Thema", null, null, D.Auto, null, false);
-        var corr = D.Create(space.Db, D.Correspondent, "Beispiel", null, null, D.Auto, null, false);
-        var type = D.Create(space.Db, D.Doctype, "Beleg", null, null, D.Auto, null, false);
-        // Früher gelernt, jetzt nicht mehr gestützt: fällt weg; bei einem Vorschlag der KI bleibt es
-        space.Db.Exec("INSERT INTO dms_doc_tags(doc, tag, auto) VALUES($a, $t, 1), ($b, $t, 1)", ("$a", a.Id), ("$b", b.Id), ("$t", tag.Id));
-        space.Db.Exec("UPDATE dms_docs SET correspondent = $c, auto_correspondent = 1, doctype = $y, auto_doctype = 1 WHERE id = $a",
-            ("$c", corr.Id), ("$y", type.Id), ("$a", a.Id));
-        space.Db.Exec("UPDATE dms_docs SET by_ai = 1 WHERE id = $b", ("$b", b.Id));
-        D.Reassess(space.Db);
-        var now = D.Get(space.Db, a.Id);
-        Assert.Empty(now.Tags);
-        Assert.Null(now.Correspondent);
-        Assert.Null(now.Doctype);
-        Assert.Single(D.Get(space.Db, b.Id).Tags);
-        // Von Hand gesetzt bleibt
-        D.Apply(space.Db, [a.Id], new D.Change(Correspondent: corr.Id));
-        D.Reassess(space.Db);
-        Assert.Equal(corr.Id, D.Get(space.Db, a.Id).Correspondent);
+        var a = await Import(space, host, "einzeln.txt", "Beispiel GmbH\nRechnung");
+        var t1 = D.Create(space.Db, D.Tag, "Eins", null, null, D.Auto, null, false);
+        var t2 = D.Create(space.Db, D.Tag, "Zwei", null, null, D.Auto, null, false);
+        space.Db.Exec("INSERT INTO dms_doc_tags(doc, tag, auto) VALUES($a, $x, 1), ($a, $y, 1)", ("$a", a.Id), ("$x", t1.Id), ("$y", t2.Id));
+        D.Apply(space.Db, [a.Id], new D.Change(RemoveTags: [t1.Id]));
+        var left = Assert.Single(D.Get(space.Db, a.Id).Tags);
+        Assert.Equal(t2.Id, left.Id);
+        Assert.True(left.Auto);
+        Assert.Null(space.Db.Scalar("SELECT label FROM dms_trained WHERE doc = $d AND entry = $e", ("$d", a.Id), ("$e", t2.Id)));
+        // Mit der ganzen Liste gilt der enthaltene Tag als bestätigt
+        D.Apply(space.Db, [a.Id], new D.Change(Tags: [t2.Id]));
+        Assert.False(Assert.Single(D.Get(space.Db, a.Id).Tags).Auto);
+    }
+
+    [Fact]
+    public void Betrag_aus_dem_Text()
+    {
+        Assert.Equal(3480, DmsAssign.FindAmount("Nettobetrag 29.24 €\nzzgl. 19 % MwSt 5.56 €\nSumme brutto 34.80 €"));
+        Assert.Equal(123456, DmsAssign.FindAmount("Zwischensumme 1.000,00 €\nRechnungsbetrag: 1.234,56 EUR"));
+        Assert.Equal(1999, DmsAssign.FindAmount("Gesamtbetrag\n19,99 €"));
+        Assert.Equal(4200, DmsAssign.FindAmount("Summe 10,00\nSumme 42,00 €"));
+        Assert.Equal(250000, DmsAssign.FindAmount("Total due: 2,500.00"));
+        Assert.Null(DmsAssign.FindAmount("Bitte überweisen Sie 34,80 € bis zum 01.12."));
+        Assert.Null(DmsAssign.FindAmount("Nettobetrag 29,24 €"));
     }
 
     [Fact]
@@ -592,6 +793,58 @@ public class DmsTests
         Assert.Equal("2026-03-14", r.DocDate);
         Assert.Contains("Finanzamt", ai.Prompt);
         Assert.Null(DmsAssign.AiAsync(space.Db, new FakeAi("kein json"), "Text", "a.pdf", null, null, default).GetAwaiter().GetResult());
+    }
+
+    [Fact]
+    public async Task KI_Pruefung_Vorschlaege_pruefen_einordnen_uebernehmen_verwerfen()
+    {
+        var (space, host) = NewSpace();
+        var lizenz = D.Create(space.Db, D.Tag, "Zugang/Lizenz", null, "#7b9cde", D.None, null, false);
+        var vers = D.Create(space.Db, D.Tag, "Versicherung", null, "#7b9cde", D.None, null, false);
+        var buero = D.Create(space.Db, D.Correspondent, "20_Bürokratie", null, null, D.None, null, false);
+        var a = await Import(space, host, "lizenz.txt", "Ihr Lizenzschlüssel lautet ABCD");
+        var b = await Import(space, host, "police.txt", "Versicherungsschein Hausrat");
+        var c = await Import(space, host, "hwk.txt", "Handwerkskammer Region Stuttgart Beitrag 2020");
+        D.Apply(space.Db, [a.Id, b.Id, c.Id], new D.Change(Confirm: true));
+        D.Apply(space.Db, [a.Id, b.Id], new D.Change(AddTags: [lizenz.Id]));
+
+        // Prüfen: b passt nicht (besser: Versicherung = Nummer 1 in der alphabetischen Tag-Liste)
+        var check = new FakeAi($$"""[{"doc": {{a.Id}}, "verdict": "fits", "confidence": 90, "reason": "Lizenz"}, {"doc": {{b.Id}}, "verdict": "wrong", "better": 1, "confidence": 85, "reason": "Versicherung"}]""");
+        var run = DmsAiCheck.Start(space, check, DmsAiCheck.Check, D.Tag, lizenz.Id, DmsAiCheck.Existing);
+        for (var i = 0; i < 100 && DmsAiCheck.Runs(space.Db).First(r => r.Id == run).State == "running"; i++) await Task.Delay(50);
+        Assert.Contains("Ihr Lizenzschlüssel", check.Prompt);
+        var open = DmsAiCheck.Open(space.Db, run);
+        var wrong = Assert.Single(open);
+        Assert.Equal((b.Id, DmsAiCheck.Wrong, vers.Id), (wrong.Doc, wrong.Verdict, wrong.ProposalEntry));
+        DmsAiCheck.Apply(space, [wrong.Id], refile: false, _ => { });
+        Assert.Equal([vers.Id], D.Get(space.Db, b.Id).Tags.Select(t => t.Id));
+
+        // Einordnen mit neuen Werten: Korrespondent für c neu unter 20_Bürokratie (Nummer 1)
+        var assign = new FakeAi($$"""[{"doc": {{c.Id}}, "entry": null, "new": "Handwerkskammer", "parent": 1, "confidence": 80, "reason": "Briefkopf"}]""");
+        var run2 = DmsAiCheck.Start(space, assign, DmsAiCheck.Assign, D.Correspondent, null, DmsAiCheck.AllowNew);
+        for (var i = 0; i < 100 && DmsAiCheck.Runs(space.Db).First(r => r.Id == run2).State == "running"; i++) await Task.Delay(50);
+        var sugg = DmsAiCheck.Open(space.Db, run2).Single(s => s.Doc == c.Id);
+        Assert.Equal(("Handwerkskammer", buero.Id), (sugg.ProposalNew, sugg.ProposalParent));
+        // Noch nichts angelegt - erst beim Übernehmen
+        Assert.DoesNotContain(D.Entries(space.Db, D.Correspondent), e => e.Name == "Handwerkskammer");
+        var refiled = new List<long>();
+        DmsAiCheck.Apply(space, [sugg.Id], refile: true, refiled.Add);
+        var hwk = Assert.Single(D.Entries(space.Db, D.Correspondent), e => e.Name == "Handwerkskammer");
+        Assert.Equal(buero.Id, hwk.Parent);
+        Assert.Equal(hwk.Id, D.Get(space.Db, c.Id).Correspondent);
+        Assert.Equal([c.Id], refiled);
+
+        // Verworfenes kommt beim nächsten Lauf nicht wieder
+        D.Apply(space.Db, [c.Id], new D.Change(Correspondent: ""));
+        var run3 = DmsAiCheck.Start(space, assign, DmsAiCheck.Assign, D.Correspondent, null, DmsAiCheck.AllowNew);
+        for (var i = 0; i < 100 && DmsAiCheck.Runs(space.Db).First(r => r.Id == run3).State == "running"; i++) await Task.Delay(50);
+        var again = DmsAiCheck.Open(space.Db, run3).Single(s => s.Doc == c.Id);
+        DmsAiCheck.Drop(space.Db, [again.Id]);
+        var run4 = DmsAiCheck.Start(space, assign, DmsAiCheck.Assign, D.Correspondent, null, DmsAiCheck.AllowNew);
+        for (var i = 0; i < 100 && DmsAiCheck.Runs(space.Db).First(r => r.Id == run4).State == "running"; i++) await Task.Delay(50);
+        Assert.DoesNotContain(DmsAiCheck.Open(space.Db, run4), s => s.Doc == c.Id);
+        // Nur vorhandene: „new“ wird ignoriert
+        Assert.Empty(DmsAiCheck.Parse("kein json"));
     }
 
     private sealed class FakeAi(string answer) : IDmsAi

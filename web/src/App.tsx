@@ -5,9 +5,10 @@ import {
   Select,
 } from '@fluentui/react-components'
 import { createContext, useCallback, useContext, useEffect, useState } from 'react'
+import { Key16Regular } from '@fluentui/react-icons'
 import { chooseLanguage, lang, t, tError } from './i18n'
-import { api, demoMode, features, fmtSize, Me, OfflineError } from './api'
-import { applyBrand, brandLogo, storeTheme, themesFor, ThemeChoice, useIsDark } from './theme'
+import { api, ApiError, demoMode, features, fmtSize, Me, OfflineError } from './api'
+import { applyBrand, brandLogo, setActiveThemes, storeTheme, themesFor, ThemeChoice, useIsDark } from './theme'
 import { currentPrefs, PrefsContext, usePrefsState, usePrefsVersion } from './prefs'
 import { Shell } from './shell/Shell'
 import { MailWindow, isMailWindow } from './mail/MailWindow'
@@ -52,6 +53,7 @@ export function App() {
   const dark = useIsDark()
   usePrefsVersion()
   const th = themesFor(currentPrefs.accent)
+  setActiveThemes(th)
   useEffect(() => applyBrand(currentPrefs.accent), [currentPrefs.accent])
   return (
     <FluentProvider theme={dark ? th.dark : th.light} style={{ height: '100%' }}>
@@ -61,7 +63,7 @@ export function App() {
 }
 
 function Root() {
-  const [state, setState] = useState<{ setupNeeded: boolean; setupCode?: boolean; loggedIn: boolean; user: Me | null; demo?: { login: string; password: string } | null; ended?: boolean } | null>(null)
+  const [state, setState] = useState<{ setupNeeded: boolean; setupCode?: boolean; loggedIn: boolean; user: Me | null; demo?: { login: string; password: string } | null; ended?: boolean; oidc?: string | null; oidcOnly?: boolean } | null>(null)
   const [upd, setUpd] = useState<UpdateState | null>(null)
   // Remount der Programme, sobald die Datenaenderung des Benutzers durch ist
   const [round, setRound] = useState(0)
@@ -69,7 +71,7 @@ function Root() {
   const { dispatchToast, dismissToast } = useToastController(toasterId)
 
   const load = useCallback(() => {
-    api.get<{ setupNeeded: boolean; loggedIn: boolean; user: Me | null; demo?: { login: string; password: string } | null; featuresOff?: string[] }>('/api/auth/state')
+    api.get<{ setupNeeded: boolean; loggedIn: boolean; user: Me | null; demo?: { login: string; password: string } | null; featuresOff?: string[]; oidc?: string | null; oidcOnly?: boolean }>('/api/auth/state')
       .then(s => { demoMode.on = !!s.demo; features.off = new Set(s.featuresOff ?? []); setState(s) }).catch(() => setState({ setupNeeded: false, loggedIn: false, user: null }))
   }, [])
   useEffect(load, [load])
@@ -102,7 +104,7 @@ function Root() {
   }, [state?.loggedIn, round])
 
   const notify = useCallback((title: string, body?: string, intent: 'success' | 'error' | 'info' | 'warning' = 'success') =>
-    dispatchToast(<Toast><ToastTitle>{title}</ToastTitle>{body && <ToastBody>{body}</ToastBody>}</Toast>, { intent, timeout: intent === 'error' ? 8000 : 3000 }),
+    dispatchToast(<Toast><ToastTitle>{title}</ToastTitle>{body && <ToastBody style={{ whiteSpace: 'pre-line' }}>{body}</ToastBody>}</Toast>, { intent, timeout: intent === 'error' ? 8000 : 3000 }),
     [dispatchToast])
   const undoable = useCallback((title: string, undo: () => Promise<void>) => {
     const id = String(Date.now()) + Math.random()
@@ -112,6 +114,8 @@ function Root() {
   const fail = useCallback((e: unknown) => {
     // Server nicht erreichbar: im Hintergrund (Fenster verdeckt, Rechner schläft) nicht melden - beim Zurückkommen lädt alles neu
     if (e instanceof OfflineError && document.hidden) return
+    // Sitzung beendet (401 ohne Text vom Server): Die Anmeldeseite nennt den Grund, keine zusätzliche Fehlermeldung
+    if (e instanceof ApiError && e.status === 401 && !e.data?.error) return
     notify(t('Fehler'), tError(e instanceof Error ? e.message : String(e)), 'error')
   }, [notify])
 
@@ -127,7 +131,7 @@ function Root() {
         {t('Demo – alle Inhalte sind erfunden und werden jede Nacht zurückgesetzt.')}
       </div>}
       {state.setupNeeded ? <Setup onDone={load} needCode={state.setupCode} />
-        : !state.loggedIn || !state.user ? <Login onDone={load} demo={state.demo} ended={state.ended} />
+        : !state.loggedIn || !state.user ? <Login onDone={load} demo={state.demo} ended={state.ended} oidc={state.oidc} oidcOnly={state.oidcOnly} />
         : (
           <Ctx.Provider value={{ me: state.user, notify, fail, refreshMe: load, undoable }}>
             {!upd ? <Center><Spinner /></Center> : waiting ? <UpdateGate state={upd} /> : <WithPrefs key={round}>{isMailWindow() ? <MailWindow /> : <Shell />}</WithPrefs>}
@@ -177,21 +181,32 @@ function CardFooter() {
   )
 }
 
-function Login({ onDone, demo, ended }: { onDone: () => void; demo?: { login: string; password: string } | null; ended?: boolean }) {
+function Login({ onDone, demo, ended, oidc, oidcOnly }: { onDone: () => void; demo?: { login: string; password: string } | null; ended?: boolean
+  /** Anmeldung über einen Identitätsanbieter: Beschriftung, null wenn nicht eingerichtet */
+  oidc?: string | null; oidcOnly?: boolean }) {
   const s = useStyles()
+  const [pwForm, setPwForm] = useState(false)
   // Demo-Server: Zugangsdaten schon eingetragen
   const [login, setLogin] = useState(demo?.login ?? '')
   const [password, setPassword] = useState(demo?.password ?? '')
   const [code, setCode] = useState('')
-  const [needCode, setNeedCode] = useState(false)
+  // Zurück vom Identitätsanbieter, das Konto hat Zwei-Faktor: jetzt der Code (/?oidc2fa=1)
+  const [oidcCode] = useState(() => new URLSearchParams(location.search).has('oidc2fa'))
+  const [needCode, setNeedCode] = useState(oidcCode)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const leaveOidcCode = () => { history.replaceState(null, '', location.pathname + location.hash) }
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
     setBusy(true)
     setError(null)
     try {
+      if (oidcCode) {
+        await api.post('/api/auth/oidc/2fa', { code })
+        leaveOidcCode(); e2eForget(); onDone()
+        return
+      }
       const r = await api.post('/api/auth/login', { login, password, code: needCode ? code : undefined })
       if (r?.twoFactor) setNeedCode(true)
       else { e2eForget(); onDone() }   // Geraeteschluessel gehoert zum vorigen Benutzer dieses Browsers
@@ -209,6 +224,15 @@ function Login({ onDone, demo, ended }: { onDone: () => void; demo?: { login: st
         <Logo />
         {ended && <MessageBar intent="warning" layout="multiline"><MessageBarBody>{t('Du wurdest abgemeldet. Das geschieht, wenn die Sitzung abläuft oder der Admin Passwort oder Rolle deines Kontos ändert. Bitte melde dich neu an.')}</MessageBarBody></MessageBar>}
         {demo && <MessageBar intent="info"><MessageBarBody>{t('Demo-Zugang: Anmeldename „{login}“, Passwort „{password}“. Alles ist erfunden und wird jede Nacht zurückgesetzt.', { login: demo.login, password: demo.password })}</MessageBarBody></MessageBar>}
+        {/* Anmeldung nur über den Anbieter: zuerst der Knopf, Anmeldename und Passwort nur für Administratoren */}
+        {oidcOnly && oidc && !pwForm && !oidcCode && <>
+          <Button appearance="primary" onClick={() => { e2eForget(); window.location.href = '/api/auth/oidc/start' }}>{t('Anmelden mit {name}', { name: oidc })}</Button>
+          {/* Notzugang der Administratoren: unauffällig unten rechts */}
+          <Button appearance="transparent" size="small" icon={<Key16Regular />} onClick={() => setPwForm(true)}
+            aria-label={t('Anmeldung für Administratoren')} title={t('Anmeldung für Administratoren')}
+            style={{ position: 'fixed', right: 12, bottom: 12, opacity: 0.45, minWidth: 0 }} />
+        </>}
+        {(!oidcOnly || !oidc || pwForm || oidcCode) && <>
         {!needCode ? (
           <>
             <Field label={t('Anmeldename')}><Input value={login} onChange={(_, d) => setLogin(d.value)} autoFocus autoComplete="username" /></Field>
@@ -224,7 +248,10 @@ function Login({ onDone, demo, ended }: { onDone: () => void; demo?: { login: st
         )}
         {error && <MessageBar intent="error" layout="multiline"><MessageBarBody>{tError(error)}{!needCode && ' ' + t('Passwort vergessen? Der Admin deines dmOffice kann dir ein neues setzen.')}</MessageBarBody></MessageBar>}
         <Button appearance="primary" type="submit" disabled={busy}>{busy ? <Spinner size="tiny" /> : needCode ? t('Bestätigen') : t('Anmelden')}</Button>
-        {needCode && <Button appearance="subtle" onClick={() => { setNeedCode(false); setCode('') }}>{t('Zurück')}</Button>}
+        {needCode && <Button appearance="subtle" onClick={() => { if (oidcCode) { leaveOidcCode(); location.reload() } else { setNeedCode(false); setCode('') } }}>{t('Zurück')}</Button>}
+        {/* Anmeldung über den Identitätsanbieter: ganze Seite zum Anbieter, zurück über /api/auth/oidc/callback */}
+        {oidc && !needCode && <Button onClick={() => { e2eForget(); window.location.href = '/api/auth/oidc/start' }}>{t('Anmelden mit {name}', { name: oidc })}</Button>}
+        </>}
         <CardFooter />
       </form>
     </Center>
@@ -377,7 +404,7 @@ function RestoreFromS3({ needCode, onBack }: { needCode?: boolean; onBack: () =>
         </>}
         <Button onClick={list} disabled={busy || (f.target === 's3' ? !f.endpoint || !f.bucket || !f.accessKey || !f.secretKey : f.target === 'webdav' ? !f.webDavUrl : !f.folder)}>{t('Core-Backups suchen')}</Button>
         {stands && (stands.length === 0 ? <Text>{t('Dort liegt kein Core-Backup.')}</Text> : (
-          <Field label={t('Stand')}>
+          <Field label={t('backup|Stand')}>
             <Select value={pick} onChange={(_, d) => setPick(d.value)}>
               {stands.map(x => <option key={x.name} value={x.name}>{new Date(x.created).toLocaleString()} · {fmtSize(x.bytes)}</option>)}
             </Select>

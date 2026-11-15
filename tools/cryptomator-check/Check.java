@@ -2,6 +2,7 @@
 // der installierten Cryptomator-App (cryptofs, cryptolib). Aufruf über check.ps1.
 //
 //   create <tresor> <passwort> <quelle>   Tresor mit Cryptomator anlegen und den Inhalt von <quelle> hineinschreiben
+//   create-ctrmac ...                     wie create, aber mit dem Verfahren SIV_CTRMAC älterer Tresore
 //   dump   <tresor> <passwort>            Inhalt auflisten: Art, Pfad, Größe, SHA-256 (sortiert, eine Zeile je Eintrag)
 //
 // Ohne Verweise zur Übersetzungszeit (nur Reflexion): Die Bibliotheken der App sind für eine neuere Java-Fassung übersetzt als
@@ -44,11 +45,16 @@ public class Check {
         var propsClass = Class.forName("org.cryptomator.cryptofs.CryptoFileSystemProperties");
         var builder = find(propsClass, "cryptoFileSystemProperties", 0).invoke(null);
         builder = find(builder.getClass(), "withKeyLoader", 1).invoke(builder, loader);
+        if (args[0].equals("create-ctrmac")) {
+            @SuppressWarnings({"unchecked", "rawtypes"})
+            var scheme = Enum.valueOf((Class) Class.forName("org.cryptomator.cryptolib.api.CryptorProvider$Scheme"), "SIV_CTRMAC");
+            builder = find(builder.getClass(), "withCipherCombo", 1).invoke(builder, scheme);
+        }
         var props = find(builder.getClass(), "build", 0).invoke(builder);
         var provider = Class.forName("org.cryptomator.cryptofs.CryptoFileSystemProvider");
         var newFs = find(provider, "newFileSystem", 2);
         switch (args[0]) {
-            case "create" -> {
+            case "create", "create-ctrmac" -> {
                 Files.createDirectories(vault);
                 var mkClass = Class.forName("org.cryptomator.cryptolib.api.Masterkey");
                 var mk = find(mkClass, "generate", 1).invoke(null, SecureRandom.getInstanceStrong());

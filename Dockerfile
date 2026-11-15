@@ -33,6 +33,12 @@ LABEL org.opencontainers.image.title="dmOffice" \
       org.opencontainers.image.source="https://github.com/Taloan/dmOffice" \
       org.opencontainers.image.licenses="AGPL-3.0-only" \
       org.opencontainers.image.description="Mail, calendar, contacts, tasks, notes and files - with its own CalDAV/CardDAV/WebDAV server, encrypted per user."
+# Paketquelle wählbar: der GitHub-Build nimmt den Azure-Spiegel, weil archive.ubuntu.com von dort zeitweise nicht antwortet (11.11.2026).
+# Leer = Vorgabe des Basis-Images.
+ARG APT_MIRROR=
+RUN if [ -n "$APT_MIRROR" ]; then \
+      for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do [ -f "$f" ] && sed -i -e "s|http://archive.ubuntu.com/ubuntu|$APT_MIRROR|g" -e "s|http://security.ubuntu.com/ubuntu|$APT_MIRROR|g" "$f"; done; \
+    fi
 # Volltextsuche mit Texterkennung (DmOffice.Server/Search/Ocr.cs), alles lokal: tesseract (Apache-2.0) mit
 # Deutsch und Englisch (tessdata_fast), pdftoppm (Poppler, GPL) rendert gescannte PDF-Seiten, heif-dec (libheif,
 # LGPL) liest HEIC-Fotos, Ghostscript (AGPL) macht die durchsuchbaren PDFs vom DMS zu PDF/A, DejaVu-Schriften setzen
@@ -64,6 +70,9 @@ ENV ASPNETCORE_URLS=http://+:8080 \
 # Start ohne Root-Rechte (docker-entrypoint.sh): übergibt /data einmalig dem Benutzer app und startet dmOffice als dieser
 COPY docker-entrypoint.sh /usr/local/bin/dmoffice-start
 RUN sed -i 's/$//' /usr/local/bin/dmoffice-start && chmod 755 /usr/local/bin/dmoffice-start
+# Dateien aus dem Core-Backup holen: docker exec dmoffice restore … (docker-restore.sh)
+COPY docker-restore.sh /usr/local/bin/restore
+RUN sed -i 's/$//' /usr/local/bin/restore && chmod 755 /usr/local/bin/restore
 VOLUME /data
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/dmoffice-start"]

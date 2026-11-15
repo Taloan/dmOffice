@@ -1,15 +1,16 @@
 import {
   Breadcrumb, BreadcrumbButton, BreadcrumbDivider, BreadcrumbItem, Button, Checkbox, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle,
-  Field, Input, makeStyles, Radio, RadioGroup, Select, Menu, MenuItem, MenuList, MenuPopover, MenuTrigger, mergeClasses, MessageBar, MessageBarBody, Spinner, Table, TableBody, TableCell,
+  Field, Input, makeStyles, Radio, RadioGroup, Select, Menu, MenuDivider, MenuItem, MenuList, MenuPopover, MenuTrigger, mergeClasses, MessageBar, MessageBarBody, Spinner, Table, TableBody, TableCell,
   TableCellLayout, TableHeader, TableHeaderCell, TableRow, Text, tokens, Toolbar, ToolbarButton,
 } from '@fluentui/react-components'
 import {
   ArrowClockwise20Regular, ArrowDownload20Regular, Copy20Regular, Dismiss20Regular, Folder20Regular, FolderArrowRight20Regular, Search20Regular, ArrowUpload20Regular, Delete20Regular, FolderAdd20Regular, MoreHorizontal20Regular, Rename20Regular,
 } from '@fluentui/react-icons'
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, fmtSize, q } from '../api'
+import { api, featureOn, fmtSize, q } from '../api'
+import { SftpFields, isSftp } from './SftpFields'
 import { useApp } from '../App'
-import { t } from '../i18n'
+import { t, tError } from '../i18n'
 import { fmtWhen, KindIcon, kindOf } from './common'
 import { usePrefs } from '../prefs'
 import { TopFolderChoice } from './TopFolderChoice'
@@ -24,12 +25,13 @@ import { ClipboardPaste20Regular, Cut20Regular, FolderOpen20Regular } from '@flu
 import { MicrosoftSignIn } from '../settings/AccountsSettings'
 
 /** available: gerade erreichbar (der Server prüft es beim Laden der Liste) */
-export interface ExternalMount { id: string; name: string; kind: 'folder' | 'webdav' | 'onedrive' | 'pcloud'; readOnly: boolean; search?: boolean; available?: boolean; account?: string | null; access?: string | null; path?: string | null }
+export interface ExternalMount { id: string; name: string; kind: 'folder' | 'webdav' | 'onedrive' | 'pcloud'; readOnly: boolean; search?: boolean; available?: boolean; account?: string | null; access?: string | null; path?: string | null; /** WebDAV-Ziel mit sftp://-Adresse */ sftp?: boolean }
 interface Entry { name: string; isDir: boolean; size: number; modified: string | null }
 
 const useStyles = makeStyles({
   root: { flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0 },
   head: { display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 16px', flexWrap: 'wrap' },
+  crumbs: { flex: 1, minWidth: '120px', overflowX: 'auto', scrollbarWidth: 'none', '::-webkit-scrollbar': { display: 'none' } },
   list: { flex: 1, overflow: 'auto', padding: '0 16px 16px' },
   drop: { outline: `2px dashed ${tokens.colorBrandStroke1}`, outlineOffset: '-6px' },
   row: { cursor: 'default' },
@@ -54,8 +56,19 @@ const join = (a: string, b: string) => (a ? a + '/' + b : b)
  * Ein externer Ordner (Ordner auf dem Server oder WebDAV): blaettern, herunterladen, hochladen, Ordner anlegen,
  * umbenennen, loeschen. Die Dateien gehoeren dem fremden Speicher - keine Versionen, kein Papierkorb, keine Freigaben.
  */
-export function ExternalView({ mount, path, onPath, vaultPanel, onVaultOpen }: {
+/** Befehle eines externen Ordners für das Menüband des Dateibereichs (Stand der Auswahl und Aktionen). */
+export interface ExtRibbon {
+  count: number; anyFile: boolean; one: boolean; readOnly: boolean; busy: boolean; canPaste: boolean
+  newFolder: () => void; uploadFiles: () => void; open: () => void; download: () => void; rename: () => void; remove: () => void
+  cut: () => void; copy: () => void; paste: () => void; moveTo: () => void
+}
+
+export function ExternalView({ mount, path, onPath, vaultPanel, onVaultOpen, ribbon, onRibbonState }: {
   mount: ExternalMount; path: string; onPath: (p: string) => void
+  /** Menüband des Dateibereichs: hier stehen die Befehle; die eigene Leiste im Inhalt entfällt dann */
+  ribbon?: React.MutableRefObject<ExtRibbon | null>
+  /** Ändert sich die Auswahl oder was möglich ist: Menüband neu zeichnen */
+  onRibbonState?: (key: string) => void
   /** Cryptomator-Tresor in diesem Ordner, gesperrt: Passwortfeld (raw: verschlüsselte Dateien zeigen) */
   vaultPanel?: (root: string, raw: () => void) => React.ReactNode
   /** … schon offen: dorthin */
@@ -160,9 +173,9 @@ export function ExternalView({ mount, path, onPath, vaultPanel, onVaultOpen }: {
   const remove = async (list: Entry[]) => {
     if (!list.length) return
     const i = list[0]
-    const text = list.length > 1 ? t('{n} Einträge endgültig löschen? Externe Ordner haben keinen Papierkorb.', { n: list.length })
-      : i.isDir ? t('Ordner „{name}“ mit allem darin endgültig löschen? Externe Ordner haben keinen Papierkorb.', { name: i.name }) : t('„{name}“ endgültig löschen? Externe Ordner haben keinen Papierkorb.', { name: i.name })
-    if (!await askConfirm('', text)) return
+    const text = list.length > 1 ? t('{n} Einträge löschen?', { n: list.length })
+      : i.isDir ? t('Ordner „{name}“ mit allem darin löschen?', { name: i.name }) : t('„{name}“ löschen?', { name: i.name })
+    if (!await askConfirm('', text, t('Löschen'))) return
     try { await api.post('/api/files/external/delete', { mount: mount.id, paths: list.map(x => join(path, x.name)) }); setSelected([]); load() } catch (e) { fail(e) }
   }
   // Mehrere Dateien: nacheinander, sonst lässt der Browser nur die erste durch; Ordner nicht
@@ -222,6 +235,21 @@ export function ExternalView({ mount, path, onPath, vaultPanel, onVaultOpen }: {
     } catch (e) { fail(e) }
   }
   const parts = path ? path.split('/') : []
+  // Befehle für das Menüband (bei jedem Zeichnen aktuell); neu gezeichnet wird es nur, wenn sich der Stand ändert
+  if (ribbon) ribbon.current = {
+    count: sel.length, anyFile: sel.some(i => !i.isDir), one: sel.length === 1, readOnly, busy, canPaste: !!clip && !readOnly,
+    newFolder: () => { setName(''); setAsk({ kind: 'mkdir' }) },
+    uploadFiles: () => file.current?.click(),
+    open: () => { const i = sel[0]; if (sel.length === 1) { if (i.isDir) onPath(join(path, i.name)); else download(i) } },
+    download: () => downloadAll(sel),
+    rename: () => { if (sel.length === 1) { setName(sel[0].name); setAsk({ kind: 'rename', item: sel[0] }) } },
+    remove: () => { if (sel.length) remove(sel) },
+    cut: () => toClip(sel, true), copy: () => toClip(sel, false), paste: () => paste(path),
+    moveTo: () => { if (sel.length) setPicker('move') },
+  }
+  const ribbonKey = [sel.length, sel.some(i => !i.isDir), readOnly, busy, !!clip].join('|')
+  useEffect(() => { onRibbonState?.(ribbonKey) }, [ribbonKey]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => { if (ribbon) ribbon.current = null; onRibbonState?.('') }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Cryptomator-Tresor in diesem Ordner: wie in „Meine Dateien“ erst das Passwort
   if (vault && !vault.unlocked && !raw && vaultPanel) return <>{vaultPanel(vault.root, () => setRaw(true))}</>
@@ -232,6 +260,8 @@ export function ExternalView({ mount, path, onPath, vaultPanel, onVaultOpen }: {
       onDragLeave={e => { if (e.currentTarget === e.target) setDragging(false) }}
       onDrop={e => { e.preventDefault(); setDragging(false); if (!readOnly) upload(e.dataTransfer.files) }}>
       <div className={s.head}>
+        {/* Lange Pfade rollen; der aktuelle Ort bleibt rechts sichtbar (wie in Dateien) */}
+        <div className={s.crumbs} ref={el => { if (el) el.scrollLeft = el.scrollWidth }}>
         <Breadcrumb size="small" aria-label={t('Pfad')}>
           <BreadcrumbItem><BreadcrumbButton onClick={() => onPath('')} current={!parts.length}>{mount.name}</BreadcrumbButton></BreadcrumbItem>
           {parts.map((p, n) => (
@@ -241,12 +271,13 @@ export function ExternalView({ mount, path, onPath, vaultPanel, onVaultOpen }: {
             </span>
           ))}
         </Breadcrumb>
+        </div>
         <div style={{ flex: 1 }} />
         {mount.search && <Input size="small" value={find} onChange={(_, d) => setFind(d.value)} contentBefore={<Search20Regular />} style={{ width: 220 }}
           placeholder={path ? t('In „{name}“ suchen', { name: parts[parts.length - 1] }) : t('In „{name}“ suchen', { name: mount.name })} aria-label={t('Im Ordner suchen')}
           onKeyDown={e => { if (e.key === 'Escape') setFind('') }} />}
-        <Toolbar size="small">
-          {sel.length > 0 && <>
+        <Toolbar size="small" style={{ flexWrap: 'wrap', minWidth: 0, maxWidth: '100%' }}>
+          {!ribbon && sel.length > 0 && <>
             <Text size={200} className={s.count}>{t('{n} ausgewählt', { n: sel.length })}</Text>
             <ToolbarButton icon={<ArrowDownload20Regular />} disabled={!sel.some(i => !i.isDir)} onClick={() => downloadAll(sel)} aria-label={t('Herunterladen')} title={t('Herunterladen')} />
             {!readOnly && <>
@@ -256,17 +287,11 @@ export function ExternalView({ mount, path, onPath, vaultPanel, onVaultOpen }: {
             </>}
             <ToolbarButton icon={<Dismiss20Regular />} onClick={() => setSelected([])} aria-label={t('Auswahl aufheben')} title={t('Auswahl aufheben')} />
           </>}
-          {!readOnly && <ToolbarButton icon={<ArrowUpload20Regular />} disabled={busy} onClick={() => file.current?.click()}>{t('Hochladen')}</ToolbarButton>}
-          {!readOnly && <ToolbarButton icon={<FolderAdd20Regular />} onClick={() => { setName(''); setAsk({ kind: 'mkdir' }) }}>{t('Neuer Ordner')}</ToolbarButton>}
+          {!ribbon && !readOnly && <ToolbarButton icon={<ArrowUpload20Regular />} disabled={busy} onClick={() => file.current?.click()}>{t('Hochladen')}</ToolbarButton>}
+          {!ribbon && !readOnly && <ToolbarButton icon={<FolderAdd20Regular />} onClick={() => { setName(''); setAsk({ kind: 'mkdir' }) }}>{t('Neuer Ordner')}</ToolbarButton>}
           <ToolbarButton icon={<ArrowClockwise20Regular />} onClick={() => load(true)} aria-label={t('Aktualisieren')} title={t('Aktualisieren')} />
         </Toolbar>
         <input ref={file} type="file" multiple hidden onChange={e => { if (e.target.files) upload(e.target.files); e.target.value = '' }} />
-      </div>
-      <div style={{ padding: '0 16px' }}>
-        <MessageBar intent="info"><MessageBarBody>
-          {mount.kind === 'webdav' ? t('WebDAV-Ordner – die Dateien liegen auf dem anderen Server.') : mount.kind === 'onedrive' ? t('OneDrive-Ordner – die Dateien liegen bei Microsoft.') : mount.kind === 'pcloud' ? t('pCloud-Ordner – die Dateien liegen bei pCloud.') : t('Ordner auf dem Server – die Dateien liegen dort, nicht in deiner Ablage.')}
-          {' '}{readOnly ? t('Nur zum Lesen.') : t('Gelöschtes ist endgültig weg (kein Papierkorb, keine Versionen).')}
-        </MessageBarBody></MessageBar>
       </div>
       <div className={s.list} onContextMenu={e => { if (!(e.target as HTMLElement).closest('[data-entry]')) cm.open(e, null) }}>
         {term ? <ExternalHits term={term} mount={mount.id} path={path} onOpen={(_, dir) => { setFind(''); onPath(dir) }} />
@@ -335,16 +360,17 @@ export function ExternalView({ mount, path, onPath, vaultPanel, onVaultOpen }: {
           const target = i?.isDir ? join(path, i.name) : path
           return <>
             {i?.isDir && <MenuItem icon={<FolderOpen20Regular />} onClick={() => onPath(join(path, i.name))}>{t('Öffnen')}</MenuItem>}
+            {!i && !readOnly && <MenuItem icon={<FolderAdd20Regular />} onClick={() => { setName(''); setAsk({ kind: 'mkdir' }) }}>{t('Neuer Ordner')}</MenuItem>}
+            {list.length === 1 && !readOnly && <MenuItem icon={<Rename20Regular />} onClick={() => { setName(list[0].name); setAsk({ kind: 'rename', item: list[0] }) }}>{t('Umbenennen')}</MenuItem>}
             {list.some(x => !x.isDir) && <MenuItem icon={<ArrowDownload20Regular />} onClick={() => downloadAll(list)}>{t('Herunterladen')}</MenuItem>}
             {list.length > 0 && !readOnly && <MenuItem icon={<Cut20Regular />} secondaryContent={t('Strg+X')} onClick={() => toClip(list, true)}>{t('Ausschneiden')}</MenuItem>}
             {list.length > 0 && <MenuItem icon={<Copy20Regular />} secondaryContent={t('Strg+C')} onClick={() => toClip(list, false)}>{t('Kopieren')}</MenuItem>}
             {clip && !readOnly && (!i || i.isDir) && <MenuItem icon={<ClipboardPaste20Regular />} secondaryContent={i ? undefined : t('Strg+V')} onClick={() => paste(target)}>{i ? t('Hier einfügen') : t('Einfügen')}</MenuItem>}
             {list.length > 0 && !readOnly && <MenuItem icon={<FolderArrowRight20Regular />} onClick={() => setPicker('move')}>{t('Verschieben nach …')}</MenuItem>}
             {list.length > 0 && !readOnly && <MenuItem icon={<Copy20Regular />} onClick={() => setPicker('copy')}>{t('Kopieren nach …')}</MenuItem>}
-            {list.length === 1 && !readOnly && <MenuItem icon={<Rename20Regular />} onClick={() => { setName(list[0].name); setAsk({ kind: 'rename', item: list[0] }) }}>{t('Umbenennen')}</MenuItem>}
-            {list.length > 0 && !readOnly && <MenuItem icon={<Delete20Regular />} onClick={() => remove(list)}>{t('Löschen')}</MenuItem>}
-            {!i && !readOnly && <MenuItem icon={<FolderAdd20Regular />} onClick={() => { setName(''); setAsk({ kind: 'mkdir' }) }}>{t('Neuer Ordner')}</MenuItem>}
             {!i && <MenuItem icon={<ArrowClockwise20Regular />} onClick={() => load(true)}>{t('Aktualisieren')}</MenuItem>}
+            {list.length > 0 && !readOnly && <MenuDivider />}
+            {list.length > 0 && !readOnly && <MenuItem icon={<Delete20Regular />} onClick={() => remove(list)}>{t('Löschen')}</MenuItem>}
           </>
         })()}
       </ContextMenu>
@@ -369,24 +395,26 @@ export function ExternalView({ mount, path, onPath, vaultPanel, onVaultOpen }: {
   )
 }
 
-type OwnKind = 'webdav' | 'onedrive' | 'pcloud'
+// sftp: auf dem Server ein WebDAV-Ziel mit sftp://-Adresse (gleiche Freigabe durch den Admin)
+type OwnKind = 'webdav' | 'sftp' | 'onedrive' | 'pcloud'
 
 /** Eigenen WebDAV-, OneDrive- oder pCloud-Ordner einbinden (je nachdem, was der Admin erlaubt). */
-export function AddExternalDialog({ webDav = true, oneDrive = false, pCloud = false, onClose, onAdded }: { webDav?: boolean; oneDrive?: boolean; pCloud?: boolean; onClose: () => void; onAdded: (m: ExternalMount) => void }) {
-  const { fail } = useApp()
-  const kinds = ([['webdav', webDav, 'WebDAV'], ['onedrive', oneDrive, 'OneDrive'], ['pcloud', pCloud, 'pCloud']] as const).filter(k => k[1])
+export function AddExternalDialog({ webDav = true, sftp = false, oneDrive = false, pCloud = false, onClose, onAdded }: { webDav?: boolean; sftp?: boolean; oneDrive?: boolean; pCloud?: boolean; onClose: () => void; onAdded: (m: ExternalMount) => void }) {
+  const kinds = ([['webdav', webDav, 'WebDAV'], ['sftp', sftp && featureOn('sftp'), 'SFTP'], ['onedrive', oneDrive, 'OneDrive'], ['pcloud', pCloud, 'pCloud']] as const).filter(k => k[1])
   const [kind, setKind] = useState<OwnKind>(kinds[0]?.[0] ?? 'webdav')
   const [f, setF] = useState({ name: '', url: '', user: '', password: '' })
   const [busy, setBusy] = useState(false)
+  // Fehler im Dialog zeigen: eine Meldung am Rand läge hinter dem abgedunkelten Hintergrund
+  const [err, setErr] = useState<string | null>(null)
   const set = (k: keyof typeof f) => (_: unknown, d: { value: string }) => setF(x => ({ ...x, [k]: d.value }))
   const add = async () => {
-    setBusy(true)
-    try { onAdded(await api.post<ExternalMount>('/api/files/external/mounts', f)) } catch (e) { fail(e) } finally { setBusy(false) }
+    setBusy(true); setErr(null)
+    try { onAdded(await api.post<ExternalMount>('/api/files/external/mounts', f)) } catch (e) { setErr(tError(e instanceof Error ? e.message : String(e))) } finally { setBusy(false) }
   }
   // Art nur zur Wahl, wenn mehrere erlaubt sind
   const choice = kinds.length > 1 ? (
     <Field label={t('Art')}>
-      <RadioGroup layout="horizontal" value={kind} onChange={(_, d) => setKind(d.value as OwnKind)}>
+      <RadioGroup layout="horizontal" value={kind} onChange={(_, d) => { setKind(d.value as OwnKind); setF(x => ({ ...x, url: d.value === 'sftp' ? 'sftp://' : '', password: '' })) }}>
         {kinds.map(k => <Radio key={k[0]} value={k[0]} label={k[2]} />)}
       </RadioGroup>
     </Field>
@@ -398,10 +426,12 @@ export function AddExternalDialog({ webDav = true, oneDrive = false, pCloud = fa
           : kind === 'pcloud' ? <AddPCloud choice={choice} onClose={onClose} onAdded={onAdded} /> : (
           <form onSubmit={e => { e.preventDefault(); add() }}>
             <DialogBody>
-              <DialogTitle>{t('WebDAV-Ordner einbinden')}</DialogTitle>
+              <DialogTitle>{kind === 'sftp' ? t('SFTP-Ordner einbinden') : t('WebDAV-Ordner einbinden')}</DialogTitle>
               <DialogContent style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {choice}
-                <Field label={t('Name')}><Input value={f.name} onChange={set('name')} placeholder={t('z. B. Nextcloud im Büro')} autoFocus /></Field>
+                <Field label={t('Name')}><Input value={f.name} onChange={set('name')} placeholder={kind === 'sftp' ? t('z. B. NAS im Keller') : t('z. B. Nextcloud im Büro')} autoFocus /></Field>
+                {kind === 'sftp' ? <SftpFields url={f.url} onUrl={x => setF(y => ({ ...y, url: x }))} user={f.user} onUser={x => setF(y => ({ ...y, user: x }))}
+                  secret={f.password} onSecret={x => setF(y => ({ ...y, password: x }))} /> : <>
                 <Field label={t('Adresse')} hint={t('Nextcloud: https://cloud.example.org/remote.php/dav/files/<name>/ · Storage Box: https://u123456.your-storagebox.de/')}>
                   <Input value={f.url} onChange={set('url')} placeholder="https://" />
                 </Field>
@@ -409,6 +439,8 @@ export function AddExternalDialog({ webDav = true, oneDrive = false, pCloud = fa
                 <Field label={t('Passwort')} hint={t('Am besten ein App-Passwort nur für dmOffice.')}>
                   <Input type="password" autoComplete="new-password" value={f.password} onChange={set('password')} />
                 </Field>
+                </>}
+                {err && <MessageBar intent="error"><MessageBarBody>{err}</MessageBarBody></MessageBar>}
               </DialogContent>
               <DialogActions>
                 <Button onClick={onClose}>{t('Abbrechen')}</Button>
@@ -438,13 +470,14 @@ export function EditExternalDialog({ target, onClose, onSaved }: { target: Exter
   }, [target.id, fail])
   const set = (k: 'name' | 'url' | 'user' | 'password') => (_: unknown, d: { value: string }) => setF(x => x && ({ ...x, [k]: d.value }))
   const webDav = target.kind === 'webdav'
+  const [err, setErr] = useState<string | null>(null)
   const save = async () => {
     if (!f) return
-    setBusy(true)
+    setBusy(true); setErr(null)
     try {
       onSaved(await api.put<ExternalMount>('/api/files/external/mounts/' + encodeURIComponent(target.id),
         webDav ? { name: f.name, url: f.url, user: f.user, password: f.password } : { name: f.name }))
-    } catch (e) { fail(e) } finally { setBusy(false) }
+    } catch (e) { setErr(tError(e instanceof Error ? e.message : String(e))) } finally { setBusy(false) }
   }
   const named = { ...target, name: f?.name.trim() || target.name }
   return (
@@ -458,7 +491,9 @@ export function EditExternalDialog({ target, onClose, onSaved }: { target: Exter
               <DialogContent style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {!f ? <Spinner size="tiny" /> : <>
                   <Field label={t('Name')}><Input value={f.name} onChange={set('name')} autoFocus /></Field>
-                  {webDav ? <>
+                  {webDav && isSftp(f.url) ? <SftpFields url={f.url} onUrl={x => setF(y => y && ({ ...y, url: x }))} user={f.user} onUser={x => setF(y => y && ({ ...y, user: x }))}
+                    secret={f.password} onSecret={x => setF(y => y && ({ ...y, password: x }))} hasSecret={f.passwordSet} />
+                  : webDav ? <>
                     <Field label={t('Adresse')} hint={t('Einbindungen in Dateien beziehen ihren Ordner auf diese Adresse.')}>
                       <Input value={f.url} onChange={set('url')} placeholder="https://" />
                     </Field>
@@ -471,6 +506,7 @@ export function EditExternalDialog({ target, onClose, onSaved }: { target: Exter
                     <Text size={200} className={s.muted}>{t('Neu anmelden, etwa nach abgelaufener Anmeldung oder für ein anderes Konto; dabei wird auch der Ordner neu gewählt. Einbindungen in Dateien beziehen ihren Ordner auf diesen.')}</Text>
                     <div><Button onClick={() => setSignIn(true)}>{target.kind === 'onedrive' ? t('Mit Microsoft neu anmelden') : t('Mit pCloud neu anmelden')}</Button></div>
                   </>}
+                  {err && <MessageBar intent="error"><MessageBarBody>{err}</MessageBarBody></MessageBar>}
                 </>}
               </DialogContent>
               <DialogActions>
@@ -732,7 +768,7 @@ export function ExternalMountDialog({ mount, added, onClose, onRemoved }: { moun
         <DialogBody>
           <DialogTitle>{mount.name}</DialogTitle>
           <DialogContent style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {added && <Text>{t('Die Verbindung klappt.')}</Text>}
+            {added && <Text>{t('Verbindung hergestellt.')}</Text>}
             <Field label={t('Name in Dateien')}><Input value={name} onChange={(_, d) => setName(d.value)} /></Field>
             <Text weight="semibold">{t('Welche Ordner sollen in dmOffice erscheinen?')}</Text>
             <TopFolderChoice dirs={dirs} include={include} onChange={setInclude} onNone={setNoFolder} />

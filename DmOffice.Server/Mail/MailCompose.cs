@@ -41,6 +41,12 @@ public static class MailCompose
         public List<string> LinkPaths { get; set; } = new();
         /// <summary>... und hochgeladene Dateien (ihre Namen im Formular) - die kommen erst in die Dateiablage.</summary>
         public List<string> LinkUploads { get; set; } = new();
+        /// <summary>Absender statt der Adresse des Kontos - nur einen Catchall-Alias (CatchallAliases.CanSendAs prüft der Aufrufer).</summary>
+        public string? From { get; set; }
+        /// <summary>OpenPGP-signieren; null: wie fürs Konto eingestellt (OpenPgpKeys.AccountSettings.Sign).</summary>
+        public bool? Sign { get; set; }
+        /// <summary>Antwortadresse (Reply-To), etwa aus den Einstellungen von Finanzen; leer: keine.</summary>
+        public string? ReplyTo { get; set; }
     }
 
     public static string Wrap(string html) =>
@@ -54,13 +60,15 @@ public static class MailCompose
     {
         var m = new MimeMessage();
         m.From.Add(new MailboxAddress(string.IsNullOrEmpty(account.DisplayName) ? null : account.DisplayName,
-            account.Email));
+            string.IsNullOrWhiteSpace(d.From) ? account.Email : d.From.Trim()));
         AddAddresses(m.To, d.To, "An");
         AddAddresses(m.Cc, d.Cc, "Cc");
         AddAddresses(m.Bcc, d.Bcc, "Bcc");
+        if (!string.IsNullOrWhiteSpace(d.ReplyTo)) AddAddresses(m.ReplyTo, d.ReplyTo, "Antwort an");
         m.Subject = d.Subject;
         // Message-ID mit der Domain des Absenders statt dem Rechnernamen (im Container ein Zufallsname): Mailprogramme und
         // Spamfilter beim Empfaenger werten eine Kennung ohne echte Domain schlecht
+        // Bei einem Catchall-Alias deren Domain - sonst verriete die Kennung das eigentliche Postfach
         var sender = m.From.Mailboxes.First().Address;
         var domain = sender.Contains('@') ? sender[(sender.LastIndexOf('@') + 1)..].Trim() : "";
         if (domain.Contains('.') && domain.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '-')) m.MessageId = MimeKit.Utils.MimeUtils.GenerateMessageId(domain);

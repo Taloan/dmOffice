@@ -35,15 +35,17 @@ type Item = { id: string; label: string; depth: number; near?: boolean }
  * ähnlich geschriebene Einträge; Pfeiltasten und Enter wählen, Escape schließt. Ohne Treffer legt Enter den getippten Namen an
  * (onNew). Die Liste ist begrenzt hoch und rollt.
  */
-export function EntrySelect({ entries, kind, value, values, none, placeholder, className, onPick, onPickMany, onNew, prefill }: {
+export function EntrySelect({ entries, kind, value, values, none, placeholder, className, size, onPick, onPickMany, onNew, prefill, autoFocus, onClose }: {
   entries: Entry[]; kind: Kind
   /** Ein Eintrag (Korrespondent, Dokumenttyp) - oder values für mehrere (Tags) */
   value?: string | null; values?: string[]
   /** Eintrag „keiner“ (nur bei einem Eintrag); ohne: nicht angeboten */
-  none?: string; placeholder?: string; className?: string
+  none?: string; placeholder?: string; className?: string; size?: 'small' | 'medium'
   onPick?: (id: string) => void; onPickMany?: (ids: string[]) => void; onNew?: (name: string) => void
   /** Text, der beim Erscheinen ins Suchfeld kommt und die Liste öffnet (aus einem Rahmen im Dokument) - neu mit anderem key */
   prefill?: string | null
+  /** Beim Erscheinen gleich offen (Bearbeiten in der Liste); onClose beim Verlassen des Felds */
+  autoFocus?: boolean; onClose?: () => void
 }) {
   const s = useStyles()
   const multi = values !== undefined
@@ -52,9 +54,12 @@ export function EntrySelect({ entries, kind, value, values, none, placeholder, c
   const [query, setQuery] = useState(prefill ?? '')
   const [open, setOpen] = useState(!!prefill)
   const [active, setActive] = useState(0)
+  // Beim Öffnen gewählte Tags (stehen oben in der Liste)
+  const [pinned, setPinned] = useState<string[]>([])
+  useEffect(() => { if (open) setPinned(multi ? values : []) }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
   const [box, setBox] = useState<{ left: number; top: number; width: number; up: boolean } | null>(null)
 
-  useEffect(() => { if (prefill) input.current?.focus() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (prefill || autoFocus) input.current?.focus() }, []) // eslint-disable-line react-hooks/exhaustive-deps
   // Unter dem Feld, bei wenig Platz darüber; beim Rollen mitwandern
   useLayoutEffect(() => {
     if (!open) return
@@ -73,16 +78,20 @@ export function EntrySelect({ entries, kind, value, values, none, placeholder, c
   const shown = multi ? values.map(id => entries.find(e => e.id === id)?.name ?? '').filter(Boolean).join(', ') : value ? fullName(entries, value) : ''
   const q = query.trim().toLocaleLowerCase()
   const all = ordered(entries, kind)
-  const found = q ? all.filter(o => fullName(entries, o.entry.id).toLocaleLowerCase().includes(q)) : all
+  const matching = q ? all.filter(o => fullName(entries, o.entry.id).toLocaleLowerCase().includes(q)) : all
+  // Mehrfachauswahl (Tags): die beim Öffnen gewählten zuerst, mit vollem Namen - bleibt beim Anklicken stehen, damit die Liste nicht springt
+  const pinnedItems = multi ? matching.filter(o => pinned.includes(o.entry.id)) : []
+  const found = pinnedItems.length ? [...pinnedItems, ...matching.filter(o => !pinned.includes(o.entry.id))] : matching
   // Dazu ähnlich geschriebene (Lesefehler), die ähnlichsten zuerst
   const near = q.length >= 3 ? all.filter(o => !found.includes(o)).map(o => ({ o, v: similar(q, o.entry.name.toLocaleLowerCase()) }))
     .filter(x => x.v >= 0.5).sort((a, b) => b.v - a.v).slice(0, 5).map(x => x.o) : []
   const exact = !!q && all.some(o => o.entry.name.toLocaleLowerCase() === q)
   const items: Item[] = [
     ...(none !== undefined && !q ? [{ id: '', label: none, depth: 0 }] : []),
-    ...found.map(o => ({ id: o.entry.id, label: q ? fullName(entries, o.entry.id) : o.entry.name, depth: q ? 0 : o.depth })),
+    ...found.map(o => pinnedItems.includes(o) ? { id: o.entry.id, label: fullName(entries, o.entry.id), depth: 0 }
+      : { id: o.entry.id, label: q ? fullName(entries, o.entry.id) : o.entry.name, depth: q ? 0 : o.depth }),
     ...near.map(o => ({ id: o.entry.id, label: fullName(entries, o.entry.id), depth: 0, near: true })),
-    ...(onNew ? [{ id: '+', label: q && !exact ? t('„{name}“ neu anlegen', { name: query.trim() }) : t('Neu …'), depth: 0 }] : []),
+    ...(onNew && (q || !autoFocus) ? [{ id: '+', label: q && !exact ? t('„{name}“ neu anlegen', { name: query.trim() }) : t('Neu …'), depth: 0 }] : []),
   ]
   const at = Math.min(active, Math.max(0, items.length - 1))
   useEffect(() => { listRef.current?.querySelector('[data-active="true"]')?.scrollIntoView({ block: 'nearest' }) }, [at, open])
@@ -102,10 +111,10 @@ export function EntrySelect({ entries, kind, value, values, none, placeholder, c
   const selected = (id: string) => multi ? values.includes(id) : (value ?? '') === id
 
   return <>
-    <Input ref={input} className={className} placeholder={open ? shown || placeholder : placeholder} value={open ? query : shown}
+    <Input ref={input} className={className} size={size} placeholder={open ? shown || placeholder : placeholder} value={open ? query : shown}
       contentAfter={<ChevronDown16Regular style={{ cursor: 'pointer' }} onMouseDown={e => { e.preventDefault(); if (open) close(); else { setOpen(true); input.current?.focus() } }} />}
       onFocus={() => { setOpen(true); setActive(0) }}
-      onBlur={close}
+      onBlur={() => { close(); onClose?.() }}
       onChange={(_, d) => { setQuery(d.value); setOpen(true); setActive(0) }}
       onKeyDown={e => {
         if (e.key === 'ArrowDown') { e.preventDefault(); setOpen(true); setActive(a => Math.min(a + 1, items.length - 1)) }

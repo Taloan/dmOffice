@@ -1,7 +1,7 @@
 import { Button, Checkbox, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Field, Input, MessageBar, MessageBarBody, Radio, RadioGroup, Select, Switch, Text, tokens, Tooltip } from '@fluentui/react-components'
 import { Add20Regular, Delete20Regular, FolderOpen20Regular } from '@fluentui/react-icons'
 import { useEffect, useState } from 'react'
-import { api, fmtSize, q } from '../api'
+import { api, featureOn, fmtSize, q } from '../api'
 import { useApp } from '../App'
 import { locale, t } from '../i18n'
 import { AdminCol, AdminTable } from './AdminTable'
@@ -32,6 +32,10 @@ export function ExternalAdmin({ part }: { part: 'server' | 'users' }) {
   // Microsoft-Anmeldung auf diesem Server eingerichtet (DMOFFICE_MS_CLIENT_ID nicht „off“)
   const [microsoft, setMicrosoft] = useState(true)
   const [pCloud, setPCloud] = useState(false)
+  // Benutzer-Mounts: gespeicherter Stand (für Verwerfen und die Rückfrage) und eingebundene Ordner je Art
+  const [sftp, setSftp] = useState(false)
+  const [savedSw, setSavedSw] = useState({ webDav: false, priv: false, oneDrive: false, pCloud: false, sftp: false })
+  const [mounts, setMounts] = useState<Record<string, number>>({})
   const [users, setUsers] = useState<UserRow[]>([])
   const [dirty, setDirty] = useState(false)
   // Ordner-Browser für den Pfad des n-ten Ordners
@@ -48,49 +52,70 @@ export function ExternalAdmin({ part }: { part: 'server' | 'users' }) {
   // Mounts, bei denen gerade kein Ordner gewählt ist: So darf nicht gespeichert werden, leer hieße alle
   const [noFolder, setNoFolder] = useState<Record<string, boolean>>({})
   useEffect(() => {
-    api.get<{ folders: Folder[]; webDavForUsers: boolean; webDavPrivate: boolean; oneDriveForUsers?: boolean; microsoft?: boolean; pCloudForUsers?: boolean }>('/api/admin/external')
+    api.get<{ folders: Folder[]; webDavForUsers: boolean; webDavPrivate: boolean; oneDriveForUsers?: boolean; microsoft?: boolean; pCloudForUsers?: boolean; sftpForUsers?: boolean; mounts?: Record<string, number> }>('/api/admin/external')
       .then(r => {
-        setFolders(r.folders); setWebDav(r.webDavForUsers); setPriv(r.webDavPrivate); setOneDrive(!!r.oneDriveForUsers); setMicrosoft(r.microsoft !== false)
-        setPCloud(!!r.pCloudForUsers)
+        const sw = { webDav: r.webDavForUsers, priv: (r.webDavForUsers || !!r.sftpForUsers) && r.webDavPrivate, oneDrive: !!r.oneDriveForUsers, pCloud: !!r.pCloudForUsers, sftp: !!r.sftpForUsers }
+        setFolders(r.folders); setWebDav(sw.webDav); setPriv(sw.priv); setOneDrive(sw.oneDrive); setMicrosoft(r.microsoft !== false)
+        setPCloud(sw.pCloud); setSftp(sw.sftp); setSavedSw(sw); setMounts(r.mounts ?? {})
       }).catch(fail)
     api.get<UserRow[]>('/api/admin/users').then(setUsers).catch(() => {})
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
   if (!folders) return null
   const change = (i: number, patch: Partial<Folder>) => { setFolders(f => f!.map((x, n) => (n === i ? { ...x, ...patch } : x))); setDirty(true) }
-  const save = async (wd = webDav, pv = priv, od = oneDrive, pc = pCloud) => {
+  const save = async (wd = webDav, pv = priv, od = oneDrive, pc = pCloud, sf = sftp) => {
     try {
-      await api.put('/api/admin/external', { folders, webDavForUsers: wd, webDavPrivate: pv, oneDriveForUsers: od, pCloudForUsers: pc })
+      await api.put('/api/admin/external', { folders, webDavForUsers: wd, webDavPrivate: pv, oneDriveForUsers: od, pCloudForUsers: pc, sftpForUsers: sf })
       // Neue Ordner bekommen ihre Kennung vom Server - neu laden, sonst bleiben sie „noch nicht gespeichert“
       setFolders((await api.get<{ folders: Folder[] }>('/api/admin/external')).folders)
       setDirty(false); notify(t('Gespeichert')); loadStates()
+      setSavedSw({ webDav: wd, priv: pv, oneDrive: od, pCloud: pc, sftp: sf })
     } catch (e) { fail(e) }
   }
+  // Benutzer-Mounts: erst mit „Speichern“, beim Ausschalten mit Rückfrage, wenn Benutzer schon Ordner dieser Art eingebunden haben
+  const swDirty = webDav !== savedSw.webDav || priv !== savedSw.priv || oneDrive !== savedSw.oneDrive || pCloud !== savedSw.pCloud || sftp !== savedSw.sftp
+  const saveSwitches = async () => {
+    const off: string[] = []
+    if (savedSw.webDav && !webDav && mounts.webdav) off.push(t('{n} WebDAV-Ordner', { n: mounts.webdav }))
+    if (savedSw.oneDrive && !oneDrive && mounts.onedrive) off.push(t('{n} OneDrive-Ordner', { n: mounts.onedrive }))
+    if (savedSw.pCloud && !pCloud && mounts.pcloud) off.push(t('{n} pCloud-Ordner', { n: mounts.pcloud }))
+    if (savedSw.sftp && !sftp && mounts.sftp) off.push(t('{n} SFTP-Ordner', { n: mounts.sftp }))
+    if (off.length && !await askConfirm(t('Eingebundene Ordner sperren?'),
+      t('Benutzer haben {list} eingebunden. Diese Ordner werden gesperrt und sind nicht mehr sichtbar. Wird die Einstellung wieder aktiviert, sind sie samt Zugangsdaten wieder verfügbar.', { list: off.join(', ') }),
+      t('Sperren und speichern'))) return
+    await save(webDav, priv, oneDrive, pCloud, sftp)
+  }
+  const discard = () => { setWebDav(savedSw.webDav); setPriv(savedSw.priv); setOneDrive(savedSw.oneDrive); setPCloud(savedSw.pCloud); setSftp(savedSw.sftp) }
   const muted = { color: tokens.colorNeutralForeground3 }
   if (part === 'users') return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 760, marginTop: 24 }}>
-      <Text size={200} style={muted}>{t('Benutzer können eigene Ordner bei einem WebDAV-Dienst, bei OneDrive oder bei pCloud einbinden, soweit es hier erlaubt ist. Ein solcher Ordner erscheint nur bei dem Benutzer, der ihn eingebunden hat, in der Dateiablage unter „Externe Ordner“; Zugangsdaten und Anmeldung bleiben bei ihm. Die Dateien bleiben an ihrem Speicherort: Versionen, Papierkorb und Freigabelinks gibt es dort nicht, und dmOffice sichert sie nicht mit.')}</Text>
-      <Text size={200} style={muted}>{t('Die Schalter gelten sofort.')}</Text>
-      <Switch checked={webDav} onChange={(_, d) => { setWebDav(d.checked); save(d.checked, priv) }} label={t('Benutzer dürfen eigene WebDAV-Ordner einbinden (Nextcloud, Storage Box, NAS …)')} />
-      {webDav && (
+      <Text size={200} style={muted}>{t('Eingebundene Ordner sieht nur der Benutzer, der sie eingebunden hat. Für diese Ordner gibt es keine Versionen, keinen Papierkorb und keine Freigabelinks, und dmOffice sichert sie nicht mit.')}</Text>
+      {/* Aus: auch „Heimnetz“ aus - sonst wäre es beim Wiedereinschalten ungefragt wieder an */}
+      <Switch checked={webDav} onChange={(_, d) => { setWebDav(d.checked); if (!d.checked && !sftp) setPriv(false) }} label={t('Benutzer dürfen eigene WebDAV-Ordner einbinden')} />
+      {featureOn('sftp') && <Switch checked={sftp} onChange={(_, d) => { setSftp(d.checked); if (!d.checked && !webDav) setPriv(false) }} label={t('Benutzer dürfen eigene SFTP-Ordner einbinden')} />}
+      {(webDav || sftp) && (
         <>
-          <Switch checked={priv} onChange={(_, d) => { setPriv(d.checked); save(webDav, d.checked) }} label={t('… auch mit Adressen im Heimnetz')} />
-          <Text size={200} style={muted}>{t('Ohne diesen Schalter erreichen eigene WebDAV-Ordner nur Adressen im Internet – sonst könnte jemand über dmOffice Geräte im Heimnetz (Router, NAS-Verwaltung) abfragen. Nur einschalten, wenn alle Benutzer vertrauenswürdig sind.')}</Text>
+          <Switch checked={priv} onChange={(_, d) => setPriv(d.checked)} label={t('… auch mit Adressen im Heimnetz')} />
+          <Text size={200} style={muted}>{t('Ist die Einstellung deaktiviert, erreichen eigene WebDAV- und SFTP-Ordner und Kalender-Abos nur Adressen im Internet. Ist sie aktiviert, können Benutzer über dmOffice auch Geräte im Heimnetz abfragen.')}</Text>
         </>
       )}
-      <Switch checked={oneDrive} disabled={!microsoft && !oneDrive} onChange={(_, d) => { setOneDrive(d.checked); save(webDav, priv, d.checked) }}
+      <Switch checked={oneDrive} disabled={!microsoft && !oneDrive} onChange={(_, d) => setOneDrive(d.checked)}
         label={t('Benutzer dürfen eigene OneDrive-Ordner einbinden (privat oder geschäftlich)')} />
       <Text size={200} style={muted}>{microsoft
-        ? t('Anmeldung über die Microsoft-App-Registrierung des Servers, mit Zugriff auf die Dateien des Kontos. Ausgeschaltet sind bestehende OneDrive-Ordner gesperrt.')
+        ? t('Ist die Einstellung deaktiviert, sind bestehende OneDrive-Ordner gesperrt.')
         : t('Die Microsoft-Anmeldung ist auf diesem Server abgeschaltet (DMOFFICE_MS_CLIENT_ID).')}</Text>
-      <Switch checked={pCloud} onChange={(_, d) => { setPCloud(d.checked); save(webDav, priv, oneDrive, d.checked) }}
+      <Switch checked={pCloud} onChange={(_, d) => setPCloud(d.checked)}
         label={t('Benutzer dürfen eigene pCloud-Ordner einbinden')} />
-      <Text size={200} style={muted}>{t('Jeder Benutzer meldet sich mit einer eigenen App bei pCloud an (Client-ID und Client-Secret beim Einbinden). Ausgeschaltet sind bestehende pCloud-Ordner gesperrt.')}</Text>
+      <Text size={200} style={muted}>{t('Jeder Benutzer meldet sich mit einer eigenen App bei pCloud an (Client-ID und Client-Secret beim Einbinden). Ist die Einstellung deaktiviert, sind bestehende pCloud-Ordner gesperrt.')}</Text>
+      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+        <Button appearance="primary" disabled={!swDirty} onClick={saveSwitches}>{t('Speichern')}</Button>
+        <Button disabled={!swDirty} onClick={discard}>{t('Verwerfen')}</Button>
+      </div>
     </div>
   )
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 760, marginTop: 24 }}>
-      <Text size={200} style={muted}>{t('Lokale Server-Mounts erscheinen bei den Benutzern, für die sie freigegeben sind, in der Dateiablage unter „Externe Ordner“. Die Dateien bleiben an ihrem Speicherort: Versionen, Papierkorb und Freigabelinks gibt es dort nicht, und dmOffice sichert sie nicht mit. Galerie, Audiothek und Suche lesen jede Datei nur einmal für alle Benutzer.')}</Text>
-      <Text size={200} style={muted}>{t('Eingebunden werden sie über die Container-Vorlage: Der Pfad im Container muss unter /external/<Name> liegen, zum Beispiel die Unraid-Freigabe /mnt/user/musik unter /external/musik. Danach lassen sie sich hier freigeben. Benutzer können keine eigenen Serverpfade eintragen.')}</Text>
+      <Text size={200} style={muted}>{t('Lokale Server-Mounts erscheinen bei den Benutzern, für die sie freigegeben sind, unter „Externe Ordner“. Für diese Ordner gibt es keine Versionen, keinen Papierkorb und keine Freigabelinks, und dmOffice sichert sie nicht mit.')}</Text>
+      <Text size={200} style={muted}>{t('Server-Mounts müssen in der Container-Vorlage unter /external/<Name> eingebunden sein.')}</Text>
       {folders.length === 0 && <Text size={200} style={muted}>{t('Noch keiner freigegeben.')}</Text>}
       {folders.map((f, i) => (
         <div key={f.id || i} style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: 10, border: `1px solid ${f.id ? tokens.colorNeutralStroke2 : tokens.colorBrandStroke1}`, borderRadius: 6 }}>
@@ -120,7 +145,7 @@ export function ExternalAdmin({ part }: { part: 'server' | 'users' }) {
             <Text size={200} style={muted}>{t('Sichtbar für:')}</Text>
             <Checkbox label={t('alle')} checked={f.users.length === 0} onChange={(_, d) => change(i, { users: d.checked ? [] : users.map(u => u.id) })} />
             {f.users.length > 0 && users.map(u => (
-              <Checkbox key={u.id} label={u.displayName || u.login} checked={f.users.includes(u.id)}
+              <Checkbox key={u.id} label={{ children: u.displayName || u.login, style: { whiteSpace: 'normal', overflowWrap: 'anywhere', minWidth: 0 } }} style={{ minWidth: 0, maxWidth: '100%' }} checked={f.users.includes(u.id)}
                 onChange={(_, d) => change(i, { users: d.checked ? [...f.users, u.id] : f.users.filter(x => x !== u.id) })} />
             ))}
           </div>

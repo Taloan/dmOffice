@@ -126,10 +126,10 @@ public sealed class EncryptingStream : Stream
     {
         if (n < FileContent.ChunkPlain) _done = true;
         if (n == 0) return false;
-        if (_out.Length < FileContent.ChunkCipher) _out = new byte[FileContent.ChunkCipher];
+        if (_out.Length < _header.ChunkCipherSize) _out = new byte[_header.ChunkCipherSize];
         FileContent.EncryptChunk(_header, _chunk++, _in.AsSpan(0, n), _out);
         _outPos = 0;
-        _outLen = n + FileContent.NonceSize + FileContent.TagSize;
+        _outLen = n + _header.Overhead;
         return true;
     }
 

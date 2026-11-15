@@ -1,11 +1,11 @@
 import {
   Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Field, FluentProvider, Input,
-  Menu, MenuItem, MenuList, MenuPopover, MenuTrigger, makeStyles, tokens,
+  Menu, MenuItem, MenuList, MenuPopover, MenuTrigger, Text, makeStyles, tokens,
 } from '@fluentui/react-components'
 import { Color20Regular, Copy20Regular, FolderArrowRight20Regular } from '@fluentui/react-icons'
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { darkTheme, lightTheme, storedTheme } from '../theme'
+import { activeTheme, storedTheme } from '../theme'
 import { t } from '../i18n'
 
 // Rechtsklick-Menues wie in Windows/Outlook - fuer alle Bereiche dieselben Bausteine und dieselbe Reihenfolge:
@@ -32,7 +32,7 @@ const pointAt = (at: At) => ({ getBoundingClientRect: () => ({ x: at.x, y: at.y,
 export function ContextMenu({ at, onClose, children }: { at: At | null | undefined; onClose: () => void; children: React.ReactNode }) {
   if (!at) return null
   return (
-    <Menu key={`${at.x},${at.y}`} open onOpenChange={(_, d) => !d.open && onClose()} positioning={{ target: pointAt(at) as any, position: 'below', align: 'start', offset: 2 }}>
+    <Menu key={`${at.x},${at.y}`} open onOpenChange={(_, d) => !d.open && onClose()} positioning={{ autoSize: 'height', target: pointAt(at) as any, position: 'below', align: 'start', offset: 2 }}>
       <MenuPopover><MenuList>{children}</MenuList></MenuPopover>
     </Menu>
   )
@@ -123,7 +123,7 @@ export function askText(title: string, initial = '', label = t('Name'), ok = t('
         </Dialog>
       )
     }
-    root.render(<FluentProvider theme={dark ? darkTheme : lightTheme}><Ask /></FluentProvider>)
+    root.render(<FluentProvider theme={activeTheme(dark)}><Ask /></FluentProvider>)
   })
 }
 
@@ -138,19 +138,38 @@ export function askPassword(title: string, withCode: boolean, ok = t('Bestätige
     function Ask() {
       const [password, setPassword] = useState('')
       const [code, setCode] = useState('')
-      const ready = !!password && (!withCode || code.trim().length >= 6)
+      // Konto ohne eigenes Passwort (über OIDC angelegt): nur Code, oder ohne Zwei-Faktor eine neue Anmeldung beim Anbieter
+      const [mode, setMode] = useState<string>('password')
+      const [provider, setProvider] = useState<{ name: string; confirmed: boolean } | null>(null)
+      useEffect(() => {
+        fetch('/api/auth/oidc/me', { credentials: 'same-origin' }).then(r => r.ok ? r.json() : null).then(m => {
+          if (!m?.confirm) return
+          setMode(m.confirm)
+          setProvider({ name: m.name ?? 'OIDC', confirmed: !!m.confirmed })
+        }).catch(() => { })
+      }, [])
+      const codeOnly = mode === 'code'
+      const byProvider = mode === 'provider'
+      const needCode = codeOnly || (withCode && mode !== 'provider')
+      const ready = byProvider ? !!provider?.confirmed : (codeOnly || !!password) && (!needCode || code.trim().length >= 6)
       return (
         <Dialog open onOpenChange={(_, x) => !x.open && done(null)}>
           <DialogSurface style={{ maxWidth: 400 }}>
-            <form onSubmit={e => { e.preventDefault(); if (ready) done({ password, code: withCode ? code.trim() : undefined }) }}>
+            <form onSubmit={e => { e.preventDefault(); if (ready) done({ password: byProvider || codeOnly ? '' : password, code: needCode ? code.trim() : undefined }) }}>
               <DialogBody>
                 <DialogTitle>{title}</DialogTitle>
                 <DialogContent style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                  <Field label={t('Passwort')}>
-                    <Input type="password" value={password} onChange={(_, d) => setPassword(d.value)} autoFocus autoComplete="current-password" />
-                  </Field>
-                  {withCode && <Field label={t('Code aus der Authenticator-App oder Wiederherstellungscode')}>
-                    <Input value={code} onChange={(_, d) => setCode(d.value)} autoComplete="one-time-code" inputMode="text" />
+                  {byProvider ? (provider?.confirmed
+                    ? <Text>{t('Bei {name} bestätigt.', { name: provider.name })}</Text>
+                    : <>
+                      <Text>{t('Dein Konto hat kein eigenes Passwort. Bestätige mit einer neuen Anmeldung bei {name} und starte den Vorgang danach noch einmal.', { name: provider?.name ?? 'OIDC' })}</Text>
+                      <div><Button onClick={() => { window.location.href = '/api/auth/oidc/start?reauth=1&back=' + encodeURIComponent(location.hash || '#/') }}>{t('Bei {name} bestätigen', { name: provider?.name ?? 'OIDC' })}</Button></div>
+                    </>)
+                    : !codeOnly && <Field label={t('Passwort')}>
+                      <Input type="password" value={password} onChange={(_, d) => setPassword(d.value)} autoFocus autoComplete="current-password" />
+                    </Field>}
+                  {needCode && <Field label={t('Code aus der Authenticator-App oder Wiederherstellungscode')}>
+                    <Input value={code} onChange={(_, d) => setCode(d.value)} autoFocus={codeOnly} autoComplete="one-time-code" inputMode="text" />
                   </Field>}
                 </DialogContent>
                 <DialogActions>
@@ -163,7 +182,7 @@ export function askPassword(title: string, withCode: boolean, ok = t('Bestätige
         </Dialog>
       )
     }
-    root.render(<FluentProvider theme={dark ? darkTheme : lightTheme}><Ask /></FluentProvider>)
+    root.render(<FluentProvider theme={activeTheme(dark)}><Ask /></FluentProvider>)
   })
 }
 
@@ -177,7 +196,7 @@ export function askConfirm(title: string, text: string, ok = t('OK')): Promise<b
     const done = (r: boolean) => { root.unmount(); host.remove(); resolve(r) }
     const dark = storedTheme() === 'dark' || (storedTheme() === 'system' && matchMedia('(prefers-color-scheme: dark)').matches)
     root.render(
-      <FluentProvider theme={dark ? darkTheme : lightTheme}>
+      <FluentProvider theme={activeTheme(dark)}>
         <Dialog open onOpenChange={(_, x) => !x.open && done(false)}>
           <DialogSurface style={{ maxWidth: 440 }}>
             <DialogBody>
@@ -203,7 +222,7 @@ export function askChoice<T extends string>(title: string, text: string, first: 
     const done = (r: T | null) => { root.unmount(); host.remove(); resolve(r) }
     const dark = storedTheme() === 'dark' || (storedTheme() === 'system' && matchMedia('(prefers-color-scheme: dark)').matches)
     root.render(
-      <FluentProvider theme={dark ? darkTheme : lightTheme}>
+      <FluentProvider theme={activeTheme(dark)}>
         <Dialog open onOpenChange={(_, x) => !x.open && done(null)}>
           <DialogSurface style={{ maxWidth: 480 }}>
             <DialogBody>

@@ -33,7 +33,7 @@ export function PhotoInfoDialog({ items, metaOf, onClose, onDone }: {
   const [title, setTitle] = useState(start.title ?? '')
   const [description, setDescription] = useState(start.description ?? '')
   const [rating, setRating] = useState(start.rating ?? 0)
-  // Stichwörter: wie viele der Fotos jedes schon haben; entfernt gilt für alle, hinzugefügt auch
+  // Tags: wie viele der Fotos jedes schon haben; entfernt gilt für alle, hinzugefügt auch
   const counts = new Map<string, { name: string; n: number }>()
   for (const m of metas) for (const k of (m?.keywords ?? '').split('\n').map(x => x.trim()).filter(Boolean)) {
     const c = counts.get(k.toLowerCase()) ?? { name: k, n: 0 }
@@ -103,7 +103,7 @@ export function PhotoInfoDialog({ items, metaOf, onClose, onDone }: {
                 {rating > 0 && <Button size="small" appearance="subtle" disabled={busy} onClick={() => { setRating(0); setTouched(x => ({ ...x, rating: true })) }}>{t('Entfernen')}</Button>}
               </div>
             </Field>
-            <Field label={t('Stichwörter')} hint={usable.length > 1 ? t('Hinzugefügte bekommen alle markierten Fotos, entfernte verlieren alle.') : undefined}>
+            <Field label={t('Tags')} hint={usable.length > 1 ? t('Hinzugefügte bekommen alle markierten Fotos, entfernte verlieren alle.') : undefined}>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
                 {[...counts.values()].filter(c => !removed.some(r => r.toLowerCase() === c.name.toLowerCase())).map(c =>
                   <Button key={c.name} size="small" shape="circular" icon={<Dismiss12Regular />} iconPosition="after" disabled={busy}
@@ -114,7 +114,7 @@ export function PhotoInfoDialog({ items, metaOf, onClose, onDone }: {
                   <Button key={'+' + k} size="small" shape="circular" appearance="primary" icon={<Dismiss12Regular />} iconPosition="after" disabled={busy}
                     title={t('Entfernen')} onClick={() => setAdded(a => a.filter(x => x !== k))}>{k}</Button>)}
               </div>
-              <Input value={kw} disabled={busy} placeholder={t('Stichwort eingeben, Enter fügt hinzu')}
+              <Input value={kw} disabled={busy} placeholder={t('Tag eingeben, Enter fügt hinzu')}
                 onChange={(_, d) => { if (/[,;]/.test(d.value)) addKw(d.value); else setKw(d.value) }}
                 onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addKw(kw) } }} />
             </Field>

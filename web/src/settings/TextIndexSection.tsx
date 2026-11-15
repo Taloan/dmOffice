@@ -52,7 +52,7 @@ export function TextIndexSection() {
   const last = st.lastRun ? new Date(st.lastRun) : null
   return (
     <Section title={t('Inhalte von Anhängen und Dateien')} last
-      hint={t('Dann findet die Suche Rechnungen, Verträge und Scans auch über ihren Inhalt – in den Anhängen deiner Mails, in Bildern und Anhängen deiner Notizen und in der Dateiablage. Gelesen wird nur auf diesem Server, nichts geht an fremde Dienste.')}>
+      hint={t('Dann findet die Suche Dokumente auch über ihren Inhalt – in den Anhängen deiner Mails, in Bildern und Anhängen deiner Notizen und in der Dateiablage. Gelesen wird nur auf diesem Server.')}>
       <Switch label={t('Inhalte von Anhängen und Dateien durchsuchbar machen')} checked={st.enabled} disabled={busy}
         onChange={(_, d) => save(d.checked, d.checked && st.ocr)} />
       <div className={s.sub}>

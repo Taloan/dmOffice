@@ -32,6 +32,23 @@ public class DmsSuggestionTests(ChatFixture fx) : IClassFixture<ChatFixture>
     private static string? Str(JsonElement e, string prop) => e.GetProperty(prop).ValueKind == JsonValueKind.Null ? null : e.GetProperty(prop).GetString();
 
     [Fact]
+    public async Task Anzahl_vor_dem_Loeschen_ohne_Untereintraege()
+    {
+        var c = fx.As("dora");
+        await Json(await c.GetAsync("/api/dms/lists"));
+        var top = (await Json(await c.PostAsJsonAsync("/api/dms/lists", new { kind = Dms.Dms.Correspondent, name = "Obenbau Zählprobe" }))).GetProperty("id").GetString()!;
+        var sub = (await Json(await c.PostAsJsonAsync("/api/dms/lists", new { kind = Dms.Dms.Correspondent, name = "Untenbau Zählprobe", parent = top }))).GetProperty("id").GetString()!;
+        var doc = await WithSuggestion("Zählprobe 0001.txt", "Zählprobe vom 24.10.2026", "");
+        await Json(await c.PutAsJsonAsync($"/api/dms/docs/{doc}", new { correspondent = sub }));
+
+        // Die Liste zählt den Untereintrag beim Obereintrag mit; gelöscht würde dort nichts an Dokumenten
+        var lists = await Json(await c.GetAsync("/api/dms/lists"));
+        Assert.Equal(1, lists.EnumerateArray().First(e => e.GetProperty("id").GetString() == top).GetProperty("count").GetInt32());
+        Assert.Equal(0, (await Json(await c.GetAsync($"/api/dms/lists/{top}/usage"))).GetProperty("docs").GetInt32());
+        Assert.Equal(1, (await Json(await c.GetAsync($"/api/dms/lists/{sub}/usage"))).GetProperty("docs").GetInt32());
+    }
+
+    [Fact]
     public async Task Vorschlag_wird_zugeordnet_sobald_es_den_Eintrag_gibt()
     {
         var c = fx.As("dora");

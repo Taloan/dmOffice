@@ -189,6 +189,26 @@ public class FileHashTests
         Assert.Equal((H(foto), (long)foto.Length), hit.Key);
         Assert.Equal("Fotos/anders.jpg", hit.Value);   // der kuerzere Pfad als Beleg
     }
+
+    [Fact]
+    public void Papierkorb_wird_eigens_gemeldet_auch_aus_geloeschten_Ordnern()
+    {
+        var db = NewDb("papierkorb");
+        FileStore.EnsureDir(db, "Bilder/2026");
+        byte[] einzeln = B("einzeln geloescht"), imOrdner = B("mit dem ordner geloescht"), da = B("noch da");
+        FileStore.Put(db, "Bilder/2026/IMG_1.jpg", einzeln, null);
+        FileStore.Delete(db, "Bilder/2026/IMG_1.jpg");
+        FileStore.EnsureDir(db, "Alt");
+        FileStore.Put(db, "Alt/IMG_2.jpg", imOrdner, null);
+        FileStore.Delete(db, "Alt");
+        FileStore.Put(db, "Bilder/2026/IMG_3.jpg", da, null);
+        FileHashes.Compute(db);
+
+        var trashed = FileHashes.InTrash(db, [(H(einzeln), einzeln.Length), (H(imOrdner).ToUpperInvariant(), imOrdner.Length), (H(da), da.Length), (H(einzeln), einzeln.Length + 1)]);
+        Assert.Equal(2, trashed.Count);
+        Assert.Contains((H(einzeln), (long)einzeln.Length), trashed);
+        Assert.Contains((H(imOrdner), (long)imOrdner.Length), trashed);
+    }
 }
 
 /// <summary>POST /api/files/hashes und die Pruefsumme in den Details - ueber HTTP mit App-Passwort.</summary>

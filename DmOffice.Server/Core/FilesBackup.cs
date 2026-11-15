@@ -199,6 +199,23 @@ public sealed class FilesBackup(Spaces spaces, ServerConfig config, DataPaths pa
         _state = _state with { Running = true, Done = 0, Total = total, Uploaded = 0 };
         // Hält die Quelle für Verdrängtes nur offen, wenn sie gebraucht wird
         IBlobRemote? source = null;
+        // Ausgeschaltet: sofort aufhören, auch mitten im Auflisten am Ziel (das dauert bei vielen Dateien Minuten)
+        var outer = ct;
+        using var off = CancellationTokenSource.CreateLinkedTokenSource(outer);
+        ct = off.Token;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                while (!off.IsCancellationRequested)
+                {
+                    if (!BackupRules.FilesOn(config.Current)) { off.Cancel(); return; }
+                    await Task.Delay(TimeSpan.FromSeconds(2), off.Token);
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch (ObjectDisposedException) { }
+        });
         try
         {
             // Im selben Speicher kopiert der Anbieter direkt, falls er das kann; die Größe muss danach stimmen
@@ -269,9 +286,10 @@ public sealed class FilesBackup(Spaces spaces, ServerConfig config, DataPaths pa
             }
         }
         catch (SwitchedOff) { _state = _state with { Running = false }; return; }
+        catch (OperationCanceledException) when (!outer.IsCancellationRequested && !BackupRules.FilesOn(config.Current)) { _state = _state with { Running = false }; return; }
         catch (OperationCanceledException) { _state = _state with { Running = false }; throw; }
         catch (Exception e) { error ??= S3Remote.Describe(e); pending++; }
-        finally { if (!same) source?.Dispose(); }
+        finally { if (!same) source?.Dispose(); off.Cancel(); }
         if (error != null) log.LogWarning("Files-Backup: {Error}", error);
         // Erst jetzt gibt der Storage Extender die längere Frist auf
         if (same && error == null && pending == 0 && !config.Current.FilesBackupOwnTarget) config.Update(x => x.FilesBackupCopied = true);

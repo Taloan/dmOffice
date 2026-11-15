@@ -18,17 +18,17 @@ export function SetupHints({ onBackup }: { onBackup: () => void }) {
   const open = (key: string) => !done.includes(key)
   const hints: { key: string; title: string; text: string; action?: [string, () => void] }[] = []
   if (backup === false && open('backup')) hints.push({
-    key: 'backup', title: t('Es läuft noch keine Sicherung'),
-    text: t('Ohne Sicherung sind die Daten bei einem Plattenschaden verloren.'),
-    action: [t('Sicherung einrichten'), onBackup],
+    key: 'backup', title: t('Es läuft noch kein Backup'),
+    text: '',
+    action: [t('Backup einrichten'), onBackup],
   })
   if (open('masterkey')) hints.push({
     key: 'masterkey', title: t('Hauptschlüssel aufbewahren'),
-    text: t('Ohne den Hauptschlüssel lässt sich keine Sicherung öffnen. Bewahre ihn getrennt vom Server auf. Er steht als DMOFFICE_MASTER_KEY in der Container-Vorlage oder als Datei master.key im Datenverzeichnis.'),
+    text: t('Ohne den Hauptschlüssel lässt sich kein Backup öffnen. Er steht als DMOFFICE_MASTER_KEY in der Container-Vorlage oder als Datei master.key im Datenverzeichnis.'),
   })
   if (me && !me.twoFactor && open('twofactor')) hints.push({
     key: 'twofactor', title: t('Zwei-Faktor einschalten'),
-    text: t('Dein Konto verwaltet den ganzen Server. Ein zweiter Faktor schützt es, falls dein Passwort in falsche Hände gerät.'),
+    text: '',
     action: [t('Zur Sicherheit'), () => { location.hash = '#/settings/security' }],
   })
   if (hints.length === 0) return null

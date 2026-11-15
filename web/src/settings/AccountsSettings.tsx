@@ -2,9 +2,9 @@ import {
   Button, Card, CardHeader, Dropdown, Field, Input, Option, SpinButton, Switch, Text, makeStyles, tokens, Spinner, MessageBar, MessageBarBody,
   Avatar, Table, TableBody, TableCell, TableHeader, TableHeaderCell, TableRow
 } from '@fluentui/react-components'
-import { Add20Regular, Copy20Regular, Delete20Regular, Edit20Regular, PlugConnected20Regular } from '@fluentui/react-icons'
+import { Add20Regular, Copy20Regular, Delete20Regular, Edit20Regular, PlugConnected20Regular, Star20Filled, Star20Regular } from '@fluentui/react-icons'
 import { useEffect, useRef, useState } from 'react'
-import { api, type Folder } from '../api'
+import { api, defaultAccount, featureOn, type Folder } from '../api'
 import { useApp } from '../App'
 import { askConfirm } from '../shell/context'
 import { locale, t, tError } from '../i18n'
@@ -21,12 +21,12 @@ const useStyles = makeStyles({
 })
 
 interface AccountForm {
-  id?: string; name: string; email: string; displayName: string
+  id?: string; name: string; email: string; displayName: string; isDefault?: boolean
   imapHost: string; imapPort: number; imapSecurity: string; imapUser: string; imapPassword?: string; hasImapPassword?: boolean
   auth?: 'Password' | 'Microsoft'; hasOAuth?: boolean; oauthFlow?: string
   smtpHost: string; smtpPort: number; smtpSecurity: string; smtpUser: string; smtpPassword?: string; hasSmtpPassword?: boolean
   signature: string; language: 'de' | 'en'; acceptAnyCertificate: boolean; saveSentCopy: boolean; syncMonths: number; maxCachedMb: number
-  trashDays: number; junkDays: number; focusedInbox: boolean
+  trashDays: number; junkDays: number; focusedInbox: boolean; inUnified?: boolean
   storage: 'full' | 'slim'; slimDays: number; slimMb: number
   /** Selbst festgelegte Sonderordner: Art → Ordnerpfad, '' = keiner; fehlt eine Art, erkennt dmOffice den Ordner selbst */
   folderMap?: Record<string, string> | null
@@ -37,7 +37,16 @@ function FolderMapEditor({ account, map, onChange }: { account: string; map: Rec
   const { fail } = useApp()
   const [folders, setFolders] = useState<Folder[] | null>(null)
   const [creating, setCreating] = useState(false)
-  useEffect(() => { api.get<Folder[]>(`/api/mail/${account}/folders`).then(setFolders).catch(() => setFolders([])) }, [account])
+  // Beim Öffnen gleich einen Abgleich anstoßen: beim Anbieter neu angelegte Ordner erscheinen sonst erst nach dem nächsten
+  // vollen Abgleich (alle 10 Minuten). Die Liste kommt sofort aus dem letzten Stand und wird kurz danach neu geladen.
+  useEffect(() => {
+    let alive = true
+    const load = () => api.get<Folder[]>(`/api/mail/${account}/folders`).then(f => { if (alive) setFolders(f) }).catch(() => { if (alive) setFolders(x => x ?? []) })
+    load()
+    api.post('/api/mail/sync', {}).catch(() => {})
+    const timers = [4000, 12000].map(ms => setTimeout(load, ms))
+    return () => { alive = false; timers.forEach(clearTimeout) }
+  }, [account])
   if (!folders) return <Spinner size="tiny" />
   const kinds: [string, string][] = [['sent', t('Gesendet')], ['drafts', t('Entwürfe')], ['junk', t('Junk-E-Mail')], ['trash', t('Gelöschte Elemente')], ['archive', t('Archiv')]]
   const choices = folders.filter(f => f.selectable && f.special !== 'inbox')
@@ -137,14 +146,23 @@ export function AccountsSettings() {
   const [msDomains, setMsDomains] = useState<string[] | null>(null)
   const load = () => api.get('/api/settings/').then(r => { setAccounts(r.accounts); setMsDomains(r.microsoftDomains ?? null) }).catch(fail)
   useEffect(() => { load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  // Postfach angelegt, geändert oder entfernt: der Mailbereich (bleibt geladen) holt seine Konten neu
+  const changed = () => { load(); window.dispatchEvent(new Event('dmoffice:mailaccounts')) }
 
   const remove = async (a: AccountForm) => {
     if (!await askConfirm(t('Konto entfernen'), t('Konto „{name}“ entfernen? Alle hier gespeicherten Mails und Daten dieses Kontos werden gelöscht. Beim Anbieter bleibt alles unverändert.', { name: a.name }), t('Entfernen'))) return
-    try { await api.del(`/api/settings/accounts/${a.id}`); load() } catch (e) { fail(e) }
+    try { await api.del(`/api/settings/accounts/${a.id}`); changed() } catch (e) { fail(e) }
   }
 
-  if (edit) return <AccountEditor initial={edit} microsoft={!!msDomains} onDone={() => { setEdit(null); load() }} />
-  if (wizard) return <AccountWizard onManual={f => { setWizard(false); setEdit(f) }} onDone={() => { setWizard(false); load() }} />
+  // Standard-Postfach (Kennung „defaultaccount“): Wahl nur bei mehreren Konten
+  const choose = featureOn('defaultaccount') && (accounts?.length ?? 0) > 1
+  const standard = accounts ? defaultAccount(accounts) : undefined
+  const makeDefault = async (a: AccountForm) => {
+    try { await api.put(`/api/settings/accounts/${a.id}/default`, {}); changed() } catch (e) { fail(e) }
+  }
+
+  if (edit) return <AccountEditor initial={edit} microsoft={!!msDomains} onDone={() => { setEdit(null); changed() }} />
+  if (wizard) return <AccountWizard onManual={f => { setWizard(false); setEdit(f) }} onDone={() => { setWizard(false); changed() }} />
   return (
     <>
       <Text size={600} weight="semibold">{t('E-Mail-Konten')}</Text>
@@ -152,14 +170,18 @@ export function AccountsSettings() {
         {accounts?.map(a => (
           <Card key={a.id} size="small">
             <CardHeader image={<Avatar name={a.name} color="colorful" />} header={<Text weight="semibold">{a.name}</Text>}
-              description={`${a.email} · ${a.syncMonths ? t('{period} synchronisiert', { period: period(a.syncMonths) }) : t('alles synchronisiert')}${a.storage === 'slim' ? ' · ' + t('Slim Mode') : ''}`}
+              description={`${a.email} · ${a.syncMonths ? t('{period} synchronisiert', { period: period(a.syncMonths) }) : t('alles synchronisiert')}${a.storage === 'slim' ? ' · ' + t('Slim Mode') : ''}${choose && a === standard ? ' · ' + t('Standard-Postfach') : ''}`}
               action={<div>
+                {choose && (a === standard
+                  ? <Button appearance="subtle" icon={<Star20Filled color={tokens.colorPaletteMarigoldForeground1} />} aria-label={t('Standard-Postfach')} title={t('Standard-Postfach')} aria-pressed />
+                  : <Button appearance="subtle" icon={<Star20Regular />} onClick={() => makeDefault(a)} aria-label={t('Als Standard-Postfach festlegen')} title={t('Als Standard-Postfach festlegen')} />)}
                 <Button appearance="subtle" icon={<Edit20Regular />} onClick={() => setEdit(a)} aria-label={t('Konto bearbeiten')} title={t('Konto bearbeiten')} />
                 <Button appearance="subtle" icon={<Delete20Regular />} onClick={() => remove(a)} aria-label={t('Konto entfernen')} title={t('Konto entfernen')} />
               </div>} />
           </Card>
         ))}
       </div>
+      {choose && <Text size={200}>{t('Das Standard-Postfach öffnet sich beim Start des Mailbereichs. Neue E-Mails ohne gewählten Ordner verschickt dmOffice über dieses Konto.')}</Text>}
       <div><Button appearance="primary" icon={<Add20Regular />} onClick={() => setWizard(true)}>{t('Konto hinzufügen')}</Button></div>
     </>
   )
@@ -396,7 +418,7 @@ function AccountWizard({ onManual, onDone }: { onManual: (f: AccountForm) => voi
       const r = await api.post('/api/settings/accounts/discover', { email: email.trim() })
       setStep('idle')
       if (!r.found) {
-        notify(t('Keine Einstellungen gefunden'), t('Für diese Adresse ließen sich keine Einstellungen finden. Bitte manuell eingeben – die Daten stehen meist in der Hilfe des Anbieters.'))
+        notify(t('Keine Einstellungen gefunden'), t('Für diese Adresse ließen sich keine Einstellungen finden. Bitte manuell eingeben.'))
         onManual(form(null))
         return
       }
@@ -430,7 +452,7 @@ function AccountWizard({ onManual, onDone }: { onManual: (f: AccountForm) => voi
   if (!found) return (
     <>
       <Text size={600} weight="semibold">{t('Konto hinzufügen')}</Text>
-      <Text>{t('Gib deine E-Mail-Adresse ein – Server, Ports und die Art der Anmeldung sucht dmOffice selbst heraus.')}</Text>
+      <Text>{t('Server, Ports und die Art der Anmeldung ermittelt dmOffice anhand der E-Mail-Adresse.')}</Text>
       <form className={s.grid} onSubmit={e => { e.preventDefault(); if (validEmail && !busy) next() }}>
         <Field label={t('E-Mail-Adresse')} className={s.full}>
           <Input type="email" value={email} onChange={(_, d) => setEmail(d.value)} autoFocus autoComplete="email" />
@@ -569,7 +591,7 @@ function AccountEditor({ initial, microsoft, onDone }: { initial: AccountForm; m
             {signIn && <MicrosoftSignIn onDone={flow => { set({ oauthFlow: flow }); setSignIn(false); setTest(null) }} onCancel={() => setSignIn(false)} />}
           </div>
         ) : (
-          <Field label={t('Passwort')} hint={a.hasImapPassword ? t('leer lassen: bleibt') : t('bei Gmail/Outlook: App-Passwort des Anbieters')}>
+          <Field label={t('Passwort')} hint={a.hasImapPassword ? t('leer lassen: bleibt') : undefined}>
             <Input type="password" value={a.imapPassword} onChange={(_, d) => set({ imapPassword: d.value })} autoComplete="new-password" />
           </Field>
         )}
@@ -586,7 +608,7 @@ function AccountEditor({ initial, microsoft, onDone }: { initial: AccountForm; m
 
         <Text className={s.section}>{t('Synchronisieren')}</Text>
         {/* Feste Zeilen: was je nach Speichermodus erscheint, hat eine eigene Zelle - so rutscht nichts nach */}
-        <Field label={t('Zeitraum')} hint={t('wie in Outlook: was hier offline liegt und durchsucht wird')}>
+        <Field label={t('Zeitraum')} hint={t('was hier offline liegt und durchsucht wird')}>
           <Dropdown value={period(a.syncMonths)}
             selectedOptions={[String(a.syncMonths)]} onOptionSelect={(_, d) => set({ syncMonths: Number(d.optionValue) })}>
             {[1, 3, 6, 12, 24, 60, 0].map(m => <Option key={m} value={String(m)}>{period(m)}</Option>)}
@@ -605,14 +627,15 @@ function AccountEditor({ initial, microsoft, onDone }: { initial: AccountForm; m
           </Dropdown>
         </Field>
         {a.storage === 'slim' ? (
-          <div style={{ display: 'flex', gap: 8 }}>
-            <Field label={t('Inhalte behalten')} hint={t('vollständig in dmOffice: Mails, die in dieser Zeit kamen oder geöffnet wurden')} style={{ flex: 1 }}>
-              <Dropdown value={t('{n} Tage', { n: a.slimDays })} selectedOptions={[String(a.slimDays)]} onOptionSelect={(_, d) => set({ slimDays: Number(d.optionValue) })}>
+          // Schmale Spalte (Handy): untereinander statt nebeneinander; die Auswahl ist sonst mindestens 250 px breit
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <Field label={t('Inhalte behalten')} hint={t('vollständig in dmOffice: Mails, die in dieser Zeit kamen oder geöffnet wurden')} style={{ flex: '1 1 180px', minWidth: 0 }}>
+              <Dropdown style={{ minWidth: 0, width: '100%' }} value={t('{n} Tage', { n: a.slimDays })} selectedOptions={[String(a.slimDays)]} onOptionSelect={(_, d) => set({ slimDays: Number(d.optionValue) })}>
                 {withValue(slimDayList, a.slimDays).map(d => <Option key={d} value={String(d)} text={t('{n} Tage', { n: d })}>{t('{n} Tage', { n: d })}</Option>)}
               </Dropdown>
             </Field>
-            <Field label={t('höchstens')} hint={t('zusammen; wird es mehr, weichen die ältesten Inhalte zuerst – beim Anbieter bleibt alles')} style={{ flex: 1 }}>
-              <Dropdown value={mbLabel(a.slimMb)} selectedOptions={[String(a.slimMb)]} onOptionSelect={(_, d) => set({ slimMb: Number(d.optionValue) })}>
+            <Field label={t('höchstens')} hint={t('zusammen; wird es mehr, weichen die ältesten Inhalte zuerst – beim Anbieter bleibt alles')} style={{ flex: '1 1 180px', minWidth: 0 }}>
+              <Dropdown style={{ minWidth: 0, width: '100%' }} value={mbLabel(a.slimMb)} selectedOptions={[String(a.slimMb)]} onOptionSelect={(_, d) => set({ slimMb: Number(d.optionValue) })}>
                 {withValue(slimMbList, a.slimMb).map(m => <Option key={m} value={String(m)} text={mbLabel(m)}>{mbLabel(m)}</Option>)}
               </Dropdown>
             </Field>
@@ -633,12 +656,14 @@ function AccountEditor({ initial, microsoft, onDone }: { initial: AccountForm; m
         </Field>
         <div />
         <Switch className={s.full} label={t('Gesendetes im Ordner „Gesendet“ ablegen (bei Gmail aus)')} checked={a.saveSentCopy} onChange={(_, d) => set({ saveSentCopy: d.checked })} />
-        <Switch className={s.full} label={t('Selbstsignierte Zertifikate annehmen (eigener Server im Netz)')} checked={a.acceptAnyCertificate} onChange={(_, d) => set({ acceptAnyCertificate: d.checked })} />
+        {featureOn('unifiedpick') && <Switch className={s.full} label={t('In „Alle Posteingänge“ zeigen')}
+          checked={a.inUnified !== false} onChange={(_, d) => set({ inUnified: d.checked })} />}
+        <Switch className={s.full} label={t('Selbstsignierte Zertifikate annehmen')} checked={a.acceptAnyCertificate} onChange={(_, d) => set({ acceptAnyCertificate: d.checked })} />
 
         {initial.id && <>
           <Text className={s.section}>{t('Ordner')}</Text>
           <Text size={200} className={s.full} style={{ color: tokens.colorNeutralForeground3 }}>
-            {t('Welcher Ordner beim Anbieter wofür da ist. dmOffice erkennt das meist selbst – hier legst du es fest, wenn es nicht passt oder ein Ordner fehlt.')}</Text>
+            {t('Welcher Ordner beim Anbieter wofür verwendet wird, wenn die automatische Zuordnung nicht passt oder ein Ordner fehlt.')}</Text>
           <FolderMapEditor account={initial.id} map={a.folderMap ?? {}} onChange={m => set({ folderMap: m })} />
         </>}
 

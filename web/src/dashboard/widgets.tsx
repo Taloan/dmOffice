@@ -22,7 +22,8 @@ export const useWidgetStyles = makeStyles({
   ell: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 },
   big: { fontSize: '40px', fontWeight: 600, lineHeight: 1 },
   bar: { width: '4px', borderRadius: '2px', alignSelf: 'stretch', flexShrink: 0 },
-  col: { display: 'flex', flexDirection: 'column', gap: '6px', minHeight: 0, flex: 1 },
+  // minWidth 0: lange Titel kuerzen mit Ellipse, statt die Spalte zu verbreitern
+  col: { display: 'flex', flexDirection: 'column', gap: '6px', minHeight: 0, minWidth: 0, flex: 1 },
   scroll: { overflowY: 'auto', overflowX: 'hidden', minHeight: 0, flex: 1 },
   input: { width: '100%' },
   chip: { display: 'inline-flex', alignItems: 'center', borderRadius: '999px', padding: '2px 9px', fontSize: tokens.fontSizeBase200, backgroundColor: tokens.colorNeutralBackground3, cursor: 'pointer', ':hover': { backgroundColor: tokens.colorNeutralBackground3Hover } },
@@ -50,7 +51,7 @@ export const WIDGET_INFO: Record<string, { label: () => string; hint: () => stri
   countdown: { label: () => t('Countdown'), hint: () => t('noch X Tage bis …'), size: 1 },
   bookmarks: { label: () => t('Lesezeichen'), hint: () => t('deine Schnellzugriffe'), size: 1 },
   storage: { label: () => t('Speicher'), hint: () => t('Belegung'), size: 1 },
-  system: { label: () => t('System'), hint: () => t('Sicherung, Speicher, Platz (Verwaltung)'), size: 2 },
+  system: { label: () => t('System'), hint: () => t('Backup, Speicher, Platz (Verwaltung)'), size: 2 },
   stack: { label: () => t('Stapel'), hint: () => t('mehrere Widgets zum Durchwischen'), size: 2 },
 }
 
@@ -111,7 +112,7 @@ export function EventsWidget({ w, big }: { w: Widget; big: boolean }) {
     <div className={s.row} onClick={ev => { ev.stopPropagation(); go(e.uri ? `#/calendar/event/${encodeURIComponent(e.uri)}/${d}` : '#/calendar/' + d) }}>
       <div className={s.bar} style={{ background: colorOf(e.calendar), minHeight: 28 }} />
       <div style={{ minWidth: 0, flex: 1 }}>
-        <div className={s.ell} style={{ fontWeight: 600, fontSize: 13 }}>{e.icon ? e.icon + ' ' : ''}{e.title}</div>
+        <div className={s.ell} style={{ fontWeight: 600, fontSize: 13 }} title={e.title}>{e.icon ? e.icon + ' ' : ''}{e.title}</div>
         <div className={mergeClasses(s.mut, s.ell)} style={{ fontSize: 12 }}>
           {e.allDay ? t('ganztägig') : `${e.start}–${e.end}`}{e.calendar ? ' · ' + e.calendar : ''}
           {e.now && <span style={{ color: tokens.colorPaletteGreenForeground1 }}> · {t('jetzt')}</span>}

@@ -5,11 +5,14 @@ import {
   TaskListSquareLtr20Regular, Image20Regular, MusicNote220Regular, DocumentText20Regular,
 } from '@fluentui/react-icons'
 import { useEffect, useRef, useState } from 'react'
+
 import { PageTitle } from './parts'
 import { BackBar, useBackClose, useIsMobile } from '../shell/mobile'
 import { pressable } from '../shell/nav'
 import { t } from '../i18n'
 import { demoMode, featureOn } from '../api'
+import { useApp } from '../App'
+import { SaveToAblageSettings } from '../files/SaveToAblage'
 import { AccountsSettings } from './AccountsSettings'
 import { RulesSettings, SpamSettings } from './RulesSettings'
 import { DevicesSettings, NotesSettings } from './DevicesSettings'
@@ -26,6 +29,8 @@ import { AppearanceSettings, InstallSettings, LanguageSettings, NotificationSett
 import { ComposeSettings, FolderPaneSettings, MessageListSettings, PreviewPaneSettings } from './MailPages'
 import { CategorySettings } from '../mail/Categories'
 import { SmartInboxSettings } from './SmartInboxSettings'
+import { OpenPgpSettings } from './OpenPgpSettings'
+import { CatchallSettings } from './CatchallSettings'
 import { CalendarViewSettings, EventSettings, PeopleSettings } from './CalendarPages'
 import { DmsAssignSettings, DmsProfilesSettings, DmsSourcesSettings } from '../dms/DmsSettings'
 import { DmsPaperlessSettings } from '../dms/DmsPaperless'
@@ -87,8 +92,10 @@ const categories: Category[] = [
       { key: 'folders', label: t('Ordnerbereich'), words: kw('favoriten ordner sortieren reihenfolge'), render: () => <FolderPaneSettings /> },
       { key: 'compose', label: t('Verfassen und Antworten'), words: kw('schrift schriftart antworten allen signatur'), render: () => <ComposeSettings /> },
       { key: 'smart', label: t('Smart Inbox'), words: kw('smart inbox intelligent relevant sonstige prio kategorien lernen pakete reisen newsletter ankündigungen termine'), render: () => <SmartInboxSettings /> },
+      { key: 'aliases', label: t('Catchall-Aliase'), words: kw('catchall catch-all alias aliase wegwerfadresse domain tarnadresse simplelogin sperren weitergeleitet'), render: () => <CatchallSettings /> },
       { key: 'categories', label: t('Kategorien'), words: kw('kategorie farbe schlagwort keyword label einordnen'), render: () => <><PageTitle>{t('Kategorien')}</PageTitle><CategorySettings /></> },
       { key: 'rules', label: t('Regeln'), words: kw('regel weiterleiten verschieben automatisch filter'), render: () => <RulesSettings /> },
+      { key: 'openpgp', label: 'OpenPGP', words: kw('openpgp pgp gpg gnupg signieren signatur schlüssel fingerabdruck autocrypt wkd verschlüsseln'), render: () => <OpenPgpSettings /> },
       { key: 'junk', label: t('Junk-E-Mail'), words: kw('spam junk filter spambayes'), render: () => <SpamSettings /> },
     ],
   },
@@ -132,6 +139,7 @@ const categories: Category[] = [
   },
   { key: 'gallery', label: t('Galerie'), icon: <Image20Regular />, pages: [
     { key: 'gallery-xmp', label: t('Angaben in den Fotos'), words: kw('xmp sidecar sterne bewertung titel beschreibung markierung farbe schreiben lightroom'), render: () => <GallerySettings /> },
+    ...(featureOn('ablagesave') ? [{ key: 'gallery-save', label: t('In Ablage sichern'), words: kw('ablage sichern kopieren galerie-ordner zielordner uploads herkunft jahr monat'), render: () => <SaveToAblageSettings /> }] : []),
   ] },
   { key: 'audio', label: t('Audiothek'), icon: <MusicNote220Regular />, pages: [] },
   {
@@ -149,7 +157,7 @@ const categories: Category[] = [
 const aliases: Record<string, string> = { general: 'language' }
 
 /** Release-Liste: Seiten und Bereiche, die erst mit einer späteren Version freigeschaltet werden. */
-const pageFeature: Record<string, string> = { tresor: 'vault' }
+const pageFeature: Record<string, string> = { aliases: 'catchall', openpgp: 'pgp', tresor: 'vault' }
 const released = (list: Category[]) => list
   .map(c => ({ ...c, pages: c.pages.filter(p => !pageFeature[p.key] || featureOn(pageFeature[p.key])) }))
   .filter(c => c.pages.length > 0)
@@ -162,6 +170,7 @@ const withModules = (list: Category[]) => list.filter(c => !categoryModule[c.key
 
 export default function SettingsView() {
   const s = useStyles()
+  const { notify } = useApp()
   const cats = released(withModules(categories))
   const pages = cats.flatMap(c => c.pages.map(p => ({ ...p, category: c })))
   const fromHash = location.hash.split('/')[2]
@@ -191,8 +200,16 @@ export default function SettingsView() {
   const onHash = useRef<() => void>(() => {})
   onHash.current = () => {
     const key = location.hash.split('/')[2]
-    if (location.hash.startsWith('#/settings') && pages.some(p => p.key === key)) { go(key); setStep('page') }
+    if (!location.hash.startsWith('#/settings')) return
+    if (pages.some(p => p.key === (aliases[key] ?? key))) { go(aliases[key] ?? key); setStep('page') }
+    else if (key) unknownPage()
   }
+  // Seite aus der Adresse gibt es nicht: Hinweis und Adresse auf die gezeigte Seite setzen, statt still etwas anderes zu zeigen
+  const unknownPage = () => {
+    notify(t('Einstellungsseite nicht gefunden.'), undefined, 'warning')
+    history.replaceState(history.state, '', '#/settings/' + page)
+  }
+  useEffect(() => { if (fromHash && !pages.some(p => p.key === (aliases[fromHash] ?? fromHash))) unknownPage() }, []) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const handle = () => onHash.current()
     window.addEventListener('hashchange', handle)

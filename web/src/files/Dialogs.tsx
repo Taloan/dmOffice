@@ -12,7 +12,7 @@ import { api, q } from '../api'
 import { locale, t } from '../i18n'
 import { Item } from './common'
 import { loadFileSettings } from '../settings/FilesSettings'
-import { askConfirm } from '../shell/context'
+import { askConfirm, askText } from '../shell/context'
 
 const useStyles = makeStyles({
   links: { display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '12px' },
@@ -320,8 +320,8 @@ export function ShareDialog({ item, onClose, notify, fail }: {
                     <Input type="number" size="small" min={0} style={{ width: 80 }} aria-label={t('Höchstens Abrufe')} title={t('Höchstens Abrufe (0 = unbegrenzt)')}
                       defaultValue={String(l.maxDownloads ?? 0)} onBlur={e => { const v = Number(e.target.value) || 0; if (v !== (l.maxDownloads ?? 0)) change(l, { maxDownloads: v }) }} />
                     {l.hasPassword && <span className={s.muted} style={{ display: 'flex', alignItems: 'center', gap: 2 }}><LockClosed16Regular />{t('Passwort')}</span>}
-                    <Button size="small" appearance="subtle" onClick={() => {
-                      const p = prompt(l.hasPassword ? t('Neues Passwort (leer = Passwort entfernen):') : t('Passwort für den Link:'))
+                    <Button size="small" appearance="subtle" onClick={async () => {
+                      const p = await askText(l.hasPassword ? t('Passwort ändern') : t('Passwort setzen'), '', l.hasPassword ? t('Neues Passwort (leer = Passwort entfernen):') : t('Passwort für den Link:'))
                       if (p !== null) change(l, { password: p })
                     }}>{l.hasPassword ? t('Passwort ändern') : t('Passwort setzen')}</Button>
                   </div>

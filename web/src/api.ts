@@ -117,11 +117,25 @@ export interface Me {
   files?: boolean
   /** Audiothek eingeschaltet (Verwaltung) und für diesen Benutzer da */
   audio?: boolean
+  /** Mit OIDC verknüpft: Passwort verwaltet der Anbieter */
+  oidcLinked?: boolean
 }
 
 export interface Addr { name?: string | null; address: string }
 
-export interface Account { id: string; name: string; email: string; displayName: string; signature: string; language?: 'de' | 'en'; trashDays?: number; junkDays?: number; storage?: 'full' | 'slim' }
+export interface Account { id: string; name: string; email: string; displayName: string; signature: string; language?: 'de' | 'en'; trashDays?: number; junkDays?: number; storage?: 'full' | 'slim'; isDefault?: boolean
+  /** Posteingang in „Alle Posteingänge“ (Kennung „unifiedpick“) */
+  inUnified?: boolean }
+
+/** Standard-Mailkonto (Einstellungen → Konten, Kennung „defaultaccount“), sonst das erste der Liste. */
+export const defaultAccount = <T extends { id?: string; isDefault?: boolean }>(accounts: T[]): T | undefined =>
+  (featureOn('defaultaccount') ? accounts.find(a => a.isDefault) : undefined) ?? accounts[0]
+
+/** Konto für eine neue Mail: das des gewählten Ordners; ohne Auswahl oder in kontoübergreifenden Ordnern
+ *  (Alle Posteingänge, Markiert, Suchordner, Kategorien, Postausgang) das Standard-Mailkonto. */
+export const composeAccount = (sel: { account: string; folder: string } | null | undefined, accounts: Account[]) =>
+  sel && !sel.folder.startsWith('__') && !sel.folder.startsWith('sf:') && !sel.folder.startsWith('cat:') && accounts.some(a => a.id === sel.account)
+    ? sel.account : defaultAccount(accounts)?.id ?? ''
 
 export interface Folder {
   path: string; name: string; delimiter: string; special: string | null; selectable: boolean
@@ -135,6 +149,10 @@ export interface MailItem {
   preview: string; spam: number | null; cached: boolean; keywords: string[]
   /** Nur in Suchergebnissen: gefunden im Inhalt dieses Anhangs (Ausschnitt mit Markierungen, shell/Snippet) */
   match?: { name: string; part: number; method: string; snippet: string } | null
+  /** An diesen Catchall-Alias gegangen (Mail/CatchallAliases.cs) */
+  alias?: string | null
+  /** open, blocked oder unknown (Adresse der Domain, nicht in der Liste) */
+  aliasState?: 'open' | 'blocked' | 'unknown' | null
 }
 
 export interface Attachment { index: number; name: string; mime: string; size: number; inline: boolean }
@@ -153,12 +171,16 @@ export interface Message {
   phish?: PhishFinding[] | null
   /** Kopfzeile List-Id (Newsletter, Mailinglisten) */
   listId?: string | null
+  /** OpenPGP: signiert (mime, inline) oder Schlüssel dabei (key) - Prüfung über /signature (mail/Pgp.tsx) */
+  pgp?: 'mime' | 'inline' | 'key' | null
+  /** An diesen Catchall-Alias gegangen; aliasReply: Antworten darf sie als Absender nehmen */
+  alias?: string | null; aliasReply?: boolean; aliasState?: 'open' | 'blocked' | 'unknown' | null
 }
 
 /** kind: auth (domain, detail dmarc|spf), link (shown, target), lookalike (domain, like, detail sender|link|mixed),
  * newsender (domain = Absenderadresse, target). strong: allein schon Grund zur Warnung */
 export interface PhishFinding {
-  kind: 'auth' | 'link' | 'lookalike' | 'newsender' | 'freemail-org' | 'hosted' | 'myaddress' | 'pressure'; strong: boolean
+  kind: 'auth' | 'link' | 'lookalike' | 'newsender' | 'virus' | 'freemail-org' | 'hosted' | 'myaddress' | 'pressure'; strong: boolean
   domain?: string | null; shown?: string | null; target?: string | null; like?: string | null; detail?: string | null
 }
 

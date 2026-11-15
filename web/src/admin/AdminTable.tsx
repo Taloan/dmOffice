@@ -85,7 +85,7 @@ export function AdminTable<R>({ id, cols, rows, rowKey, initialSort, max = 1000 
       </Table>
       </div>
       <Menu open={!!menu} onOpenChange={(_, d) => { if (!d.open) setMenu(null) }}
-        positioning={{ target: menu ? { getBoundingClientRect: () => ({ x: menu.x, y: menu.y, left: menu.x, top: menu.y, right: menu.x, bottom: menu.y, width: 0, height: 0, toJSON: () => '' }) } as unknown as HTMLElement : undefined }}>
+        positioning={{ autoSize: 'height', target: menu ? { getBoundingClientRect: () => ({ x: menu.x, y: menu.y, left: menu.x, top: menu.y, right: menu.x, bottom: menu.y, width: 0, height: 0, toJSON: () => '' }) } as unknown as HTMLElement : undefined }}>
         <MenuPopover>
           <MenuList checkedValues={{ cols: layout.map(x => x.key) }}>
             {cols.filter(c => !c.fixed).map(c => <MenuItemCheckbox key={c.key} name="cols" value={c.key} onClick={() => toggle(c.key)}>{c.label()}</MenuItemCheckbox>)}

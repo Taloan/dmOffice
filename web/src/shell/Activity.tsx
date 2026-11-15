@@ -58,6 +58,7 @@ function nameOf(id: string): string {
     case 'mail-queue': return t('Postausgang senden')
     case 'mail-slim': return t('Slim Mode aufräumen')
     case 'files-transfer': return t('Dateien übertragen')
+    case 'gallery-save': return t('In Ablage sichern')
     case 'mail-trash': return t('Papierkorb und Junk leeren')
     case 'mail-classify': return t('Posteingang neu einordnen')
     case 'files-blobs': return t('Dateiinhalte auslagern')
@@ -75,6 +76,7 @@ function nameOf(id: string): string {
     case 'mount-index': return t('Suche in Server-Mounts')
     case 'files-meta': return t('Aufnahmedaten auslesen')
     case 'gallery-scan': return t('Galerie-Ordner einlesen')
+    case 'storage-cleanup': return t('Alte Daten am bisherigen Ziel löschen')
     case 'gallery-import': return t('Importprofile')
     case 'audio-scan': return t('Audiothek-Ordner einlesen')
     case 'gallery-proxies': return t('Große Vorschauen erzeugen')
@@ -93,7 +95,7 @@ function describe(i: ActivityItem): string {
   else if (i.state === 'waiting') parts.push(t('wartet'))
   if (i.detail) parts.push(i.detail)
   // Übertragen zählt Bytes - als Größe zeigen (190,0 MB von 3,1 GB), sonst Anzahl
-  const amount = (x: number) => (i.id === 'files-transfer' ? fmtSize(x) : n(x))
+  const amount = (x: number) => (i.id === 'files-transfer' || i.id === 'gallery-save' ? fmtSize(x) : n(x))
   if (i.total != null && i.done != null) parts.push(t('{done} von {total}', { done: amount(i.done), total: amount(i.total) }))
   else if (i.pending) parts.push(t('noch {n}', { n: n(i.pending) }))
   if (i.state !== 'running') {

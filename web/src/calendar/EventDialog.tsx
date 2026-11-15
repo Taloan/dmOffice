@@ -3,13 +3,13 @@ import {
   Textarea, makeStyles, mergeClasses, tokens,
 } from '@fluentui/react-components'
 import { Mail20Regular } from '@fluentui/react-icons'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { FluentProvider } from '@fluentui/react-components'
-import { Account, api, Attendee, Collection } from '../api'
+import { Account, api, Attendee, Collection, defaultAccount } from '../api'
 import { AddressInput } from '../mail/AddressInput'
 import { useApp } from '../App'
-import { darkTheme, lightTheme, storedTheme } from '../theme'
+import { activeTheme, storedTheme } from '../theme'
 import { locale, t } from '../i18n'
 import { NaturalDate, parseNaturalDate } from '../shell/naturalDate'
 import { DateHint } from '../shell/DateHint'
@@ -184,7 +184,7 @@ export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; 
         scope, instance: d.instance, moveTo: moveTo !== draft.calendar ? moveTo : undefined,
         // Teilnehmer nur bei eigenen Terminen; null laesst sie unveraendert
         attendees: foreign || readOnly ? null : people.map(parseAddress).filter(a => a.email.includes('@')),
-        account: account ?? accounts[0]?.id, notify: notifyPeople,
+        account: account ?? defaultAccount(accounts)?.id, notify: notifyPeople,
       }) as { invited?: number; cancelled?: number; error?: string }
       if (r?.error) notify(r.error, undefined, 'warning')
       else if (r?.invited || r?.cancelled) notify(r.invited ? t('Einladung an {n} Teilnehmer im Postausgang', { n: r.invited }) : t('Absage an {n} Teilnehmer im Postausgang', { n: r.cancelled ?? 0 }))
@@ -199,7 +199,8 @@ export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; 
       const r = await askScope(t('Termin löschen'))
       if (!r) return
       if (r === 'instance') instance = d.instance
-    } else if (!await askConfirm('', hadPeople && !foreign ? t('Termin löschen? Die Teilnehmer bekommen eine Absage.') : t('Termin löschen? Es gibt dafür keinen Papierkorb, nur direkt danach „Rückgängig“.'))) return
+    // Ohne Teilnehmer keine Rückfrage: danach gibt es „Rückgängig“
+    } else if (hadPeople && !foreign && !await askConfirm('', t('Termin löschen? Die Teilnehmer bekommen eine Absage.'), t('Löschen'))) return
     try {
       const uri = d.uri, calendar = draft.calendar
       const r = await api.del(`/api/pim/events/${calendar}/${encodeURIComponent(uri)}` + (instance ? `?instance=${encodeURIComponent(instance)}` : '')) as { cancelled?: number; undo?: string } | undefined
@@ -222,10 +223,16 @@ export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; 
     set({ start, end: new Date(start.getTime() + Math.max(len, 0)) })
   }
   const setEnd = (v: string) => {
-    const end = d.allDay ? new Date(v + 'T00:00') : new Date(v)
+    const day = new Date(v + 'T00:00')
+    // Ganztägig: das Feld zeigt den letzten Tag, gespeichert wird wie überall der Tag danach
+    const end = d.allDay ? new Date(day.getFullYear(), day.getMonth(), day.getDate() + 1) : new Date(v)
     if (!isNaN(end.getTime())) set({ end })
   }
   const endShown = d.allDay ? lastDay(d.start, d.end) : d.end
+  // Ende vor Beginn: am Feld zeigen und nicht speichern, statt still zu ändern
+  const endBefore = d.allDay ? dayNumber(endShown) < dayNumber(d.start) : d.end.getTime() < d.start.getTime()
+  // Langer Kalendername: im Feld gekürzt, ganz im Tooltip
+  const calLabel = (c => c?.owner ? t('{name} (von {owner})', { name: c.name, owner: c.owner }) : c?.name ?? '')(calendars.find(c => c.id === moveTo))
 
   // Etwas eingegeben: Klick daneben, Esc oder Zurück fragen nach, statt alles zu verwerfen
   const [initial] = useState(() => JSON.stringify({ d: draft, people, art, moveTo: draft.calendar }))
@@ -233,6 +240,23 @@ export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; 
   const askClose = async () => {
     if (!dirty || await askConfirm('', t('Eingaben verwerfen?'), t('Verwerfen'))) onClose(false)
   }
+  // Anderer Bereich gewählt (Kopfzeile, Tastenkürzel): Dialog schließen statt über der neuen Seite stehen zu lassen.
+  // Mit Eingaben erst nachfragen; abgelehnt geht es zurück in den Bereich des Dialogs.
+  const dirtyRef = useRef(dirty)
+  dirtyRef.current = dirty
+  const closeRef = useRef(onClose)
+  closeRef.current = onClose
+  useEffect(() => {
+    const areaOf = (h: string) => h.replace(/^#\/?/, '').split('/')[0]
+    const area = areaOf(location.hash)
+    const onHash = async () => {
+      if (areaOf(location.hash) === area) return
+      if (!dirtyRef.current || await askConfirm('', t('Eingaben verwerfen?'), t('Verwerfen'))) closeRef.current(false)
+      else history.back()
+    }
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
 
   return (
     <Dialog open onOpenChange={(_, x) => { if (!x.open) askClose() }}>
@@ -242,7 +266,7 @@ export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; 
             {d.uri ? t('Termin') : t('Neuer Termin')}
           </DialogTitle>
           <DialogContent>
-            <form className={s.grid} onSubmit={e => { e.preventDefault(); save() }}>
+            <form className={s.grid} onSubmit={e => { e.preventDefault(); if (!endBefore) save() }}>
               <Field label={t('Titel')} className={s.full}>
                 <Input value={d.title} onChange={(_, v) => typeTitle(v.value)} autoFocus placeholder={d.uri ? undefined : t('z. B. „Zahnarzt morgen 15 Uhr“')} />
                 {nl && !nlOff && !d.uri && <DateHint nd={nl} onIgnore={() => { setNlOff(true); set({ ...orig }) }} />}
@@ -281,7 +305,7 @@ export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; 
                 {(people.length > 0 || hadPeople) && accounts.length > 0 && <>
                   {accounts.length > 1 && !draft.organizer && (
                     <Field label={t('Einladen als')}>
-                      <Dropdown value={(accounts.find(a => a.id === account) ?? accounts[0])?.email ?? ''} selectedOptions={[account ?? accounts[0]?.id ?? '']}
+                      <Dropdown value={(accounts.find(a => a.id === account) ?? defaultAccount(accounts))?.email ?? ''} selectedOptions={[account ?? defaultAccount(accounts)?.id ?? '']}
                         onOptionSelect={(_, v) => setAccount(v.optionValue)}>
                         {accounts.map(a => <Option key={a.id} value={a.id}>{a.email}</Option>)}
                       </Dropdown>
@@ -294,7 +318,7 @@ export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; 
               <Field label={t('Beginn')}>
                 <Input type={d.allDay ? 'date' : 'datetime-local'} value={d.allDay ? localDate(d.start) : localDateTime(d.start)} onChange={(_, v) => setStart(v.value)} />
               </Field>
-              <Field label={t('Ende')}>
+              <Field label={t('Ende')} validationState={endBefore ? 'error' : 'none'} validationMessage={endBefore ? t('Das Ende liegt vor dem Beginn.') : undefined}>
                 <Input type={d.allDay ? 'date' : 'datetime-local'} value={d.allDay ? localDate(endShown) : localDateTime(d.end)} onChange={(_, v) => setEnd(v.value)} />
               </Field>
               <Switch label={t('Ganztägig')} checked={d.allDay} onChange={(_, v) => set({ allDay: v.checked, ...(v.checked ? {} : { end: new Date(d.start.getTime() + 3600000) }) })} />
@@ -314,7 +338,8 @@ export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; 
                 </Dropdown>
               </Field>
               <Field label={t('Kalender')} className={s.full}>
-                <Dropdown value={(c => c?.owner ? t('{name} (von {owner})', { name: c.name, owner: c.owner }) : c?.name ?? '')(calendars.find(c => c.id === moveTo))} selectedOptions={[String(moveTo)]}
+                <Dropdown value={calLabel} selectedOptions={[String(moveTo)]} title={calLabel} style={{ minWidth: 0, maxWidth: '100%' }}
+                  button={{ children: <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{calLabel}</span> }}
                   onOptionSelect={(_, v) => setMoveTo(Number(v.optionValue))}>
                   {calendars.filter(c => c.canWrite !== false || c.id === moveTo).map(c => <Option key={c.id} value={String(c.id)}>{c.owner ? t('{name} (von {owner})', { name: c.name, owner: c.owner }) : c.name}</Option>)}
                 </Dropdown>
@@ -330,7 +355,7 @@ export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; 
             {d.uri && !readOnly && <Button onClick={remove} style={{ marginRight: 'auto' }}>{t('Löschen')}</Button>}
             <Button onClick={() => onClose(false)}>{readOnly ? t('Schließen') : t('Abbrechen')}</Button>
             {/* disabledFocusable: der Fokus bleibt im Dialog, Esc wirkt auch nach einem gescheiterten Speichern */}
-            {!readOnly && <Button appearance="primary" onClick={() => { if (!busy) save() }} disabledFocusable={busy}>{t('Speichern')}</Button>}
+            {!readOnly && <Button appearance="primary" onClick={() => { if (!busy && !endBefore) save() }} disabledFocusable={busy || endBefore}>{t('Speichern')}</Button>}
           </DialogActions>
         </DialogBody>
       </DialogSurface>
@@ -354,7 +379,7 @@ export function askScope(title: string): Promise<'series' | 'instance' | null> {
     const done = (r: 'series' | 'instance' | null) => { root.unmount(); host.remove(); resolve(r) }
     const dark = storedTheme() === 'dark' || (storedTheme() === 'system' && matchMedia('(prefers-color-scheme: dark)').matches)
     root.render(
-      <FluentProvider theme={dark ? darkTheme : lightTheme}>
+      <FluentProvider theme={activeTheme(dark)}>
         <Dialog open onOpenChange={(_, x) => !x.open && done(null)}>
           <DialogSurface style={{ maxWidth: 420 }}>
             <DialogBody>

@@ -180,12 +180,12 @@ public class PukkiTests : IClassFixture<ChatFixture>
         Assert.Contains("10:00 Uhr", when);
         Assert.Contains("finde ich nichts", await Ask("cleo", room, "Such Quantenphysik"));
 
-        // Nur der Ort passt („Biotonne“ in Vöhringen): kein Treffer für „Schlachtplatte in Vöhringen“
+        // Nur der Ort passt („Biotonne“ in Musterstadt): kein Treffer für „Schlachtplatte in Musterstadt“
         var cal = PimStore.Collections(space.Db, PimStore.Calendar).First(c => c.Components.Contains("VEVENT"));
         var day = DateTime.UtcNow.AddDays(3).ToString("yyyyMMdd");
         PimStore.Put(space.Db, cal, "bio-test.ics", "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//t//t//DE\r\nBEGIN:VEVENT\r\nUID:bio-test\r\nDTSTAMP:20260101T000000Z\r\n"
-            + $"DTSTART;VALUE=DATE:{day}\r\nSUMMARY:Biotonne\r\nLOCATION:Neue Wiesen, Vöhringen\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n", zone: space.Zone);
-        Assert.Contains("finde ich keinen Termin", await Ask("cleo", room, "wann ist die Schlachtplatte in 72189 Vöhringen"));
+            + $"DTSTART;VALUE=DATE:{day}\r\nSUMMARY:Biotonne\r\nLOCATION:Hauptstraße, Musterstadt\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n", zone: space.Zone);
+        Assert.Contains("finde ich keinen Termin", await Ask("cleo", room, "wann ist die Schlachtplatte in 12345 Musterstadt"));
         Assert.Contains("Biotonne", await Ask("cleo", room, "wann ist die Biotonne"));
     }
 }

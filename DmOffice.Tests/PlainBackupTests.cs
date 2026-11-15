@@ -55,6 +55,24 @@ public class PlainBackupTests
     }
 
     [Fact]
+    public async Task Namen_die_Windows_nicht_kennt_werden_im_Export_gesaeubert()
+    {
+        using var c = new Ctx();
+        c.S.Areas = [PlainBackup.Files];
+        foreach (var name in new[] { "a:b.txt", "CON.txt", "Bericht.", "Bericht", "Ende " })
+            Put(c.Db, "Namen/" + name, name);
+        var r = await c.Run();
+        Assert.Equal(0, r.Failed);
+        Assert.Null(r.Error);
+        var got = Directory.GetFiles(c.File("Dateien/Namen")).Select(Path.GetFileName).Order().ToArray();
+        Assert.Equal(5, got.Length);
+        Assert.Contains("a_b.txt", got);
+        Assert.Contains("_CON.txt", got);
+        Assert.Contains("Bericht (2)", got);
+        Assert.Equal(0, (await c.Run()).Failed);
+    }
+
+    [Fact]
     public async Task Erster_Lauf_legt_lesbare_Kopie_an_und_zweiter_sendet_nichts()
     {
         using var c = new Ctx();

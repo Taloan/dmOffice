@@ -7,7 +7,8 @@ namespace DmOffice.Core;
 /// Release-Liste: welche Bereiche und Funktionen in dieser Version freigeschaltet sind. features.json (neben der Assembly)
 /// nennt je Kennung die Version, ab der sie gilt, oder „aus“ (in keiner Version); release.txt die Version dieses Stands.
 /// Kennungen, die nicht in der Liste stehen, gelten immer. Testserver schalten mit DMOFFICE_FEATURES mehr oder weniger
-/// frei: „all“ (alles) oder eine Liste wie „+vault,-dms“.
+/// frei: „all“ (alles), eine Versionsnummer wie „2.1“ (alles, was laut features.json bis dahin gilt) oder eine Liste wie
+/// „+vault,-pgp“ - auch gemischt: „2.1,+vault“.
 /// Nicht Freigeschaltetes ist nur inaktiv: Die Pfade der API antworten mit 404, Web und App blenden es aus
 /// (/api/auth/state: featuresOff), Hintergrundarbeit und Querverbindungen fragen <see cref="On"/>.
 /// Dazu die Hauptschalter der Module (<see cref="Modules"/>): Was der Admin ausschaltet (ServerSettings.ModulesOff), gilt
@@ -15,8 +16,12 @@ namespace DmOffice.Core;
 /// </summary>
 public static class Features
 {
-    public const string Vault = "vault", ImportProfiles = "importprofiles", Audio = "audio", Gallery = "gallery", Notes = "notes",
-        Tasks = "tasks", Office = "office", Dms = "dms";
+    public const string Catchall = "catchall",
+        MailExpiry = "mailexpiry", MailMove = "mailmove", Oidc = "oidc", Sftp = "sftp", Pgp = "pgp", FileCategories = "filecats", VirusScan = "clamav", Vault = "vault",
+        ImportProfiles = "importprofiles", Audio = "audio", Gallery = "gallery", Notes = "notes", Tasks = "tasks", Office = "office",
+        Dms = "dms", DmsFolders = "dmsfolders", DmsHide = "dmshide", DmsYear = "dmsyear", DmsSave = "dmssave", DmsAmount = "dmsamount", DmsRelearn = "dmsrelearn", AutoUnsubscribe = "autounsub",
+        DefaultAccount = "defaultaccount", GalleryDupes = "galdupes", DmsMark = "dmsmark", DmsRework = "dmsrework", SaveToAblage = "ablagesave", UnifiedPick = "unifiedpick", DmsPlace = "dmsplace", DmsAiCheck = "dmsaicheck",
+        CalendarSearch = "calsearch", ExtenderUsage = "extenderusage";
 
     /// <summary>
     /// Zusatzmodule, die der Admin serverweit aus- und einschaltet (Reihenfolge wie in der Leiste). Die Grundausstattung
@@ -24,6 +29,12 @@ public static class Features
     /// darauf auf. Früher gespeicherte Schalter dafür zählen nicht mehr (SetModulesOff).
     /// </summary>
     public static readonly string[] Modules = [Audio, Dms];
+
+    /// <summary>Angezeigte Version: die höchste, deren Funktionen alle freigeschaltet sind (Testserver mit DMOFFICE_FEATURES
+    /// zeigen so 2.1 statt 2.0). Steht vor _off, weil Load beides setzt.</summary>
+    public static string Shown { get; private set; } = "";
+    /// <summary>Darüber hinaus freigeschaltete Funktionen späterer Versionen oder solche, die in keiner Version gelten („aus“)</summary>
+    public static IReadOnlyList<string> ShownExtra { get; private set; } = [];
 
     private static HashSet<string> _off = Load();
     // Vom Admin ausgeschaltete Module (ServerSettings.ModulesOff), gesetzt in Use und bei jeder Änderung der Einstellungen
@@ -39,7 +50,9 @@ public static class Features
     /// Kennungen von Funktionen, die dieser Stand gar nicht enthält. Clients, die sie kennen (die App), blenden sie nur aus, wenn
     /// sie in <see cref="Off"/> stehen - darum meldet der Server sie immer als aus.
     /// </summary>
-    internal static readonly string[] NotIncluded = ["journal", "coach", "emergency", "catchall", "mailexpiry", "pgp", "clamav", "filecats", "faces", "finance"];
+    internal static readonly string[] NotIncluded = ["journal", "coach", "emergency", "faces", "mailnudge", "helpdesk", "helpdeskoauth", "hdinline",
+        "finance", "finfiling", "zugferd", "finaccounts", "finassets", "einvoice", "finbankimport", "finbooking", "fints", "eurexport",
+        "recentclear", "folderviews", "navtop", "treeauto", "backupcron", "addressbar", "folderprops", "fkeys", "exportcron", "selectpattern", "copypath", "bulkrename", "f1help", "dualpane", "typeahead", "foldertabs", "mailplain", "mailpreview", "darkswap", "mailsearchhist", "dmsrolename", "mailtrackers", "calclip", "dmshistory"];
 
     /// <summary>Die nicht freigeschalteten, ausgeschalteten oder nicht enthaltenen Kennungen (für Web und App).</summary>
     public static IReadOnlyCollection<string> Off => _off.Union(_modulesOff).Union(NotIncluded).ToList();
@@ -63,6 +76,8 @@ public static class Features
         try { list = JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(Path.Combine(dir, "features.json"))) ?? new(); }
         catch (Exception e) when (e is IOException or JsonException) { list = new(); }
         var off = Compute(release, list, Environment.GetEnvironmentVariable("DMOFFICE_FEATURES"));
+        (Shown, var extra) = Display(release, list, off);
+        ShownExtra = extra;
         // Demo-Server: einiges ist dort immer aus (Tresor, Importprofile)
         if (Demo.Enabled) off.UnionWith(Demo.FeaturesOff);
         return off;
@@ -75,10 +90,26 @@ public static class Features
         foreach (var part in (env ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
             if (part.Equals("all", StringComparison.OrdinalIgnoreCase)) off.Clear();
+            // Versionsnummer: verhalten wie diese Version (Testserver der nächsten Version)
+            else if (char.IsDigit(part[0])) off.RemoveWhere(id => list.TryGetValue(id, out var since) && Released(since, part));
             else if (part.StartsWith('+')) off.Remove(part[1..]);
             else if (part.StartsWith('-')) off.Add(part[1..]);
         }
         return off;
+    }
+
+    /// <summary>Angezeigte Version und die Funktionen, die darüber hinaus freigeschaltet sind.</summary>
+    internal static (string Shown, List<string> Extra) Display(string release, Dictionary<string, string> list, HashSet<string> off)
+    {
+        var shown = release;
+        var later = list.Values.Where(v => Version.TryParse(v, out _) && !Released(v, release)).Distinct().OrderBy(Version.Parse);
+        foreach (var v in later)
+        {
+            if (list.Where(kv => kv.Value == v).Any(kv => off.Contains(kv.Key))) break;
+            shown = v;
+        }
+        var extra = list.Where(kv => !Released(kv.Value, shown) && !off.Contains(kv.Key)).Select(kv => kv.Key).Order().ToList();
+        return (shown, extra);
     }
 
     private static bool Released(string since, string release) =>
@@ -87,6 +118,13 @@ public static class Features
     // Pfade der API je Kennung - wer nicht freigeschaltet ist, bekommt 404
     private static readonly (Regex Path, string Id)[] Paths =
     [
+        (new(@"^/api/(auth|admin)/oidc(/|$)", RegexOptions.IgnoreCase), Oidc),
+        (new(@"^/api/gallery/save(/|$)", RegexOptions.IgnoreCase), SaveToAblage),
+        (new(@"^/api/mail/aliases(/|$)", RegexOptions.IgnoreCase), Catchall),
+        (new(@"^/api/mail/(expiries$|[^/]+/expire(/|$))", RegexOptions.IgnoreCase), MailExpiry),
+        (new(@"^/api/mail/(pgp(/|$)|[^/]+/signature$)", RegexOptions.IgnoreCase), Pgp),
+        (new(@"^/api/files/(categories|tags/items)(/|$)", RegexOptions.IgnoreCase), FileCategories),
+        (new(@"^/api/admin/virus(/|$)", RegexOptions.IgnoreCase), VirusScan),
         (new(@"^/api/tresor(/|$)", RegexOptions.IgnoreCase), Vault),
         (new(@"^/api/gallery/imports(/|$)", RegexOptions.IgnoreCase), ImportProfiles),
         (new(@"^/api/dms(/|$)", RegexOptions.IgnoreCase), Dms),

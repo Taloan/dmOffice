@@ -6,6 +6,7 @@ import {
 } from '@fluentui/react-icons'
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
 import { t } from '../i18n'
+import { askText } from './context'
 
 const useStyles = makeStyles({
   wrap: { display: 'flex', flexDirection: 'column', minHeight: 0, flex: 1 },
@@ -15,14 +16,24 @@ const useStyles = makeStyles({
   swatch: { width: '22px', height: '22px', borderRadius: '4px', border: `1px solid ${tokens.colorNeutralStroke1}`, cursor: 'pointer', padding: 0 },
 })
 
-const colors = ['#000000', '#444444', '#888888', '#C00000', '#E8590C', '#B8860B', '#2E7D32', '#0F6CBD', '#1F3A93', '#7B1FA2', '#AD1457', '#FFFFFF']
-const marks = ['#FFF59D', '#C5E1A5', '#B3E5FC', '#F8BBD0', '#FFE0B2', 'transparent']
+export const colors = ['#000000', '#444444', '#888888', '#C00000', '#E8590C', '#B8860B', '#2E7D32', '#0F6CBD', '#1F3A93', '#7B1FA2', '#AD1457', '#FFFFFF']
+export const marks = ['#FFF59D', '#C5E1A5', '#B3E5FC', '#F8BBD0', '#FFE0B2', 'transparent']
 
 export interface RichEditorHandle {
   html(): string
   text(): string
   focus(): void
+  /** Einfügemarke an den Anfang des Textes setzen (Antworten: vor Signatur und Zitat). */
+  focusStart(): void
   insertHtml(html: string): void
+  /** Formatbefehl (execCommand) auf den Text anwenden, etwa aus dem Menüband. */
+  exec(cmd: string, value?: string): void
+  /** Ist der Befehl an der Einfügemarke gerade aktiv (fett, Liste …)? */
+  active(cmd: string): boolean
+  link(): void
+  pickImage(): void
+  /** Der Textbereich (für Fokus-Abfragen von außen). */
+  area(): HTMLDivElement | null
 }
 
 interface Props {
@@ -35,10 +46,25 @@ interface Props {
   areaStyle?: React.CSSProperties
   /** Sprache fuer die Rechtschreibpruefung (Sprache des Kontos). */
   lang?: string
+  /** Eigene Formatleiste zeigen (Standard); aus, wenn die Befehle im Menüband stehen */
+  toolbar?: boolean
+}
+
+/** Bild für eingebetteten Text: höchstens 1600 px, als JPEG (data:-Adresse). */
+export async function smallImage(file: File): Promise<string> {
+  const url = URL.createObjectURL(file)
+  try {
+    const img = await new Promise<HTMLImageElement>((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url })
+    const f = Math.min(1, 1600 / Math.max(img.width, img.height))
+    const c = document.createElement('canvas')
+    c.width = Math.round(img.width * f); c.height = Math.round(img.height * f)
+    c.getContext('2d')!.drawImage(img, 0, 0, c.width, c.height)
+    return c.toDataURL('image/jpeg', 0.85)
+  } finally { URL.revokeObjectURL(url) }
 }
 
 /** Formatierter Text wie in Outlook: contentEditable mit den gaengigen Befehlen. */
-export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor({ initial, onChange, onImage, minimal, areaStyle, lang }, ref) {
+export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor({ initial, onChange, onImage, minimal, areaStyle, lang, toolbar = true }, ref) {
   const s = useStyles()
   const area = useRef<HTMLDivElement>(null)
   const fileInput = useRef<HTMLInputElement>(null)
@@ -54,7 +80,24 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
     html: () => area.current?.innerHTML ?? '',
     text: () => area.current?.innerText ?? '',
     focus: () => area.current?.focus(),
-    insertHtml: (html: string) => { area.current?.focus(); document.execCommand('insertHTML', false, html) },
+    focusStart: () => {
+      const a = area.current
+      if (!a) return
+      a.focus()
+      const r = document.createRange()
+      r.setStart(a.firstChild ?? a, 0)
+      r.collapse(true)
+      const sel = window.getSelection()
+      sel?.removeAllRanges()
+      sel?.addRange(r)
+      a.scrollTop = 0
+    },
+    insertHtml: (html: string) => { area.current?.focus(); document.execCommand('insertHTML', false, html); onChange?.() },
+    exec: (cmd: string, value?: string) => exec(cmd, value),
+    active: (cmd: string) => { try { return document.queryCommandState(cmd) } catch { return false } },
+    link: () => link(),
+    pickImage: () => fileInput.current?.click(),
+    area: () => area.current,
   }))
 
   const exec = (cmd: string, value?: string) => {
@@ -63,9 +106,15 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
     onChange?.()
   }
 
-  const link = () => {
-    const url = prompt(t('Adresse des Links:'), 'https://')
-    if (url) exec('createLink', url)
+  const link = async () => {
+    // Markierung merken: Der Dialog nimmt dem Editor den Fokus
+    const sel = window.getSelection()
+    const range = sel && sel.rangeCount && area.current?.contains(sel.anchorNode) ? sel.getRangeAt(0).cloneRange() : null
+    const url = await askText(t('Link'), 'https://', t('Adresse'))
+    if (!url) return
+    area.current?.focus()
+    if (range) { const s = window.getSelection(); s?.removeAllRanges(); s?.addRange(range) }
+    exec('createLink', url)
   }
 
   const image = async (file: File) => {
@@ -90,7 +139,7 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
 
   return (
     <div className={s.wrap}>
-      <Toolbar size="small" className={s.bar}>
+      {toolbar && <Toolbar size="small" className={s.bar}>
         {btn(t('Fett (Strg+B)'), <TextBold20Regular />, 'bold')}
         {btn(t('Kursiv (Strg+I)'), <TextItalic20Regular />, 'italic')}
         {btn(t('Unterstrichen (Strg+U)'), <TextUnderline20Regular />, 'underline')}
@@ -128,21 +177,22 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
           </Tooltip>
         )}
         {btn(t('Formatierung entfernen'), <TextClearFormatting20Regular />, 'removeFormat')}
-      </Toolbar>
+      </Toolbar>}
       <input ref={fileInput} type="file" accept="image/*" hidden onChange={e => { const f = e.target.files?.[0]; if (f) image(f); e.target.value = '' }} />
-      <div ref={area} className={`${s.area} dm-editor`} style={areaStyle} contentEditable suppressContentEditableWarning
+      {/* minHeight 0 inline: .dm-editor (global.css) setzt min-height: 100 % - im festen Rahmen ragte die Fläche sonst um die Formatleiste heraus */}
+      <div ref={area} className={`${s.area} dm-editor`} style={{ minHeight: 0, ...areaStyle }} contentEditable suppressContentEditableWarning
         onInput={() => onChange?.()} onPaste={onPaste} spellCheck lang={lang} />
     </div>
   )
 })
 
-function Swatches({ label, icon, values, onPick }: { label: string; icon: JSX.Element; values: string[]; onPick: (c: string) => void }) {
+export function Swatches({ label, icon, values, onPick, disabled }: { label: string; icon: JSX.Element; values: string[]; onPick: (c: string) => void; disabled?: boolean }) {
   const s = useStyles()
   return (
     <Menu>
       <MenuTrigger disableButtonEnhancement>
         <Tooltip content={label} relationship="label">
-          <Button appearance="subtle" size="small" icon={icon} onMouseDown={e => e.preventDefault()} />
+          <Button appearance="subtle" size="small" icon={icon} disabled={disabled} onMouseDown={e => e.preventDefault()} />
         </Tooltip>
       </MenuTrigger>
       <MenuPopover>

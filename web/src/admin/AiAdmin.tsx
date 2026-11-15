@@ -36,7 +36,7 @@ export function AiAdmin() {
   const muted = { color: tokens.colorNeutralForeground3 }
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 640 }}>
-      <Text>{t('dmOffice nutzt die KI nur für Benutzer, denen du das im Reiter „Benutzer“ (Spalte „KI“) erlaubst: Pukki beantwortet damit, was er selbst nicht kann; in den Notizen sucht „Rezepte suchen“ auf Wunsch zusätzlich mit der KI; das DMS ordnet damit auf Wunsch beim Import ein (Korrespondent, Dokumenttyp, Tags).')}</Text>
+      <Text>{t('Die KI steht nur Benutzern zur Verfügung, die im Reiter „Benutzer“ in der Spalte „KI“ freigeschaltet sind.')}</Text>
       <MessageBar intent="warning" layout="multiline">
         <MessageBarBody>
           <div>{t('An die KI gehen:')}</div>
@@ -57,21 +57,21 @@ export function AiAdmin() {
           <Input value={endpoint} onChange={(_, d) => setEndpoint(d.value)} placeholder="https://api.openai.com/v1" />
         </Field>
       )}
-      <Field label={t('Modell')} hint={provider === 'anthropic' ? t('Opus antwortet am besten, Haiku am günstigsten.') : t('Name wie beim Anbieter, etwa gpt-5-mini oder llama3.2')}>
+      <Field label={t('Modell')} hint={provider === 'anthropic' ? undefined : t('Name wie beim Anbieter, etwa gpt-5-mini oder llama3.2')}>
         {provider === 'anthropic'
           ? <Select value={model || st.claudeModels[0]} onChange={(_, d) => setModel(d.value)}>{st.claudeModels.map(m => <option key={m} value={m}>{m}</option>)}</Select>
           : <Input value={model} onChange={(_, d) => setModel(d.value)} />}
       </Field>
-      <Field label={t('API-Schlüssel')} hint={st.hasKey ? t('Ein Schlüssel ist gespeichert – leer lassen, um ihn zu behalten.') : provider === 'openai' ? t('Für Ollama und LM Studio nicht nötig.') : t('Aus der Claude Console (console.anthropic.com).')}>
+      <Field label={t('API-Schlüssel')} hint={st.hasKey ? t('Ein Schlüssel ist gespeichert – leer lassen, um ihn zu behalten.') : provider === 'openai' ? t('Für Ollama und LM Studio nicht nötig.') : undefined}>
         <Input type="password" autoComplete="new-password" value={key} onChange={(_, d) => setKey(d.value)} placeholder={st.hasKey ? '••••••••' : ''} />
       </Field>
       {provider === 'anthropic' && (
         <>
-          <Field hint={t('Für Wetter, Nachrichten, Öffnungszeiten … Die Suchbegriffe gehen an die Websuche von Anthropic; jede Suche kostet extra.')}>
+          <Field hint={t('Die Suchbegriffe gehen an die Websuche von Anthropic; jede Suche kostet extra.')}>
             <Switch checked={webSearch} onChange={(_, d) => setWebSearch(d.checked)} label={t('Im Internet suchen')} />
           </Field>
           {webSearch && (
-            <Field label={t('Ort')} hint={t('Für Fragen ohne Ortsangabe, etwa „Wie wird das Wetter morgen?“')}>
+            <Field label={t('Ort')} hint={t('Für Fragen ohne Ortsangabe.')}>
               <Input value={location} onChange={(_, d) => setLocation(d.value)} placeholder={t('z. B. München')} />
             </Field>
           )}

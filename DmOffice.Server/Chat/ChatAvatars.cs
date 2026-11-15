@@ -37,7 +37,7 @@ public static partial class ChatApi
                         accent = c;
             return (db.Get(AvatarVersionKey), accent);
         }
-        catch (Exception e) when (e is KeyNotFoundException or JsonException) { return (null, null); }
+        catch (Exception e) when (e is KeyNotFoundException or JsonException or InvalidOperationException) { return (null, null); }
     }
 
     private static void MapAvatars(RouteGroupBuilder api, Spaces spaces)

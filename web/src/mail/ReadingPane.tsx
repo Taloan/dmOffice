@@ -1,19 +1,21 @@
 import { DmsAttachmentButton, DmsFiledHint } from '../dms/MailToDms'
 import {
   Avatar, Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Link, MessageBar, MessageBarActions, MessageBarBody, Spinner, Text, Tooltip, makeStyles, tokens,
-  Menu, MenuItem, MenuList, MenuPopover, MenuTrigger,
+  Menu, MenuItem, MenuList, MenuPopover, MenuTrigger, Slider,
 } from '@fluentui/react-components'
 import {
   ArrowReply20Regular, ArrowReplyAll20Regular, ArrowForward20Regular, Attach16Regular, ArrowDownload16Regular, MoreHorizontal20Regular,
-  Code20Regular, Print20Regular, ShieldError16Regular, Delete20Regular, WeatherMoon16Regular,
+  Code20Regular, Print20Regular, ShieldError16Regular, Delete20Regular, WeatherMoon16Regular, ZoomIn16Regular, ZoomOut16Regular,
 } from '@fluentui/react-icons'
 import { useEffect, useRef, useState } from 'react'
 import { addrFull, api, fmtSize, MailItem, Message, q } from '../api'
 import { peek, remember } from './messageCache'
 import { useApp } from '../App'
 import { CategoryChips } from './Categories'
+import { AliasHint } from './CatchallFolders'
 import { InviteCard } from './InviteCard'
 import { PhishBar, phishWarns } from './PhishBar'
+import { PgpBar } from './Pgp'
 import { SpamWhy } from './SpamWhy'
 import { SmartCard } from './SmartCard'
 import { fmtLong } from '../shell/hooks'
@@ -24,6 +26,7 @@ import { Viewer } from '../files/Viewer'
 import { Item, Source, viewKind } from '../files/common'
 import { OfficeEditor, officeMode, useOffice } from '../files/Office'
 import { askConfirm } from '../shell/context'
+import { cancelExpiry, ExpiryIcon, ExpiryMenuItems, expiryOf, expiryText, useExpiries } from './ExpiryMenu'
 
 const useStyles = makeStyles({
   root: { flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', backgroundColor: tokens.colorNeutralBackground2 },
@@ -67,6 +70,7 @@ interface Props {
 export function ReadingPane({ item, onLoaded, onReply, onForward, onAct, onRemoveCategory }: Props) {
   const s = useStyles()
   const { fail, notify } = useApp()
+  const expiry = expiryOf(useExpiries(), item)
   const [unsubDone, setUnsubDone] = useState(false)
   // Anhänge in dmOffice ansehen: Bilder, PDF, Audio, Video, Text im Betrachter, Office-Dateien im Office-Server
   const [viewing, setViewing] = useState<{ items: Item[]; index: number } | null>(null)
@@ -87,7 +91,15 @@ export function ReadingPane({ item, onLoaded, onReply, onForward, onAct, onRemov
     } catch (e) { fail(e) }
   }
   const dark = useIsDark()
-  const { prefs } = usePrefs()
+  const { prefs, update } = usePrefs()
+  // Zoom nur für den Mailtext (wie Outlook unten rechts); früher „Textgröße“ als Vorgabe
+  const zoomPct = prefs.readZoom ?? (prefs.textSize === 'small' ? 90 : prefs.textSize === 'large' ? 115 : 100)
+  const setZoom = (z: number) => update({ readZoom: Math.max(50, Math.min(250, Math.round(z / 10) * 10)) })
+  const applyZoom = () => {
+    const el = frame.current?.contentDocument?.documentElement
+    if (el) { el.style.zoom = String(zoomPct / 100); fit() }
+  }
+  useEffect(() => { applyZoom() }, [zoomPct]) // eslint-disable-line react-hooks/exhaustive-deps
   const [message, setMessage] = useState<Message | null>(null)
   useEffect(() => setUnsubDone(false), [message?.account, message?.folder, message?.uid])
   const [images, setImages] = useState(false)
@@ -138,8 +150,9 @@ export function ReadingPane({ item, onLoaded, onReply, onForward, onAct, onRemov
   if (!message) return <Spinner style={{ margin: 'auto' }} />
 
   const darkStyle = dark && invert
-    // invertiert: #d6d6d6 wird zum Grau des Lesebereichs, nicht zu Schwarz
-    ? 'html{filter:invert(1) hue-rotate(180deg);background:#d6d6d6}body{background:transparent}img,video,[style*="background-image"]{filter:invert(1) hue-rotate(180deg)}'
+    // invertiert, ohne eigenen Hintergrund: durch den durchsichtigen Rahmen scheint die Fläche der Oberfläche (mit ihrem Farbstich), kein neutrales Grau
+    // (gleiches Farbschema wie die Oberfläche, sonst malt der Browser den Rahmen weiß; Links ohne eigene Farbe wie im hellen Schema)
+    ? 'html{color-scheme:dark;filter:invert(1) hue-rotate(180deg);background:transparent}body{background:transparent}:where(a){color:#0b5cad}img,video,[style*="background-image"]{filter:invert(1) hue-rotate(180deg)}'
     : ''
   const doc = `<!doctype html><html><head><meta charset="utf-8"><base target="_blank">
 <style>body{margin:0;font-family:'Segoe UI',Calibri,Arial,sans-serif;font-size:14px;line-height:1.45;color:#242424;background:#fff;word-wrap:break-word;overflow-wrap:anywhere}
@@ -175,7 +188,7 @@ img[data-remote-src]{display:inline-block;min-width:16px;min-height:16px;backgro
   }
 
   return (
-    <div className={s.root} style={{ zoom: prefs.textSize === 'small' ? 0.92 : prefs.textSize === 'large' ? 1.12 : 1 }}>
+    <div className={s.root}>
       <div className={s.head}>
         <div className={s.subject}>{message.subject || t('(ohne Betreff)')}</div>
         {item.keywords?.length > 0 && <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}><CategoryChips keywords={item.keywords} onRemove={onRemoveCategory} /></div>}
@@ -187,6 +200,7 @@ img[data-remote-src]{display:inline-block;min-width:16px;min-height:16px;backgro
               {t('An: {recipients}', { recipients: (showAllTo ? recipients : recipients.slice(0, 4)).map(addrFull).join('; ') })}
               {!showAllTo && recipients.length > 4 && <> <Link inline onClick={() => setShowAllTo(true)}>{t('+{n} weitere', { n: recipients.length - 4 })}</Link></>}
             </span>
+            {message.alias && <AliasHint className={s.small} address={message.alias} state={message.aliasState} sender={message.from?.name} />}
             <span className={s.small}>{fmtLong(message.date)}</span>
           </div>
           <div className={s.actions}>
@@ -202,6 +216,8 @@ img[data-remote-src]{display:inline-block;min-width:16px;min-height:16px;backgro
               <MenuPopover>
                 <MenuList>
                   <MenuItem icon={<Delete20Regular />} onClick={() => onAct('delete')}>{t('Löschen')}</MenuItem>
+                  <ExpiryMenuItems targets={[item]} onError={fail}
+                    onDone={w => notify(w === 'set' ? t('Entfernen nach Zeit eingeplant') : t('Entfernen nach Zeit zurückgenommen'))} />
                   <MenuItem icon={<Print20Regular />} onClick={() => frame.current?.contentWindow?.print()}>{t('Drucken')}</MenuItem>
                   <MenuItem icon={<Code20Regular />} onClick={() => window.open(`/api/mail/${item.account}/source?` + q({ folder: item.folder, uid: item.uid }))}>{t('Quelltext (.eml)')}</MenuItem>
                   {dark && <MenuItem icon={<WeatherMoon16Regular />} onClick={() => setInvert(v => !v)}>{invert ? t('Original-Farben') : t('Dunkel darstellen')}</MenuItem>}
@@ -212,7 +228,16 @@ img[data-remote-src]{display:inline-block;min-width:16px;min-height:16px;backgro
         </div>
       </div>
 
+      {expiry && (
+        <MessageBar intent={expiry.kind === 'destroy' ? 'warning' : 'info'} className={s.bar} layout="singleline" icon={<ExpiryIcon />}>
+          <MessageBarBody>{expiryText(expiry)}</MessageBarBody>
+          <MessageBarActions>
+            <Button size="small" onClick={() => cancelExpiry([item]).then(() => notify(t('Entfernen nach Zeit zurückgenommen'))).catch(fail)}>{t('mail|Zurücknehmen')}</Button>
+          </MessageBarActions>
+        </MessageBar>
+      )}
       {/* Phishing-Verdacht: Absenderpruefung, Linktext gegen Linkziel, aehnliche Domains, erstmaliger Absender */}
+      {message.pgp && <PgpBar message={message} className={s.bar} />}
       {message.phish && <PhishBar found={message.phish} className={s.bar} onJunk={message.junk ? undefined : () => onAct('junk')} />}
       {message.junk && (
         // Wie Outlook: in Junk keine Bilder und keine Links - erst "Kein Junk" gibt die Mail frei
@@ -319,8 +344,16 @@ img[data-remote-src]{display:inline-block;min-width:16px;min-height:16px;backgro
         open={() => api.post<{ path: string }>(`/api/mail/${item.account}/part/office`, { folder: item.folder, uid: item.uid, index: officeAtt.index })
           .then(r => api.post('/api/office/open', { path: r.path, view: true }))} />}
       <div className={s.frameWrap}>
-        <iframe ref={frame} className={s.frame} title={t('Inhalt')} srcDoc={doc} onLoad={() => { fit(); setTimeout(fit, 300); setTimeout(fit, 1500) }}
+        <iframe ref={frame} className={s.frame} title={t('mail|Inhalt')} srcDoc={doc} onLoad={() => { applyZoom(); fit(); setTimeout(fit, 300); setTimeout(fit, 1500) }}
           sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-modals" />
+      </div>
+      {/* Zoom des Mailtexts, unten rechts, bleibt beim Rollen stehen */}
+      <div style={{ position: 'sticky', bottom: 0, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 2, padding: '2px 8px', marginTop: 'auto',
+        backgroundColor: tokens.colorNeutralBackground2, borderTop: `1px solid ${tokens.colorNeutralStroke2}`, flexShrink: 0 }}>
+        <Button size="small" appearance="subtle" icon={<ZoomOut16Regular />} aria-label={t('Verkleinern')} disabled={zoomPct <= 50} onClick={() => setZoom(zoomPct - 10)} />
+        <Slider size="small" min={50} max={250} step={10} value={zoomPct} style={{ width: 140 }} aria-label={t('Zoom des Mailtexts')} onChange={(_, d) => setZoom(d.value)} />
+        <Button size="small" appearance="subtle" icon={<ZoomIn16Regular />} aria-label={t('Vergrößern')} disabled={zoomPct >= 250} onClick={() => setZoom(zoomPct + 10)} />
+        <Button size="small" appearance="subtle" style={{ minWidth: 52 }} title={t('Auf 100 % zurücksetzen')} onClick={() => setZoom(100)}>{zoomPct} %</Button>
       </div>
     </div>
   )

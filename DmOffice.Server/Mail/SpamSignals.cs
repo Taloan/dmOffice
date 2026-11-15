@@ -125,6 +125,8 @@ public static partial class SpamSignals
         r = r with { NotToMe = NotToMe(m, space.Settings.MailAccounts.Select(a => a.Email)) };
         var from = m.From.Mailboxes.FirstOrDefault()?.Address?.ToLowerInvariant() ?? "";
         var own = from.Length > 0 && space.Settings.MailAccounts.Any(a => a.Email.Equals(from, StringComparison.OrdinalIgnoreCase));
+        // Gesperrter Catchall-Alias (CatchallAliases): Junk, gleich wer schreibt
+        if (CatchallAliases.Judge(space.Db, account, m) is { } alias) return (Math.Max(0.99, spam.SpamCutoff), alias.Rule, r);
         var (trusted, trustRule) = Trusted(space, m, r);
         if (learned is double s)
         {
@@ -236,7 +238,7 @@ public static partial class SpamSignals
     [GeneratedRegex(@"[\p{L}\p{N}]+")]
     private static partial Regex WordRx();
 
-    /// <summary>Zufallskennung im Betreff, wie sie Massenversender zum Umgehen von Filtern anhängen: „__ID:aa11bb22cc33“, „#Ref: 8f3k29dk4“.</summary>
+    /// <summary>Zufallskennung im Betreff, wie sie Massenversender zum Umgehen von Filtern anhängen: „__ID:ia3q12854589s6“, „#Ref: 8f3k29dk4“.</summary>
     [GeneratedRegex(@"(?:_{2,}|#|\b)(?:id|ref|nr|no|code|ticket)\s*[:#_-]\s*(?=[a-z0-9]*\d)(?=[a-z0-9]*[a-z])[a-z0-9]{8,}\b", RegexOptions.IgnoreCase)]
     private static partial Regex RandomIdRx();
 }

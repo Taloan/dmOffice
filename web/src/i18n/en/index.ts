@@ -9,6 +9,7 @@ import { search } from './search'
 import { server } from './server'
 import { update } from './update'
 import { dashboard } from './dashboard'
+import { pgp } from './pgp'
 import { audio } from './audio'
 import { imports } from './imports'
 import { tresor } from './tresor'
@@ -16,4 +17,4 @@ import { dms } from './dms'
 import { recipescan } from './recipescan'
 import { plainbackup } from './plainbackup'
 
-export const en: Record<string, string> = Object.assign({}, chat, common, app, mail, pim, server, menus, search, update, dashboard, audio, tresor, imports, dms, recipescan, plainbackup)
+export const en: Record<string, string> = Object.assign({}, chat, common, app, mail, pim, server, menus, search, update, dashboard, pgp, audio, tresor, imports, dms, recipescan, plainbackup)

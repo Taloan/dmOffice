@@ -19,6 +19,12 @@ public sealed record MailRow(long Id, string Account, string Folder, uint Uid, s
     /// <summary>Nur in Suchergebnissen: gefunden im Inhalt dieses Anhangs (Search/TextIndex.cs).</summary>
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public DmOffice.Search.AttachmentMatch? Match { get; init; }
+    /// <summary>An diesen Catchall-Alias gegangen (CatchallAliases.Tag).</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? Alias { get; init; }
+    /// <summary>Zustand des Alias: „open“, „blocked“ oder „unknown“ (Adresse der Domain, nicht in der Liste).</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? AliasState { get; init; }
 }
 
 /// <summary>
@@ -454,6 +460,7 @@ public static class MailStore
     private const string RowColumns =
         "id,account,folder,uid,message_id,subject,from_name,from_addr,recipients,date,size,seen,flagged,answered,forwarded,has_att,preview,spam,cached,keywords,focus";
 
+
     /// <summary>Dieselben Spalten mit Tabellenkuerzel "m." - jede einzeln, nicht per Ersetzen (uid, message_id).</summary>
     private static readonly string Prefixed = string.Join(",", RowColumns.Split(',').Select(c => "m." + c.Trim()));
 
@@ -481,6 +488,10 @@ public static class MailStore
 
     /// <summary>Kein Ordner auf dem Server: die Posteingaenge aller Konten zusammen ("Alle Posteingaenge").</summary>
     public const string UnifiedFolder = "__unified";
+
+    /// <summary>Konten, deren Posteingang zu „Alle Posteingänge“ gehört (ohne die abgewählten, Kennung „unifiedpick“).</summary>
+    public static List<MailAccount> UnifiedAccounts(UserSettings settings) =>
+        settings.MailAccounts.Where(a => a.InUnified || !Features.On(Features.UnifiedPick)).ToList();
 
     private const string NotDeleted =
         " AND NOT EXISTS (SELECT 1 FROM mail_folders mf WHERE mf.account=mail.account AND mf.path=mail.folder AND mf.special IN ('trash','junk'))";

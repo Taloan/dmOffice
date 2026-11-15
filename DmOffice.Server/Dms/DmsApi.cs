@@ -19,10 +19,15 @@ public static class DmsApi
 
     public record EntryBody(string? Kind, string? Name, string? Parent, string? Color, string? Match, string? MatchText, bool? CaseSensitive);
     public record DocBody(string? Title, string? DocDate, string? Correspondent, string? Doctype, List<string>? Tags, List<string>? AddTags,
-        List<string>? RemoveTags, bool? Confirm, string? Role = null, string? Amount = null);
+        List<string>? RemoveTags, bool? Confirm, string? Role = null, string? Amount = null, string? DocPeriod = null);
     public record FixedBody(bool Fixed);
+    public record AiRunBody(string Kind, string Field, string? Entry, string? Mode);
+    public record AiEditBody(string? Entry, string? NewName, string? Parent);
+    public record AiApplyBody(List<long> Ids, bool Refile);
     public record BatchBody(List<long> Ids, DocBody Change);
     public record IdsBody(List<long> Ids);
+    /// <summary>Nach Vorgabe ablegen; Profile: dieses Ablageprofil gilt danach für die Dokumente (Ordner und Dateiname).</summary>
+    public record RefileBody(List<long> Ids, string? Profile);
     public record ImportFilesBody(List<string> Paths, string? Profile, bool? Move);
     public record MoveAreaBody(List<long> Ids, string To, string? Profile);
     public record PauseBody(bool Paused);
@@ -38,6 +43,17 @@ public static class DmsApi
         FileStore.TrashPurged = db => DmsImport.ForgetGone(db);
         // Fixierte Dokumente: Die Sperre sitzt in der Dateiablage, damit sie für Web, App, WebDAV, Office und alle anderen Wege gilt
         FileStore.HasFixed = Dms.HasFixed;
+        // Zielordner der Ablageprofile unter Dateien ausblenden (Schalter je Profil); nur gespeicherte Profile - kein Anlegen beim Ansehen
+        FilesApi.DmsFileIds = space =>
+        {
+            if (!Features.On(Features.Dms) || !Features.On(Features.DmsMark)) return null;
+            Dms.Ensure(space.Db);
+            return space.Db.Query("SELECT fileid FROM dms_docs WHERE fileid IS NOT NULL", r => r.GetInt64(0)).ToHashSet();
+        };
+        FilesApi.HiddenFolders = space => Features.On(Features.Dms) && Features.On(Features.DmsHide)
+            ? space.Db.GetJson<List<DmsProfile>>(DmsFiling.Key).Where(p => p.Target == "files" && p.HideInFiles && p.Folder.Length > 0)
+                .Select(p => FileStore.Normalize(p.Folder)).ToList()
+            : [];
 
         var api = app.MapGroup("/api/dms").RequireAuthorization();
         api.AddEndpointFilter(async (ctx, next) =>
@@ -83,6 +99,26 @@ public static class DmsApi
             return Results.Ok(new { holder = d == null || d.Trashed ? null : (object?)new { id = d.Id, tresor = h.Tresor, title = d.Title, docDate = d.DocDate ?? d.Imported.ToString("yyyy-MM-dd") } });
         });
 
+        // Alle Rollen mit ihrem Dokument (Spalte „Dokument“ der Rollenliste); im geschlossenen Tresor ohne Titel
+        api.MapGet("/roles/holders", (HttpContext http) =>
+        {
+            var space = http.Space();
+            var roles = Dms.Roles(space.Db);
+            DmsStore? tresor = roles.Values.Any(h => h.Tresor) && Core.Tresor.IsOpen(http, touch: false) && Core.Tresor.DbOf(space.User.Id) is { } tdb
+                ? DmsStore.ForTresor(space.Db, tdb) : null;
+            var mine = Dms.ByIds(space.Db, roles.Values.Where(h => !h.Tresor).Select(h => h.Doc).ToList()).ToDictionary(d => d.Id);
+            var vault = tresor == null ? new Dictionary<long, DmsDoc>() : Dms.ByIds(tresor, roles.Values.Where(h => h.Tresor).Select(h => h.Doc).ToList()).ToDictionary(d => d.Id);
+            var list = new List<object>();
+            foreach (var (role, h) in roles)
+            {
+                var d = (h.Tresor ? vault : mine).GetValueOrDefault(h.Doc);
+                if (d is { Trashed: true }) continue;
+                if (d == null && !(h.Tresor && tresor == null)) continue;
+                list.Add(new { role, id = h.Doc, tresor = h.Tresor, title = d?.Title });
+            }
+            return list;
+        });
+
         api.MapGet("/state", (HttpContext http) =>
         {
             var space = http.Space();
@@ -100,6 +136,7 @@ public static class DmsApi
                 ai = settings.Ai,
                 inbox = Dms.InboxCount(space.Db),
                 all = Dms.Docs(space.Db, new Dms.Filter(), 0, 1).Total,
+                fixedCount = Dms.Docs(space.Db, new Dms.Filter(Fixed: true), 0, 1).Total,
                 queued = Dms.QueuedCount(space.Db),
                 // Tresor: eingerichtet, offen auf diesem Gerät, Posteingang darin, noch nicht übernommene Ablagen
                 tresor = Core.Tresor.Exists(space.User.Id),
@@ -109,6 +146,8 @@ public static class DmsApi
                     ? Dms.QueuedCount(DmsStore.ForTresor(space.Db, tdb2)) : 0,
                 tresorAll = Core.Tresor.IsOpen(http, touch: false) && Core.Tresor.DbOf(space.User.Id) is { } tdb3
                     ? Dms.Docs(DmsStore.ForTresor(space.Db, tdb3), new Dms.Filter(), 0, 1).Total : 0,
+                tresorFixed = Core.Tresor.IsOpen(http, touch: false) && Core.Tresor.DbOf(space.User.Id) is { } tdb4
+                    ? Dms.Docs(DmsStore.ForTresor(space.Db, tdb4), new Dms.Filter(Fixed: true), 0, 1).Total : 0,
                 // Bei geschlossenem Tresor abgelegt (Ablageprofil mit Ziel Tresor): wartet, bis er geöffnet wird
                 tresorWaiting = Core.Tresor.Exists(space.User.Id) ? Core.Tresor.Pending(space.User.Id, "dms") : 0,
             };
@@ -151,6 +190,9 @@ public static class DmsApi
             return e;
         });
 
+        // Für die Rückfrage vor dem Löschen: wie viele Dokumente den Eintrag selbst tragen
+        api.MapGet("/lists/{id}/usage", (string id, HttpContext http) => new { docs = Dms.DocsWith(http.Space().Db, id) });
+
         api.MapDelete("/lists/{id}", (string id, HttpContext http) =>
         {
             var space = http.Space();
@@ -164,7 +206,7 @@ public static class DmsApi
 
         api.MapGet("/docs", (HttpContext http, string? q, string? correspondent, string? doctype, string? tags, string? docFrom, string? docTo,
             string? importedFrom, string? importedTo, bool? inbox, string? profile, string? mime, bool? noCorrespondent, bool? noDoctype, bool? noTags,
-            bool? paperlessDiffers, bool? queued, string? sort, bool? desc, string? area, int? offset, int? limit, string? role, bool? noRole, bool? @fixed) =>
+            bool? paperlessDiffers, bool? queued, string? sort, bool? desc, string? area, int? offset, int? limit, string? role, bool? noRole, bool? @fixed, bool? misplaced) =>
         {
             var space = http.Space();
             var store = Store(http, area);
@@ -172,11 +214,57 @@ public static class DmsApi
                 ? new DateTimeOffset(TimeZoneInfo.ConvertTimeToUtc(x.ToDateTime(end ? new TimeOnly(23, 59, 59) : TimeOnly.MinValue), space.Zone)).ToUnixTimeSeconds() : null;
             var filter = new Dms.Filter(q, correspondent, doctype, tags?.Split(',', StringSplitOptions.RemoveEmptyEntries).ToList(), docFrom, docTo,
                 Day(importedFrom, false), Day(importedTo, true), inbox, profile, mime, noCorrespondent, noDoctype, noTags, paperlessDiffers, queued, sort, desc ?? false, role, noRole, @fixed);
+            // Nur die, deren Ablage nicht zur Vorgabe passt (dmsplace): erst alle passenden holen, dann prüfen und blättern
+            if (misplaced == true && Features.On(Features.DmsPlace))
+            {
+                var wrong = Dms.Docs(store, filter with { Inbox = false }, 0, 5000).Items.Where(d => DmsImport.Misplaced(space, store, d) != null).ToList();
+                return new { items = wrong.Skip(Math.Max(0, offset ?? 0)).Take(Math.Clamp(limit ?? 100, 1, 500)).ToList(), total = wrong.Count };
+            }
             var (items, total) = Dms.Docs(store, filter, Math.Max(0, offset ?? 0), Math.Clamp(limit ?? 100, 1, 500));
             return new { items, total };
         });
 
         api.MapGet("/docs/{id:long}", (long id, string? area, HttpContext http) => Dms.Get(Store(http, area), id));
+
+        // KI-Prüfung (dmsaicheck): Läufe starten und abbrechen, Vorschläge ansehen, ändern, übernehmen (auf Wunsch mit Ablegen), verwerfen
+        api.MapPost("/ai/runs", (AiRunBody b, HttpContext http) =>
+        {
+            if (!Features.On(Features.DmsAiCheck)) return Results.NotFound();
+            return Results.Ok(new { id = DmsAiCheck.Start(http.Space(), Host(), b.Kind, b.Field, b.Entry, b.Mode ?? DmsAiCheck.Existing) });
+        });
+        api.MapGet("/ai/runs", (HttpContext http) => Features.On(Features.DmsAiCheck) ? Results.Ok(DmsAiCheck.Runs(http.Space().Db)) : Results.NotFound());
+        api.MapPost("/ai/runs/{id:long}/cancel", (long id) => { DmsAiCheck.Cancel(id); return Results.NoContent(); });
+        api.MapGet("/ai/suggestions", (long? run, HttpContext http) =>
+        {
+            if (!Features.On(Features.DmsAiCheck)) return Results.NotFound();
+            var db = http.Space().Db;
+            var list = DmsAiCheck.Open(db, run);
+            var docs = Dms.ByIds(db, list.Select(s => s.Doc).Distinct().ToList()).ToDictionary(d => d.Id);
+            return Results.Ok(list.Where(s => docs.ContainsKey(s.Doc)).Select(s => new { suggestion = s, doc = docs[s.Doc] }));
+        });
+        api.MapPut("/ai/suggestions/{id:long}", (long id, AiEditBody b, HttpContext http) => { DmsAiCheck.Edit(http.Space().Db, id, b.Entry, b.NewName, b.Parent); return Results.NoContent(); });
+        api.MapPost("/ai/suggestions/apply", (AiApplyBody b, HttpContext http) =>
+        {
+            var space = http.Space();
+            var changed = DmsAiCheck.Apply(space, b.Ids, b.Refile, d => DmsImport.Refile(space, Host(), d, force: true));
+            return Results.Ok(new { changed = changed.Count });
+        });
+        api.MapPost("/ai/suggestions/drop", (IdsBody b, HttpContext http) => Results.Ok(new { dropped = DmsAiCheck.Drop(http.Space().Db, b.Ids) }));
+
+        // Ablage passt nicht zur Vorgabe (dmsplace): je Dokument der Pfad, wohin es gehört - für die gezeigten (ids) oder alle Bestätigten
+        api.MapGet("/docs/misplaced", (string? ids, string? area, HttpContext http) =>
+        {
+            if (!Features.On(Features.DmsPlace)) return Results.NotFound();
+            var space = http.Space();
+            var store = Store(http, area);
+            var docs = ids != null
+                ? Dms.ByIds(store, ids.Split(',').Select(x => long.TryParse(x, out var n) ? n : 0).Where(n => n > 0).Take(500).ToList())
+                : Dms.Docs(store, new Dms.Filter(Inbox: false), 0, 5000).Items;
+            var result = new Dictionary<long, string>();
+            foreach (var d in docs)
+                if (DmsImport.Misplaced(space, store, d) is { } wanted) result[d.Id] = wanted;
+            return Results.Ok(result);
+        });
 
         // Plausible Daten aus dem Text zur Auswahl (nicht nach dem Importtag)
         api.MapGet("/docs/{id:long}/dates", (long id, string? area, HttpContext http) =>
@@ -219,11 +307,34 @@ public static class DmsApi
         });
 
         // Nach Vorgabe ablegen (auch „von Hand abgelegte“); nur Bestätigte - Unbestätigte legt „Bestätigen“ nach dem Ordnermuster ab
-        api.MapPost("/docs/refile", (IdsBody b, string? area, HttpContext http) =>
+        api.MapPost("/docs/refile", (RefileBody b, string? area, HttpContext http) =>
         {
             var space = http.Space();
             var store = Store(http, area);
-            foreach (var d in Dms.ByIds(store, b.Ids).Where(d => !d.Inbox)) DmsImport.Refile(space, Host(), d.Id, force: true, store);
+            // Gewähltes Ablageprofil (dmsrework): nur eines, das zum Ort des Dokuments passt - Tresor, Dateiablage oder derselbe externe Ordner
+            var profile = Features.On(Features.DmsRework) && !string.IsNullOrEmpty(b.Profile)
+                ? DmsFiling.Find(space, b.Profile) ?? throw new ArgumentException("Dieses Ablageprofil gibt es nicht.") : null;
+            foreach (var d in Dms.ByIds(store, b.Ids).Where(d => !d.Inbox))
+            {
+                if (profile != null)
+                {
+                    var fits = store.Tresor ? profile.Target == "tresor" : d.Mount != null ? profile.Target == "external" && profile.Mount == d.Mount : profile.Target == "files";
+                    if (!fits) throw new ArgumentException($"Das Ablageprofil „{profile.Name}“ passt nicht zum Ort von „{d.Title}“.");
+                    store.Exec("UPDATE dms_docs SET profile = $p WHERE id = $d", ("$p", profile.Id), ("$d", d.Id));
+                }
+                DmsImport.Refile(space, Host(), d.Id, force: true, store);
+            }
+            return Results.Ok(Dms.ByIds(store, b.Ids));
+        });
+
+        // Zurück in die Inbox (dmsrework): unbestätigt, die Datei in den Inbox-Ordner - zum Überarbeiten
+        api.MapPost("/docs/to-inbox", (IdsBody b, string? area, HttpContext http) =>
+        {
+            if (!Features.On(Features.DmsRework)) return Results.NotFound();
+            var space = http.Space();
+            var store = Store(http, area);
+            var ids = Dms.Apply(store, b.Ids, new Dms.Change(Confirm: false));
+            foreach (var id in ids) DmsImport.Refile(space, Host(), id, force: true, store);
             return Results.Ok(Dms.ByIds(store, b.Ids));
         });
 
@@ -466,6 +577,17 @@ public static class DmsApi
             return Results.Ok(new { files = results });
         }).DisableAntiforgery();
 
+        // Welche dieser Dateien sind schon Dokumente? (Menü „Ins DMS aufnehmen“ nur für die übrigen)
+        api.MapPost("/doc-paths", (ImportFilesBody b, HttpContext http) =>
+        {
+            var db = http.Space().Db;
+            Dms.Ensure(db);
+            var docs = new List<object>();
+            foreach (var p in b.Paths.Take(1000).Select(FileStore.Normalize))
+                if (db.Scalar("SELECT d.id FROM dms_docs d JOIN files f ON f.fileid = d.fileid WHERE f.path = $p", ("$p", p)) is { } id) docs.Add(new { path = p, id = Convert.ToInt64(id) });
+            return Results.Ok(new { docs });
+        });
+
         // „Ins DMS aufnehmen“ aus der Dateiablage: Inhalt übernehmen, Datei danach in den Papierkorb (move, Vorgabe)
         api.MapPost("/import-files", async (ImportFilesBody b, HttpContext http, CancellationToken ct) =>
         {
@@ -526,7 +648,17 @@ public static class DmsApi
 
         // ---------------- Quellen ----------------
 
-        api.MapGet("/sources", (HttpContext http) => DmsSources.Of(http.Space().Db));
+        // Busy: wird gerade geprüft oder wartet darauf (nicht gespeichert)
+        api.MapGet("/sources", (HttpContext http) =>
+        {
+            var space = http.Space();
+            return DmsSources.Of(space.Db).Select(x =>
+            {
+                var o = System.Text.Json.JsonSerializer.SerializeToNode(x, System.Text.Json.JsonSerializerOptions.Web)!.AsObject();
+                o["busy"] = DmsJob.Busy(space.User.Id, x.Id);
+                return o;
+            }).ToList();
+        });
         api.MapGet("/mounts", (HttpContext http) => Host().Mounts(http.Space()).Select(m => new { id = m.Id, name = m.Name,
             readOnly = Host().MountInfo(http.Space(), m.Id)?.ReadOnly ?? true }));
         api.MapPost("/sources", (DmsSource s, HttpContext http) =>
@@ -541,6 +673,18 @@ public static class DmsApi
             if (DmsSources.Of(http.Space().Db).All(x => x.Id != id)) throw new KeyNotFoundException("Quelle nicht gefunden.");
             s.Id = id;
             return DmsSources.Save(http.Space(), s, Host());
+        });
+        // Unterordner eines (künftigen) Quellordners - für die Zuordnung der Ordnernamen
+        api.MapGet("/sources/subfolders", async (string? mount, string? folder, HttpContext http, CancellationToken ct) =>
+        {
+            if (!Features.On(Features.DmsFolders)) return Results.NotFound();
+            var space = http.Space();
+            var m = string.IsNullOrEmpty(mount) ? null : mount;
+            var f = m == null ? FileStore.Normalize(folder ?? "") : Storage.StoragePath.Clean(folder);
+            if (m == null && FileStore.Get(space.Db, f) is not { IsDir: true }) throw new KeyNotFoundException("Diesen Ordner gibt es in deiner Ablage nicht.");
+            if (m != null && Host().Mounts(space).All(x => x.Id != m)) throw new KeyNotFoundException("Diesen externen Ordner gibt es nicht.");
+            var (files, _) = await Host().ListAsync(space, m, f, ct);
+            return Results.Ok(DmsSources.Subfolders(f, files).Select(x => new { path = x.Path, files = x.Files, role = DmsSources.DefaultRole(x.Path.Split('/')[^1]) }));
         });
         api.MapDelete("/sources/{id}", (string id, HttpContext http) => { DmsSources.Delete(http.Space().Db, id); return Results.NoContent(); });
         api.MapPost("/sources/{id}/run", (string id, HttpContext http) => { DmsJob.Request(http.Space().User.Id, id); return Results.NoContent(); });
@@ -674,10 +818,11 @@ public static class DmsApi
         foreach (var id in Dms.Reassess(space.Db)) DmsImport.Refile(space, DmsHost.Current!, id, false, space.Db);
     }
 
-    private static void Change(UserSpace space, IEnumerable<long> ids, DocBody b, DmsStore? store = null)
+    internal static void Change(UserSpace space, IEnumerable<long> ids, DocBody b, DmsStore? store = null)
     {
         store ??= space.Db;
-        var changed = Dms.Apply(store, ids, new Dms.Change(b.Title, b.DocDate, b.Correspondent, b.Doctype, b.Tags, b.AddTags, b.RemoveTags, b.Confirm, b.Role, b.Amount));
+        var changed = Dms.Apply(store, ids, new Dms.Change(b.Title, b.DocDate, b.Correspondent, b.Doctype, b.Tags, b.AddTags, b.RemoveTags, b.Confirm == false && !Features.On(Features.DmsRework) ? null : b.Confirm, b.Role, b.Amount,
+            Features.On(Features.DmsYear) ? b.DocPeriod : null));
         // Die übrigen offenen Dokumente der Inbox reagieren auf die Zuordnung (Gelerntes, neue Einträge)
         foreach (var id in Dms.Reassess(store)) if (!changed.Contains(id)) changed.Add(id);
         foreach (var id in changed)

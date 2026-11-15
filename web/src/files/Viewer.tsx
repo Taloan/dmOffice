@@ -6,6 +6,7 @@ import {
   Save20Regular, ZoomIn20Regular, ZoomOut20Regular,
   Chat20Regular,
   ImageEdit20Regular, Delete20Regular, Share20Regular, Star20Regular, Star20Filled, Filmstrip20Regular,
+  CloudArrowUp20Regular,
 } from '@fluentui/react-icons'
 import { MARK_LABELS, labelColor, labelName } from './PhotoFilter'
 import { Adjust, CropRect, PhotoEditor, PhotoSettings, RAW, photoCaps } from './PhotoEditor'
@@ -14,6 +15,7 @@ import { fmtSize } from '../api'
 import { locale, t } from '../i18n'
 import { Item, KindIcon, Source, extOf, fmtWhen, viewKind } from './common'
 import { Markdown } from './Markdown'
+import { askConfirm } from '../shell/context'
 
 const useStyles = makeStyles({
   root: {
@@ -23,8 +25,10 @@ const useStyles = makeStyles({
   bar: {
     display: 'flex', alignItems: 'center', gap: '4px', padding: '6px 8px', minHeight: '44px', flexShrink: 0,
     paddingTop: 'calc(6px + env(safe-area-inset-top, 0px))',
+    // Schmal (Handy): Knöpfe brechen um, statt aus dem Bild zu laufen
+    '@media (max-width: 700px)': { flexWrap: 'wrap', rowGap: '0px' },
   },
-  title: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', paddingLeft: '8px' },
+  title: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', paddingLeft: '8px', '@media (max-width: 700px)': { flexBasis: '100%' } },
   name: { fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   sub: { fontSize: '12px', opacity: 0.75, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   btn: { color: 'inherit', minWidth: '36px' },
@@ -35,7 +39,7 @@ const useStyles = makeStyles({
   stripOn: { outline: '3px solid #F5A623' },
   side: {
     width: '340px', maxWidth: '45vw', flexShrink: 0, overflowY: 'auto', backgroundColor: tokens.colorNeutralBackground1, color: tokens.colorNeutralForeground1,
-    borderLeft: `1px solid ${tokens.colorNeutralStroke2}`, '@media (max-width: 700px)': { position: 'absolute', right: 0, top: '44px', bottom: 0, maxWidth: '90vw', zIndex: 2 },
+    borderLeft: `1px solid ${tokens.colorNeutralStroke2}`, '@media (max-width: 700px)': { position: 'absolute', right: 0, top: 0, bottom: 0, maxWidth: '90vw', zIndex: 2 },
   },
   stage: { flex: 1, minWidth: 0, minHeight: 0, position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
   img: { maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', userSelect: 'none', cursor: 'zoom-in' },
@@ -65,7 +69,7 @@ const useStyles = makeStyles({
 /** Text bis zu dieser Groesse laden (Rest abgeschnitten), bearbeiten nur darunter. */
 const TEXT_LIMIT = 2 * 1024 * 1024
 
-export function Viewer({ items, index, source, onIndex, onClose, onSeen, onDownload, onDetails, onChat, onSave, startEdit, side, onPhotoEdit, onPhotoSettings, markOf, onMark, onShare, onFavorite, onDelete, groupOf }: {
+export function Viewer({ items, index, source, onIndex, onClose, onSeen, onDownload, onDetails, onChat, onSave, startEdit, side, onPhotoEdit, onPhotoSettings, markOf, onMark, onShare, onFavorite, onDelete, groupOf, onSaveToAblage }: {
   items: Item[]; index: number; source: Source; onIndex: (i: number) => void; onClose: () => void
   /** Eine Weile angezeigt - für „Zuletzt verwendet“ */
   onSeen?: (i: Item) => void
@@ -88,6 +92,8 @@ export function Viewer({ items, index, source, onIndex, onClose, onSeen, onDownl
   onShare?: (i: Item) => void
   onFavorite?: (i: Item) => void
   onDelete?: (i: Item) => void
+  /** „In Ablage sichern“ - nur für Fotos, die nur in einem Galerie-Ordner liegen */
+  onSaveToAblage?: (i: Item) => void
   /** Gruppe in der Liste (etwa der Tag): der Filmstreifen zeigt nur die Gruppe des gezeigten Bilds */
   groupOf?: (i: Item) => string
   /** Text speichern (nur angemeldet); wirft bei Konflikt ApiError 409 */
@@ -281,19 +287,37 @@ export function Viewer({ items, index, source, onIndex, onClose, onSeen, onDownl
       await onSave(item, value, force)
       setText({ body: value, cut: false }); setEdit(null)
     } catch (e: any) {
-      setError(e?.status === 409 ? 'conflict' : e?.message ?? String(e))
+      setError(e?.status === 409 && e?.data?.conflict ? 'conflict' : e?.message ?? String(e))
     } finally { setSaving(false) }
+  }
+
+  // Bearbeiten beenden: mit ungespeicherten Änderungen erst nachfragen
+  const asking = useRef(false)
+  const cancelEdit = async () => {
+    if (asking.current) return
+    if (edit !== null && edit !== (text?.body ?? '')) {
+      asking.current = true
+      try { if (!await askConfirm('', t('Änderungen verwerfen?'), t('Verwerfen'))) return } finally { asking.current = false }
+    }
+    setEdit(null); setError(null)
   }
 
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if (edit !== null) {
+        if (asking.current) return
         if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); save() }
-        else if (e.key === 'Escape') { e.preventDefault(); setEdit(null) }
+        else if (e.key === 'Escape') { e.preventDefault(); cancelEdit() }
         return
       }
       // Im Foto-Editor: Esc schließt nur den Editor, Pfeiltasten blättern nicht (die Änderungen gingen sonst verloren)
       if (cropping) { if (e.key === 'Escape') { e.preventDefault(); setCropping(false) } return }
+      // In einem Eingabefeld (etwa Titel in den Details) gehören Entf und Pfeiltasten dem Feld; Esc verlässt nur das Feld
+      const field = e.target as HTMLElement | null
+      if (field && (field.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(field.tagName))) {
+        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); field.blur() }
+        return
+      }
       // Markieren wie in der Galerie
       const k = e.key.toLowerCase()
       // Farbe wie im Camera Importer: Strg+1 bis Strg+5, Strg+0 ohne; dieselbe noch einmal: weg
@@ -480,7 +504,7 @@ export function Viewer({ items, index, source, onIndex, onClose, onSeen, onDownl
         {canEdit && edit === null && <Button appearance="transparent" className={s.btn} icon={<Edit20Regular />} onClick={() => setEdit(text!.body)}>{mobile ? undefined : t('Bearbeiten')}</Button>}
         {edit !== null && <>
           <Button appearance="primary" icon={saving ? <Spinner size="tiny" /> : <Save20Regular />} disabled={saving} onClick={() => save()}>{t('Speichern')}</Button>
-          <Button appearance="transparent" className={s.btn} onClick={() => { setEdit(null); setError(null) }}>{t('Abbrechen')}</Button>
+          <Button appearance="transparent" className={s.btn} onClick={cancelEdit}>{t('Abbrechen')}</Button>
         </>}
         {kind === 'image' && onPhotoEdit && !cropping && <span className={s.sep} />}
         {onChat && item.fileId && <Tooltip content={t('Im Chat zeigen oder senden …')} relationship="label">
@@ -488,6 +512,9 @@ export function Viewer({ items, index, source, onIndex, onClose, onSeen, onDownl
         </Tooltip>}
         {onShare && !cropping && <Tooltip content={t('Teilen …')} relationship="label">
           <Button appearance="transparent" className={s.btn} icon={<Share20Regular />} onClick={() => onShare(item)} />
+        </Tooltip>}
+        {onSaveToAblage && !item.isDir && item.path.startsWith('ext:') && !cropping && <Tooltip content={t('In Ablage sichern')} relationship="label">
+          <Button appearance="transparent" className={s.btn} icon={<CloudArrowUp20Regular />} onClick={() => onSaveToAblage(item)} />
         </Tooltip>}
         {(onShare || onChat && item.fileId) && !cropping && <span className={s.sep} />}
         {(kind === 'pdf' || kind === 'image') && !mobile && <Tooltip content={t('In neuem Tab öffnen')} relationship="label">
@@ -521,7 +548,7 @@ export function Viewer({ items, index, source, onIndex, onClose, onSeen, onDownl
       {cropping && onPhotoEdit ? <PhotoEditor src={source.thumb(item, 1600) + '&orig=1'} path={item.path} onCancel={() => setCropping(false)}
         onApply={async st => { if (onPhotoSettings) await onPhotoSettings(item, st); setCropping(false); setOriginal(false) }}
         onExport={async st => { await onPhotoEdit(item, st.rotate, st.crop, false, st.adjust); setCropping(false); setOriginal(false) }} /> :
-      <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+      <div style={{ flex: 1, minHeight: 0, display: 'flex', position: 'relative' }}>
         {/* Pfeile außerhalb der scrollenden Bühne: bleiben beim Vergrößern an ihrem Platz */}
         <div style={{ flex: 1, minWidth: 0, position: 'relative', display: 'flex' }}>
           <div ref={stageRef} className={mergeClasses(s.stage, zoom && s.zoomed)} onScroll={followScroll}>

@@ -9,7 +9,7 @@ import enGbLocale from '@fullcalendar/core/locales/en-gb'
 import type { DateSelectArg, EventClickArg, EventDropArg, EventInput as FcEvent } from '@fullcalendar/core'
 import type { EventResizeDoneArg } from '@fullcalendar/interaction'
 import {
-  Button, Menu, MenuDivider, MenuItem, MenuItemRadio, MenuList, MenuPopover, MenuTrigger, Text, Toolbar, ToolbarButton, Tooltip,
+  Button, Menu, MenuDivider, MenuItem, MenuItemRadio, MenuList, MenuPopover, MenuTrigger, SearchBox, Text, Toolbar, ToolbarButton, Tooltip,
   makeStyles, mergeClasses, tokens } from '@fluentui/react-components'
 import {
   ChevronLeft20Regular, ChevronRight20Regular, CalendarToday20Regular, CalendarAdd20Regular, TaskListSquareLtr16Regular, Rss20Regular, Rss16Regular,
@@ -19,13 +19,14 @@ import {
   ArrowSync20Regular, Eye20Regular, CheckmarkCircle20Regular, CalendarEmpty20Regular, People16Regular, People20Regular, PersonDelete20Regular, ChevronDown16Regular, ChevronRight16Regular,
   Chat20Regular, Cloud16Regular, Cloud20Regular,
 } from '@fluentui/react-icons'
-import { ColorMenu, ContextMenu, TargetMenu, askConfirm, askText, isTyping, useContextMenu } from '../shell/context'
+import { ColorMenu, ContextMenu, TargetMenu, askChoice, askConfirm, askText, isTyping, useContextMenu } from '../shell/context'
 import { graphAccounts, graphTitle } from './graph'
 import { useNavStyles } from '../shell/nav'
 import { RibbonButton, RibbonDivider, RibbonHeader, useSidePane } from '../shell/Ribbon'
 import { SidePane, useIsMobile } from '../shell/mobile'
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
-import { api, CalEvent, Collection, q, Task } from '../api'
+import { Account, api, CalEvent, Collection, featureOn, q, Task } from '../api'
+import { CalendarSearch } from './CalendarSearch'
 import { useApp } from '../App'
 import { usePrefs } from '../prefs'
 import { EVENT_RESTORED, EventDialog, EventDraft, askScope, restoreEvent } from './EventDialog'
@@ -43,7 +44,13 @@ const useStyles = makeStyles({
   main: { flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 },
   bar: { borderBottom: `1px solid ${tokens.colorNeutralStroke2}`, padding: '4px 8px', gap: '4px' },
   title: { fontSize: '18px', fontWeight: 600, marginLeft: '8px', marginRight: 'auto' },
-  cal: { flex: 1, minHeight: 0, padding: '0 8px 8px' },
+  cal: {
+    flex: 1, minHeight: 0, padding: '0 8px 8px',
+    // Lange Titel: in Zeilen-Ansichten mit „…“ kürzen, in Spalten und Liste umbrechen statt abschneiden
+    '& .fc-daygrid-event .fc-event-title': { overflow: 'hidden', textOverflow: 'ellipsis' },
+    '& .fc-timegrid-event .fc-event-title': { overflowWrap: 'anywhere' },
+    '& .fc-list-event-title': { overflowWrap: 'anywhere' },
+  },
   mini: { display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '1px', fontSize: '12px', textAlign: 'center' },
   miniDay: { padding: '4px 0', borderRadius: '50%', cursor: 'pointer', ':hover': { backgroundColor: tokens.colorNeutralBackground1Hover } },
   miniHead: { color: tokens.colorNeutralForeground3, padding: '2px 0' },
@@ -67,7 +74,7 @@ const fcLocale = lang === 'en' ? enGbLocale : deLocale
 
 export default function CalendarView() {
   const s = useStyles()
-  const { fail, notify, undoable } = useApp()
+  const { fail, notify, undoable, me } = useApp()
   const fc = useRef<FullCalendar>(null)
   const { prefs, update } = usePrefs()
   const [sidePane, toggleSide, closeSide] = useSidePane('calendar')
@@ -79,7 +86,22 @@ export default function CalendarView() {
   const [collapsed, setCollapsed] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem(COLLAPSED) || '[]') } catch { return [] } })
   const [view, setView] = useState(() => localStorage.getItem(viewKey) || (mobile ? 'timeGridDay' : 'timeGridWorkWeek'))
   const [title, setTitle] = useState('')
-  const [draft, setDraft] = useState<EventDraft | null>(null)
+  const [draft, setDraftState] = useState<EventDraft | null>(null)
+  // Auslösendes Element merken: nach dem Schließen (auch per Esc) bekommt es den Fokus zurück
+  const opener = useRef<HTMLElement | null>(null)
+  const setDraft = (x: EventDraft | null) => {
+    if (x && !draft) opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    setDraftState(x)
+  }
+  const closeDraft = () => {
+    const el = opener.current
+    opener.current = null
+    setDraftState(null)
+    requestAnimationFrame(() => { if (el?.isConnected && (document.activeElement === document.body || !document.activeElement)) el.focus() })
+  }
+  // Terminsuche: solange etwas eingetippt ist, steht die Trefferliste statt des Kalenders da
+  const [search, setSearch] = useState('')
+  const searching = featureOn('calsearch') && search.trim().length > 0
   const [editColl, setEditColl] = useState<Collection | 'new' | null>(null)
   const [newKind, setNewKind] = useState<string | undefined>()
   const [subscribe, setSubscribe] = useState<Collection | 'new' | null>(null)
@@ -106,12 +128,40 @@ export default function CalendarView() {
 
   const [taskLists, setTaskLists] = useState<Collection[]>([])
   const showTasks = prefs.calendarTasks ?? true
+  // Erst nach dem Laden ist „kein eigener Kalender“ eine Aussage
+  const calsLoaded = useRef(false)
   const loadCalendars = useCallback(() =>
     api.get<Collection[]>('/api/pim/collections/calendars').then(list => {
+      calsLoaded.current = true
       setCalendars(list.filter(c => c.components.includes('VEVENT')))
       setTaskLists(list.filter(c => c.components.includes('VTODO')))
     }).catch(fail), [fail])
   useEffect(() => { loadCalendars() }, [loadCalendars])
+
+  // Eigene Adressen (Mailkonten und die interne): Teilnehmer ausser mir bekommen Änderungen und Absagen
+  const [mailAccounts, setMailAccounts] = useState<Account[]>([])
+  useEffect(() => { api.get<Account[]>('/api/mail/accounts').then(setMailAccounts).catch(() => {}) }, [])
+  /** Zahl der Teilnehmer, die bei Änderungen dieses Termins benachrichtigt werden (nur eigene Termine, wie im Termin-Dialog) */
+  const invitees = (e: CalEvent) => {
+    const c = calendars.find(x => x.id === e.calendar)
+    if (!c || c.owner || c.subscription) return 0
+    const mine = [...mailAccounts.map(a => a.email.toLowerCase()), `${me.login.toLowerCase()}@dmoffice.intern`]
+    if (e.organizer && !mine.includes(e.organizer.toLowerCase())) return 0
+    return (e.attendees ?? []).filter(a => !mine.includes(a.email.toLowerCase())).length
+  }
+  /** Vor dem Verschieben eines Termins mit Teilnehmern: benachrichtigen? true/false, null: abgebrochen */
+  const askNotify = async (e: CalEvent): Promise<boolean | null> => {
+    const n = invitees(e)
+    if (!n) return true
+    const r = await askChoice(t('Teilnehmer benachrichtigen?'),
+      n === 1 ? t('Der Termin hat 1 Teilnehmer. Soll er die neue Zeit bekommen?') : t('Der Termin hat {n} Teilnehmer. Sollen sie die neue Zeit bekommen?', { n }),
+      { value: 'send', label: t('Senden') }, { value: 'skip', label: t('Nicht senden') })
+    return r == null ? null : r === 'send'
+  }
+  const sentNotice = (r: { invited?: number; cancelled?: number; error?: string } | undefined) => {
+    if (r?.error) notify(r.error, undefined, 'warning')
+    else if (r?.invited || r?.cancelled) notify(r.invited ? t('Einladung an {n} Teilnehmer im Postausgang', { n: r.invited }) : t('Absage an {n} Teilnehmer im Postausgang', { n: r.cancelled ?? 0 }))
+  }
 
   const refetch = () => fc.current?.getApi().refetchEvents()
   useEffect(() => {
@@ -131,6 +181,7 @@ export default function CalendarView() {
         api.get<CalEvent[]>('/api/pim/events?' + q({ from: from.toISOString(), to: to.toISOString() })).then(list => {
           const e = list.find(x => x.uri === uri)
           if (e) openEvent(e, new Date(e.start), new Date(e.end))
+          else notify(t('Termin nicht gefunden.'), undefined, 'warning')
         }).catch(fail)
         return
       }
@@ -228,8 +279,16 @@ export default function CalendarView() {
   const newEvent = (start?: Date, end?: Date, allDay = false, calendar?: number) => {
     const now = new Date()
     const st = start ?? new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours() + 1)
+    // Nur Kalender der normalen Ansichten - ein Termin gehört nicht in den Essensplan
+    const target = calendar ?? calendars.find(c => inNormalViews(c) && !isOff(c) && !c.subscription && c.canWrite !== false)?.id ?? writable.find(inNormalViews)?.id
+    if (target == null) {
+      if (!calsLoaded.current) return
+      notify(t('Es gibt keinen eigenen Kalender, in den sich ein Termin eintragen lässt. Lege zuerst einen an.'), undefined, 'warning')
+      setNewKind(undefined); setEditColl('new')
+      return
+    }
     setDraft({
-      calendar: calendar ?? calendars.find(c => inNormalViews(c) && !isOff(c) && !c.subscription && c.canWrite !== false)?.id ?? writable.find(inNormalViews)?.id ?? writable[0]?.id ?? calendars[0]?.id,
+      calendar: target,
       title: '', start: st, end: end ?? new Date(st.getTime() + 3600000), allDay, rRule: '', reminder: prefs.defaultReminder === undefined ? 15 : prefs.defaultReminder, busy: true,
     })
   }
@@ -275,14 +334,17 @@ export default function CalendarView() {
       if (!r) { a.revert(); return }
       scope = r
     }
+    const notifyPeople = await askNotify(e)
+    if (notifyPeople == null) { a.revert(); return }
     const allDay = a.event.allDay
     const iso = (d: Date) => (allDay ? d.toLocaleDateString('sv-SE') : d.toISOString())
     try {
-      await api.post('/api/pim/events', {
+      const r = await api.post('/api/pim/events', {
         calendar: e.calendar, uri: e.uri, etag: e.etag, title: e.title, location: e.location, description: e.description,
         start: iso(a.event.start!), end: iso(a.event.end ?? new Date(a.event.start!.getTime() + (allDay ? 86400000 : 3600000))),
-        allDay, reminder: e.reminder, busy: e.busy, categories: e.categories, scope, instance: e.recurrenceId,
-      })
+        allDay, reminder: e.reminder, busy: e.busy, categories: e.categories, scope, instance: e.recurrenceId, notify: notifyPeople,
+      }) as { invited?: number; cancelled?: number; error?: string } | undefined
+      sentNotice(r)
       refetch()
     } catch (err) { fail(err); a.revert() }
   }
@@ -323,7 +385,15 @@ export default function CalendarView() {
     try { await api.post(`/api/pim/shares/${c.id}/leave`); setHidden(h => h.filter(x => x !== c.id)); loadCalendars() } catch (e) { fail(e) }
   }
   const deleteCollection = async (c: Collection, tasks?: boolean) => {
-    try { if (await removeCollection(c, 'calendars', tasks)) loadCalendars() } catch (e) { fail(e) }
+    // Letzter eigener Kalender bzw. letzte Aufgabenliste: in der Rückfrage sagen, dass danach erst wieder einer anzulegen ist
+    const own = (x: Collection) => !x.owner && !x.subscription && !x.graph
+    const asList = tasks || !c.components.includes('VEVENT')
+    const last = asList
+      ? taskLists.filter(own).length === 1 && taskLists.some(x => x.id === c.id)
+      : calendars.filter(x => own(x) && inNormalViews(x)).length === 1 && calendars.some(x => x.id === c.id && inNormalViews(x))
+    const note = !last ? undefined : asList ? t('Es ist deine letzte Aufgabenliste. Für neue Aufgaben musst du danach erst wieder eine anlegen.')
+      : t('Es ist dein letzter eigener Kalender. Für neue Termine musst du danach erst wieder einen anlegen.')
+    try { if (await removeCollection(c, 'calendars', tasks, note)) loadCalendars() } catch (e) { fail(e) }
   }
   const openEvent = (e: CalEvent, start: Date, end: Date) => setDraft({
     calendar: e.calendar, uri: e.uri, etag: e.etag, title: e.title, location: e.location, description: e.description,
@@ -361,7 +431,8 @@ export default function CalendarView() {
       const r = await askScope(t('Termin löschen'))
       if (!r) return
       if (r === 'instance') instance = e.recurrenceId
-    } else if (!await askConfirm('', t('„{name}“ löschen? Es gibt dafür keinen Papierkorb, nur direkt danach „Rückgängig“.', { name: e.title || t('Termin') }))) return
+    // Ohne Teilnehmer keine Rückfrage: danach gibt es „Rückgängig“
+    } else if (invitees(e) > 0 && !await askConfirm('', t('Termin löschen? Die Teilnehmer bekommen eine Absage.'), t('Löschen'))) return
     try {
       const r = await api.del(`/api/pim/events/${e.calendar}/${encodeURIComponent(e.uri)}` + (instance ? `?instance=${encodeURIComponent(instance)}` : '')) as { cancelled?: number; undo?: string } | undefined
       if (r?.cancelled) notify(t('Absage an {n} Teilnehmer im Postausgang', { n: r.cancelled }))
@@ -663,11 +734,17 @@ export default function CalendarView() {
           <ToolbarButton icon={<CalendarToday20Regular />} onClick={goToday}>{t('Heute')}</ToolbarButton>
           <ToolbarButton icon={<ChevronLeft20Regular />} onClick={() => fc.current?.getApi().prev()} aria-label={t('Zurück')} />
           <ToolbarButton icon={<ChevronRight20Regular />} onClick={() => fc.current?.getApi().next()} aria-label={t('Weiter')} />
-          <Text className={s.title} style={mobile ? { fontSize: 15, marginLeft: 4 } : undefined}>{title}</Text>
+          <Text className={s.title} style={mobile ? { fontSize: 15, marginLeft: 4 } : undefined}>{searching ? t('Suchergebnisse') : title}</Text>
+          {featureOn('calsearch') && <SearchBox size="small" placeholder={t('Termine suchen')} value={search} style={{ width: mobile ? 150 : 260, flexShrink: 0 }}
+            // Eingabe nimmt nur den Platz zwischen Lupe und Löschen-x, damit das x im Feld bleibt
+            input={{ style: { width: 0 } }}
+            onChange={(_, d) => setSearch(d.value)} onKeyDown={e => { if (e.key === 'Escape') setSearch('') }} />}
         </Toolbar>
+        {searching && !planKind && <CalendarSearch query={search} calendars={calendars.filter(c => inNormalViews(c) && !isOff(c))}
+          onOpen={e => openEvent(e, new Date(e.allDay ? e.start + 'T00:00:00' : e.start), new Date(e.allDay ? e.end + 'T00:00:00' : e.end))} />}
         {planKind?.plan && <planKind.plan.view calendars={calendars.filter(c => c.calendarKind === planKind.key && !c.subscription && !isOff(c))}
           total={calendars.filter(c => c.calendarKind === planKind.key && !c.subscription).length} onCreate={() => { setNewKind(planKind.key); setEditColl('new') }} />}
-        <div className={s.cal} ref={calBox} onContextMenu={slotMenu} style={planKind ? { display: 'none' } : undefined}>
+        <div className={s.cal} ref={calBox} onContextMenu={slotMenu} style={planKind || searching ? { display: 'none' } : undefined}>
           <FullCalendar
             ref={fc}
             plugins={[dayGridPlugin, timeGridPlugin, listPlugin, interactionPlugin]}
@@ -703,7 +780,7 @@ export default function CalendarView() {
               const time = !arg.event.allDay && !arg.view.type.startsWith('list') && arg.event.start
                 ? arg.event.start.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', hour12: prefs.timeFormat === '12' }) : ''
               return (
-                <span title={t('Aufgabe')} style={{
+                <span title={arg.event.title} style={{
                   display: 'flex', alignItems: 'center', gap: 4, overflow: 'hidden', whiteSpace: 'nowrap', padding: '0 2px', minWidth: 0, width: '100%',
                   ...(dot ? { borderLeft: `3px solid ${color}`, paddingLeft: 4, borderRadius: 2 } : {}),
                 }}>
@@ -713,7 +790,7 @@ export default function CalendarView() {
                 </span>
               )
             }}
-            eventDidMount={arg => arg.el.addEventListener('contextmenu', ev => eventMenu.current(ev, arg.event))}
+            eventDidMount={arg => { if (!arg.event.extendedProps.task) arg.el.title = arg.event.title; arg.el.addEventListener('contextmenu', ev => eventMenu.current(ev, arg.event)) }}
             eventDragStop={dropOnCalendar}
             select={onSelect}
             eventClick={onClick}
@@ -725,7 +802,7 @@ export default function CalendarView() {
         </div>
       </div>
       <ContextMenu at={cm.ctx?.at} onClose={cm.close}>{ctxMenu()}</ContextMenu>
-      {draft && <EventDialog draft={draft} calendars={calendars} onClose={changed => { setDraft(null); if (changed) refetch() }} />}
+      {draft && <EventDialog draft={draft} calendars={calendars} onClose={changed => { closeDraft(); if (changed) refetch() }} />}
       {subscribe && <SubscribeDialog collection={subscribe === 'new' ? null : subscribe} onClose={c => { setSubscribe(null); if (c) loadCalendars() }} />}
       {shareColl && <ShareDialog list={shareColl} onClose={changed => { setShareColl(null); if (changed) loadCalendars() }} />}
       {editColl && <CollectionDialog kind="calendars" collection={editColl === 'new' ? null : editColl} defaultKind={newKind} onClose={changed => { setEditColl(null); setNewKind(undefined); if (changed) loadCalendars() }} />}

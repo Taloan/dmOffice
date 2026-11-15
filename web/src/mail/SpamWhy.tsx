@@ -12,6 +12,8 @@ interface Why {
   shared?: number
   /** Erkennungsregeln des Admins: die mit der festen Wirkung und alle zutreffenden (SpamRules) */
   custom?: string | null; rules?: { id: string; name: string }[]
+  /** Catchall-Alias bei den Regeln alias-blocked / alias-unknown */
+  alias?: string | null
   /** Die übrigen Prüfungen: Absenderbestätigung, bekannter Absender, Verteiler, Urteil des eigenen Mailservers … */
   checks?: { dmarc: string | null; dkim: string[]; known: string | null; list: boolean; obfuscated: boolean; randomId: boolean; forwarded: string | null; server: string[]; freemailOrg?: boolean; notToMe?: boolean }
 }
@@ -65,6 +67,8 @@ function ruleText(why: Why): string | null {
       : t('Jemand anderes auf diesem Server hat dieselbe Mail als Junk gemeldet – darum mindestens unsicher ({p} %).', { p })
     case 'custom-junk': return t('Die Erkennungsregel „{name}“ trifft zu – darum Junk ({p} %).', { name: why.custom ?? '', p })
     case 'custom-uncertain': return t('Die Erkennungsregel „{name}“ trifft zu – darum mindestens unsicher ({p} %).', { name: why.custom ?? '', p })
+    case 'alias-blocked': return t('Die Mail ging an den gesperrten Catchall-Alias {a} – darum Junk ({p} %).', { a: why.alias ?? '', p })
+    case 'alias-unknown': return t('Die Mail ging an eine Adresse deiner Catchall-Domain, die kein Alias ist – darum Junk ({p} %).', { p })
     case 'dmarc-fail': return t('Die Absenderadresse ist vermutlich gefälscht (DMARC gescheitert) – darum mindestens unsicher ({p} %).', { p })
     case 'few-learned': return t('Der Filter hat erst wenig gelernt. Bis er je 50 Junk- und gute Mails kennt, meldet er nur deutlichen Junk (ab 90 %) – darum gilt diese Mail als gut ({p} %).', { p })
     case 'verified-sender': return t('Dein Mailserver hat bestätigt, dass die Mail wirklich von {domain} kommt, und der Filter sieht sie nicht deutlich als Junk – darum gilt sie als gut ({p} %).', { domain: why.verified ?? '', p })

@@ -29,11 +29,13 @@ export function usePoll<T>(load: () => Promise<T>, everyMs: number, refreshEvent
   return data
 }
 
-/** Name der Version ("1.5") und Build ("2026.10.22-a643818") des Servers aus /api/health (ohne Anmeldung); leer, solange sie nicht da sind. */
-export function useVersion(): { release: string; build: string } {
-  const [v, setV] = useState({ release: '', build: '' })
+/** Name der Version ("2.1", die höchste, deren Funktionen alle freigeschaltet sind), darüber hinaus freigeschaltete Funktionen
+ *  und Build ("2026.10.22-a643818") des Servers aus /api/health (ohne Anmeldung); leer, solange sie nicht da sind. */
+export function useVersion(): { release: string; build: string; extra: string[] } {
+  const [v, setV] = useState<{ release: string; build: string; extra: string[] }>({ release: '', build: '', extra: [] })
   useEffect(() => {
-    fetch('/api/health', { cache: 'no-store' }).then(r => r.json()).then(d => setV({ release: String(d.release ?? ''), build: String(d.version ?? '') })).catch(() => {})
+    fetch('/api/health', { cache: 'no-store' }).then(r => r.json())
+      .then(d => setV({ release: String(d.release ?? ''), build: String(d.version ?? ''), extra: Array.isArray(d.releaseExtra) ? d.releaseExtra.map(String) : [] })).catch(() => {})
   }, [])
   return v
 }

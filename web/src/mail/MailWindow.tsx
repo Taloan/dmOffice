@@ -2,7 +2,8 @@
 // Adresse: #/popup/mail/<konto>/<message-id>
 import { Spinner, Text, tokens } from '@fluentui/react-components'
 import { useEffect, useRef, useState } from 'react'
-import { Account, api, MailItem, Message, q } from '../api'
+import { Account, api, featureOn, MailItem, Message, q } from '../api'
+import { Ribbon, RibbonFrame, RibbonTabs } from '../shell/Ribbon'
 import { useApp } from '../App'
 import { t } from '../i18n'
 import { Compose, ComposeHandle, ComposeInit, forwardOf, replyOf } from './Compose'
@@ -23,7 +24,8 @@ export function openComposeWindow(state: ComposeInit): boolean {
 
 /** Verfassen im eigenen Fenster; schliesst sich nach dem Senden oder Verwerfen. */
 function ComposeWindow() {
-  const [accounts, setAccounts] = useState<Account[]>([])
+  // null: noch nicht geladen
+  const [accounts, setAccounts] = useState<Account[] | null>(null)
   const [init] = useState<ComposeInit | null>(() => {
     const key = location.hash.replace('#/popup/compose/', '')
     try {
@@ -34,13 +36,20 @@ function ComposeWindow() {
     } catch { return null }
   })
   const ref = useRef<ComposeHandle>(null)
-  useEffect(() => { api.get<Account[]>('/api/mail/accounts').then(setAccounts).catch(() => {}) }, [])
+  // Eigenes Fenster: Menüband mit dem Reiter „Nachricht“ wie im Hauptfenster
+  const [ribbonSlot, setRibbonSlot] = useState<HTMLDivElement | null>(null)
+  const messageRibbon = featureOn('mailribbon') && window.innerWidth >= 768
+  useEffect(() => { api.get<Account[]>('/api/mail/accounts').then(setAccounts).catch(() => setAccounts([])) }, [])
   useEffect(() => { document.title = init?.subject || t('Neue E-Mail') }, [init])
   if (!init) return <div style={{ padding: 40, textAlign: 'center', color: tokens.colorNeutralForeground3 }}><Text>{t('Diese Mail wurde nicht gefunden.')}</Text></div>
-  if (!accounts.length) return <Spinner style={{ marginTop: 60 }} />
+  if (!accounts) return <Spinner style={{ marginTop: 60 }} />
+  if (!accounts.length) return <div style={{ padding: 40, textAlign: 'center', color: tokens.colorNeutralForeground3 }}><Text>{t('Kein Mailkonto eingerichtet.')}</Text></div>
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: tokens.colorNeutralBackground1 }}>
-      <Compose ref={ref} init={init} accounts={accounts} onSaved={tellOpener} onClose={(_, queued) => {
+      {messageRibbon && <RibbonFrame area="mailcompose" tabs={<RibbonTabs tabs={[['message', t('Nachricht')]]} value="message" onChange={() => {}} />}>
+        <Ribbon><div ref={setRibbonSlot} style={{ display: 'contents' }} /></Ribbon>
+      </RibbonFrame>}
+      <Compose ref={ref} init={init} accounts={accounts} onSaved={tellOpener} ribbonSlot={messageRibbon ? ribbonSlot : null} onClose={(_, queued) => {
         // Zurueckrufen geht im Hauptfenster weiter, dieses Fenster schliesst sich
         try { if (queued) (window.opener as any)?.__dmUndo?.(queued) } catch { /* Hauptfenster zu */ }
         tellOpener(); window.close()

@@ -27,6 +27,8 @@ public static class MailToDms
             if (Dav.FileStore.FilesOff(space.Db)) return Results.Json(new { error = "Die Dateiablage ist für dieses Konto abgeschaltet." }, statusCode: 403);
             var account = space.Account(acc);
             var message = await MailApi.Load(space, account, body.Folder, body.Uid, pool, ct);
+            if (MailVirus.Of(space.Db, MailVirus.KeyOf(message, acc, body.Folder, body.Uid)) is { } virus)
+                return Results.Json(new { error = $"Diese Mail enthält Schadsoftware ({virus}) – sie lässt sich nicht ablegen." }, statusCode: 403);
             var from = message.From.Mailboxes.FirstOrDefault()?.Address;
             var reference = RefOf(acc, message, body.Folder, body.Uid);
             var date = message.Date == DateTimeOffset.MinValue ? (DateTime?)null : message.Date.UtcDateTime;
@@ -62,8 +64,9 @@ public static class MailToDms
     /// <summary>Die Mailkonten der Person für das DMS (Mailordner als Quelle).</summary>
     private sealed class Bridge(ImapPool pool, MailSync sync, MailOutbox outbox) : IDmsMail
     {
+        // Standard-Mailkonto zuerst: neue Quellen im DMS nehmen das erste der Liste
         public List<(string Id, string Name)> Accounts(UserSpace space) =>
-            space.Settings.MailAccounts.Select(a => (a.Id, string.IsNullOrWhiteSpace(a.Name) ? a.Email : $"{a.Name} ({a.Email})")).ToList();
+            space.Settings.AccountsDefaultFirst().Select(a => (a.Id, string.IsNullOrWhiteSpace(a.Name) ? a.Email : $"{a.Name} ({a.Email})")).ToList();
 
         public List<(string Path, string Name)> Folders(UserSpace space, string account) =>
             MailStore.Folders(space.Db, account).Where(f => f.Selectable).Select(f => (f.Path, f.Name)).ToList();

@@ -52,6 +52,8 @@ public sealed class CryptomatorVault : IDisposable
     public static CryptomatorVault Open(IVaultFiles store, Masterkey key, bool ownsKey = false)
     {
         var cfg = VaultConfig.Read(Encoding.ASCII.GetString(store.ReadAll(VaultConfig.FileName)), key);
+        // Ältere Tresore (SIV_CTRMAC): Inhalte mit AES-CTR und HMAC, Namen wie bei SIV_GCM
+        key.CtrMac = cfg.CipherCombo == VaultConfig.CipherComboCtrMac;
         return new CryptomatorVault(store, key, cfg.ShorteningThreshold, ownsKey);
     }
 
@@ -139,7 +141,7 @@ public sealed class CryptomatorVault : IDisposable
             else if (!isDirNode || Store.FileExists(cipherFile))
             {
                 if (cipherSize < 0) cipherSize = Store.List(node).FirstOrDefault(x => x.Name == VaultNames.ContentsFile).Size;
-                result.Add(new Entry(name, false, FileContent.CleartextSize(cipherSize), modified));
+                result.Add(new Entry(name, false, FileContent.CleartextSize(Key, cipherSize), modified));
             }
         }
         return result;

@@ -197,6 +197,77 @@ public class CryptomatorFormatTests
         finally { Directory.Delete(copy, recursive: true); }
     }
 
+    /// <summary>Älterer Tresor (SIV_CTRMAC), angelegt mit Cryptomator (tools/cryptomator-check create-ctrmac): lesen, hineinschreiben, wieder lesen.</summary>
+    [Fact]
+    public async Task Liest_und_schreibt_einen_Tresor_mit_SIV_CTRMAC()
+    {
+        var copy = Path.Combine(Path.GetTempPath(), "cm-ctr-" + Guid.NewGuid().ToString("N"));
+        CopyDir(Path.Combine(Fixtures, "reference-ctrmac"), copy);
+        try
+        {
+            var expected = File.ReadAllLines(Path.Combine(Fixtures, "reference-ctrmac.txt"), Encoding.UTF8).Where(l => l.Length > 0)
+                .Select(l => l.Normalize(NormalizationForm.FormC)).Order(StringComparer.Ordinal).ToList();
+            Assert.Null(LocalVault.Open(copy, "falsch"));
+            var size = 3 * FileContent.ChunkPlain + 77;
+            using (var v = LocalVault.Open(copy, ReferencePassword)!)
+            {
+                Assert.True(v.Key.CtrMac);
+                Assert.Equal(expected, Dump(v));
+                // Schreiben bleibt im Verfahren des Tresors (Kopf 88 Byte, Blöcke mit HMAC)
+                var big = RandomNumberGenerator.GetBytes(size);
+                await v.WriteAsync("/Ordner ä/neu.bin", new MemoryStream(big));
+                await using var s = v.OpenRead("/Ordner ä/neu.bin");
+                Assert.Equal(SHA256.HashData(big), SHA256.HashData(s));
+                Assert.Equal(size, v.List("/Ordner ä").Single(e => e.Name == "neu.bin").Size);
+            }
+            // Gegenprobe: Cryptomator liest den von dmOffice ergänzten Tresor (nur mit DMOFFICE_CRYPTOMATOR_CHECK=1)
+            if (Environment.GetEnvironmentVariable("DMOFFICE_CRYPTOMATOR_CHECK") == "1")
+                Assert.Contains(await CryptomatorDump(copy), l => l.StartsWith("F\t/Ordner ä/neu.bin\t" + size + "\t"));
+        }
+        finally { Directory.Delete(copy, recursive: true); }
+    }
+
+    [Fact]
+    public void Inhalt_SIV_CTRMAC_Groessen_und_Veraenderung()
+    {
+        using var key = Masterkey.Generate();
+        key.CtrMac = true;
+        foreach (var n in new[] { 0, 1, FileContent.ChunkPlain, FileContent.ChunkPlain + 1, 2 * FileContent.ChunkPlain + 5 })
+        {
+            var plain = RandomNumberGenerator.GetBytes(n);
+            var cipher = FileContent.Encrypt(key, plain);
+            Assert.Equal(FileContent.CiphertextSize(n, true), cipher.Length);
+            Assert.Equal(n, FileContent.CleartextSize(key, cipher.Length));
+            Assert.Equal(plain, FileContent.Decrypt(key, cipher));
+            using var s = new DecryptingStream(key, new MemoryStream(cipher));
+            Assert.Equal(n, s.Length);
+            if (n > 0)
+            {
+                var bad = (byte[])cipher.Clone();
+                bad[^40] ^= 1;
+                Assert.Throws<CryptographicException>(() => FileContent.Decrypt(key, bad));
+            }
+        }
+        // Blöcke vertauschen fällt auf (Blocknummer in der HMAC)
+        var two = FileContent.Encrypt(key, new byte[2 * FileContent.ChunkPlain]);
+        var swapped = (byte[])two.Clone();
+        two.AsSpan(FileContent.CtrHeaderSize, FileContent.CtrChunkCipher).CopyTo(swapped.AsSpan(FileContent.CtrHeaderSize + FileContent.CtrChunkCipher));
+        two.AsSpan(FileContent.CtrHeaderSize + FileContent.CtrChunkCipher, FileContent.CtrChunkCipher).CopyTo(swapped.AsSpan(FileContent.CtrHeaderSize));
+        Assert.Throws<CryptographicException>(() => FileContent.Decrypt(key, swapped));
+    }
+
+    [Fact]
+    public void AesCtr_NIST_SP800_38A_F5_1()
+    {
+        var key = Hex("2b7e1516 28aed2a6 abf71588 09cf4f3c");
+        var iv = Hex("f0f1f2f3 f4f5f6f7 f8f9fafb fcfdfeff");
+        var plain = Hex("6bc1bee2 2e409f96 e93d7e11 7393172a ae2d8a57 1e03ac9c 9eb76fac 45af8e51 30c81c46 a35ce411 e5fbc119 1a0a52ef f69f2445 df4f9b17 ad2b417b e66c3710");
+        var expected = Hex("874d6191 b620e326 1bef6864 990db6ce 9806f66b 7970fdff 8617187b b9fffdff 5ae4df3e dbd5d35e 5b4f0902 0db03eab 1e031dda 2fbe03d1 792170a0 f3009cee");
+        var output = new byte[plain.Length];
+        FileContent.Ctr(key, iv, plain, output);
+        Assert.Equal(expected, output);
+    }
+
     private static void CopyDir(string from, string to)
     {
         foreach (var f in Directory.EnumerateFiles(from, "*", SearchOption.AllDirectories))

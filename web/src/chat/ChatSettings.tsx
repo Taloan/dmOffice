@@ -45,7 +45,7 @@ function PukkiMailSwitch() {
         setOn(d.checked)
         try { await api.put('/api/chat/pukki/mail', { allowed: d.checked }) } catch (e) { setOn(!d.checked); fail(e) }
       }} />
-      <Hint>{t('Dann beantwortet er Fragen wie „Welche Mails sind auf Wiedervorlage?“, „Was ist ungelesen?“ oder „Mails von Anna“. Er liest nur, was dmOffice ohnehin zwischenspeichert, und schreibt keine Mails.')}</Hint>
+      <Hint>{t('Dann beantwortet er Fragen wie „Welche Mails sind auf Wiedervorlage?“, „Was ist ungelesen?“ oder „Mails von Anna“. Er liest nur, was dmOffice ohnehin zwischenspeichert.')}</Hint>
     </>
   )
 }
@@ -94,7 +94,7 @@ function ChatSettingsForm({ part }: { part: Exclude<ChatSettingsPart, 'profile'>
           </Dropdown>
         </Field>
         <Switch label={t('Empfänger dürfen es an andere weiterleiten')} checked={s.reshow} onChange={(_, d) => save({ reshow: d.checked })} />
-        <Hint>{t('Sonst kann nur der Empfänger selbst es ansehen. Was du sendest, darf er immer weiterleiten – er kann es ja ohnehin speichern.')}</Hint>
+        <Hint>{t('Sonst kann nur der Empfänger selbst es ansehen. Was du sendest, darf er immer weiterleiten.')}</Hint>
       </Section>
       <Section title={t('Wenn du etwas aus dem Chat bei dir speicherst')}
         hint={t('Fotos und Dateien landen in deiner Dateiablage im Ordner „Chat“, Notizen in deinen Notizen im Ordner „Chat“; beide legt dmOffice bei Bedarf an. Beim Speichern kannst du jedes Mal ein anderes Ziel wählen.')} last>{null}</Section>
@@ -107,7 +107,7 @@ function ChatSettingsForm({ part }: { part: Exclude<ChatSettingsPart, 'profile'>
       <WebPushSetting />
       <Section title={t('Lesebestätigungen')}>
         <Switch label={t('Lesebestätigungen senden')} checked={s.readReceipts ?? true} onChange={(_, d) => save({ readReceipts: d.checked })} />
-        <Hint>{t('Wenn das an ist, sehen andere, dass du ihre Nachricht gelesen hast. Ist es aus, sehen sie nur, dass die Nachricht bei dir angekommen ist. Eine Nachricht an dich kann der Absender dann nur so lange ändern oder löschen, bis sie bei dir angekommen ist.')}</Hint>
+        <Hint>{t('Ist die Einstellung aktiviert, sehen andere, dass du ihre Nachricht gelesen hast. Ist sie deaktiviert, sehen sie nur, dass die Nachricht bei dir angekommen ist. Eine Nachricht an dich kann der Absender dann nur so lange ändern oder löschen, bis sie bei dir angekommen ist.')}</Hint>
       </Section>
       <Section title={t('Ruhezeiten')}>
         <Switch label={t('Zu bestimmten Zeiten keine Benachrichtigungen')} checked={s.quiet} onChange={(_, d) => save({ quiet: d.checked })} />
@@ -124,11 +124,11 @@ function ChatSettingsForm({ part }: { part: Exclude<ChatSettingsPart, 'profile'>
             <Switch label={t('Trotzdem benachrichtigen, wenn mich jemand mit @ erwähnt')} checked={s.quietMentions} onChange={(_, d) => save({ quietMentions: d.checked })} />
           </>
         )}
-        <Hint>{t('Zum Beispiel nachts. Nachrichten kommen in dieser Zeit trotzdem an, Handy und Browser bleiben nur still. Hast du danach noch ungelesene Nachrichten, bekommst du eine Benachrichtigung.')}</Hint>
+        <Hint>{t('Nachrichten kommen in dieser Zeit trotzdem an, Handy und Browser bleiben nur still. Hast du danach noch ungelesene Nachrichten, bekommst du eine Benachrichtigung.')}</Hint>
       </Section>
       <Section title={t('Standort')} last>
         <Switch label={t('Andere dürfen mich fragen, wo ich gerade bin')} checked={s.locationRequests} onChange={(_, d) => save({ locationRequests: d.checked })} />
-        <Hint>{t('Du entscheidest bei jeder Anfrage selbst, ob du deinen Standort schickst. Er geht dann einmal als Nachricht an die Person, die gefragt hat – er wird nicht laufend weitergegeben.')}</Hint>
+        <Hint>{t('Du entscheidest bei jeder Anfrage selbst, ob du deinen Standort schickst. Er geht dann einmal als Nachricht an die Person, die gefragt hat.')}</Hint>
       </Section>
     </>
   )
@@ -182,7 +182,7 @@ export function ChatRightsAdmin() {
   return (
     <>
       <MessageBar intent="info" style={{ maxWidth: 760 }}>
-        <MessageBarBody>{t('Hier legst du fest, was jemand im Chat darf – etwa, dass Kinder nichts verschicken, das später spurlos verschwindet.')}</MessageBarBody>
+        <MessageBarBody>{t('Hier legst du fest, was jemand im Chat darf.')}</MessageBarBody>
       </MessageBar>
       <Field label={t('Chat-Nachrichten aufbewahren')} style={{ maxWidth: 760, marginTop: 12 }}
         hint={t('Gilt für alle Unterhaltungen auf dem Server. Ältere Nachrichten werden endgültig gelöscht; Dateien und Notizen bleiben bei ihren Besitzern.')}>

@@ -242,6 +242,8 @@ public static class GalleryFolders
             db.Exec("UPDATE gallery_ext SET sidecar = -1 WHERE sidecar <> 0");
             db.Set("gallery_ext.gps1", "1");
         }
+        // Das einmalige Neulesen (gallery_ext.xmp2) ist ausgebaut: übrig gebliebene Vormerkungen wegräumen
+        db.Exec("DROP TABLE IF EXISTS gallery_ext_reread");
         Ready[db] = true;
     }
 
@@ -1452,10 +1454,13 @@ public sealed class GalleryScanJob(Spaces spaces, ServerConfig config, ILogger<G
                 if (Wanted.TryRemove(key, out _)) GalleryFolders.RetryNow(src.Id);
                 Doing(space.User.Id, src.Path, "Einlesen");
                 using var job = Activity.Start(space.User.Id, Activity.GalleryScan, src.Path);
+                // Ins Protokoll nur, was sich ändert: Der Fehler steht ohnehin am Ordner - derselbe Fehler bei jedem Durchgang füllte das Protokoll
+                var before = src.Error;
                 try
                 {
                     src.Count = await GalleryFolders.ScanAsync(space, config, src, ct, job);
                     src.Error = null;
+                    if (before != null) log.LogInformation("Galerie-Ordner {User}/{Source}: wieder erreichbar", space.User.Login, src.Id);
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (GalleryFolders.SourceGone)
@@ -1469,7 +1474,7 @@ public sealed class GalleryScanJob(Spaces spaces, ServerConfig config, ILogger<G
                 {
                     src.Error = e.Message;
                     job.Fail($"{src.Path}: {e.Message}");
-                    log.LogWarning("Galerie-Ordner {User}/{Source}: {Error}", space.User.Login, src.Id, e.Message);
+                    if (before != e.Message) log.LogWarning("Galerie-Ordner {User}/{Source}: {Error}", space.User.Login, src.Id, e.Message);
                 }
                 finally { Running.TryRemove(key, out _); }
                 src.LastScan = DateTime.UtcNow;

@@ -161,7 +161,7 @@ export function SecurityAdmin() {
       </div>
 
       <AdminHeading>{t('Erlaubt-Liste')}</AdminHeading>
-      <Text size={200} className={s.muted}>{t('Diese Netze werden nie gesperrt. Gehört ein Haushalt oder Büro dazu, das feste Adressen hat, hier eintragen.')}</Text>
+      <Text size={200} className={s.muted}>{t('Diese Netze werden nie gesperrt.')}</Text>
       <AdminTable id="security.allow" cols={allowCols} rows={allowRows} rowKey={a => a.cidr} />
       <div className={s.row}>
         <Field label={t('Adresse oder Netz')}><Input value={allow.cidr} onChange={(_, d) => setAllow({ ...allow, cidr: d.value })} placeholder="203.0.113.0/24" /></Field>
@@ -204,9 +204,9 @@ export function SecurityAdmin() {
         <Switch checked={form.abuseCheck} onChange={(_, d) => setForm({ ...form, abuseCheck: d.checked })}
           label={<InfoLabel info={t('Fragt die Adresse jedes nicht angemeldeten Besuchers beim ersten Kontakt bei AbuseIPDB nach, auch von Empfängern eines Freigabelinks (das Ergebnis gilt einen Tag), und sperrt sie ab der Schwelle sofort. Nicht gefragt wird für die Erlaubt-Liste, Angemeldete und Adressen mit gültiger Anmeldung. Die Adresse geht dabei an AbuseIPDB (Marathon Studios, Inc., USA).')}>{t('Unbekannte Adressen bei AbuseIPDB prüfen')}</InfoLabel>} />
         <Switch checked={form.abuseReport} onChange={(_, d) => setForm({ ...form, abuseReport: d.checked })}
-          label={<InfoLabel info={t('Meldet Adressen, die in eine Falle gelaufen sind, an AbuseIPDB: Adresse, Kategorie und Anfrage, auf Englisch mit dem Namen dmOffice (dmoffice.de). Das hilft anderen, dieselben Angreifer früh abzuweisen.')}>{t('Angriffe an AbuseIPDB melden')}</InfoLabel>} />
+          label={<InfoLabel info={t('Meldet Adressen, die in eine Falle gelaufen sind, an AbuseIPDB: Adresse, Kategorie und Anfrage, auf Englisch mit dem Namen dmOffice (dmoffice.de).')}>{t('Angriffe an AbuseIPDB melden')}</InfoLabel>} />
         <div className={s.form}>
-          <InfoLabel info={t('Anlegen unter abuseipdb.com → Account → API. Er wird verschlüsselt gespeichert und nicht wieder angezeigt.')}>{t('API-Schlüssel')}</InfoLabel>
+          <InfoLabel info={t('Der Schlüssel wird verschlüsselt gespeichert und nicht wieder angezeigt.')}>{t('API-Schlüssel')}</InfoLabel>
           <div className={s.row} style={{ alignItems: 'center', flexWrap: 'nowrap' }}>
             <Input type="password" value={abuseKey} onChange={(_, d) => setAbuseKey(d.value)} placeholder={data.abuseKey ? t('gespeichert') : ''} style={{ flex: 1, minWidth: 160 }} />
             <Button disabled={!abuseKey.trim()} onClick={() => run(async () => { await api.put('/api/admin/security/abuseipdb/key', { key: abuseKey.trim() }); setAbuseKey('') }, t('Gespeichert'))}>{t('Speichern')}</Button>

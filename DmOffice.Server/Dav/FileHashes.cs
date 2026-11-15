@@ -117,6 +117,23 @@ public static class FileHashes
         }
         return found;
     }
+
+    /// <summary>
+    /// Welche dieser Inhalte liegen im Papierkorb (gleiche Prüfsumme und Größe, auch in gelöschten Ordnern)? Für die App:
+    /// Ein Foto, das man auf dem Server gelöscht hat, soll der automatische Upload nicht wieder hochladen.
+    /// </summary>
+    public static HashSet<(string Sha256, long Size)> InTrash(UserDb db, IEnumerable<(string Sha256, long Size)> items)
+    {
+        var hit = new HashSet<(string, long)>();
+        using var conn = db.Open();
+        foreach (var (sha, size) in items.Select(i => (i.Sha256.ToLowerInvariant(), i.Size)).Distinct())
+        {
+            if (!ValidHash(sha) || size < 0) continue;
+            if (UserDb.Query(conn, "SELECT 1 FROM file_trash_items WHERE sha256=$h AND size=$s AND is_dir=0 LIMIT 1", r => true, ("$h", sha), ("$s", size)).Any())
+                hit.Add((sha, size));
+        }
+        return hit;
+    }
 }
 
 /// <summary>

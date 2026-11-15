@@ -201,7 +201,7 @@ CREATE INDEX mail_flagged ON mail(account, date DESC) WHERE flagged = 1;
 CREATE INDEX mail_unseen ON mail(account, folder, date DESC) WHERE seen = 0;
 CREATE INDEX mail_attach ON mail(account, folder, date DESC) WHERE has_att = 1;")),
         // IMAP-Schlagworte (Kategorien), mit Leerzeichen eingefasst: " dm_rechnung dm_privat "
-        new(4, "Mail-Schlagwörter", c => Run(c, "ALTER TABLE mail ADD COLUMN keywords TEXT NOT NULL DEFAULT ''")),
+        new(4, "Mail-Tags", c => Run(c, "ALTER TABLE mail ADD COLUMN keywords TEXT NOT NULL DEFAULT ''")),
         // Der Spamfilter rechnete bis hierher verkehrt herum - alte Werte sind falsch
         new(5, "Spamfilter neu bewerten", c => Run(c, "UPDATE mail SET spam=NULL WHERE spam IS NOT NULL")),
         // Geraeteschluessel der Handy-App fuer den verschluesselten Umschlag (E2e.cs), je App-Passwort
@@ -330,7 +330,7 @@ CREATE TRIGGER {table}_blob_upd AFTER UPDATE OF blob ON {table} WHEN OLD.blob IS
         }),
         // Schlagwoerter (Tags) der Notizen aus dem notizi-Abgleich, als JSON-Liste. NULL: noch nicht bekannt
         // (die Notiz kam von einem Geraet vor den Tags) - Rezepte tragen "recipe" (Essensplan).
-        new(17, "Schlagwörter der Notizen", c => Run(c, "ALTER TABLE notes ADD COLUMN tags TEXT NULL")),
+        new(17, "Tags der Notizen", c => Run(c, "ALTER TABLE notes ADD COLUMN tags TEXT NULL")),
         // Pruefsumme (SHA-256 des Klartexts, hex) je Dateiinhalt: beim Schreiben mitgerechnet, fuer Vorhandenes
         // rechnet FileHashes im Hintergrund nach (NULL: noch unbekannt). Wandert mit Version, Papierkorb und Kopie.
         // Der Index dient "Ist dieser Inhalt schon da?" (App, POST /api/files/hashes) und spaeter Duplikaten.

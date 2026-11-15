@@ -59,7 +59,7 @@ public sealed class S3Backup(DataPaths paths, Vault vault, UserStore users, Serv
 
     public string? Blocked() =>
         !TargetConfigured(config) ? "Das Ziel des Core-Backups ist nicht eingerichtet."
-        : vault.KeyInDataDir ? "Der Hauptschlüssel liegt als Datei im Datenverzeichnis. Eine Sicherung, die ihn nicht enthält, ließe sich nach einem Ausfall nicht öffnen – setze DMOFFICE_MASTER_KEY in der Container-Vorlage (oben in der Verwaltung steht, wie) und bewahre ihn getrennt auf."
+        : vault.KeyInDataDir ? "Der Hauptschlüssel liegt als Datei im Datenverzeichnis. Ein Backup, das ihn nicht enthält, ließe sich nach einem Ausfall nicht öffnen – setze DMOFFICE_MASTER_KEY in der Container-Vorlage (oben in der Verwaltung steht, wie) und bewahre ihn getrennt auf."
         : null;
 
     /// <summary>

@@ -62,6 +62,56 @@ public class StorageDriverTests : IClassFixture<FilesServerFixture>
     }
 
     [Fact]
+    public async Task Ordner_Verknuepfungen_aufgeloest_pruefen_und_Kreise_beim_Kopieren()
+    {
+        var parent = Directory.CreateTempSubdirectory("dmdriver-ebene").FullName;
+        var root = Path.Combine(parent, "share");
+        var ct = CancellationToken.None;
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(root, "x", "y"));
+            Directory.CreateDirectory(Path.Combine(parent, "geheim"));
+            File.WriteAllText(Path.Combine(parent, "geheim", "f.txt"), "nicht zeigen");
+            Directory.CreateDirectory(Path.Combine(root, "src"));
+            File.WriteAllText(Path.Combine(root, "src", "f.txt"), "inhalt");
+            // Windows braucht für Verknüpfungen Rechte - dann überspringen
+            try
+            {
+                Directory.CreateSymbolicLink(Path.Combine(root, "x", "y", "a"), root);
+                Directory.CreateSymbolicLink(Path.Combine(root, "c"), Path.Combine("..", "geheim"));
+                Directory.CreateSymbolicLink(Path.Combine(root, "src", "kreis"), Path.Combine(root, "src"));
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return; }
+            using var d = new FolderDriver(root);
+
+            // Verknüpfung hinter einer Verknüpfung: das Betriebssystem landet außerhalb
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() => d.OpenReadAsync("c/f.txt", ct));
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() => d.OpenReadAsync("x/y/a/c/f.txt", ct));
+            Assert.DoesNotContain(await d.ListAsync("x/y/a", ct), e => e.Name == "c");
+            // Verknüpfung nach innen bleibt nutzbar
+            await using (var s = await d.OpenReadAsync("x/y/a/src/f.txt", ct)) Assert.Equal("inhalt", new StreamReader(s).ReadToEnd());
+
+            // Kreis: kopiert einmal, endet
+            await DmOffice.Storage.ExternalFolders.CopyAsync(d, "src", "kopie", ct);
+            Assert.Equal("inhalt", File.ReadAllText(Path.Combine(root, "kopie", "f.txt")));
+            Assert.False(Directory.Exists(Path.Combine(root, "kopie", "kreis")));
+            // In einen Ordner, der über eine Verknüpfung die Quelle selbst ist
+            Directory.CreateSymbolicLink(Path.Combine(root, "ziel"), Path.Combine(root, "src"));
+            Directory.Delete(Path.Combine(root, "src", "kreis"));
+            await DmOffice.Storage.ExternalFolders.CopyAsync(d, "src", "ziel/src2", ct);
+            Assert.True(File.Exists(Path.Combine(root, "src", "src2", "f.txt")));
+            Assert.False(Directory.Exists(Path.Combine(root, "src", "src2", "src2")));
+        }
+        finally
+        {
+            // Verknüpfungen zuerst, damit nichts über sie gelöscht wird
+            foreach (var l in new[] { Path.Combine(root, "x", "y", "a"), Path.Combine(root, "c"), Path.Combine(root, "src", "kreis"), Path.Combine(root, "ziel") })
+                if (new DirectoryInfo(l).LinkTarget != null) Directory.Delete(l);
+            Directory.Delete(parent, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task WebDav_gegen_dmOffice_selbst()
     {
         using var http = _fx.Client();

@@ -35,6 +35,8 @@ export interface ExtenderBoxes {
   /** Rechts: vorhanden, noch zu übertragen, frei (null: Größe unbekannt), nicht von dmOffice belegt. */
   there: number; pending: number; free: number | null; foreign: number
   leftNote: string; rightNote: string; unitLabel: string; fetching: boolean
+  /** Nur das lokale Speichervolumen (die Belegung des Storage Extender steht unter „Speicherplatz“) */
+  single?: boolean
 }
 
 /** Links immer 48 Kästchen für das ganze Volume, rechts im selben Maßstab: was im Storage Extender liegt. */
@@ -51,18 +53,18 @@ export function ExtenderPicture(b: ExtenderBoxes) {
   const legend = (Cell: () => JSX.Element, label: string) => <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}><Cell /><Text size={200}>{label}</Text></span>
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(224px, 1fr) 90px minmax(224px, 1fr)', overflowX: 'auto', gap: 8, alignItems: 'center' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: b.single ? 'minmax(224px, 360px)' : 'minmax(224px, 1fr) 90px minmax(224px, 1fr)', justifyContent: b.single ? 'center' : undefined, overflowX: 'auto', gap: 8, alignItems: 'center' }}>
         <Area cols={12} title={t('Lokales Speichervolumen')} note={b.leftNote}>
           {repeat(Used, used)}{repeat(Clean, clean)}{repeat(Free, open)}{repeat(Blocked, blocked)}{repeat(Foreign, other)}
         </Area>
-        <Text size={100} align="center" style={{ color: tokens.colorNeutralForeground3 }}>{t('alle Dateien')} →{b.fetching && <><br />← {t('lädt bei Bedarf')}</>}</Text>
+        {!b.single && <><Text size={100} align="center" style={{ color: tokens.colorNeutralForeground3 }}>{t('alle Dateien')} →{b.fetching && <><br />← {t('lädt bei Bedarf')}</>}</Text>
         <Area cols={12} title={t('Storage Extender')} note={b.rightNote + (right > MAX_RIGHT ? ' · ' + t('{n} Kästchen, {max} gezeigt', { n: right, max: MAX_RIGHT }) : '')}>
           {repeat(Used, take(b.there))}{repeat(Pending, take(b.pending))}{repeat(Free, take(b.free ?? 0))}{repeat(Foreign, take(b.foreign))}
-        </Area>
+        </Area></>}
       </div>
       <Text size={200} align="center" style={{ color: tokens.colorNeutralForeground3 }}>{b.unitLabel}</Text>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 14px', justifyContent: 'center' }}>
-        {legend(Used, t('Belegt'))}{legend(Clean, t('Wird bereinigt'))}{legend(Pending, t('Wird noch übertragen'))}{legend(Free, t('Frei'))}{legend(Blocked, t('Durch die Regler gesperrt'))}{legend(Foreign, t('Sonstige Daten'))}
+        {legend(Used, t('Belegt'))}{legend(Clean, t('Wird bereinigt'))}{!b.single && legend(Pending, t('Wird noch übertragen'))}{legend(Free, t('Frei'))}{legend(Blocked, b.single ? t('Durch die Grenzen gesperrt') : t('Durch die Regler gesperrt'))}{legend(Foreign, t('Sonstige Daten'))}
       </div>
     </div>
   )

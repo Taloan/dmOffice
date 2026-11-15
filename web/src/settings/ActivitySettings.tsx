@@ -9,7 +9,7 @@ export function ActivitySettings() {
   return (
     <>
       <PageTitle>{t('Aktivität')}</PageTitle>
-      <Text>{t('Was der Server für dich im Hintergrund erledigt: läuft, wartet, zuletzt fertig oder mit Fehler. Die Anzeige aktualisiert sich von selbst.')}</Text>
+      <Text>{t('Aufgaben, die der Server im Hintergrund erledigt. Die Anzeige aktualisiert sich automatisch.')}</Text>
       <ActivityList data={data} />
     </>
   )

@@ -60,7 +60,7 @@ export function useGridColumns(id: string, defs: Record<string, ColDef>, default
   const m = menu
   const columnMenu = m && (
     <Menu open onOpenChange={(_, d) => { if (!d.open) setMenu(null) }}
-      positioning={{ target: { getBoundingClientRect: () => ({ x: m.x, y: m.y, left: m.x, top: m.y, right: m.x, bottom: m.y, width: 0, height: 0, toJSON: () => '' }) } as any }}>
+      positioning={{ autoSize: 'height', target: { getBoundingClientRect: () => ({ x: m.x, y: m.y, left: m.x, top: m.y, right: m.x, bottom: m.y, width: 0, height: 0, toJSON: () => '' }) } as any }}>
       <MenuPopover>
         <MenuList checkedValues={{ cols: cols.map(c => c.key) }}>
           {Object.keys(defs).map(k => <MenuItemCheckbox key={k} name="cols" value={k} onClick={() => toggle(k)}>{defs[k].label()}</MenuItemCheckbox>)}

@@ -446,7 +446,7 @@ public static partial class Pukki
         var hits = new List<Hit>();
         foreach (var (owner, coll, shared) in Calendars(c.Services, c.Space))
             foreach (var e in CalendarModel.Events(owner, now.AddDays(-400), now.AddDays(400), [coll.Id]))
-                // Ein Wort im Titel, oder alle irgendwo - nur der Ort allein reicht nicht („Schlachtplatte in Vöhringen“ ist nicht die Biotonne dort)
+                // Ein Wort im Titel, oder alle irgendwo - nur der Ort allein reicht nicht („Schlachtplatte in Musterstadt“ ist nicht die Biotonne dort)
                 if (PukkiSearch.Matches(e.Title, terms) || terms.All(t => PukkiSearch.Matches(e.Title + " " + e.Location + " " + e.Description, [t])))
                     hits.Add(new Hit(e, Local(e.Start, c.Space.Zone), owner, coll, shared));
         return hits.OrderBy(h => h.Local < c.Now.Date ? 1 : 0).ThenBy(h => h.Local < c.Now.Date ? -h.Local.Ticks : h.Local.Ticks).DistinctBy(h => (h.Coll.Id, h.E.Uri)).ToList();

@@ -4,7 +4,7 @@ import {
 import { Book20Regular, Globe20Regular, Info20Regular, QuestionCircle20Regular } from '@fluentui/react-icons'
 import { useState } from 'react'
 import { useApp } from '../App'
-import { t } from '../i18n'
+import { lang, t } from '../i18n'
 import { copyText } from './browser'
 import { brandLogo } from '../theme'
 import { currentPrefs } from '../prefs'
@@ -12,12 +12,12 @@ import { OpenSourceDialog } from './OpenSource'
 
 export const WEBSITE = 'https://dmoffice.de'
 export const GITHUB = 'https://github.com/Taloan/dmOffice'
-const MANUAL = GITHUB + '/blob/master/docs/manual.md'
+const MANUAL = GITHUB + '/blob/master/docs/' + (lang === 'de' ? 'handbuch.md' : 'manual.md')
 
 const open = (url: string) => { window.open(url, '_blank', 'noopener,noreferrer') }
 
 /** Hilfe in der Kopfzeile: Webseite, Handbuch, GitHub und ein Infofenster. */
-export function HelpMenu({ className, release, build }: { className?: string; release: string; build: string }) {
+export function HelpMenu({ className, release, build, extra }: { className?: string; release: string; build: string; extra?: string[] }) {
   const [about, setAbout] = useState(false)
   return (
     <>
@@ -37,15 +37,15 @@ export function HelpMenu({ className, release, build }: { className?: string; re
           </MenuList>
         </MenuPopover>
       </Menu>
-      {about && <AboutDialog release={release} build={build} onClose={() => setAbout(false)} />}
+      {about && <AboutDialog release={release} build={build} extra={extra ?? []} onClose={() => setAbout(false)} />}
     </>
   )
 }
 
-function AboutDialog({ release, build, onClose }: { release: string; build: string; onClose: () => void }) {
+function AboutDialog({ release, build, extra, onClose }: { release: string; build: string; extra: string[]; onClose: () => void }) {
   const { notify } = useApp()
   const [oss, setOss] = useState(false)
-  const text = [release && `v${release}`, build && `(${t('Build')} ${build})`].filter(Boolean).join(' ')
+  const text = [release && `v${release}`, extra.length > 0 && `+ ${extra.join(', ')}`, build && `(${t('Build')} ${build})`].filter(Boolean).join(' ')
   return (
     <>
     <Dialog open onOpenChange={(_, d) => { if (!d.open) onClose() }}>
@@ -60,6 +60,7 @@ function AboutDialog({ release, build, onClose }: { release: string; build: stri
                 <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>{t('Mail, Kalender, Kontakte, Aufgaben, Notizen und Dateien auf deinem eigenen Server.')}</Text>
               </div>
             </div>
+            {extra.length > 0 && <Text size={200}>{t('Zusätzlich freigeschaltet: {list}', { list: extra.join(', ') })}</Text>}
             {build && (
               <Text size={200}>
                 {t('Build')}: <span style={{ fontFamily: tokens.fontFamilyMonospace }}>{build}</span>{' '}

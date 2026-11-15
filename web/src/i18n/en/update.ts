@@ -29,12 +29,9 @@ export const update: Record<string, string> = {
   'ohne Sicherung': 'without backup',
   'Frei: {size}': 'Free: {size}',
   'Dauer: {eta}': 'Duration: {eta}',
-  'Es fehlen etwa {missing} freier Platz. Bis genug da ist, wird nichts verändert – die Daten bleiben unberührt, dieser Benutzer kommt nur noch nicht an seine Daten. Platz schaffen (Dateien löschen, größeren Datenträger einbinden) und „Erneut prüfen“.':
-    'About {missing} of free space is missing. Nothing is changed until there is enough – the data stays untouched, this user just cannot reach their data yet. Free up space (delete files, attach a bigger disk) and press “Check again”.',
-  'Für die Sicherung vor dem Umbau fehlen etwa {missing}. Entweder Platz schaffen und „Erneut prüfen“ – oder ausdrücklich ohne Sicherung fortfahren (dann hilft bei einem Fehler nur deine eigene Sicherung des Datenordners).':
-    'About {missing} is missing for the backup before the conversion. Either free up space and press “Check again” – or explicitly continue without a backup (then only your own copy of the data folder helps if something goes wrong).',
-  'Dieser Umbau ist groß ({eta}, {size} Platz) und startet nicht von selbst. Der Server läuft währenddessen weiter, dieser Benutzer wartet. Am besten vorher den ganzen Datenordner kopieren.':
-    'This conversion is large ({eta}, {size} of space) and does not start by itself. The server keeps running meanwhile; this user waits. Best copy the whole data folder first.',
+  'Es fehlen etwa {missing} freier Platz. Bis genug Platz frei ist, wird nichts verändert, und dieser Benutzer kann nicht auf seine Daten zugreifen.': 'About {missing} of free space is missing. Until there is enough, nothing is changed, and this user cannot access their data.',
+  'Für die Sicherung vor dem Umbau fehlen etwa {missing}. Ohne Sicherung fortzufahren ist möglich; bei einem Fehler hilft dann nur eine eigene Sicherung des Datenordners.': 'About {missing} is missing for the backup before the conversion. Continuing without a backup is possible; if something fails, only your own backup of the data folder helps.',
+  'Dieser Umbau ist groß ({eta}, {size} Platz) und startet nicht von selbst. Der Server läuft währenddessen weiter, dieser Benutzer wartet.': 'This conversion is large ({eta}, {size} of space) and does not start by itself. The server keeps running meanwhile; this user waits.',
   'Die Datenänderung ist gescheitert; die Daten sind unverändert (jeder Schritt gilt ganz oder gar nicht).':
     'The data change failed; the data is unchanged (every step is all or nothing).',
   'Sicherung wird angelegt …': 'Creating backup …',
@@ -93,7 +90,7 @@ export const update: Record<string, string> = {
   'Grundstruktur': 'Basic structure',
   'Spamfilter bereinigen': 'Clean up spam filter',
   'Mailinhalte in eigene Tabelle': 'Mail contents into their own table',
-  'Mail-Schlagwörter': 'Mail keywords',
+  'Mail-Tags': 'Mail tags',
   'Spamfilter neu bewerten': 'Re-rate spam filter',
   'Geräteschlüssel der App': 'App device keys',
   'Browser-Geräte': 'Browser devices',
@@ -106,7 +103,7 @@ export const update: Record<string, string> = {
   'Volltextsuche': 'Full-text search',
   'Abrufgrenze der Freigabelinks': 'Download limit of share links',
   'Dateiinhalte als eigene Dateien': 'File contents as separate files',
-  'Schlagwörter der Notizen': 'Note tags',
+  'Tags der Notizen': 'Note tags',
   'Prüfsummen der Dateien': 'File checksums',
   // Meldungen des Servers
   'Ohne Sicherung fortfahren muss ausdrücklich bestätigt werden.': 'Continuing without a backup must be confirmed explicitly.',

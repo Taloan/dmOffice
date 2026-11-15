@@ -11,7 +11,6 @@ import { locale, t } from '../i18n'
 import { CategoryDot, useCategories } from './Categories'
 import { folderLabel } from './FolderPane'
 import type { Selection } from './MailView'
-import { askConfirm } from '../shell/context'
 
 export interface MailCriteria {
   text?: string | null; accounts?: string[] | null; folders?: string[] | null; categories?: string[] | null
@@ -52,7 +51,7 @@ export function VirtualFolders({ accounts, folders, selection, onSelect, refresh
   onCategoryDrop?: (key: string, ids: number[]) => void
 }) {
   const s = useStyles()
-  const { fail } = useApp()
+  const { fail, undoable } = useApp()
   const { prefs, update } = usePrefs()
   const categories = useCategories()
   const [list, setList] = useState<SearchFolder[]>([])
@@ -90,7 +89,7 @@ export function VirtualFolders({ accounts, folders, selection, onSelect, refresh
   const item = (folder: string, icon: JSX.Element, name: string, onMenu?: (e: React.MouseEvent) => void) => {
     const c = counts[folder]
     return (
-      <div key={folder} className={mergeClasses(s.item, selection?.folder === folder && s.active)} onClick={() => open(folder)}
+      <div key={folder} className={mergeClasses('dm-frow', s.item, selection?.folder === folder && s.active)} onClick={() => open(folder)}
         style={dropOn === folder ? { outline: `2px solid ${tokens.colorBrandStroke1}`, outlineOffset: -2 } : undefined}
         onContextMenu={onMenu ? e => { e.preventDefault(); onMenu(e) } : undefined}
         // Kategorie: Mails hierher ziehen ordnet sie zu (lernende Kategorien lernen daraus)
@@ -112,8 +111,8 @@ export function VirtualFolders({ accounts, folders, selection, onSelect, refresh
   if (!anchor) return null
   return (
     <>
-      <div style={{ marginBottom: 10 }}>
-        <div className={s.head} onClick={() => toggle('search')}>
+      {(prefs.searchFolders ?? true) && <div className="dm-fsub" style={{ marginBottom: 10 }}>
+        <div className={mergeClasses('dm-fhead', s.head)} onClick={() => toggle('search')}>
           {closed.search ? <ChevronRight16Regular /> : <ChevronDown16Regular />}
           <Text weight="semibold" style={{ flex: 1 }}>{t('Suchordner')}</Text>
           <Tooltip content={t('Neuer Suchordner')} relationship="label">
@@ -125,10 +124,10 @@ export function VirtualFolders({ accounts, folders, selection, onSelect, refresh
         {!closed.search && list.length === 0 && (
           <Text size={200} className={s.preview} style={{ paddingLeft: 24, display: 'block' }}>{t('Gespeicherte Suchen erscheinen hier wie Ordner.')}</Text>
         )}
-      </div>
+      </div>}
       {categories.length > 0 && (prefs.categoryFolders ?? true) && (
-        <div style={{ marginBottom: 10 }}>
-          <div className={s.head} onClick={() => toggle('categories')}>
+        <div className="dm-fsub" style={{ marginBottom: 10 }}>
+          <div className={mergeClasses('dm-fhead', s.head)} onClick={() => toggle('categories')}>
             {closed.categories ? <ChevronRight16Regular /> : <ChevronDown16Regular />}
             <Text weight="semibold" style={{ flex: 1 }}>{t('Kategorien')}</Text>
           </div>
@@ -138,14 +137,16 @@ export function VirtualFolders({ accounts, folders, selection, onSelect, refresh
       )}
       {menu && (
         <Menu open onOpenChange={(_, d) => !d.open && setMenu(null)}
-          positioning={{ target: { getBoundingClientRect: () => ({ x: menu.x, y: menu.y, top: menu.y, left: menu.x, bottom: menu.y, right: menu.x, width: 0, height: 0 }) } as any }}>
+          positioning={{ autoSize: 'height', target: { getBoundingClientRect: () => ({ x: menu.x, y: menu.y, top: menu.y, left: menu.x, bottom: menu.y, right: menu.x, width: 0, height: 0 }) } as any }}>
           <MenuPopover>
             <MenuList>
               <MenuItem onClick={() => { setEdit(menu.f); setMenu(null) }}>{t('Bearbeiten …')}</MenuItem>
               <MenuItem onClick={async () => {
                 const f = menu.f
                 setMenu(null)
-                if (await askConfirm('', t('Suchordner „{name}“ löschen? Die Mails bleiben, wo sie sind.', { name: f.name }))) save(list.filter(x => x.id !== f.id))
+                // Keine Rückfrage: es ist nur eine gespeicherte Suche, danach gibt es „Rückgängig“
+                const before = list
+                if (await save(list.filter(x => x.id !== f.id))) undoable(t('„{name}“ gelöscht', { name: f.name }), async () => { await save(before) })
               }}>{t('Löschen')}</MenuItem>
             </MenuList>
           </MenuPopover>
@@ -153,7 +154,7 @@ export function VirtualFolders({ accounts, folders, selection, onSelect, refresh
       )}
       {catMenu && (
         <Menu open onOpenChange={(_, d) => !d.open && setCatMenu(null)}
-          positioning={{ target: { getBoundingClientRect: () => ({ x: catMenu.x, y: catMenu.y, top: catMenu.y, left: catMenu.x, bottom: catMenu.y, right: catMenu.x, width: 0, height: 0 }) } as any }}>
+          positioning={{ autoSize: 'height', target: { getBoundingClientRect: () => ({ x: catMenu.x, y: catMenu.y, top: catMenu.y, left: catMenu.x, bottom: catMenu.y, right: catMenu.x, width: 0, height: 0 }) } as any }}>
           <MenuPopover>
             <MenuList>
               <Menu>

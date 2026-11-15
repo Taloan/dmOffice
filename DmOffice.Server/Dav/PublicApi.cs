@@ -105,7 +105,7 @@ public static class PublicApi
             // verriete die Antwort (gefunden/404, Groesse, Datum), welche Dateien im Ordner liegen.
             var f = drop ? a.Root : Under(a, path);
             // Office-Ansicht nur bei Links "nur ansehen": welche Endungen der Office-Server zeigen kann
-            var office = a.Link.Mode == "read" ? await DmOffice.Office.WopiApi.PublicExtensions(http) : [];
+            var office = a.Link.Mode == "read" ? await DmOffice.Office.WopiApi.PublicExtensions(http, a.Link) : [];
             return Results.Ok(new
             {
                 name = a.Root.Name.Length == 0 ? "Dateien" : a.Root.Name,

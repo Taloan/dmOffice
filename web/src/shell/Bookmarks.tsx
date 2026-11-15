@@ -2,6 +2,7 @@ import { Button, Menu, MenuItem, MenuList, MenuPopover, Tooltip, makeStyles, mer
 import { Add20Regular, Delete20Regular, Rename20Regular, ArrowUp20Regular } from '@fluentui/react-icons'
 import { useState } from 'react'
 import { t } from '../i18n'
+import { askConfirm, askText } from './context'
 import { usePrefs } from '../prefs'
 
 export const MAX_BOOKMARKS = 5
@@ -45,15 +46,15 @@ export function Bookmarks() {
   const save = (next: { name: string; url: string }[]) => update({ bookmarks: next.slice(0, MAX_BOOKMARKS) })
 
   const add = (url: string, name?: string) => {
-    if (list.length >= MAX_BOOKMARKS) { alert(t('Höchstens {n} Lesezeichen – erst eines entfernen.', { n: MAX_BOOKMARKS })); return }
+    if (list.length >= MAX_BOOKMARKS) { void askConfirm(t('Lesezeichen'), t('Höchstens {n} Lesezeichen – erst eines entfernen.', { n: MAX_BOOKMARKS }), t('OK')); return }
     if (list.some(b => b.url === url)) return
     save([...list, { url, name: (name?.trim() || nameOf(url)).slice(0, 60) }])
   }
-  const ask = () => {
-    const raw = prompt(t('Adresse des Lesezeichens:'), 'https://')
+  const ask = async () => {
+    const raw = await askText(t('Lesezeichen hinzufügen'), 'https://', t('Adresse'), t('Weiter'))
     const url = raw ? cleanUrl(raw) : null
     if (!url) return
-    add(url, prompt(t('Name:'), nameOf(url)) ?? undefined)
+    add(url, await askText(t('Lesezeichen hinzufügen'), nameOf(url), t('Name'), t('Hinzufügen')) ?? undefined)
   }
 
   return (
@@ -87,12 +88,13 @@ export function Bookmarks() {
         </Tooltip>
       )}
       {menu && (
-        <Menu open onOpenChange={(_, d) => !d.open && setMenu(null)} positioning={{ target: { getBoundingClientRect: () => new DOMRect(menu.x, menu.y, 0, 0) } }}>
+        <Menu open onOpenChange={(_, d) => !d.open && setMenu(null)} positioning={{ autoSize: 'height', target: { getBoundingClientRect: () => new DOMRect(menu.x, menu.y, 0, 0) } }}>
           <MenuPopover>
             <MenuList>
-              <MenuItem icon={<Rename20Regular />} onClick={() => {
-                const name = prompt(t('Name:'), list[menu.i].name)
-                if (name?.trim()) save(list.map((b, j) => j === menu.i ? { ...b, name: name.trim().slice(0, 60) } : b))
+              <MenuItem icon={<Rename20Regular />} onClick={async () => {
+                const i = menu.i
+                const name = await askText(t('Umbenennen'), list[i].name)
+                if (name?.trim()) save(list.map((b, j) => j === i ? { ...b, name: name.trim().slice(0, 60) } : b))
               }}>{t('Umbenennen')}</MenuItem>
               {menu.i > 0 && <MenuItem icon={<ArrowUp20Regular />} onClick={() => {
                 const next = [...list];

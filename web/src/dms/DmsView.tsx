@@ -1,27 +1,28 @@
 import {
   Badge, Button, Checkbox, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Dropdown, Field, Input, MessageBar, MessageBarActions, MessageBarBody, MessageBarTitle,
-  Menu, MenuItem, MenuPopover, MenuTrigger, Option, Slider, Spinner, Text,
+  Menu, MenuDivider, MenuItem, MenuPopover, MenuTrigger, Option, Slider, Spinner, Text,
   Textarea, makeStyles, mergeClasses, tokens,
 } from '@fluentui/react-components'
 import {
   Add20Regular, ArrowDownload20Regular, ArrowSync20Regular, Checkmark20Regular, ChevronDown16Regular, ChevronRight16Regular, Delete20Regular,
   Dismiss20Regular, DocumentText20Regular, Edit20Regular, Folder20Regular, FolderArrowRight20Regular, FolderOpen20Regular, MailInbox20Regular, AppsList20Regular, Grid20Regular, ZoomIn20Regular,
-  PanelRight20Regular, Person20Regular, PersonAdd20Regular, MoreHorizontal20Regular, Search20Regular, Settings20Regular, Sparkle16Regular, Tag20Regular, Ribbon20Regular, TextBulletListTree20Regular, ArrowUpload20Regular,
-  DocumentBulletList20Regular, NumberSymbol20Regular, ArrowSwap20Regular, LockClosed20Regular, LockOpen20Regular, Hourglass20Regular, Pause16Regular, Pause20Regular, Play20Regular,
+  PanelRight20Regular, Person20Regular, PersonAdd20Regular, MoreHorizontal20Regular, Search20Regular, Settings20Regular, Sparkle16Regular, Sparkle20Regular, Tag20Regular, Ribbon20Regular, TextBulletListTree20Regular, ArrowUpload20Regular,
+  Add16Regular, ChevronDown12Regular, PaintBrush20Regular, Dismiss12Regular, DocumentBulletList20Regular, NumberSymbol20Regular, ArrowSwap20Regular, LockClosed20Regular, LockOpen20Regular, Hourglass20Regular, Pause16Regular, Pause20Regular, Play20Regular, Save20Regular, ArrowUndo20Regular,
 } from '@fluentui/react-icons'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, fmtSize, q } from '../api'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { api, featureOn, fmtSize, q } from '../api'
 import { useApp } from '../App'
 import { lang, t } from '../i18n'
 import { moneyText, parseMoney } from './money'
 import { usePrefs } from '../prefs'
 import { useNavStyles } from '../shell/nav'
 import { RibbonButton, RibbonDivider, RibbonHeader, useSidePane } from '../shell/Ribbon'
-import { SidePane, useIsMobile } from '../shell/mobile'
-import { askConfirm, ContextMenu, useContextMenu } from '../shell/context'
+import { SidePane, useBackClose, useIsMobile } from '../shell/mobile'
+import { askChoice, askConfirm, ContextMenu, useContextMenu } from '../shell/context'
 import { EditEntry, ListsView, useEntryActions } from './DmsLists'
 import { Pick, PickButton, PickField, PickPages, usePick } from './DmsPick'
 import { MoveAreaDialog } from './DmsMoveArea'
+import { RefileDialog, profilesFor } from './DmsRefile'
 import { closeTresor, OPEN_COLOR, requestTresorOpen, TRESOR_EVENT } from '../tresor/tresor'
 import { ColDef, useGridColumns } from '../shell/GridColumns'
 import { entriesOf, readEntries } from '../files/FilesView'
@@ -29,11 +30,15 @@ import { OfficeEditor, OfficeSession, officeMode, useOffice } from '../files/Off
 import {
   areaQ, contentUrl, defaultTrees, downloadDocs, Doc, Entry, Filter, filterOf, fullName, importedText, Kind, kindLabel, Level, levelLabel, LEVELS, loadDocs, monthName, Node, ordered, sourceLabel, State, Tree, typeLabel,
 } from './model'
+import type { Profile } from './model'
 import { EntrySelect } from './EntrySelect'
+import { AiStartDialog, AiSuggestions } from './DmsAi'
 
 const FIXED_COLOR = '#1F7FD6'
 
 const useStyles = makeStyles({
+  // Läuft gerade (Bestätigen): grüner drehender Kreis an Stelle des Hakens
+  spin: { color: tokens.colorPaletteGreenForeground1, animationName: { from: { transform: 'rotate(0deg)' }, to: { transform: 'rotate(360deg)' } }, animationDuration: '1.2s', animationIterationCount: 'infinite', animationTimingFunction: 'linear' },
   outer: { display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 },
   root: { display: 'flex', flex: 1, minWidth: 0, minHeight: 0, position: 'relative' },
   side: { width: '240px', flexShrink: 0, borderRight: `1px solid ${tokens.colorNeutralStroke2}` },
@@ -58,6 +63,14 @@ const useStyles = makeStyles({
   muted: { color: tokens.colorNeutralForeground3 },
   chips: { display: 'flex', gap: '4px', flexWrap: 'nowrap', overflow: 'hidden' },
   chip: { borderRadius: '4px', padding: '0 6px', fontSize: '12px', lineHeight: '18px', color: '#1b1b1b', whiteSpace: 'nowrap' },
+  // Vom DMS gesetzt, noch nicht bestätigt: kursiv mit gestricheltem Rand, die Schrift bleibt dunkel und lesbar
+  chipAuto: { fontStyle: 'italic', outline: '1px dashed #1b1b1b', outlineOffset: '-1px', opacity: 0.8 },
+  // Bearbeiten in der Liste (dmsinline): alle Tags sichtbar, ✕ entfernt, + fügt hinzu, ⌄ öffnet die Auswahl
+  chipsWrap: { display: 'flex', gap: '4px', flexWrap: 'wrap', alignItems: 'center', minWidth: 0, padding: '2px 0' },
+  chipX: { display: 'inline-flex', marginLeft: '2px', marginRight: '-3px', verticalAlign: 'middle', cursor: 'pointer', opacity: 0.55, ':hover': { opacity: 1 } },
+  tool: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '20px', height: '20px', borderRadius: '4px', cursor: 'pointer', flexShrink: 0,
+    color: tokens.colorNeutralForeground3, ':hover': { backgroundColor: tokens.colorNeutralBackground3Hover, color: tokens.colorNeutralForeground1 } },
+  editCell: { display: 'flex', alignItems: 'center', gap: '2px', minWidth: 0 },
   detail: { width: '420px', flexShrink: 0, borderLeft: `1px solid ${tokens.colorNeutralStroke2}`, display: 'flex', flexDirection: 'column', minHeight: 0, overflowY: 'auto',
     '@media (max-width: 1100px)': { width: '340px' } },
   preview: { height: '360px', flexShrink: 0, backgroundColor: tokens.colorNeutralBackground3, display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -81,6 +94,11 @@ const useStyles = makeStyles({
   miniThumb: { width: '40px', height: '56px', backgroundColor: tokens.colorNeutralBackground3, borderRadius: tokens.borderRadiusSmall, overflow: 'hidden',
     display: 'flex', alignItems: 'center', justifyContent: 'center', '& img': { width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'top', backgroundColor: '#fff' } },
   actions: { display: 'flex', gap: '6px', flexWrap: 'wrap' },
+  // Kopf (Status, Schließen) und Fußleiste (Übernehmen, Verwerfen) bleiben beim Scrollen stehen
+  stickyHead: { position: 'sticky', top: 0, zIndex: 2, display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '-12px -16px 0', padding: '8px 16px',
+    backgroundColor: tokens.colorNeutralBackground1, borderBottom: `1px solid ${tokens.colorNeutralStroke2}` },
+  stickyFoot: { position: 'sticky', bottom: 0, zIndex: 2, display: 'flex', gap: '6px', flexWrap: 'wrap', margin: '0 -16px -12px', padding: '10px 16px 12px',
+    backgroundColor: tokens.colorNeutralBackground1, borderTop: `1px solid ${tokens.colorNeutralStroke2}` },
   empty: { margin: 'auto', textAlign: 'center', maxWidth: '460px', display: 'flex', flexDirection: 'column', gap: '12px', alignItems: 'center', padding: '24px' },
   drop: { outline: `2px dashed ${tokens.colorBrandStroke1}`, outlineOffset: '-6px' },
   treeRow: { paddingLeft: '4px' },
@@ -96,7 +114,7 @@ const useStyles = makeStyles({
   fixedRow: { boxShadow: `inset 3px 0 0 ${FIXED_COLOR}` },
   fixedTresorThumb: { outline: `2px solid ${FIXED_COLOR}`, outlineOffset: '-2px', boxShadow: `0 0 0 2px ${OPEN_COLOR}` },
   fixedTresorRow: { boxShadow: `inset 3px 0 0 ${OPEN_COLOR}, inset 6px 0 0 ${FIXED_COLOR}` },
-  areas: { display: 'grid', gridTemplateColumns: '1fr 1fr', margin: '8px 8px 4px', border: `1px solid ${tokens.colorNeutralStroke1}`, borderRadius: tokens.borderRadiusMedium, overflow: 'hidden' },
+  areas: { display: 'grid', gridTemplateColumns: '1fr 1fr', flexShrink: 0, margin: '8px 8px 4px', border: `1px solid ${tokens.colorNeutralStroke1}`, borderRadius: tokens.borderRadiusMedium, overflow: 'hidden' },
   area: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', padding: '6px 4px', border: 'none', background: 'transparent', color: 'inherit',
     font: 'inherit', cursor: 'pointer', ':hover': { backgroundColor: tokens.colorSubtleBackgroundHover } },
   areaFiles: { backgroundColor: tokens.colorBrandBackground2, color: tokens.colorBrandForeground2, ':hover': { backgroundColor: tokens.colorBrandBackground2 } },
@@ -115,7 +133,7 @@ const useStyles = makeStyles({
 })
 
 type Nav =
-  | { kind: 'inbox' } | { kind: 'queue' } | { kind: 'all' } | { kind: 'paperless' } | { kind: 'tresor' } | { kind: 'tresorInbox' } | { kind: 'tresorQueue' } | { kind: 'fixed' } | { kind: 'tresorFixed' }
+  | { kind: 'inbox' } | { kind: 'queue' } | { kind: 'all' } | { kind: 'paperless' } | { kind: 'tresor' } | { kind: 'tresorInbox' } | { kind: 'tresorQueue' } | { kind: 'fixed' } | { kind: 'tresorFixed' } | { kind: 'misplaced' } | { kind: 'ai' }
   /** tresor: derselbe Baum über den Dokumenten im Tresor (eigener Abschnitt, grün) */
   | { kind: 'tree'; tree: number; path: { level: string; key: string | null; name: string }[]; tresor?: boolean }
   | { kind: 'entry'; entry: Entry }
@@ -142,7 +160,7 @@ const DOC_COLS: Record<string, ColDef> = {
   size: { label: () => t('Größe'), width: 90, sort: 'size' },
   source: { label: () => t('Quelle'), width: 110, sort: 'source' },
 }
-const DOC_DEFAULT = ['date', 'title', 'correspondent', 'doctype', 'tags']
+const DOC_DEFAULT = ['date', 'title', 'correspondent', 'doctype', 'tags', 'imported']
 
 /** Rotes „!“ an einem Dokument: der Hinweis dazu als Tooltip. */
 const ErrorMark = ({ text }: { text: string }) => <Badge size="small" color="danger" style={{ marginLeft: 6 }} title={t(text)} aria-label={t(text)}>!</Badge>
@@ -170,7 +188,7 @@ export default function DmsView() {
   const grid = useGridColumns('dms-docs', DOC_COLS, DOC_DEFAULT)
   const [state, setState] = useState<State | null>(null)
   const [entries, setEntries] = useState<Entry[]>([])
-  const [nav, setNav] = useState<Nav>({ kind: 'inbox' })
+  const [nav, setNavRaw] = useState<Nav>({ kind: 'inbox' })
   const [query, setQuery] = useState('')
   const [range, setRange] = useState<{ docFrom?: string; docTo?: string }>({})
   const [docs, setDocs] = useState<Doc[] | null>(null)
@@ -195,8 +213,57 @@ export default function DmsView() {
     document.addEventListener('keydown', on)
     return () => document.removeEventListener('keydown', on)
   }, [])
-  const [current, setCurrent] = useState<number | null>(null)
+  // Esc hebt die Auswahl auf (nicht in Eingabefeldern und Dialogen)
+  useEffect(() => {
+    const on = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || !location.hash.startsWith('#/dms')) return
+      const el = e.target as HTMLElement | null
+      if (el && (el.isContentEditable || /^(TEXTAREA|SELECT|INPUT)$/.test(el.tagName)) || document.querySelector('[role=dialog]')) return
+      setChecked(c => c.size ? new Set() : c)
+    }
+    document.addEventListener('keydown', on)
+    return () => document.removeEventListener('keydown', on)
+  }, [])
+  // Lupe: Maus auf einem Dokument gedrückt halten → große Vorschau, solange gedrückt; bewegen zeigt den Ausschnitt, am Rand blättern.
+  // Handy: langes Drücken beginnt die Auswahl. Danach zählt der Klick, der beim Loslassen kommt, nicht.
+  const [peek, setPeek] = useState<{ doc: Doc; page: number; count: number; x: number; y: number } | null>(null)
+  const press = useRef<{ id: number; x: number; y: number; timer: number } | null>(null)
+  const swallowClick = useRef(false)
+  const pageFlip = useRef(0)
+  useEffect(() => {
+    if (!peek) return
+    const move = (e: PointerEvent) => {
+      const x = e.clientX / window.innerWidth, y = e.clientY / window.innerHeight
+      setPeek(p => {
+        if (!p) return p
+        // Am linken bzw. rechten Rand blättern (höchstens alle 0,7 Sekunden)
+        let page = p.page
+        if (Date.now() - pageFlip.current > 700 && (x > 0.96 && page < p.count - 1 || x < 0.04 && page > 0)) { page += x > 0.5 ? 1 : -1; pageFlip.current = Date.now() }
+        return { ...p, x, y, page }
+      })
+    }
+    const up = () => { setPeek(null); swallowClick.current = true; setTimeout(() => { swallowClick.current = false }, 300) }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', up)
+    return () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', up) }
+  }, [!!peek]) // eslint-disable-line react-hooks/exhaustive-deps
+  const [current, setCurrentRaw] = useState<number | null>(null)
+  // Detailbereich mit „Übernehmen und schließen“ (dmssave): vor dem Wechsel nicht übernommene Änderungen übernehmen oder verwerfen
+  const pendingEdit = useRef<DetailHandle | null>(null)
+  const guard = (go: () => void) => {
+    const h = pendingEdit.current
+    if (!h?.has()) { go(); return }
+    askChoice(t('Nicht übernommene Änderungen'), t('Die Änderungen an diesem Dokument sind noch nicht übernommen.'),
+      { value: 'save', label: t('Übernehmen') }, { value: 'drop', label: t('Verwerfen') }).then(async a => {
+      if (a === null) return
+      if (a === 'save' ? await h.save() : (h.drop(), true)) go()
+    })
+  }
+  const setCurrent = (id: number | null) => { if (id === current) return; guard(() => setCurrentRaw(id)) }
+  const setNav = (n: Nav | ((x: Nav) => Nav)) => guard(() => setNavRaw(n))
   const [detail, setDetail] = useState(true)
+  const [docText, setDocText] = useState<string | null>(null)
   const [treeData, setTreeData] = useState<Record<number, Node[]>>({})
   const [open, setOpen] = useState<Set<string>>(new Set())
   const [editTree, setEditTree] = useState<number | 'new' | null>(null)
@@ -212,6 +279,7 @@ export default function DmsView() {
       : nav.kind === 'tresorInbox' ? { area: 'tresor', inbox: true }
       : nav.kind === 'tresorQueue' ? { area: 'tresor', queued: true }
       : nav.kind === 'fixed' ? { fixed: true }
+      : nav.kind === 'misplaced' ? { misplaced: true }
       : nav.kind === 'tresorFixed' ? { area: 'tresor', fixed: true }
       : nav.kind === 'tree' ? { ...filterOf(nav.path), area: nav.tresor ? 'tresor' : undefined }
       : nav.kind === 'entry' ? (nav.entry.kind === 'correspondent' ? { correspondent: nav.entry.id } : nav.entry.kind === 'doctype' ? { doctype: nav.entry.id } : nav.entry.kind === 'role' ? { role: nav.entry.id } : { tags: [nav.entry.id] })
@@ -219,6 +287,13 @@ export default function DmsView() {
     return { ...base, q: query.trim() || undefined, docFrom: range.docFrom ?? base.docFrom, docTo: range.docTo ?? base.docTo, sort: grid.sort?.key, desc: grid.sort?.desc }
   }, [nav, query, range, grid.sort?.key, grid.sort?.desc])
 
+  // Ablage passt nicht zur Vorgabe (dmsplace): Dokument → Pfad, wohin es gehört; nach jedem Laden der Liste neu (verzögert)
+  const [misplaced, setMisplaced] = useState<Record<number, string>>({})
+  const loadMisplaced = useCallback(() => {
+    if (!featureOn('dmsplace')) return
+    api.get<Record<number, string>>('/api/dms/docs/misplaced').then(setMisplaced).catch(() => {})
+  }, [])
+  useEffect(() => { const h = setTimeout(loadMisplaced, 800); return () => clearTimeout(h) }, [docs, loadMisplaced])
   const [plDiff, setPlDiff] = useState(0)
   const loadState = useCallback(() => {
     api.get<{ differing: number }>('/api/dms/paperless/status').then(r => setPlDiff(r.differing)).catch(() => {})
@@ -284,6 +359,31 @@ export default function DmsView() {
   }, [loadState, loadEntries, loadList, loadTree, treeData])
 
   useEffect(() => { loadState(); loadEntries() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  // Sprung zu einem Dokument (#/dms/doc/<id>, etwa aus der Dateiablage): Inbox oder alle Dokumente, das Dokument geöffnet
+  const jump = useRef<Doc | null>(null)
+  useEffect(() => {
+    const go = () => {
+      const m = /^#\/dms\/doc\/(\d+)/.exec(location.hash)
+      if (!m) return
+      history.replaceState(history.state, '', '#/dms')
+      api.get<Doc>('/api/dms/docs/' + m[1]).then(d => {
+        jump.current = d
+        const want: Nav = { kind: d.inbox ? 'inbox' : 'all' }
+        if (nav.kind === want.kind && docs) { setDocs(x => x && !x.some(y => y.id === d.id) ? [d, ...x] : x); setCurrentRaw(d.id); setDetail(true); jump.current = null }
+        else setNavRaw(want)
+      }).catch(fail)
+    }
+    go()
+    window.addEventListener('hashchange', go)
+    return () => window.removeEventListener('hashchange', go)
+  }, [nav.kind, docs != null]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const d = jump.current
+    if (!d || !docs) return
+    jump.current = null
+    if (!docs.some(y => y.id === d.id)) setDocs([d, ...docs])
+    setCurrentRaw(d.id); setDetail(true)
+  }, [docs])
   // Andere Ansicht (etwa Tresor): alte Liste und Auswahl nicht stehen lassen, Stand (Schloss) neu holen
   useEffect(() => { setDocs(null); setCurrent(null); setChecked(new Set()); loadState() }, [nav]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
@@ -339,7 +439,33 @@ export default function DmsView() {
 
   // ---------------- Ändern ----------------
 
+  // Bearbeiten in der Liste (dmsinline): welche Zelle gerade eine Auswahl zeigt
+  const inline = featureOn('dmsinline')
+  const [cellEdit, setCellEdit] = useState<{ id: number; col: string } | null>(null)
+  // Angaben übertragen wie der Formatpinsel: Korrespondent, Dokumenttyp und Tags des Quelldokuments auf die angeklickten Dokumente;
+  // Titel, Datum, Betrag und Rolle bleiben (sie gehören zum einzelnen Dokument). Aus mit Esc oder erneutem Klick auf den Knopf.
+  const [painter, setPainter] = useState<Doc | null>(null)
+  const paintBody = (src: Doc) => ({ correspondent: src.correspondent ?? '', doctype: src.doctype ?? '', tags: src.tags.map(x => x.id) })
+  const paint = (targets: number[]) => { if (painter && targets.length) change(targets.filter(id => id !== painter.id), { ...paintBody(painter), batch: true }) }
+  useEffect(() => {
+    if (!painter) return
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') setPainter(null) }
+    window.addEventListener('keydown', key)
+    return () => window.removeEventListener('keydown', key)
+  }, [painter])
+  /** In der Liste getippter neuer Name: anlegen und dem Dokument zuordnen (ohne Namen nichts) */
+  const listCreate = async (kind: Kind, name: string, id: number) => {
+    if (!name) return
+    try {
+      const created = await api.post<Entry>('/api/dms/lists', { kind, name })
+      await change([id], kind === 'tag' ? { addTags: [created.id] } : { [kind]: created.id })
+    } catch (e) { fail(e) }
+  }
+
   const change = async (ids: number[], body: Record<string, unknown>) => {
+    // Mehrere Dokumente auf einmal: vorher fragen (ändert Angaben, Gelerntes und die Ablage aller markierten)
+    const meta = ['correspondent', 'doctype', 'addTags', 'removeTags', 'tags', 'title', 'docDate', 'docPeriod', 'amount'].some(k => k in body)
+    if (ids.length > 1 && meta && !await askConfirm('', t('Angaben von {n} Dokumenten ändern? Die Dokumente werden danach neu abgelegt, wenn das Ablageprofil den Angaben folgt.', { n: ids.length }), t('Ändern'))) return false
     try {
       const updated = ids.length === 1 && !body.batch
         ? [await api.put<Doc>(`/api/dms/docs/${ids[0]}` + areaQ(inTresor), body)]
@@ -360,14 +486,17 @@ export default function DmsView() {
     const open = (x: Doc) => x.inbox && !ids.includes(x.id)
     return { id: (list.slice(at + 1).find(open) ?? list.slice(0, at).reverse().find(open))?.id ?? null }
   }
+  const [confirming, setConfirming] = useState(false)
   const confirm = (ids: number[]) => {
     // Danach gleich das nächste Dokument zeigen - zügig eins nach dem anderen durchgehen
     const next = nextAfter(ids)
+    setConfirming(true)
     return change(ids, { confirm: true, batch: ids.length > 1 }).then(() => {
       if (isInbox || nav.kind === 'paperless') { setDocs(d => d?.filter(x => !ids.includes(x.id)) ?? null); setTotal(n => Math.max(0, n - ids.length)); setChecked(new Set()) }
       if (next) setCurrent(next.id)
-    })
+    }).finally(() => setConfirming(false))
   }
+  const confirmIcon = confirming ? <ArrowSync20Regular className={s.spin} /> : <Checkmark20Regular />
   // Abweichung: die Angaben aus paperless übernehmen (als bestätigt) - danach wie beim Bestätigen das nächste Dokument
   const takePaperless = async (ids: number[]) => {
     const next = nextAfter(ids)
@@ -391,12 +520,12 @@ export default function DmsView() {
       : unplaced === n
         ? (one ? t('1 Dokument ist noch nicht abgelegt und wird endgültig gelöscht.') : t('{n} Dokumente sind noch nicht abgelegt und werden endgültig gelöscht.', { n }))
         : external === n
-          ? (one ? t('1 Dokument liegt in einem externen Ordner und wird dort samt Original endgültig gelöscht. Dort gibt es keinen Papierkorb.')
-            : t('{n} Dokumente liegen in einem externen Ordner und werden dort samt Original endgültig gelöscht. Dort gibt es keinen Papierkorb.', { n }))
+          ? (one ? t('1 Dokument liegt in einem externen Ordner und wird dort samt Original gelöscht.')
+            : t('{n} Dokumente liegen in einem externen Ordner und werden dort samt Original gelöscht.', { n }))
           : (one ? t('1 Dokument kommt mit seiner Datei in den Papierkorb der Dateiablage. Dort lässt es sich samt Angaben wiederherstellen.')
             : t('{n} Dokumente kommen mit ihren Dateien in den Papierkorb der Dateiablage. Dort lassen sie sich samt Angaben wiederherstellen.', { n }))
             + (external ? ' ' + (external === 1 ? t('1 davon liegt in einem externen Ordner und wird dort samt Original endgültig gelöscht.')
-              : t('{n} davon liegen in einem externen Ordner und werden dort samt Original endgültig gelöscht.', { n: external })) : '')
+              : t('{n} davon liegen in einem externen Ordner und werden dort samt Original gelöscht.', { n: external })) : '')
             + (unplaced ? ' ' + (unplaced === 1 ? t('1 davon ist noch nicht abgelegt und wird endgültig gelöscht.')
               : t('{n} davon sind noch nicht abgelegt und werden endgültig gelöscht.', { n: unplaced })) : '')
     if (!await askConfirm(t('Dokumente löschen'), text, t('Löschen'))) return
@@ -411,8 +540,28 @@ export default function DmsView() {
     try { for (const d of list) await api.post(`/api/dms/docs/${d.id}/fixed` + areaQ(inTresor), { fixed: on }) } catch (e) { fail(e) }
     refresh()
   }
+  // Nach Vorgabe ablegen; mit dmsrework und mehreren passenden Ablageprofilen erst das Profil wählen (Ordner und Dateiname kommen von dort)
+  const [refiling, setRefiling] = useState<{ docs: Doc[]; profiles: Profile[] } | null>(null)
   const refile = async (ids: number[]) => {
-    try { await api.post('/api/dms/docs/refile' + areaQ(inTresor), { ids }); notify(t('Nach Vorgabe abgelegt')); loadList() } catch (e) { fail(e) }
+    try {
+      if (featureOn('dmsrework')) {
+        const list = (docs ?? []).filter(d => ids.includes(d.id))
+        const usable = profilesFor(await api.get<Profile[]>('/api/dms/profiles'), list, inTresor)
+        if (usable.length > 1) { setRefiling({ docs: list, profiles: usable }); return }
+        await api.post('/api/dms/docs/refile' + areaQ(inTresor), { ids, profile: usable[0]?.id })
+      } else await api.post('/api/dms/docs/refile' + areaQ(inTresor), { ids })
+      notify(t('Nach Vorgabe abgelegt')); loadList()
+    } catch (e) { fail(e) }
+  }
+  // Zurück in die Inbox (dmsrework): wieder unbestätigt, die Datei in den Inbox-Ordner - zum Überarbeiten
+  const toInbox = async (ids: number[]) => {
+    const list = (docs ?? []).filter(d => ids.includes(d.id) && !d.inbox && d.state === 'done').map(d => d.id)
+    if (!list.length) return
+    try {
+      await api.post('/api/dms/docs/to-inbox' + areaQ(inTresor), { ids: list })
+      notify(list.length === 1 ? t('1 Dokument zurück in die Inbox') : t('{n} Dokumente zurück in die Inbox', { n: list.length }))
+      setChecked(new Set()); refresh()
+    } catch (e) { fail(e) }
   }
   // Zwischen offenem Bereich und Tresor verschieben (Tresor muss auf diesem Gerät offen sein; sonst fragt der Öffnen-Dialog)
   // Zwischen offenem Bereich und Tresor: Dialog mit Wahl des Ablageprofils und Zielpfad
@@ -423,6 +572,7 @@ export default function DmsView() {
   const dragDoc = (d: { id: number }) => ({
     draggable: true,
     onDragStart: (e: React.DragEvent) => {
+      if (peek || press.current) { if (press.current) { clearTimeout(press.current.timer); press.current = null } if (peek) { e.preventDefault(); return } }
       const ids = checked.has(d.id) ? [...checked] : [d.id]
       e.dataTransfer.setData(DRAG_DOCS, JSON.stringify(ids))
       // Beides erlauben: auf einen Bereich = verschieben, auf einen Eintrag im Baum = zuordnen. Passt die Wirkung am Ziel nicht dazu, verweigert der Browser das Ablegen
@@ -431,6 +581,17 @@ export default function DmsView() {
   })
   const [dropOn, setDropOn] = useState<string | null>(null)
   /** Ablegen auf einem Bereich: nur der jeweils andere (aus dem Tresor nach offen und umgekehrt). */
+  const inboxDrop = (key: string) => !featureOn('dmsrework') ? {} : {
+    onDragOver: (e: React.DragEvent) => { if (e.dataTransfer.types.includes(DRAG_DOCS)) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDropOn(key) } },
+    onDragLeave: () => setDropOn(k => (k === key ? null : k)),
+    onDrop: (e: React.DragEvent) => {
+      setDropOn(null)
+      const raw = e.dataTransfer.getData(DRAG_DOCS)
+      if (!raw) return
+      e.preventDefault()
+      try { toInbox(JSON.parse(raw) as number[]) } catch { /* fremde Daten */ }
+    },
+  }
   const areaDrop = (key: string, toTresor: boolean) => inTresor === toTresor ? {} : {
     onDragOver: (e: React.DragEvent) => { if (e.dataTransfer.types.includes(DRAG_DOCS)) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDropOn(key) } },
     onDragLeave: () => setDropOn(k => (k === key ? null : k)),
@@ -498,6 +659,33 @@ export default function DmsView() {
     }
   }
 
+  // Dokumente auf ein Jahr oder einen Monat (Ebene Dokumentdatum) ziehen: Jahr bzw. Monat des Dokumentdatums ändern, der Tag bleibt
+  const datePeriod = async (ids: number[], period: string, label: string) => {
+    const ready = ids.filter(id => docs?.find(d => d.id === id)?.state !== 'queued')
+    if (!ready.length) return
+    if (!await change(ready, { docPeriod: period, batch: true })) return
+    setChecked(new Set())
+    notify(t(ready.length === 1 ? '1 Dokument: Dokumentdatum {name}' : '{n} Dokumente: Dokumentdatum {name}', { n: ready.length, name: label }))
+  }
+  const periodDrop = (period: string, label: string, key: string, toggle?: { open: boolean; on: () => void }) => ({
+    onDragOver: (e: React.DragEvent) => {
+      startExpand(key, toggle)
+      if (!e.dataTransfer.types.includes(DRAG_DOCS) || (Number(key.split('|')[0]) >= TRESOR_TREE) !== inTresor) return
+      e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setDropOn(key)
+    },
+    onDragLeave: (e: React.DragEvent) => {
+      if (e.currentTarget.contains(e.relatedTarget as globalThis.Node | null)) return
+      stopExpand(key); setDropOn(k => (k === key ? null : k))
+    },
+    onDrop: (e: React.DragEvent) => {
+      stopExpand(); setDropOn(null)
+      const raw = e.dataTransfer.getData(DRAG_DOCS)
+      if (!raw) return
+      e.preventDefault()
+      try { datePeriod(JSON.parse(raw) as number[], period, label) } catch { /* fremde Daten */ }
+    },
+  })
+
   // Kontextmenü an einem Dokument: gilt für die markierten, wenn es dazugehört, sonst für dieses eine
   const docMenu = useContextMenu<number[]>()
   const docContext = (d: Doc) => ({ onContextMenu: (e: React.MouseEvent) => docMenu.open(e, checked.has(d.id) ? [...checked] : [d.id]) })
@@ -505,7 +693,11 @@ export default function DmsView() {
   // ---------------- Seitenleiste ----------------
 
   // Einträge (Korrespondenten, Dokumenttypen, Tags) im Baum: Kontextmenü, „…“, Ziehen auf einen anderen = darunter einordnen
-  const act = useEntryActions(entries, () => { loadEntries(); loadList(); Object.keys(treeData).forEach(k => loadTree(Number(k))) })
+  // KI-Prüfung (dmsaicheck): Rechtsklick auf einen Eintrag bzw. eine Liste im Baum
+  const [aiStart, setAiStart] = useState<{ kind: Kind; entry: Entry | null } | null>(null)
+  const aiOn = featureOn('dmsaicheck') && !!state?.aiAllowed
+  const act = useEntryActions(entries, () => { loadEntries(); loadList(); Object.keys(treeData).forEach(k => loadTree(Number(k))) },
+    aiOn ? (kind, entry) => setAiStart({ kind, entry }) : undefined)
   const [treePicked, setTreePicked] = useState<Set<string>>(new Set())
   const navRow = (key: string, active: boolean, icon: React.ReactNode, label: string, count: number | null, onClick: () => void, depth = 0,
     toggle?: { open: boolean; on: () => void }, entry?: Entry, menu?: (e: React.MouseEvent) => void, drop?: object, inTree = false) => (
@@ -523,7 +715,8 @@ export default function DmsView() {
       {/* Baum: Platz für den Pfeil immer frei, das Symbol steht bei allen Einträgen an derselben Stelle */}
       {(toggle || inTree) && <span onClick={toggle ? e => { e.stopPropagation(); toggle.on() } : undefined} style={{ display: 'inline-flex', width: 16, flexShrink: 0 }}>{toggle && (toggle.open ? <ChevronDown16Regular /> : <ChevronRight16Regular />)}</span>}
       {icon}
-      <span className={nv.name}>{label}</span>
+      {/* Schmale Leiste: abgeschnittene Beschriftung beim Darüberfahren ganz zeigen */}
+      <span className={nv.name} title={label}>{label}</span>
       {entry && <Button className="dm-more" appearance="transparent" size="small" icon={<MoreHorizontal20Regular />} aria-label={t('Weitere Aktionen')}
         onClick={e => act.openMenu(e, entry.kind, entry)} />}
       {count !== null && <span className={nv.count}>{count}</span>}
@@ -538,9 +731,11 @@ export default function DmsView() {
       const active = nav.kind === 'tree' && nav.tree === i % TRESOR_TREE && !!nav.tresor === tresorTree && nav.path.map(x => `${x.level}:${x.key}`).join('/') === p.map(x => `${x.level}:${x.key}`).join('/')
       const entry = n.key !== null && (n.level === 'correspondent' || n.level === 'doctype' || n.level === 'tag' || n.level === 'role') ? byId.get(n.key) : undefined
       const toggle = n.children.length ? { open: isOpen, on: () => setOpen(o => { const x = new Set(o); if (x.has(id)) x.delete(id); else x.add(id); return x }) } : undefined
-      const row = navRow(id, active, <Folder20Regular style={tresorTree ? { color: OPEN_COLOR } : undefined} />, keyName(n.level, n.key, n.name), n.count,
+      const period = n.key !== null && (n.level === 'doc_year' || n.level === 'doc_month') && featureOn('dmsyear') ? n.key : null
+      const label = keyName(n.level, n.key, n.name)
+      const row = navRow(id, active, <Folder20Regular style={tresorTree ? { color: OPEN_COLOR } : undefined} />, label, n.count,
         () => setNav({ kind: 'tree', tree: i % TRESOR_TREE, path: p, tresor: tresorTree }), depth,
-        toggle, entry, undefined, entry ? undefined : hoverOpen(id, toggle), true)
+        toggle, entry, undefined, entry ? undefined : period ? periodDrop(period, label, id, toggle) : hoverOpen(id, toggle), true)
       return [row, ...(isOpen ? treeRows(i, n.children, p, depth + 1) : [])]
     })
 
@@ -592,20 +787,22 @@ export default function DmsView() {
       </ContextMenu>
       <div className={mergeClasses(nv.section, !state?.tresor && nv.first)}>{t('Dokumente')}</div>
       {!inTresor ? <>
-        {navRow('inbox', nav.kind === 'inbox', <MailInbox20Regular />, t('Inbox'), state?.inbox ?? null, () => setNav({ kind: 'inbox' }))}
+        {navRow('inbox', nav.kind === 'inbox', <MailInbox20Regular />, t('Inbox'), state?.inbox ?? null, () => setNav({ kind: 'inbox' }), 0, undefined, undefined, undefined, inboxDrop('inbox'))}
         {(!!state?.queued || state?.paused || nav.kind === 'queue') && navRow('queue', nav.kind === 'queue',
           state?.paused ? <Pause20Regular /> : <Hourglass20Regular />, state?.paused ? t('Warteschlange (angehalten)') : t('Warteschlange'), state?.queued || null,
           () => setNav({ kind: 'queue' }))}
         {navRow('all', nav.kind === 'all', <DocumentBulletList20Regular />, t('Alle Dokumente'), state?.all || null, () => setNav({ kind: 'all' }))}
-        {navRow('fixed', nav.kind === 'fixed', <LockClosed20Regular style={{ color: FIXED_COLOR }} />, t('Fixiert'), null, () => setNav({ kind: 'fixed' }))}
+        {navRow('fixed', nav.kind === 'fixed', <LockClosed20Regular style={{ color: FIXED_COLOR }} />, t('Fixiert'), state?.fixedCount || null, () => setNav({ kind: 'fixed' }))}
+        {aiOn && navRow('ai', nav.kind === 'ai', <Sparkle20Regular />, t('KI-Vorschläge'), null, () => setNav({ kind: 'ai' }))}
+        {featureOn('dmsplace') && navRow('misplaced', nav.kind === 'misplaced', <FolderArrowRight20Regular />, t('Nicht nach Vorgabe abgelegt'), Object.keys(misplaced).length || null, () => setNav({ kind: 'misplaced' }))}
         {(plDiff > 0 || nav.kind === 'paperless') && navRow('paperless', nav.kind === 'paperless', <ArrowSwap20Regular />, t('Abweichung von paperless'), plDiff, () => setNav({ kind: 'paperless' }))}
       </> : <>
         {/* Tresor: die Symbole grün - man sieht, in welchem Bereich man ist */}
-        {navRow('tresorInbox', nav.kind === 'tresorInbox', <MailInbox20Regular style={{ color: OPEN_COLOR }} />, t('Inbox'), state?.tresorInbox || null, () => setNav({ kind: 'tresorInbox' }))}
+        {navRow('tresorInbox', nav.kind === 'tresorInbox', <MailInbox20Regular style={{ color: OPEN_COLOR }} />, t('Inbox'), state?.tresorInbox || null, () => setNav({ kind: 'tresorInbox' }), 0, undefined, undefined, undefined, inboxDrop('tresorInbox'))}
         {(!!state?.tresorQueued || nav.kind === 'tresorQueue') && navRow('tresorQueue', nav.kind === 'tresorQueue',
           state?.paused ? <Pause20Regular style={{ color: OPEN_COLOR }} /> : <Hourglass20Regular style={{ color: OPEN_COLOR }} />,
           state?.paused ? t('Warteschlange (angehalten)') : t('Warteschlange'), state?.tresorQueued || null, () => setNav({ kind: 'tresorQueue' }))}
-        {navRow('tresorFixed', nav.kind === 'tresorFixed', <LockClosed20Regular style={{ color: FIXED_COLOR }} />, t('Fixiert'), null, () => setNav({ kind: 'tresorFixed' }))}
+        {navRow('tresorFixed', nav.kind === 'tresorFixed', <LockClosed20Regular style={{ color: FIXED_COLOR }} />, t('Fixiert'), state?.tresorFixed || null, () => setNav({ kind: 'tresorFixed' }))}
         {navRow('tresor', nav.kind === 'tresor', <DocumentBulletList20Regular style={{ color: OPEN_COLOR }} />, t('Alle Dokumente'), state?.tresorAll || null, () => setNav({ kind: 'tresor' }))}
       </>}
       <div className={nv.section}><span style={{ flex: 1 }}>{t('Bäume')}</span>
@@ -624,20 +821,26 @@ export default function DmsView() {
 
   // ---------------- Liste ----------------
 
-  const heading = nav.kind === 'fixed' ? t('Fixiert') : nav.kind === 'tresorFixed' ? t('Tresor') + ' › ' + t('Fixiert') : nav.kind === 'inbox' ? t('Inbox') : nav.kind === 'queue' ? t('Warteschlange') : nav.kind === 'all' ? t('Alle Dokumente') : nav.kind === 'tresor' ? t('Tresor') + ' › ' + t('Alle Dokumente')
+  const heading = nav.kind === 'ai' ? t('KI-Vorschläge') : nav.kind === 'misplaced' ? t('Nicht nach Vorgabe abgelegt') : nav.kind === 'fixed' ? t('Fixiert') : nav.kind === 'tresorFixed' ? t('Tresor') + ' › ' + t('Fixiert') : nav.kind === 'inbox' ? t('Inbox') : nav.kind === 'queue' ? t('Warteschlange') : nav.kind === 'all' ? t('Alle Dokumente') : nav.kind === 'tresor' ? t('Tresor') + ' › ' + t('Alle Dokumente')
     : nav.kind === 'tresorInbox' ? t('Tresor') + ' › ' + t('Inbox') : nav.kind === 'tresorQueue' ? t('Tresor') + ' › ' + t('Warteschlange') : nav.kind === 'paperless' ? t('Abweichung von paperless')
     : nav.kind === 'entry' ? `${kindLabel(nav.entry.kind)}: ${fullName(entries, nav.entry.id)}`
     : nav.kind === 'tree' ? [trees[nav.tree]?.name, ...nav.path.map(p => keyName(p.level, p.key, p.name))].join(' › ')
     : ''
-  const tagChip = (id: string, auto: boolean) => {
+  const tagChip = (id: string, auto: boolean, onRemove?: () => void, style?: React.CSSProperties) => {
     const e = byId.get(id)
     if (!e) return null
-    return <span key={id} className={mergeClasses(s.chip, auto && s.auto)} style={{ backgroundColor: e.color ?? '#d0d0d0' }} title={auto ? t('Noch nicht bestätigt') : undefined}>{e.name}</span>
+    return <span key={id} className={mergeClasses(s.chip, auto && s.chipAuto)} style={{ backgroundColor: e.color ?? '#d0d0d0', ...style }} title={auto ? e.name + ' – ' + t('Noch nicht bestätigt') : e.name}>{e.name}
+      {onRemove && <span className={s.chipX} role="button" aria-label={t('Tag entfernen')} title={t('Tag entfernen')}
+        onClick={ev => { ev.stopPropagation(); onRemove() }}><Dismiss12Regular /></span>}</span>
   }
   const all = docs ?? []
   allIds.current = all.map(d => d.id)
   const allChecked = all.length > 0 && all.every(d => checked.has(d.id))
   const ids = [...checked]
+  // Fixieren und Aufheben für genau ein Dokument: das markierte, sonst das geöffnete (Einzelklick markiert nur)
+  const fixDoc = checked.size === 1 ? (docs ?? []).find(d => checked.has(d.id)) ?? null : checked.size ? null : doc
+  // Angaben übertragen: Quelle ist das geöffnete Dokument, sonst das eine markierte
+  const paintSource = doc ?? (checked.size === 1 ? (docs ?? []).find(d => checked.has(d.id)) ?? null : null)
   const download = (list: number[]) => {
     downloadDocs(list, inTresor)
     if (inTresor) notify(t('Aus dem Tresor heruntergeladen'), t('Die Datei liegt jetzt unverschlüsselt in deinem Download-Ordner.'))
@@ -658,7 +861,47 @@ export default function DmsView() {
         {isInbox && <Text size={200} className={s.muted}>{t('Dokumente kommen über Hochladen, Ziehen und Ablegen hierher oder über eine Quelle (überwachter Ordner).')}</Text>}
       </div>
     )
-    const pick = (d: Doc) => { setCurrent(d.id); setDetail(true) }
+    // Mit dmsinline wie in der Galerie und in Finanzen: Einzelklick markiert (mit Strg dazu, mit Umschalt bis hierher), Doppelklick öffnet;
+    // auf dem Handy öffnet ein Tippen
+    // Klick auf ein Dokument: Ist etwas markiert, schaltet er nur die Markierung um (die Großansicht bleibt zu - öffnen per Doppelklick
+    // oder Kontextmenü „Öffnen“); sonst öffnet er es. Strg/Umschalt markieren dazu bzw. bis hierher. Auf dem Handy beginnt langes
+    // Drücken die Auswahl.
+    const pick = (d: Doc, e?: React.MouseEvent) => {
+      if (swallowClick.current) { swallowClick.current = false; return }
+      if (painter) { if (d.id !== painter.id && d.state !== 'queued') paint([d.id]); return }
+      if (e?.ctrlKey || e?.metaKey || checked.size > 0 && !e?.shiftKey) {
+        lastCheck.current = d.id
+        setChecked(c => { const n = new Set(c); if (n.has(d.id)) n.delete(d.id); else n.add(d.id); return n })
+        return
+      }
+      if (e?.shiftKey && lastCheck.current != null) { shiftNext.current = true; check(d, true); return }
+      lastCheck.current = d.id
+      setCurrent(d.id); setDetail(true)
+    }
+    const open = (d: Doc) => { if (painter) return; setCurrent(d.id); setDetail(true) }
+    // Gedrückt halten: Maus → Lupe, Finger → Auswahl beginnen; Bewegen vorher bricht ab (dann ist es Ziehen bzw. Rollen)
+    const hold = (d: Doc) => ({
+      onPointerDown: (e: React.PointerEvent) => {
+        if (painter || e.button !== 0 || d.state === 'queued') return
+        const touch = e.pointerType !== 'mouse'
+        const timer = window.setTimeout(() => {
+          press.current = null
+          if (touch) { swallowClick.current = true; lastCheck.current = d.id; setChecked(c => new Set(c).add(d.id)); navigator.vibrate?.(20) }
+          else setPeek({ doc: d, page: 0, count: 1, x: e.clientX / window.innerWidth, y: e.clientY / window.innerHeight })
+        }, touch ? 500 : 700)
+        press.current = { id: d.id, x: e.clientX, y: e.clientY, timer }
+      },
+      onPointerMove: (e: React.PointerEvent) => {
+        const p = press.current
+        if (p && Math.hypot(e.clientX - p.x, e.clientY - p.y) > 6) { clearTimeout(p.timer); press.current = null }
+      },
+      onPointerUp: () => { if (press.current) { clearTimeout(press.current.timer); press.current = null } },
+      onPointerLeave: () => { if (press.current) { clearTimeout(press.current.timer); press.current = null } },
+    })
+    // Ablage passt nicht zur Vorgabe: kleines Symbol mit dem Ziel im Tooltip
+    const placeMark = (d: Doc) => !inTresor && misplaced[d.id]
+      ? <span title={t('Ablage passt nicht zur Vorgabe. Gehört nach: {path}', { path: misplaced[d.id] })} style={{ marginLeft: 4, verticalAlign: 'middle', display: 'inline-flex', color: tokens.colorPaletteMarigoldForeground1 }}>
+        <FolderArrowRight20Regular style={{ width: 14, height: 14 }} /></span> : null
     // Eine Zelle der Liste (Spalte col); auf dem Handy nur der Titel mit Datum, Korrespondent und Dokumenttyp darunter
     const cell = (d: Doc, col: string) => {
       switch (col) {
@@ -668,12 +911,38 @@ export default function DmsView() {
           <span className={s.cell}>
             {d.state === 'queued' ? <>{state?.paused ? <Pause16Regular style={{ verticalAlign: 'middle', marginRight: 6 }} />
               : <Spinner size="extra-tiny" style={{ display: 'inline-flex', marginRight: 6 }} />}{d.originalName}</>
-              : <>{d.title || d.originalName}{d.byAi && <Sparkle16Regular style={{ marginLeft: 4, verticalAlign: 'middle' }} />}{d.error && <ErrorMark text={d.error} />}</>}
+              : <>{d.title || d.originalName}{d.byAi && <Sparkle16Regular style={{ marginLeft: 4, verticalAlign: 'middle' }} />}{d.error && <ErrorMark text={d.error} />}{placeMark(d)}</>}
             <div className={s.narrow}>{[fmtDay(d.docDate), d.correspondent && byId.get(d.correspondent)?.name, d.doctype && byId.get(d.doctype)?.name].filter(Boolean).join(' · ')}</div>
           </span>)
-        case 'correspondent': return <span className={mergeClasses(s.cell, d.autoCorrespondent && s.auto)}>{d.correspondent ? byId.get(d.correspondent)?.name : ''}</span>
-        case 'doctype': return <span className={mergeClasses(s.cell, d.autoDoctype && s.auto)}>{d.doctype ? byId.get(d.doctype)?.name : ''}</span>
-        case 'tags': return <span className={s.chips}>{d.tags.map(x => tagChip(x.id, x.auto))}</span>
+        case 'correspondent': case 'doctype': {
+          const value = col === 'correspondent' ? d.correspondent : d.doctype
+          const auto = col === 'correspondent' ? d.autoCorrespondent : d.autoDoctype
+          const text = <span className={mergeClasses(s.cell, auto && s.auto)}>{value ? byId.get(value)?.name : ''}</span>
+          if (!inline || d.state === 'queued') return text
+          if (cellEdit?.id === d.id && cellEdit.col === col) return (
+            <span onClick={e => e.stopPropagation()} style={{ minWidth: 0 }}>
+              <EntrySelect entries={entries} kind={col} value={value} none={t('(keiner)')} size="small" autoFocus onClose={() => setCellEdit(null)}
+                onPick={id => { setCellEdit(null); if (id !== (value ?? '')) change([d.id], { [col]: id }) }} onNew={name => listCreate(col, name, d.id)} />
+            </span>)
+          return <span className={s.editCell} onDoubleClick={e => e.stopPropagation()}>{text}<span className={s.tool} role="button" aria-label={t('Ändern')} title={t('Ändern')}
+            onClick={e => { e.stopPropagation(); setCellEdit({ id: d.id, col }) }}><ChevronDown12Regular /></span></span>
+        }
+        case 'tags': {
+          if (!inline || d.state === 'queued') return <ChipRow className={s.chips} chipClass={s.chip} tags={d.tags.filter(x => byId.has(x.id)).map(x => ({ id: x.id, name: byId.get(x.id)!.name }))}
+            chip={(id, style) => tagChip(id, d.tags.find(x => x.id === id)!.auto, undefined, style)} />
+          const have = d.tags.map(x => x.id)
+          return (
+            <span className={s.chipsWrap} onDoubleClick={e => e.stopPropagation()}>
+              {d.tags.map(x => tagChip(x.id, x.auto, () => change([d.id], { removeTags: [x.id] })))}
+              {cellEdit?.id === d.id && cellEdit.col === 'tags'
+                ? <span onClick={e => e.stopPropagation()} style={{ width: 160 }}>
+                  <EntrySelect entries={entries.filter(e => e.kind !== 'tag' || !have.includes(e.id))} kind="tag" value={null} placeholder={t('Tag hinzufügen')} size="small" autoFocus
+                    onClose={() => setCellEdit(null)} onPick={id => { setCellEdit(null); if (id) change([d.id], { addTags: [id] }) }} onNew={name => listCreate('tag', name, d.id)} />
+                </span>
+                : <span className={s.tool} role="button" aria-label={t('Tag hinzufügen')} title={t('Tag hinzufügen')}
+                  onClick={e => { e.stopPropagation(); setCellEdit({ id: d.id, col: 'tags' }) }}><Add16Regular /></span>}
+            </span>)
+        }
         // Rolle: die geltende normal, eine frühere Version blass mit Hinweis
         case 'role': return <span className={mergeClasses(s.cell, !!d.role && !d.roleCurrent && s.auto)} title={d.role && !d.roleCurrent ? t('Frühere Version') : undefined}>{d.role ? byId.get(d.role)?.name : ''}</span>
         case 'imported': return <span className={s.cell}>{d.imported ? new Date(d.imported).toLocaleString(lang === 'en' ? 'en-GB' : 'de-DE', { dateStyle: 'short', timeStyle: 'short' }) : ''}</span>
@@ -703,12 +972,12 @@ export default function DmsView() {
       <div className={s.list}>
         <div className={s.grid} style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${tilePx}px, 1fr))` }}>
           {docs.map(d => (
-            <div key={d.id} {...dragDoc(d)} {...docContext(d)} className={mergeClasses(s.tile, current === d.id && s.tileSel)} onClick={() => pick(d)}
+            <div key={d.id} {...dragDoc(d)} {...docContext(d)} {...hold(d)} className={mergeClasses(s.tile, (current === d.id || checked.has(d.id)) && s.tileSel)} onClick={e => pick(d, e)} onDoubleClick={() => open(d)}
               title={[d.title || d.originalName, sub(d)].filter(Boolean).join(' · ')}>
               <div className={mergeClasses(s.thumb, d.fixed ? (inTresor ? s.fixedTresorThumb : s.fixedThumb) : inTresor && s.tresorThumb)}><DocThumb doc={d} tresor={inTresor} px={tilePx} paused={!!state?.paused} /></div>
               <Checkbox className={s.tileCheck} checked={checked.has(d.id)} onClick={e => { e.stopPropagation(); shiftNext.current = e.shiftKey }} onChange={(_, x) => check(d, !!x.checked)} />
               <span className={s.tileTitle}>{d.state === 'queued' ? d.originalName : d.title || d.originalName}
-                {d.byAi && <Sparkle16Regular style={{ marginLeft: 4, verticalAlign: 'middle' }} />}{d.error && <ErrorMark text={d.error} />}</span>
+                {d.byAi && <Sparkle16Regular style={{ marginLeft: 4, verticalAlign: 'middle' }} />}{d.error && <ErrorMark text={d.error} />}{placeMark(d)}</span>
               <span className={s.tileSub}>{sub(d)}</span>
             </div>
           ))}
@@ -724,7 +993,7 @@ export default function DmsView() {
         </div>
         {grid.columnMenu}
         {docs.map(d => (
-          <div key={d.id} {...dragDoc(d)} {...docContext(d)} className={mergeClasses(s.row, current === d.id && s.sel, d.fixed ? (inTresor ? s.fixedTresorRow : s.fixedRow) : inTresor && s.tresorRow)} style={mobile ? undefined : { gridTemplateColumns: grid.template, minWidth: 'max-content' }} onClick={() => pick(d)}>
+          <div key={d.id} {...dragDoc(d)} {...docContext(d)} {...hold(d)} className={mergeClasses(s.row, (current === d.id || checked.has(d.id)) && s.sel, d.fixed ? (inTresor ? s.fixedTresorRow : s.fixedRow) : inTresor && s.tresorRow)} style={mobile ? (painter ? { cursor: 'copy' } : undefined) : { gridTemplateColumns: grid.template, minWidth: 'max-content', cursor: painter ? 'copy' : undefined, userSelect: inline ? 'none' : undefined }} onClick={e => pick(d, e)} onDoubleClick={() => open(d)}>
             <Checkbox checked={checked.has(d.id)} onClick={e => { e.stopPropagation(); shiftNext.current = e.shiftKey }} onChange={(_, x) => check(d, !!x.checked)} />
             {(mobile ? ['title'] : grid.cols.map(c => c.key)).map(k => <span key={k} style={{ display: 'contents' }}>{cell(d, k)}</span>)}
           </div>
@@ -757,8 +1026,12 @@ export default function DmsView() {
     </aside>
   )
   const editing = detail && !!doc && nav.kind !== 'manage' && !mobile
+  const phoneDetail = mobile && detail && !!doc && nav.kind !== 'manage'
+  useBackClose(phoneDetail, () => setCurrent(null))
 
   const content = () => {
+    if (nav.kind === 'ai') return <AiSuggestions entries={entries} onChanged={refresh}
+      onOpenDoc={d => { setDocs(x => x && !x.some(y => y.id === d.id) ? [d, ...x] : x ?? [d]); setCurrentRaw(d.id); setDetail(true) }} />
     if (nav.kind === 'manage') return <ListsView kind={nav.list} entries={entries} onChanged={() => { loadEntries(); loadList() }}
       onShow={e => setNav({ kind: 'entry', entry: e })} />
     return (
@@ -776,9 +1049,16 @@ export default function DmsView() {
           <MessageBarActions><Button size="small" icon={<LockOpen20Regular />} onClick={toggleTresor}>{t('Tresor öffnen')}</Button></MessageBarActions>
         </MessageBar>}
         {/* Markiert: die Aktionen an Stelle der Filterzeile, gleich hoch - die Liste darunter bleibt, wo sie ist */}
-        {checked.size > 0 ? <BatchBar ids={ids} entries={entries} inbox={toConfirm.length > 0}
+        {painter ? <div className={s.batch}>
+          <PaintBrush20Regular />
+          <Text weight="semibold">{t('Angaben von „{title}“ übertragen', { title: painter.title })}</Text>
+          <Text size={200}>{t('Zieldokumente anklicken - übernommen werden Korrespondent, Dokumenttyp und Tags.')}</Text>
+          <div style={{ flex: 1 }} />
+          <Button size="small" icon={<Dismiss20Regular />} onClick={() => setPainter(null)}>{t('Beenden (Esc)')}</Button>
+        </div>
+        : checked.size > 0 ? <BatchBar ids={ids} entries={entries} inbox={toConfirm.length > 0}
           onMoveArea={state?.tresor ? () => moveArea(ids) : undefined} tresor={inTresor} onTakePaperless={nav.kind === 'paperless' ? () => takePaperless(ids) : undefined} onChange={body => change(ids, { ...body, batch: true })}
-          onConfirm={() => confirm(toConfirm)} onRefile={!inboxView && toRefile.length ? () => refile(toRefile) : undefined} onDelete={() => remove(ids)} onClear={() => setChecked(new Set())} />
+          onConfirm={() => confirm(toConfirm)} confirmIcon={confirmIcon} confirming={confirming} onRefile={!inboxView && toRefile.length ? () => refile(toRefile) : undefined} onDelete={() => remove(ids)} onClear={() => setChecked(new Set())} />
         : <div className={s.filters}>
           <Text size={200} className={s.muted}>{t('Dokumentdatum')}</Text>
           <Dropdown size="small" style={{ minWidth: 150 }} placeholder={t('Zeitraum')} value={presetLabel(range)}
@@ -801,13 +1081,40 @@ export default function DmsView() {
         start={<>
           <RibbonButton primary icon={<ArrowUpload20Regular />} label={t('Hochladen')} disabled={busy} onClick={() => fileInput.current?.click()} />
           <RibbonDivider />
-          <RibbonButton icon={<Checkmark20Regular />} label={t('Bestätigen')} title={t('Angaben übernehmen und nach dem Ordnermuster ablegen')}
-            disabled={!toConfirm.length} onClick={() => confirm(toConfirm)} />
+          <RibbonButton icon={confirmIcon} label={t('Bestätigen')} title={confirming ? t('Wird bestätigt …') : t('Angaben übernehmen und nach dem Ordnermuster ablegen')}
+            disabled={!toConfirm.length || confirming} onClick={async () => { const h = pendingEdit.current; if (h?.has() && !await h.save()) return; confirm(toConfirm) }} />
           {!inboxView && <RibbonButton icon={<FolderArrowRight20Regular />} label={t('Nach Vorgabe ablegen')} title={t('Bestätigte Dokumente wieder nach Ordner- und Namensmuster ablegen, auch von Hand verschobene')}
             disabled={!toRefile.length} onClick={() => refile(toRefile)} />}
+          {!inboxView && featureOn('dmsrework') && <RibbonButton icon={<MailInbox20Regular />} label={t('Zurück in die Inbox')} title={t('Wieder unbestätigt in die Inbox, zum Überarbeiten')}
+            disabled={!toRefile.length} onClick={() => toInbox(toRefile)} />}
           <RibbonButton icon={<ArrowDownload20Regular />} label={t('Herunterladen')} disabled={!checked.size && !doc} onClick={() => download(checked.size ? ids : doc ? [doc.id] : [])} />
           <RibbonButton icon={<Delete20Regular />} label={t('Löschen')} disabled={!checked.size && !doc} onClick={() => remove(checked.size ? ids : doc ? [doc.id] : [])} />
-          {doc && !checked.size && doc.state !== 'queued' && <RibbonButton icon={doc.fixed ? <LockOpen20Regular /> : <LockClosed20Regular />} label={doc.fixed ? t('Fixierung aufheben') : t('Fixieren')} onClick={() => setFixed([doc], !doc.fixed)} />}
+          {fixDoc && fixDoc.state !== 'queued' && <RibbonButton icon={fixDoc.fixed ? <LockClosed20Regular style={{ color: FIXED_COLOR }} /> : <LockOpen20Regular />} label={fixDoc.fixed ? t('Fixiert') : t('Nicht fixiert')}
+            title={fixDoc.fixed ? t('Fixierung aufheben') : t('Fixieren')} onClick={() => setFixed([fixDoc], !fixDoc.fixed)} />}
+          {inline && <RibbonButton icon={<PaintBrush20Regular />} label={t('Angaben übertragen')} pressed={!!painter}
+            title={painter ? t('Beenden (Esc)') : t('Korrespondent, Dokumenttyp und Tags dieses Dokuments auf andere übertragen: danach die Zieldokumente anklicken oder vorher markieren')}
+            disabled={!painter && (!paintSource || paintSource.state === 'queued')}
+            onClick={() => {
+              if (painter) { setPainter(null); return }
+              if (!paintSource) return
+              // Geöffnet und andere markiert: die markierten bekommen die Angaben sofort; sonst wirkt jeder Klick auf eine Zeile
+              const targets = doc ? ids.filter(id => id !== doc.id) : []
+              if (targets.length) change(targets, { ...paintBody(paintSource), batch: true })
+              else { setPainter(paintSource); setChecked(new Set()) }
+            }} />}
+          {/* Geöffnetes Dokument: hier statt im Seitenbereich, damit nichts wegscrollt */}
+          {doc && detail && nav.kind !== 'manage' && <>
+            <RibbonDivider />
+            {doc.hasOriginal && <RibbonButton icon={<ArrowDownload20Regular />} label={t('Original herunterladen')}
+              onClick={() => { const a = document.createElement('a'); a.href = `/api/dms/docs/${doc.id}/original` + areaQ(inTresor); a.click() }} />}
+            {doc.path && !inTresor && <RibbonButton icon={<FolderOpen20Regular />} label={t('In Dateien zeigen')} onClick={() => {
+              const dir = (doc.path!.includes('/') ? doc.path!.slice(0, doc.path!.lastIndexOf('/')) : '').split('/').map(encodeURIComponent).join('/')
+              location.hash = doc.mount ? '#/files/:ext/' + encodeURIComponent(doc.mount) + (dir ? '/' + dir : '') : '#/files/' + dir
+            }} />}
+            <RibbonButton icon={<DocumentText20Regular />} label={t('Erkannter Text')}
+              onClick={() => api.get<{ text: string }>(`/api/dms/docs/${doc.id}/text` + areaQ(inTresor)).then(r => setDocText(r.text)).catch(fail)} />
+            <RibbonButton icon={<Dismiss20Regular />} label={t('Schließen')} onClick={() => setCurrent(null)} />
+          </>}
           <RibbonDivider />
           <RibbonButton icon={<ArrowSync20Regular />} label={t('Aktualisieren')} onClick={refresh} />
           <RibbonButton icon={<Settings20Regular />} label={t('Quellen und Ablageprofile')} onClick={() => { location.hash = '#/settings/dms-sources' }} />
@@ -829,15 +1136,16 @@ export default function DmsView() {
           <RibbonButton icon={<PanelRight20Regular />} label={t('Detailbereich')} pressed={detail} onClick={() => setDetail(d => !d)} />
         </>} />
       <input ref={fileInput} type="file" multiple hidden onChange={e => { if (e.target.files) upload(e.target.files); e.target.value = '' }} />
-      {state && !state.ocr && <Text size={200} className={s.muted} style={{ padding: '4px 20px' }}>{t('Text in Scans und Bildern wird auf diesem Server nicht erkannt. Das lässt sich in der Verwaltung einrichten.')}</Text>}
       <div className={s.root}>
         {side}
         {editing && doc ? <>
           <DocDetail key={doc.id} wide doc={doc} entries={entries} onChange={body => change([doc.id], body)} onConfirm={() => confirm([doc.id])} onTakePaperless={() => takePaperless([doc.id])} tresor={inTresor}
-            onEntriesChanged={loadEntries} onClose={() => setCurrent(null)} onReload={refresh} />
+            onEntriesChanged={loadEntries} onClose={() => setCurrent(null)} onReload={refresh} handle={pendingEdit}
+            misplaced={inTresor ? undefined : misplaced[doc.id]} onRefile={() => refile([doc.id])} />
           {miniList()}
         </> : <>
-        <div className={mergeClasses(s.main, drag && s.drop)}
+        {/* Handy: Detail statt Liste (wie in Mail); Zurück oder ✕ führt zur Liste */}
+        <div className={mergeClasses(s.main, drag && s.drop)} style={phoneDetail ? { display: 'none' } : undefined}
           onDragOver={e => { if (e.dataTransfer.types.includes('Files')) { e.preventDefault(); setDrag(true) } }}
           onDragLeave={() => setDrag(false)}
           onDrop={e => {
@@ -851,9 +1159,22 @@ export default function DmsView() {
         </div>
         {detail && doc && nav.kind !== 'manage' &&
           <DocDetail key={doc.id} doc={doc} entries={entries} onChange={body => change([doc.id], body)} onConfirm={() => confirm([doc.id])} onTakePaperless={() => takePaperless([doc.id])} tresor={inTresor}
-            onEntriesChanged={loadEntries} onClose={() => setCurrent(null)} onReload={refresh} />}
+            onEntriesChanged={loadEntries} onClose={() => setCurrent(null)} onReload={refresh} handle={pendingEdit} onUnfix={() => setFixed([doc], false)}
+            misplaced={inTresor ? undefined : misplaced[doc.id]} onRefile={() => refile([doc.id])} />}
         </>}
       </div>
+      {/* Fester Platz unter dem Arbeitsbereich: erscheint nach dem Laden, ohne die Liste zu verschieben */}
+      {state && !state.ocr && <Text size={200} className={s.muted} style={{ padding: '4px 20px' }}>{t('Text in Scans und Bildern wird auf diesem Server nicht erkannt. Das lässt sich in der Verwaltung einrichten.')}</Text>}
+      {docText !== null && <Dialog open onOpenChange={(_, d) => { if (!d.open) setDocText(null) }}>
+        <DialogSurface style={{ maxWidth: 760 }}>
+          <DialogBody>
+            <DialogTitle>{t('Erkannter Text')}</DialogTitle>
+            <DialogContent><Textarea readOnly value={docText || t('Kein Text erkannt.')} style={{ width: '100%', maxWidth: '100%' }} resize="vertical"
+              textarea={{ style: { height: '60vh', minHeight: '6em', maxHeight: '60vh' } }} /></DialogContent>
+            <DialogActions><Button appearance="primary" onClick={() => setDocText(null)}>{t('Schließen')}</Button></DialogActions>
+          </DialogBody>
+        </DialogSurface>
+      </Dialog>}
       <ContextMenu at={docMenu.ctx?.at} onClose={docMenu.close}>
         {(() => {
           const ids = docMenu.ctx?.data ?? []
@@ -861,17 +1182,25 @@ export default function DmsView() {
           const one = list.length === 1 ? list[0] : null
           return <>
             {one && <MenuItem icon={<FolderOpen20Regular />} onClick={() => setCurrent(one.id)}>{t('Öffnen')}</MenuItem>}
+            {inline && one && one.state !== 'queued' && <MenuItem icon={<PaintBrush20Regular />} onClick={() => { setPainter(one); setChecked(new Set()) }}>{t('Angaben übertragen')}</MenuItem>}
             {list.some(d => d.inbox) && <MenuItem icon={<Checkmark20Regular />} onClick={() => confirm(list.filter(d => d.inbox).map(d => d.id))}>{t('Bestätigen')}</MenuItem>}
             <MenuItem icon={<FolderArrowRight20Regular />} onClick={() => refile(ids)}>{t('Nach Vorgabe ablegen')}</MenuItem>
+            {featureOn('dmsrework') && list.some(d => !d.inbox && d.state === 'done') && <MenuItem icon={<MailInbox20Regular />} onClick={() => toInbox(ids)}>{t('Zurück in die Inbox')}</MenuItem>}
             {state?.tresor && <MenuItem icon={inTresor ? <LockOpen20Regular /> : <LockClosed20Regular />} onClick={() => moveArea(ids)}>
               {inTresor ? t('Aus dem Tresor holen') : t('In den Tresor verschieben')}</MenuItem>}
-            <MenuItem icon={<ArrowDownload20Regular />} onClick={() => download(ids)}>{t('Herunterladen')}</MenuItem>
             {list.some(d => !d.fixed && d.state !== 'queued') && <MenuItem icon={<LockClosed20Regular />} onClick={() => setFixed(list.filter(d => !d.fixed && d.state !== 'queued'), true)}>{t('Fixieren')}</MenuItem>}
             {list.some(d => d.fixed) && <MenuItem icon={<LockOpen20Regular />} onClick={() => setFixed(list.filter(d => d.fixed), false)}>{t('Fixierung aufheben')}</MenuItem>}
+            <MenuItem icon={<ArrowDownload20Regular />} onClick={() => download(ids)}>{t('Herunterladen')}</MenuItem>
+            <MenuDivider />
             <MenuItem icon={<Delete20Regular />} onClick={() => remove(ids)}>{ids.length > 1 ? t('{n} Dokumente löschen', { n: ids.length }) : t('Löschen')}</MenuItem>
           </>
         })()}
       </ContextMenu>
+      {refiling && <RefileDialog docs={refiling.docs} profiles={refiling.profiles} tresor={inTresor} onClose={() => setRefiling(null)}
+        onDone={() => { setRefiling(null); notify(t('Nach Vorgabe abgelegt')); loadList() }} />}
+      {aiStart && <AiStartDialog kind={aiStart.kind} entry={aiStart.entry} entries={entries} service={state?.aiService ?? null} onClose={() => setAiStart(null)}
+        onStarted={() => { setAiStart(null); setNav({ kind: 'ai' }) }} />}
+      {peek && <PeekView peek={peek} tresor={inTresor} onCount={n => setPeek(p => p && { ...p, count: n })} />}
       {moving && <MoveAreaDialog docs={moving} toTresor={!inTresor} onClose={() => setMoving(null)}
         onMoved={text => { setMoving(null); notify(text); setChecked(new Set()); setCurrent(null); refresh() }} />}
       {editTree !== null && <TreeDialog trees={trees} index={editTree === 'new' ? null : editTree}
@@ -883,6 +1212,74 @@ export default function DmsView() {
 // ---------------- Kachel-Vorschau ----------------
 
 /** Vorschau einer Kachel: PDF als Bild der ersten Seite (vom Server gerendert), Bild direkt, sonst ein Symbol. */
+/**
+ * Lupe: große Vorschau, solange die Maustaste auf einem Dokument gedrückt bleibt. Die Seite steht bildschirmhoch da und ist um den Faktor
+ * zwei vergrößert, mit dem Ausschnitt dort, wo die Maus steht; am linken und rechten Rand wird geblättert. Loslassen schließt sie.
+ */
+/** Tags in einer Zeile: was nicht passt, zählt „+N“ (Namen im Tooltip); ein einzelner langer Tag endet mit „…“. */
+const PLUS = 34
+function ChipRow({ tags, chip, className, chipClass }: {
+  tags: { id: string; name: string }[]; chip: (id: string, style: React.CSSProperties) => React.ReactNode; className: string; chipClass: string
+}) {
+  const box = useRef<HTMLSpanElement>(null)
+  const [fit, setFit] = useState(tags.length)
+  const sig = tags.map(x => x.id).join('|')
+  useLayoutEffect(() => {
+    const el = box.current
+    if (!el) return
+    const measure = () => {
+      // Natürliche Breite jedes Tags (scrollWidth gilt auch für gekürzte und ausgeblendete)
+      const widths = Array.from(el.querySelectorAll<HTMLElement>(':scope > [data-chip] > *')).map(x => x.scrollWidth)
+      const avail = el.clientWidth
+      const total = widths.reduce((a, w, i) => a + w + (i ? 4 : 0), 0)
+      if (total <= avail) { setFit(widths.length); return }
+      let sum = 0, n = 0
+      for (let i = 0; i < widths.length; i++) {
+        sum += widths[i] + (i ? 4 : 0)
+        if (sum + PLUS > avail) break
+        n++
+      }
+      setFit(n)
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [sig])
+  const shown = tags.length ? Math.max(fit, 1) : 0
+  const hidden = tags.slice(shown)
+  return (
+    <span ref={box} className={className} style={{ position: 'relative', minWidth: 0 }}>
+      {tags.map((x, i) => <span key={x.id} data-chip style={{ display: 'contents' }}>{chip(x.id, {
+        overflow: 'hidden', textOverflow: 'ellipsis', flexShrink: 0,
+        maxWidth: i === 0 ? (hidden.length ? `calc(100% - ${PLUS}px)` : '100%') : undefined,
+        ...(i < shown ? {} : { position: 'absolute', visibility: 'hidden', left: 0 }),
+      })}</span>)}
+      {hidden.length > 0 && <span className={chipClass} style={{ backgroundColor: 'transparent', color: 'inherit', flexShrink: 0 }}
+        title={hidden.map(x => x.name).join(', ')}>+{hidden.length}</span>}
+    </span>
+  )
+}
+
+function PeekView({ peek, tresor, onCount }: { peek: { doc: Doc; page: number; count: number; x: number; y: number }; tresor: boolean; onCount: (n: number) => void }) {
+  const d = peek.doc
+  const isPdf = d.mime === 'application/pdf' || d.path?.toLowerCase().endsWith('.pdf')
+  useEffect(() => {
+    if (isPdf) api.get<{ count: number }>(`/api/dms/docs/${d.id}/pages` + areaQ(tresor)).then(r => onCount(Math.max(1, r.count))).catch(() => {})
+  }, [d.id]) // eslint-disable-line react-hooks/exhaustive-deps
+  const src = isPdf ? `/api/dms/docs/${d.id}/page/${peek.page}?` + q({ width: 1600, area: tresor ? 'tresor' : undefined, v: d.path ?? '' })
+    : d.mime?.startsWith('image/') ? contentUrl(d, tresor, true) : null
+  return <div style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,.75)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+    overflow: 'hidden', cursor: 'zoom-in', userSelect: 'none', touchAction: 'none' }}>
+    {src ? <img src={src} alt="" draggable={false} style={{ maxHeight: '96vh', maxWidth: '96vw', background: '#fff', boxShadow: '0 8px 40px rgba(0,0,0,.5)',
+      transform: 'scale(2)', transformOrigin: `${peek.x * 100}% ${peek.y * 100}%`, transition: 'transform-origin .05s linear' }} />
+      : <Text style={{ color: '#fff' }}>{t('Keine Vorschau für diese Datei.')}</Text>}
+    <div style={{ position: 'fixed', bottom: 12, left: 0, right: 0, textAlign: 'center', color: '#fff', fontSize: 12, textShadow: '0 1px 2px #000' }}>
+      {(d.title || d.originalName)}{peek.count > 1 ? ' · ' + t('Seite {n} von {m} - am Rand blättern', { n: peek.page + 1, m: peek.count }) : ''}
+    </div>
+  </div>
+}
+
 function DocThumb({ doc, tresor, px, paused }: { doc: Doc; tresor: boolean; px: number; paused: boolean }) {
   const [failed, setFailed] = useState(false)
   if (doc.state === 'queued') return paused ? <Pause20Regular /> : <Spinner size="tiny" />
@@ -898,16 +1295,16 @@ function DocThumb({ doc, tresor, px, paused }: { doc: Doc; tresor: boolean; px: 
 
 // ---------------- Mehrfachauswahl ----------------
 
-function BatchBar({ ids, entries, inbox, onChange, onConfirm, onRefile, onDelete, onClear, onTakePaperless, onMoveArea, tresor }: {
-  ids: number[]; entries: Entry[]; inbox: boolean; onChange: (body: Record<string, unknown>) => void; onConfirm: () => void; onRefile?: () => void
+function BatchBar({ ids, entries, inbox, onChange, onConfirm, confirmIcon, confirming, onRefile, onDelete, onClear, onTakePaperless, onMoveArea, tresor }: {
+  ids: number[]; entries: Entry[]; inbox: boolean; onChange: (body: Record<string, unknown>) => void; onConfirm: () => void; confirmIcon: JSX.Element; confirming: boolean; onRefile?: () => void
   onDelete: () => void; onClear: () => void; onTakePaperless?: () => void; onMoveArea?: () => void; tresor?: boolean
 }) {
   const s = useStyles()
+  // Auswahl mit Suche wie in der Dokumentansicht; nach der Wahl wieder leer für die nächste Aktion
   const pick = (kind: Kind, label: string, onPick: (id: string) => void) => (
-    <Dropdown size="small" placeholder={label} value="" selectedOptions={[]} onOptionSelect={(_, d) => d.optionValue !== undefined && onPick(d.optionValue)} style={{ minWidth: 150 }}>
-      {kind !== 'tag' && <Option value="">{t('(keiner)')}</Option>}
-      {ordered(entries, kind).map(o => <Option key={o.entry.id} value={o.entry.id} text={o.entry.name}><span style={{ paddingLeft: o.depth * 12 }}>{o.entry.name}</span></Option>)}
-    </Dropdown>
+    <div style={{ width: 170 }}>
+      <EntrySelect entries={entries} kind={kind} value={null} none={kind !== 'tag' ? t('(keiner)') : undefined} placeholder={label} size="small" onPick={onPick} />
+    </div>
   )
   return (
     <div className={s.batch}>
@@ -916,7 +1313,7 @@ function BatchBar({ ids, entries, inbox, onChange, onConfirm, onRefile, onDelete
       {pick('doctype', t('Dokumenttyp setzen'), id => onChange({ doctype: id }))}
       {pick('tag', t('Tag hinzufügen'), id => onChange({ addTags: [id] }))}
       {pick('tag', t('Tag entfernen'), id => onChange({ removeTags: [id] }))}
-      {inbox && <Button size="small" icon={<Checkmark20Regular />} onClick={onConfirm}>{onTakePaperless ? t('DMS übernehmen') : t('Bestätigen')}</Button>}
+      {inbox && <Button size="small" icon={confirmIcon} disabled={confirming} onClick={onConfirm}>{onTakePaperless ? t('DMS übernehmen') : t('Bestätigen')}</Button>}
       {onTakePaperless && <Button size="small" icon={<ArrowSwap20Regular />} onClick={onTakePaperless}>{t('paperless übernehmen')}</Button>}
       {onRefile && <Button size="small" icon={<FolderArrowRight20Regular />} onClick={onRefile}>{t('Nach Vorgabe ablegen')}</Button>}
       {onMoveArea && <Button size="small" icon={tresor ? <LockOpen20Regular /> : <LockClosed20Regular />} onClick={onMoveArea}>{tresor ? t('Aus dem Tresor holen') : t('In den Tresor verschieben')}</Button>}
@@ -928,14 +1325,60 @@ function BatchBar({ ids, entries, inbox, onChange, onConfirm, onRefile, onDelete
 
 // ---------------- Detailbereich ----------------
 
-function DocDetail({ doc, entries, onChange, onConfirm, onTakePaperless, onEntriesChanged, onClose, onReload, tresor, wide }: {
+/** Nicht übernommene Änderungen im Detailbereich, für die Nachfrage beim Wechsel. */
+type DetailHandle = { has: () => boolean; save: () => Promise<boolean>; drop: () => void }
+
+function DocDetail({ doc, entries, onChange: commit, onConfirm, onTakePaperless, onEntriesChanged, onClose, onReload, tresor, wide, handle, onUnfix, misplaced, onRefile }: {
+  /** Ablage passt nicht zur Vorgabe: Pfad, wohin es gehört (dmsplace) */
+  misplaced?: string; onRefile?: () => void
   doc: Doc; entries: Entry[]; onChange: (body: Record<string, unknown>) => Promise<unknown>; onConfirm: () => void; onTakePaperless: () => void; onEntriesChanged: () => void; tresor: boolean
   onClose: () => void; onReload: () => void
+  /** Fixierung aufheben (fragt nach) */
+  onUnfix?: () => void
+  /** Nicht übernommene Änderungen melden (nur mit dmssave) */
+  handle?: React.MutableRefObject<DetailHandle | null>
   /** Bearbeitungsansicht: das Dokument groß, die Felder daneben, an jedem Feld „Aus dem Dokument übernehmen“ */
   wide?: boolean
 }) {
   const s = useStyles()
   const { fail } = useApp()
+  const mobile = useIsMobile()
+  // Mit dmssave sammeln die Felder ihre Änderungen; gespeichert wird erst mit „Übernehmen und schließen“. Ohne: jede Änderung sofort
+  const buffered = featureOn('dmssave')
+  const [pending, setPendingState] = useState<Record<string, unknown>>({})
+  const pendingRef = useRef(pending)
+  const setPending = (p: Record<string, unknown>) => { pendingRef.current = p; setPendingState(p) }
+  const onChange = (body: Record<string, unknown>): Promise<unknown> => {
+    if (!buffered) return commit(body)
+    const { addTags, ...rest } = body as { addTags?: string[] } & Record<string, unknown>
+    const next: Record<string, unknown> = { ...pendingRef.current, ...rest }
+    if (addTags) next.tags = [...new Set([...((next.tags as string[] | undefined) ?? doc.tags.map(x => x.id)), ...addTags])]
+    // Aus dem Dokument übernommen (Rahmen): das Feld zeigt den neuen Wert gleich, nicht erst nach dem Übernehmen
+    if (typeof rest.title === 'string') setTitle(rest.title)
+    if (typeof rest.docDate === 'string') setDate(rest.docDate)
+    setPending(next)
+    return Promise.resolve(true)
+  }
+  const dirty = Object.keys(pending).length > 0
+  const flush = async () => {
+    const p = pendingRef.current
+    if (!Object.keys(p).length) return true
+    const ok = await commit(p)
+    if (ok === false) return false
+    setPending({})
+    return true
+  }
+  const discard = () => {
+    setPending({})
+    setTitle(doc.title); setDate(doc.docDate ?? ''); setAmount(doc.amount == null ? '' : moneyText(doc.amount))
+  }
+  useEffect(() => {
+    if (!handle || !buffered) return
+    handle.current = { has: () => Object.keys(pendingRef.current).length > 0, save: flush, drop: discard }
+    return () => { handle.current = null }
+  })
+  /** Angezeigter Wert: die noch nicht übernommene Änderung, sonst der gespeicherte („“ = keiner). */
+  const shown = (k: 'correspondent' | 'doctype' | 'role', saved: string | null | undefined): string | null => k in pending ? ((pending[k] as string) || null) : saved ?? null
   // Aus einem Rahmen erkannter Name ohne passenden Eintrag: kommt ins Suchfeld der Liste (mit ähnlichen Einträgen), angelegt wird nichts
   const [prefill, setPrefill] = useState<{ kind: Kind; text: string; n: number } | null>(null)
   const pick = usePick({ doc, tresor, entries, onChange, onEntriesChanged, onText: (kind, text) => setPrefill(p => ({ kind, text, n: (p?.n ?? 0) + 1 })) })
@@ -1024,35 +1467,34 @@ function DocDetail({ doc, entries, onChange, onConfirm, onTakePaperless, onEntri
     <Text className={s.muted}>{doc.state === 'queued' ? t('Wird verarbeitet …') : t('Keine Vorschau')}</Text>
     {mode && <Button appearance="primary" icon={<Edit20Regular />} onClick={() => setEditing(true)}>{mode === 'edit' ? t('In Office bearbeiten') : t('In Office ansehen')}</Button>}
   </div>
+  // Enter in einem Eingabefeld (Titel, Betrag, Datum) wirkt wie „Übernehmen und schließen“; Auswahllisten behalten ihr Enter
+  const enterSaves = (e: React.KeyboardEvent) => {
+    const el = e.target as HTMLElement
+    if (!buffered || e.key !== 'Enter' || el.tagName !== 'INPUT' || el.getAttribute('role') === 'combobox' || el.getAttribute('aria-expanded') === 'true') return
+    e.preventDefault()
+    el.blur()   // Titel und Betrag geben ihren Wert beim Verlassen ab
+    if (Object.keys(pendingRef.current).length) flush().then(ok => { if (ok) onClose() })
+  }
   const form = (
-      <div className={s.form}>
-        <div className={s.actions} style={{ justifyContent: 'space-between' }}>
-          <Text weight="semibold">{doc.inbox ? t('In der Inbox') : t('Geprüft')}</Text>
-          <Button appearance="subtle" size="small" icon={<Dismiss20Regular />} aria-label={t('Schließen')} onClick={onClose} />
+      <div className={s.form} onKeyDown={enterSaves}>
+        {/* Kopfzeile mit fester Höhe: Hinweise beim Text-Übernehmen stehen hier und verschieben die Felder nicht */}
+        <div className={s.stickyHead}>
+          {wide && pick.field ? <>
+            <Text size={200} truncate wrap={false} style={{ minWidth: 0, flex: 1 }}>{t('Im Dokument einen Rahmen um den Text ziehen')}</Text>
+            <Button size="small" onClick={() => pick.choose(null)}>{t('Abbrechen')}</Button>
+          </> : wide && pick.busy ? <Spinner size="tiny" label={t('Text wird gelesen …')} /> : <>
+            <Text weight="semibold" truncate wrap={false} style={{ minWidth: 0, flex: 1 }}>{doc.inbox ? t('In der Inbox') : t('Geprüft')}
+              {wide && pick.last && <Text size={200} weight="regular" className={s.muted}>{' · ' + t('Übernommen: „{text}“', { text: pick.last.text })}</Text>}</Text>
+            <Button appearance="subtle" size="small" icon={<Dismiss20Regular />} aria-label={t('Schließen')} title={t('Schließen')} onClick={onClose} />
+          </>}
         </div>
         {doc.error && <Text style={{ color: tokens.colorPaletteRedForeground1 }}>{t(doc.error)}</Text>}
-        {wide && pick.field && <MessageBar intent="info"><MessageBarBody>{t('Im Dokument einen Rahmen um den Text ziehen')}</MessageBarBody>
-          <MessageBarActions><Button size="small" onClick={() => pick.choose(null)}>{t('Abbrechen')}</Button></MessageBarActions></MessageBar>}
-        {wide && pick.busy && <Spinner size="tiny" label={t('Text wird gelesen …')} />}
-        {wide && pick.last && !pick.busy && !pick.field && <Text size={200} className={s.muted}>{t('Übernommen: „{text}“', { text: pick.last.text })}</Text>}
-        {doc.aiSuggestion && <MessageBar intent="info" layout="multiline">
-          <MessageBarBody>
-            <MessageBarTitle>{suggestionKnown ? t('Korrespondent zuordnen?') : t('Neuer Korrespondent?')}</MessageBarTitle>
-            {suggestionKnown ? t('Die KI schlägt „{name}“ vor.', { name: doc.aiSuggestion })
-              : t('Die KI schlägt „{name}“ vor. Den Eintrag gibt es noch nicht.', { name: doc.aiSuggestion })}
-          </MessageBarBody>
-          <MessageBarActions>
-            <Button appearance="primary" size="small" icon={<PersonAdd20Regular />}
-              onClick={() => api.post(`/api/dms/docs/${doc.id}/adopt-correspondent`).then(() => { onEntriesChanged(); onReload() }).catch(fail)}>
-              {suggestionKnown ? t('„{name}“ zuordnen', { name: doc.aiSuggestion }) : t('„{name}“ anlegen und zuordnen', { name: doc.aiSuggestion })}
-            </Button>
-          </MessageBarActions>
-        </MessageBar>}
         <Field label={lab(t('Titel'), 'title')}>
           <Input value={title} onChange={(_, d) => setTitle(d.value)} onBlur={() => title.trim() && title !== doc.title && onChange({ title })}
             onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }} />
         </Field>
-        {doc.fixed && <Text weight="semibold" style={{ color: FIXED_COLOR }}><LockClosed20Regular style={{ verticalAlign: 'middle', marginRight: 4 }} />{t('Fixiert')}</Text>}
+        {doc.fixed && <div><Button appearance="transparent" size="small" icon={<LockClosed20Regular style={{ color: FIXED_COLOR }} />} title={t('Fixierung aufheben')} disabled={!onUnfix} onClick={onUnfix}
+          style={{ color: FIXED_COLOR, fontWeight: 600, padding: 0, minWidth: 0 }}>{t('Fixiert')}</Button></div>}
         <Field label={t('Betrag')}>
           <Input value={amount} inputMode="decimal" contentAfter="€" onChange={(_, d) => setAmount(d.value)} onBlur={() => {
             const cents = amount.trim() ? parseMoney(amount) : null
@@ -1060,7 +1502,6 @@ function DocDetail({ doc, entries, onChange, onConfirm, onTakePaperless, onEntri
             if (cents !== (doc.amount ?? null)) onChange({ amount: cents == null ? '' : String(cents) })
           }} />
         </Field>
-        {/* Als Einnahme oder Ausgabe in Finanzen buchen - nur, wenn Finanzen freigeschaltet ist */}
         <Field label={lab(t('Dokumentdatum'), 'docDate')}>
           <div className={s.dateRow}>
             <Input type="date" value={date} onChange={(_, d) => { setDate(d.value); if (d.value !== (doc.docDate ?? '')) onChange({ docDate: d.value }) }} />
@@ -1076,22 +1517,29 @@ function DocDetail({ doc, entries, onChange, onConfirm, onTakePaperless, onEntri
             </Dropdown>}
           </div>
         </Field>
-        {single('correspondent', doc.correspondent, doc.autoCorrespondent)}
-        {single('doctype', doc.doctype, doc.autoDoctype)}
+        {single('correspondent', shown('correspondent', doc.correspondent), doc.autoCorrespondent && !('correspondent' in pending))}
+        {single('doctype', shown('doctype', doc.doctype), doc.autoDoctype && !('doctype' in pending))}
         <Field label={t('Rolle')} hint={doc.role && !doc.roleCurrent && doc.roleReplaced
           ? t('Frühere Version – ersetzt am {date}', { date: new Date(doc.roleReplaced).toLocaleDateString() }) : undefined}>
-          <Dropdown value={doc.role ? (doc.roleCurrent ? t('Gilt als: {role}', { role: fullName(entries, doc.role) }) : fullName(entries, doc.role)) : ''}
-            placeholder={t('(keine)')} selectedOptions={[doc.role ?? '']} onOptionSelect={(_, d) => setRole(d.optionValue ?? '')}>
+          <Dropdown value={'role' in pending ? fullName(entries, shown('role', doc.role) ?? '') : doc.role ? (doc.roleCurrent ? t('Gilt als: {role}', { role: fullName(entries, doc.role) }) : fullName(entries, doc.role)) : ''}
+            placeholder={t('(keine)')} selectedOptions={[shown('role', doc.role) ?? '']} onOptionSelect={(_, d) => setRole(d.optionValue ?? '')}>
             <Option value="">{t('(keine)')}</Option>
             {roleOpts.map(o => <Option key={o.entry.id} value={o.entry.id} text={o.entry.name}>{o.entry.name}</Option>)}
             <Option value="+" text={t('Neu …')}>{t('Neu …')}</Option>
           </Dropdown>
         </Field>
         <Field label={lab(t('Tags'), 'tag')}>
-          <EntrySelect entries={entries} kind="tag" values={doc.tags.map(x => x.id)} placeholder={t('(keine)')}
+          <EntrySelect entries={entries} kind="tag" values={(pending.tags as string[] | undefined) ?? doc.tags.map(x => x.id)} placeholder={t('(keine)')}
             key={prefillFor('tag').key} prefill={prefillFor('tag').prefill} onPickMany={ids => onChange({ tags: ids })} onNew={name => createNamed('tag', name)} />
         </Field>
         {doc.tags.some(x => x.auto) && <Text size={200} className={s.muted}>{t('Kursiv: vom DMS gesetzt, noch nicht bestätigt.')}</Text>}
+        {/* Unter den Feldern (verschiebt nichts darüber): Ordner und Dateiname passen nach einer Änderung nicht mehr */}
+        {misplaced && <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '8px 10px', borderRadius: 6, border: `1px solid ${tokens.colorPaletteMarigoldBorder2}` }}>
+          <Text size={200} weight="semibold">{t('Ordner und Dateiname passen nicht mehr zur Vorgabe')}</Text>
+          <Text size={200} className={s.muted} style={{ wordBreak: 'break-all' }}>{t('Gehört nach: {path}', { path: misplaced })}</Text>
+          <div><Button size="small" icon={<FolderArrowRight20Regular />} onClick={onRefile}>{t('Jetzt nach Vorgabe ablegen')}</Button></div>
+          <Text size={200} className={s.muted}>{t('Automatisch: im Ablageprofil „Ablage folgt den Angaben“ einschalten (Quellen und Ablageprofile).')}</Text>
+        </div>}
         {doc.paperless && <div className={s.compare}>
           <Text weight="semibold">{doc.paperless.differs ? t('Angaben aus paperless (abweichend)') : t('Angaben aus paperless (gleich)')}</Text>
           <Text size={200}>{t('Korrespondent')}: {fullName(entries, doc.paperless.correspondent) || '–'}</Text>
@@ -1102,21 +1550,37 @@ function DocDetail({ doc, entries, onChange, onConfirm, onTakePaperless, onEntri
             <Button size="small" icon={<ArrowSwap20Regular />} onClick={onTakePaperless}>{t('paperless übernehmen')}</Button>
           </div>}
         </div>}
-        <div className={s.actions}>
-          {doc.inbox && <Button appearance="primary" icon={<Checkmark20Regular />} onClick={onConfirm}>{t('Bestätigen')}</Button>}
-          {(doc.fileId > 0 || !!doc.mount) && <Button icon={<ArrowDownload20Regular />} onClick={() => downloadDocs([doc.id], tresor)}>{t('Herunterladen')}</Button>}
-          {doc.hasOriginal && <Button icon={<ArrowDownload20Regular />} as="a" href={`/api/dms/docs/${doc.id}/original` + areaQ(tresor)}>{t('Original herunterladen')}</Button>}
-          {doc.path && !tresor && <Button icon={<FolderOpen20Regular />} onClick={() => {
-            const dir = (doc.path!.includes('/') ? doc.path!.slice(0, doc.path!.lastIndexOf('/')) : '').split('/').map(encodeURIComponent).join('/')
-            location.hash = doc.mount ? '#/files/:ext/' + encodeURIComponent(doc.mount) + (dir ? '/' + dir : '') : '#/files/' + dir
-          }}>{t('In Dateien zeigen')}</Button>}
-          <Button icon={<DocumentText20Regular />} onClick={() => api.get<{ text: string }>(`/api/dms/docs/${doc.id}/text` + areaQ(tresor)).then(r => setText(r.text)).catch(fail)}>{t('Erkannter Text')}</Button>
-          {doc.state === 'error' && <Button icon={<ArrowSync20Regular />} onClick={() => api.post(`/api/dms/docs/${doc.id}/retry` + areaQ(tresor)).then(onReload).catch(fail)}>{t('Erneut verarbeiten')}</Button>}
-        </div>
-        <Text size={200} className={s.muted}>
-          {[doc.mount ? t('Externer Ordner') + ' › ' + doc.path : doc.path, fmtSize(doc.size), doc.archive ? (doc.pdfA ? t('Durchsuchbare PDF/A') : t('Durchsuchbare PDF')) : null,
+        {/* Vorschlag unter den Feldern: erscheint und verschwindet, ohne die Felder zu verschieben */}
+        {doc.aiSuggestion && <MessageBar intent="info" layout="multiline">
+          <MessageBarBody>
+            <MessageBarTitle>{suggestionKnown ? t('Korrespondent zuordnen?') : t('Neuer Korrespondent?')}</MessageBarTitle>
+            {suggestionKnown ? t('Die KI schlägt „{name}“ vor.', { name: doc.aiSuggestion })
+              : t('Die KI schlägt „{name}“ vor. Den Eintrag gibt es noch nicht.', { name: doc.aiSuggestion })}
+          </MessageBarBody>
+          <MessageBarActions>
+            <Button appearance="primary" size="small" icon={<PersonAdd20Regular />}
+              onClick={() => api.post(`/api/dms/docs/${doc.id}/adopt-correspondent`).then(() => { onEntriesChanged(); onReload() }).catch(fail)}>
+              {suggestionKnown ? t('„{name}“ zuordnen', { name: doc.aiSuggestion }) : t('„{name}“ anlegen und zuordnen', { name: doc.aiSuggestion })}
+            </Button>
+          </MessageBarActions>
+        </MessageBar>}
+        {doc.state === 'error' && <div className={s.actions}>
+          <Button icon={<ArrowSync20Regular />} onClick={() => api.post(`/api/dms/docs/${doc.id}/retry` + areaQ(tresor)).then(onReload).catch(fail)}>{t('Erneut verarbeiten')}</Button>
+        </div>}
+        <Text size={200} className={s.muted} style={{ overflowWrap: 'anywhere' }}>
+          {/* Ort immer mit Speicher, hervorgehoben (Tresor grün wie überall): Ablage und Tresor haben beide einen Ordner „DMS“ - ohne Angabe
+              führte der Pfad an die falsche Stelle */}
+          {doc.path && <><span style={{ fontWeight: 600, color: !doc.mount && tresor ? OPEN_COLOR : tokens.colorNeutralForeground1 }}>
+            {doc.mount ? t('Externer Ordner') : tresor ? t('Tresor') : t('Meine Dateien')}</span>{' › '}</>}
+          {[doc.path ? doc.path.split('/').join(' › ') : null, fmtSize(doc.size), doc.archive ? (doc.pdfA ? t('Durchsuchbare PDF/A') : t('Durchsuchbare PDF')) : null,
             doc.manual ? t('Von Hand abgelegt') : null, t('Importiert {when}', { when: new Date(doc.imported).toLocaleString() }), doc.originalName].filter(Boolean).join(' · ')}
         </Text>
+        {/* Übernehmen und Verwerfen gehören zum Formular: feste Fußleiste. Bestätigen, Herunterladen usw. stehen in der Menüleiste */}
+        {buffered && <div className={s.stickyFoot}>
+          <Button appearance={dirty ? 'primary' : 'secondary'} icon={<Save20Regular />} disabled={!dirty}
+            onClick={async () => { if (await flush()) onClose() }}>{t('Übernehmen und schließen')}</Button>
+          <Button icon={<ArrowUndo20Regular />} disabled={!dirty} onClick={discard}>{t('Verwerfen')}</Button>
+        </div>}
       </div>
   )
   const dialogs = <>
@@ -1126,7 +1590,8 @@ function DocDetail({ doc, entries, onChange, onConfirm, onTakePaperless, onEntri
         <DialogSurface style={{ maxWidth: 760 }}>
           <DialogBody>
             <DialogTitle>{t('Erkannter Text')}</DialogTitle>
-            <DialogContent><Textarea readOnly value={text || t('Kein Text erkannt.')} style={{ width: '100%', height: '60vh' }} resize="vertical" /></DialogContent>
+            <DialogContent><Textarea readOnly value={text || t('Kein Text erkannt.')} style={{ width: '100%', maxWidth: '100%' }} resize="vertical"
+              textarea={{ style: { height: '60vh', minHeight: '6em', maxHeight: '60vh' } }} /></DialogContent>
             <DialogActions><Button appearance="primary" onClick={() => setText(null)}>{t('Schließen')}</Button></DialogActions>
           </DialogBody>
         </DialogSurface>
@@ -1150,7 +1615,7 @@ function DocDetail({ doc, entries, onChange, onConfirm, onTakePaperless, onEntri
     </div>
   )
   return (
-    <aside className={s.detail}>
+    <aside className={s.detail} style={mobile ? { width: '100%', flexShrink: 1, borderLeft: 'none' } : undefined}>
       <div className={s.preview}>
         {/* PDF als Seitenbilder vom Server: den PDF-Betrachter des Browsers blockiert Vivaldi im Rahmen unter der CSP der Seite */}
         {inline && isPdf ? <PdfPages doc={doc} tresor={tresor} className={s.pages} entries={entries} onChange={onChange} onEntriesChanged={onEntriesChanged} />

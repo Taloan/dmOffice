@@ -24,6 +24,8 @@ without the key, nobody can open the backup – dmOffice included.
 
 ## Storage Extender
 
+With the Storage Extender, dmOffice extends the internal file storage with an external location, for example a NAS, a Storage Box or an object storage. Files are stored there encrypted. In total, the local storage pool plus the storage limit of the Storage Extender are available: 1 TB local and 1 TB in the Storage Extender give 2 TB.
+
 ### 1. Where is the second place?
 
 **Type:**
@@ -40,8 +42,7 @@ without the key, nobody can open the backup – dmOffice included.
 
 ### 2. Set up the local storage pool
 
-The local storage pool is the part of the local storage volume that is available. The Storage Extender holds all files, the local storage pool the most recently used. If all files fit within the limits, all of them are on
-the server as well, and dmOffice fetches missing ones back by itself. Otherwise dmOffice automatically fills the free storage space with the newest files, and a file that is only in the Storage Extender is fetched on opening; large
+The local storage pool is the part of the local storage volume that is available. If all files fit, all of them are local, and dmOffice fetches missing ones back by itself. Otherwise the most recently used files are local, and a file that is only in the Storage Extender is fetched on opening; large
 files are passed through instead of stored. Thumbnails, mail, calendars, contacts, notes and the databases always stay local.
 
 - **Always keep free on the local storage volume** (default 50 GB, at most a fifth of the volume): applies to the whole volume of the data
@@ -49,11 +50,24 @@ files are passed through instead of stored. Thumbnails, mail, calendars, contact
   dmOffice accepts no new files.
 - **Use at most this much for the local storage pool**: optional upper limit. It counts files only; thumbnails always stay local and take additional space on the volume.
 
-The graphic shows what happens as the sliders move: red are files that will be cleaned, yellow are files still to be transferred. Nothing is saved until **Apply**. The used and free space of the Storage Extender is only shown for a folder target, S3 and WebDAV do not report it reliably.
+Both values are entered in GB or TB. Before saving, the graphic shows what will happen: red are files that will be cleaned. Nothing is saved until **Apply**.
+
+### 3. Set up the Storage Extender
+
+- **Storage limit**: the maximum space dmOffice uses in the Storage Extender. Without a limit it is unlimited.
+- **Usage**:
+  - **Minimal – Strict: free up immediately**: Files are moved to the Storage Extender only when there is no room locally. Once they are local again, the external copy is removed immediately.
+  - **Economical – Only when needed**: Files are moved to the Storage Extender only when there is no room locally. Once they are local again, the external copy is removed after 7 days.
+  - **Optimal – Keep copies where possible** (default): Files are moved to the Storage Extender only when there is no room locally. External copies are kept, even once the files are local again. Only when space is needed externally are these copies removed.
+  - **Maximal – Use free space**: Free space in the Storage Extender is used to keep as many files as possible additionally stored externally. Further copies are created as long as there is enough space.
+
+Under the hood: when the local storage pool is almost full, the least recently used files already have a copy in the Storage Extender, so cleaning never has to transfer under time pressure. When the Storage Extender needs space, the copy of a file that is also local and was used most recently goes first. Copies dropped by Economical are removed only after 7 days, with Minimal immediately.
+
+**Storage space** shows total, used and free as well as the usage of the Storage Extender. **Files** shows what is only local, in both places or only in the Storage Extender.
 
 Backing up the Storage Extender is the administrator's responsibility. For earlier states of the files there is the files backup.
 
-### 3. Switch on
+### 4. Switch on
 
 **Switch on Storage Extender.** The first sync starts 30 seconds after the server start, then at the latest every
 10 minutes, and right after a change. The state shows "Last synced" and how many files are in the Storage Extender.
@@ -91,7 +105,7 @@ elsewhere.
   target makes sure a restored older core backup removes the account again. A core backup copied elsewhere and restored without
   this target does not know the note.
 
-Restoring and fetching individual files: [Restoring](wiederherstellen.md).
+Restoring and fetching individual files: [Restoring](restore.md).
 
 ## Core backup
 

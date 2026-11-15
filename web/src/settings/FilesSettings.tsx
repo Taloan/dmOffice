@@ -79,6 +79,14 @@ function useFileSettings() {
     if (p.versionsMode === 'off' && data.versions > 0
       && !await askConfirm('', t('Keine früheren Versionen mehr? Die vorhandenen ({size}) werden gelöscht.', { size: fmtSize(data.versions) }))) return
     const next = { ...data.settings, ...p }
+    // Kürzere Haltedauer, weniger Versionen, kleinere Grenze: was darüber liegt, löscht der Server sofort
+    const cut = (k: keyof FileSettings) => typeof next[k] === 'number' && (next[k] as number) > 0 && (data.settings[k] === 0 || (next[k] as number) < (data.settings[k] as number))
+    const versionsCut = next.versionsMode !== 'off' && data.versions > 0
+      && (cut('versionsDays') || cut('versionsMb') || (next.versionsMode === 'fixed' && cut('versionsMax')))
+    const trashCut = data.trash > 0 && (cut('trashDays') || cut('trashMb'))
+    if ((versionsCut || trashCut) && !await askConfirm(t('Grenze verkleinern'), versionsCut
+      ? t('Frühere Versionen, die über die neue Grenze hinausgehen, werden sofort endgültig gelöscht.')
+      : t('Einträge im Papierkorb, die über die neue Grenze hinausgehen, werden sofort endgültig gelöscht.'), t('Endgültig löschen'))) return
     setData({ ...data, settings: next })
     try {
       const r = await api.put<{ settings: FileSettings; trash: number; versions: number }>('/api/files/settings', next)
@@ -140,7 +148,7 @@ function CopySection({ copy, last }: { copy: CopyInfo; last: boolean }) {
   const c = copy.cache
   const scale = c ? Math.max(c.max, c.local, 1) : 1
   return (
-    <Section title={t('Kopie und Sicherung')} last={last}>
+    <Section title={t('Kopie und Backup')} last={last}>
       <Text>{t('Deine Dateien liegen zusätzlich verschlüsselt auf {where}. Zuletzt abgeglichen: {when}.', { where, when: when(copy.lastRun) })}</Text>
       {!copy.ok && <Hint>{t('Beim letzten Abgleich gab es ein Problem – Näheres sieht die Verwaltung.')}</Hint>}
       {c && (
@@ -154,9 +162,9 @@ function CopySection({ copy, last }: { copy: CopyInfo; last: boolean }) {
         </>
       )}
       {copy.backup
-        ? <Text>{t('Das Core-Backup bewahrt {n} Stände auf. Letzte Sicherung: {when}.', { n: copy.backup.keepCount, when: when(copy.backup.lastRun) })}</Text>
-        : <Hint>{t('Die Kopie allein ist keine Sicherung: Was du hier löschst, verschwindet nach einigen Tagen auch dort.')}</Hint>}
-      {copy.backup && !copy.backup.ok && <Hint>{t('Die letzte Sicherung hat nicht geklappt – Näheres sieht die Verwaltung.')}</Hint>}
+        ? <Text>{t('Das Core-Backup bewahrt {n} Stände auf. Letztes Backup: {when}.', { n: copy.backup.keepCount, when: when(copy.backup.lastRun) })}</Text>
+        : null}
+      {copy.backup && !copy.backup.ok && <Hint>{t('Das letzte Backup hat nicht geklappt – Näheres sieht die Verwaltung.')}</Hint>}
     </Section>
   )
 }
@@ -178,7 +186,7 @@ function ExternalSection({ list }: { list: ExternalSpace[] }) {
           )
         })}
       </div>
-      <Hint>{t('Externe Ordner zählen nicht zu deinem Speicherplatz hier – die Dateien liegen dort, wo der Ordner hinzeigt.')}</Hint>
+      <Hint>{t('Externe Ordner zählen nicht zum belegten Speicherplatz.')}</Hint>
     </Section>
   )
 }
@@ -214,7 +222,7 @@ export function FilesVersionSettings() {
         )}
       </div>
       {st.versionsMode === 'auto' && (
-        <Hint>{t('Wie Nextcloud und Time Machine: aus den letzten 24 Stunden bleibt eine Version je Stunde, aus den letzten 30 Tagen eine je Tag, danach eine je Woche.')}</Hint>
+        <Hint>{t('Aus den letzten 24 Stunden bleibt eine Version je Stunde, aus den letzten 30 Tagen eine je Tag, danach eine je Woche.')}</Hint>
       )}
       {st.versionsMode !== 'off' && <Hint>{t('Ist die Speichergrenze erreicht, fallen die ältesten Versionen zuerst weg. Änderungen gelten sofort.')}</Hint>}
     </div>

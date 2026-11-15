@@ -45,7 +45,8 @@ public static class RecipeImport
 
     internal static bool IsPublic(IPAddress a)
     {
-        if (a.IsIPv4MappedToIPv6) a = a.MapToIPv4();
+        // Auch in IPv6 verpackte IPv4-Adressen (::ffff:…, NAT64, 6to4) als IPv4 prüfen
+        a = DmOffice.Storage.ExternalFolders.Embedded(a);
         if (IPAddress.IsLoopback(a) || a.IsIPv6LinkLocal || a.IsIPv6SiteLocal || a.IsIPv6Multicast || a.Equals(IPAddress.Any) || a.Equals(IPAddress.IPv6Any))
             return false;
         var b = a.GetAddressBytes();

@@ -13,7 +13,7 @@ import {
 import { sendToChat } from '../chat/SendToChat'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { e2eFetch } from '../e2e'
-import { api, Collection, featureOn, fmtSize, q } from '../api'
+import { api, Collection, demoMode, featureOn, fmtSize, q } from '../api'
 import { OPEN_COLOR, requestTresorOpen, useTresor } from '../tresor/tresor'
 import { LockClosed20Regular, LockOpen20Regular, LockOpen16Regular } from '@fluentui/react-icons'
 import { EventDialog, EventDraft, guessStart } from '../calendar/EventDialog'
@@ -69,7 +69,7 @@ const useStyles = makeStyles({
   cardsFocus: { ':focus-visible': { boxShadow: `inset 0 0 0 2px ${tokens.colorStrokeFocus2}` } },
   cardMulti: { backgroundColor: tokens.colorBrandBackground2, ':hover': { backgroundColor: tokens.colorBrandBackground2Hover } },
   cardTitle: { fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flexShrink: 0 },
-  cardText: { fontSize: '12px', color: tokens.colorNeutralForeground3, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', marginTop: '2px', lineHeight: '16px' },
+  cardText: { fontSize: '12px', color: tokens.colorNeutralForeground3, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', overflowWrap: 'anywhere', marginTop: '2px', lineHeight: '16px' },
   cardDate: { fontSize: '11px', color: tokens.colorNeutralForeground4, marginTop: 'auto' },
   editor: { flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 },
   // Handy: offene Notiz im Vollbild ueber der Liste; am Desktop ohne eigene Box
@@ -212,7 +212,7 @@ export default function NotesView() {
   const switchDb = async (folder: string) => {
     if (vault) { NB = '/api/notes'; setVault(null) }
     if (folder === '__new') {
-      const name = prompt(t('Name der neuen Datenbank (wird im Abgleichordner angelegt):'))
+      const name = await askText(t('Neue Datenbank'), '', t('Name der neuen Datenbank (wird im Abgleichordner angelegt)'), t('Anlegen'))
       if (!name?.trim()) return
       folder = name.trim()
     }
@@ -413,7 +413,7 @@ export default function NotesView() {
     afterChange(ids, true)
   }
   const destroyMany = async (ids: number[]) => {
-    if (!await askConfirm('', ids.length === 1 ? t('Endgültig löschen? Auch auf allen anderen Geräten.') : t('{n} Notizen endgültig löschen? Auch auf allen anderen Geräten.', { n: ids.length }))) return
+    if (!await askConfirm('', ids.length === 1 ? t('Endgültig löschen? Auch auf allen anderen Geräten.') : t('{n} Notizen endgültig löschen? Auch auf allen anderen Geräten.', { n: ids.length }), t('Endgültig löschen'))) return
     try { for (const id of ids) await api.del(`${NB}/${id}`) } catch (e) { fail(e) }
     afterChange(ids, true)
   }
@@ -459,7 +459,7 @@ export default function NotesView() {
     try { await api.put(`${NB}/folders/${f.syncId}`, { name }); loadFolders() } catch (err) { fail(err) }
   }
   const deleteFolder = async (f: NoteFolder) => {
-    if (!await askConfirm('', t('Ordner „{name}“ löschen?', { name: f.name }))) return
+    // Keine Rückfrage: nur leere Ordner lassen sich löschen, es geht nichts verloren
     try {
       await api.del(`${NB}/folders/${f.syncId}`)
       if (view.kind === 'folder' && view.id === f.syncId) setView({ kind: 'all' })
@@ -548,9 +548,9 @@ export default function NotesView() {
           try { const r = await api.post(NB, { folder: f.syncId }); setView({ kind: 'folder', id: f.syncId }); setSearch(''); setSelected(r.id) } catch (err) { fail(err) }
         }}>{t('Neue Notiz')}</MenuItem>
         <MenuItem icon={<FolderAdd20Regular />} onClick={() => newFolder(f.syncId)}>{t('Neuer Unterordner')}</MenuItem>
-        {!vault && <MenuItem icon={<People20Regular />} onClick={() => setShareDialog(f)}>{t('Teilen …')}</MenuItem>}
         <MenuDivider />
         <MenuItem icon={<Rename20Regular />} onClick={() => renameFolder(f)}>{t('Umbenennen')}</MenuItem>
+        {!vault && <MenuItem icon={<People20Regular />} onClick={() => setShareDialog(f)}>{t('Teilen …')}</MenuItem>}
         <TargetMenu kind="move" targets={[{ id: '', label: t('Oberste Ebene'), disabled: !f.parent }, ...folderTargets(below(f.syncId).concat(parentOf ? [parentOf.syncId] : []))]}
           onPick={id => moveFolder(f.syncId, id ? String(id) : null)} />
         <MenuDivider />
@@ -793,7 +793,7 @@ export default function NotesView() {
         </div>
         {tree(null, 0)}
         {allTags.length > 0 && <>
-          <div className={nv.section}><span style={{ flex: 1 }}>{t('Schlagwörter')}</span></div>
+          <div className={nv.section}><span style={{ flex: 1 }}>{t('Tags')}</span></div>
           {allTags.map(x => <div key={x.tag}>{nav({ kind: 'tag', tag: x.tag }, <Tag20Regular />, tagLabel(x.tag), x.count)}</div>)}
         </>}
         {(shared.length > 0 || singles.length > 0) && <>
@@ -829,16 +829,6 @@ export default function NotesView() {
       <div className={s.panes}>
       <div className={s.list} style={listW.width ? { width: listW.width, position: 'relative' } : undefined}>
         {listW.handle('right', true)}
-        {config && !config.enabled && !prefs.notiziTipHidden && (
-          <MessageBar intent="info" style={{ margin: '10px 10px 0' }}>
-            <MessageBarBody>
-              {t('Tipp: Mit der App notizi hast du deine Notizen auch auf dem Windows-Desktop – mit Erinnerungen, Texterkennung und Abgleich.')}{' '}
-              <a href="#/settings/notes">{t('Abgleich einrichten')}</a>
-            </MessageBarBody>
-            <MessageBarActions containerAction={<Button appearance="transparent" size="small" icon={<Dismiss16Regular />} aria-label={t('Ausblenden')}
-              onClick={() => update({ notiziTipHidden: true })} />} />
-          </MessageBar>
-        )}
         <div style={{ padding: 10 }}><SearchBox placeholder={t('Notizen durchsuchen')} value={search} onChange={(_, d) => setSearch(d.value)} style={{ width: '100%' }}
           onKeyDown={e => { if (e.key === 'ArrowDown') { e.preventDefault(); cardsRef.current?.focus(); mx.step(1, false) } }} /></div>
         <div className={mergeClasses(s.cards, s.cardsFocus)} ref={cardsRef} tabIndex={0} role="listbox" aria-multiselectable aria-label={t('Notizen')} onKeyDown={onCardsKey} onContextMenu={e => cm.open(e, { kind: 'list' })}
@@ -851,13 +841,24 @@ export default function NotesView() {
                 style={{ borderTopColor: n.color || '#FFF9A8', paddingRight: n.image ? 84 : undefined }}>
                 {n.image && <img className={s.cardThumb} src={`${NB}/blob/${encodeURIComponent(n.image)}?thumb=160`} alt="" loading="lazy" draggable={false}
                   onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none' }} />}
-                <div className={s.cardTitle}>{n.important && '★ '}{n.title}</div>
+                <div className={s.cardTitle} title={n.title}>{n.important && '★ '}{n.title}</div>
                 {n.match ? <div className={s.cardText}>📎 {t('im Anhang {name}', { name: n.match.name })}: <Snippet text={n.match.snippet} /></div>
                   : preview && n.snippet && <div className={s.cardText}>{n.snippet}</div>}
                 <div className={s.cardDate}>{fmtDate(n.modified)}{n.attachments > 0 && ` · 📎 ${n.attachments}`}{n.owner && ` · ${t('von {name}', { name: n.owner })}`}{n.tags?.length ? ' · ' + n.tags.map(x => '#' + tagLabel(x)).join(' ') : ''}</div>
               </div>
             ))}
         </div>
+        {/* Tipp unter der Liste: erscheint nach dem Laden, ohne die Liste zu verschieben */}
+        {config && !config.enabled && !prefs.notiziTipHidden && (
+          <MessageBar intent="info" style={{ margin: '0 10px 10px', flexShrink: 0 }}>
+            <MessageBarBody>
+              {t('Tipp: Mit der App notizi hast du deine Notizen auch auf dem Windows-Desktop – mit Erinnerungen, Texterkennung und Abgleich.')}{' '}
+              <a href="#/settings/notes">{t('Abgleich einrichten')}</a>
+            </MessageBarBody>
+            <MessageBarActions containerAction={<Button appearance="transparent" size="small" icon={<Dismiss16Regular />} aria-label={t('Ausblenden')}
+              onClick={() => update({ notiziTipHidden: true })} />} />
+          </MessageBar>
+        )}
       </div>
       {picked.length > 1 ? (
         // Mehrere markiert: Aktionen fuer alle statt des Editors einer einzelnen Notiz (wie in Outlook)
@@ -1277,7 +1278,7 @@ function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onO
     } catch (e) { fail(e) }
   }
   const destroy = async () => {
-    if (!await askConfirm('', t('Endgültig löschen? Auch auf allen anderen Geräten.'))) return
+    if (!await askConfirm('', t('Endgültig löschen? Auch auf allen anderen Geräten.'), t('Endgültig löschen'))) return
     try { await api.del(`${NB}/${id}`); onGone() } catch (e) { fail(e) }
   }
   const exec = (cmd: string, value?: string) => { document.execCommand('styleWithCSS', false, 'true'); document.execCommand(cmd, false, value); changed() }
@@ -1455,8 +1456,9 @@ function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onO
             </MenuList>
           </MenuPopover>
         </Menu></>}
-        {/* Anhängen: vom Gerät, aus der Galerie oder aus den Dateien von dmOffice (die werden geholt und wie vom Gerät eingefügt) */}
-        <Menu>
+        {/* Anhängen: vom Gerät, aus der Galerie oder aus den Dateien von dmOffice (die werden geholt und wie vom Gerät eingefügt).
+            Nicht in der Demo: ein gemeinsames Konto, keine Dateien */}
+        {!demoMode.on && <Menu>
           <MenuTrigger disableButtonEnhancement>
             <Tooltip content={t('Datei anhängen')} relationship="label"><Button appearance="subtle" disabled={locked} icon={<Attach20Regular />} /></Tooltip>
           </MenuTrigger>
@@ -1465,7 +1467,7 @@ function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onO
             <MenuItem icon={<ImageMultiple20Regular />} onClick={() => setPickFrom('gallery')}>{t('Aus der dmOffice-Galerie')}</MenuItem>
             <MenuItem icon={<Cloud20Regular />} onClick={() => setPickFrom('files')}>{t('Aus den dmOffice-Dateien')}</MenuItem>
           </MenuList></MenuPopover>
-        </Menu>
+        </Menu>}
         {pickFrom === 'gallery' && <PickPhotoDialog title={t('Aus der dmOffice-Galerie')} onClose={() => setPickFrom(null)} onPickMany={items => { setPickFrom(null); fromServer(items, gallerySource) }} />}
         {pickFrom === 'files' && <StoredFilesDialog onClose={() => setPickFrom(null)} onPick={items => { setPickFrom(null); fromServer(items, ownSource) }} />}
         {!mobile ? null : note.owner ? null : inTrash || note.archived

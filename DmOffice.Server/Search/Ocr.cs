@@ -1,3 +1,4 @@
+using DmOffice.Core;
 using System.Diagnostics;
 
 namespace DmOffice.Search;
@@ -196,15 +197,10 @@ public static class Ocr
 
     internal static string TempDir()
     {
-        var dir = Path.Combine(Path.GetTempPath(), "dmoffice-ocr-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(dir);
-        return dir;
+        return WorkDir.Create("ocr");
     }
 
-    internal static void Clean(string dir)
-    {
-        try { Directory.Delete(dir, true); } catch { /* beim naechsten Mal */ }
-    }
+    internal static void Clean(string dir) => WorkDir.Delete(dir);
 
     private const string PrLimit = "/usr/bin/prlimit";
 

@@ -281,16 +281,26 @@ public static class SharedFiles
         var quota = FileStore.Quota(to.Db);
         if (quota > 0 && UserStorage.Counted(to.Db) + items.Sum(f => f.Size) > quota) throw new QuotaExceededException(quota);
         if (exists) FileStore.Delete(to.Db, to.Path);
-        foreach (var f in items)
+        try
         {
-            ct.ThrowIfCancellationRequested();
-            var dst = to.Path + f.Path[src.Path.Length..];
-            if (f.IsDir) FileStore.Mkcol(to.Db, dst);
-            else
+            foreach (var f in items)
             {
-                await using var data = FileStore.OpenRead(from.Db, f.Path);
-                await FileStore.PutAsync(to.Db, dst, data, f.Mime, mtime: f.Modified, ct: ct);
+                ct.ThrowIfCancellationRequested();
+                var dst = to.Path + f.Path[src.Path.Length..];
+                if (f.IsDir) FileStore.Mkcol(to.Db, dst);
+                else
+                {
+                    await using var data = FileStore.OpenRead(from.Db, f.Path);
+                    await FileStore.PutAsync(to.Db, dst, data, f.Mime, mtime: f.Modified, ct: ct);
+                }
             }
+        }
+        catch (Exception)
+        {
+            // Abgebrochen: die Teilkopie am Ziel wieder entfernen (endgültig), die Quelle bleibt unverändert
+            try { if (FileStore.Get(to.Db, to.Path) != null && FileStore.Delete(to.Db, to.Path, out var trash) && trash > 0) FileStore.PurgeTrash(to.Db, [trash]); }
+            catch (Exception) { /* der ursprüngliche Fehler zählt */ }
+            throw;
         }
         return !exists;
     }

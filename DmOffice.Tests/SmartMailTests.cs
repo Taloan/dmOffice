@@ -59,6 +59,31 @@ public class SmartMailTests
     }
 
     [Fact]
+    public void Scan_liest_auch_Ordner_der_Catchall_Aliase()
+    {
+        var dir = Directory.CreateTempSubdirectory("dmsmart");
+        var db = new UserDb(Path.Combine(dir.FullName, "u.db"), new byte[32], "t");
+        var space = new UserSpace(new UserRecord { Login = "t" }, db);
+        var acc = new MailAccount { Id = "a", Email = "ich@x.de", ImapHost = "imap.x.de" };
+        space.UpdateSettings(s => s.MailAccounts.Add(acc));
+        MailStore.ReplaceFolders(db, "a", [("INBOX", "INBOX", "/", "inbox", true), ("x_de", "x_de", "/", null, true), ("x_de/shop", "shop", "/", null, true)]);
+        CatchallAliases.Save(db, new CatchallAliases.Config { Domains = ["x.de"], Account = "a" }, space.Settings.MailAccounts);
+        var alias = CatchallAliases.Create(db, CatchallAliases.Load(db), "shop", "x.de", null);
+        CatchallAliases.SetFolder(db, alias.Address, "x_de/shop");
+        // Mail an den Alias liegt direkt in dessen Ordner, nicht im Posteingang
+        var m = Mail("noreply@dhl.de", "DHL Paket", "Ihre Sendung kommt heute",
+            text: "Hallo, Ihre Sendung 00340434161234567890 kommt heute zwischen 10:30 und 13:30 Uhr.", date: DateTime.UtcNow);
+        m.MessageId = "alias-1@x.de";
+        db.Exec("INSERT INTO mail(account,folder,uid,message_id,subject,from_name,from_addr,date,size) VALUES('a','x_de/shop',1,$m,'s','DHL','noreply@dhl.de',$d,100)",
+            ("$m", m.MessageId), ("$d", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
+        using var ms = new MemoryStream();
+        m.WriteTo(ms);
+        MailStore.StoreRaw(db, "a", "x_de/shop", 1, ms.ToArray(), m);
+
+        Assert.Equal(1, SmartMail.Scan(space, acc));
+    }
+
+    [Fact]
     public void Amazon_ueber_Alias_mit_Datum()
     {
         // Weitergeleitet ueber einen Wegwerf-Alias: Absenderadresse fremd, "DHL"/"Amazon" in Name und Betreff

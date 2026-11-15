@@ -133,11 +133,11 @@ export function PlainBackupSettings() {
   return (
     <div className={s.page}>
       <PageTitle>{t('Datenexport')}</PageTitle>
-      <Text>{t('dmOffice legt deine Daten regelmäßig entschlüsselt und in offenen Formaten an einem separaten Speicherort ab, beispielsweise per WebDAV in pCloud. Die Dateien lassen sich ohne dmOffice öffnen. Zurückspielen lässt sich ein Datenexport nicht.')}</Text>
+      <Text>{t('dmOffice legt deine Daten regelmäßig entschlüsselt und in offenen Formaten an einem separaten Speicherort ab. Die Dateien lassen sich ohne dmOffice öffnen. Zurückspielen lässt sich ein Datenexport nicht.')}</Text>
       <Text>{t('dmOffice schreibt ausschließlich an diesen Speicherort und liest keine Daten von dort zurück. Gelöschte Dateien bleiben zunächst im versteckten Ordner .trash erhalten und werden erst nach Ablauf der eingestellten Aufbewahrungsfrist endgültig entfernt.')}</Text>
 
       <Section title={t('Zustand')}>
-        {!view.ready && <Text className={s.muted}>{t('Noch nicht eingeschaltet.')}</Text>}
+        {!view.ready && <Text className={s.muted}>{t('Noch nicht aktiviert.')}</Text>}
         {run && <>
           <ProgressBar value={run.total ? run.done / run.total : undefined} />
           <Text size={200} className={s.muted}>{t('Läuft: {done} von {total}', { done: run.done.toLocaleString(locale), total: run.total.toLocaleString(locale) })}{run.current ? ' · ' + run.current : ''}</Text>
@@ -165,7 +165,7 @@ export function PlainBackupSettings() {
         </div>
       </Section>
 
-      <Section title={t('Ziel')} hint={t('Speicherort des Datenexports auf einem externen Server. Ein Download über den Browser ist nicht vorgesehen; für eine Kopie auf dem eigenen Rechner lässt sich das Ziel dorthin synchronisieren.')}>
+      <Section title={t('Ziel')} hint={t('Speicherort des Datenexports auf einem externen Server.')}>
         <div className={s.form}>
           {/* Ziel ist ein externes Ziel (Einstellungen → Externe Ziele) und ein Ordner darin */}
           {view.mounts.length === 0 ? <>
@@ -181,7 +181,7 @@ export function PlainBackupSettings() {
               <Button onClick={() => { location.hash = '#/settings/external-targets' }}>{t('Neues Ziel anlegen')}</Button>
               </div>
             </Field>
-            <Field label={t('Ordner')} hint={t('Leer: direkt im externen Ziel. Ein fehlender Ordner wird angelegt.')}>
+            <Field label={t('Ordner')} hint={t('Leer: direkt im externen Ziel.')}>
               <div className={s.row}>
                 <Input value={f.folder} onChange={(_, d) => change({ folder: d.value })} placeholder="Sicherung/dmOffice" style={{ flex: 1, maxWidth: 360 }} />
                 <Button disabled={!f.mount} onClick={() => setBrowse(true)}>{t('Wählen …')}</Button>
@@ -197,7 +197,7 @@ export function PlainBackupSettings() {
         </div>
       </Section>
 
-      <Section title={t('Bereiche')} hint={t('E-Mails sind nicht enthalten, sie liegen beim Mailanbieter.')}>
+      <Section title={t('Bereiche')} hint={t('E-Mails sind nicht enthalten.')}>
         {AREAS.filter(a => view.available.includes(a.key)).map(a => {
           const on = f.areas.includes(a.key)
           const skipped = f.skip.filter(x => x.startsWith(a.key + ':')).length
@@ -223,7 +223,7 @@ export function PlainBackupSettings() {
             </Select>
           </Field>
           <Switch checked={f.versions} onChange={(_, d) => change({ versions: d.checked })} label={t('Ältere Versionen geänderter Dateien aufbewahren')} />
-          <Hint>{t('Statt zu überschreiben, kommt die vorige Version nach .trash: höchstens eine je Tag, bei Kalendern, Kontakten und Listen eine je Woche. Schützt etwa vor versehentlichem Überschreiben, braucht aber mehr Platz im Ziel.')}</Hint>
+          <Hint>{t('Statt zu überschreiben, kommt die vorige Version nach .trash: höchstens eine je Tag, bei Kalendern, Kontakten und Listen eine je Woche. Das braucht mehr Platz im Ziel.')}</Hint>
         </div>
       </Section>
 

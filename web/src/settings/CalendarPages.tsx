@@ -52,7 +52,7 @@ export function EventSettings() {
   return (
     <>
       <PageTitle>{t('Ereignisse')}</PageTitle>
-      <Section title={t('Standarderinnerung')} hint={t('Für neue Termine. Die Erinnerung wird im Termin gespeichert, das Handy erinnert also ebenso.')}>
+      <Section title={t('Standarderinnerung')} hint={t('Für neue Termine. Die Erinnerung wird im Termin gespeichert.')}>
         <Field style={{ maxWidth: 260 }}>
           <Dropdown value={reminders.find(r => r[0] === value)?.[1] ?? value} selectedOptions={[value]}
             onOptionSelect={(_, d) => update({ defaultReminder: d.optionValue ? Number(d.optionValue) : null })}>
@@ -63,8 +63,7 @@ export function EventSettings() {
       <InviteCalendarSetting />
       <Section title={t('Importieren und exportieren')} last>
         <Hint>
-          {t('Im Kalender links beim jeweiligen Kalender auf ⋮ → „Importieren (.ics)“ oder „Exportieren (.ics)“.')}{' '}
-          {t('Aus Nextcloud: in der Kalender-App beim Kalender ⋯ → „Herunterladen“.')}
+          {t('Im Kalender links beim jeweiligen Kalender auf ⋮ → „Importieren (.ics)“ oder „Exportieren (.ics)“.')}
         </Hint>
       </Section>
     </>
@@ -84,7 +83,9 @@ function InviteCalendarSetting() {
   return (
     <Section title={t('Einladungen')} hint={t('Zugesagte Einladungen aus E-Mails kommen in diesen Kalender. Steht ein Termin schon in einem anderen Kalender, bleibt er dort.')}>
       <Field style={{ maxWidth: 320 }} label={t('Standardkalender für Einladungen')}>
-        <Dropdown value={current?.name ?? ''} selectedOptions={current ? [String(current.id)] : []}
+        {/* Langer Name: mit Ellipse kuerzen, das Feld waechst nicht mit */}
+        <Dropdown value={current?.name ?? ''} selectedOptions={current ? [String(current.id)] : []} style={{ maxWidth: '100%', minWidth: 0 }} title={current?.name}
+          button={{ children: <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{current?.name ?? ''}</span> }}
           onOptionSelect={async (_, d) => {
             const id = Number(d.optionValue)
             setValue(id)
@@ -105,8 +106,7 @@ export function PeopleSettings() {
       <PageTitle>{t('Kontakte')}</PageTitle>
       <Section title={t('Importieren und exportieren')}>
         <Hint>
-          {t('In Kontakte links beim Adressbuch auf ⋮ → „Importieren (.vcf)“ oder „Exportieren (.vcf)“.')}{' '}
-          {t('Aus Nextcloud: Kontakte-App → Einstellungen (unten links) → beim Adressbuch ⋯ → „Herunterladen“.')}
+          {t('In Kontakte links beim Adressbuch auf ⋮ → „Importieren (.vcf)“ oder „Exportieren (.vcf)“.')}
         </Hint>
       </Section>
       <Section title={t('Adressvorschläge')} hint={t('Beim Schreiben schlägt dmOffice Kontakte und die zuletzt angeschriebenen Adressen vor. Hier lassen sie sich aufräumen oder als Kontakt übernehmen.')} last>

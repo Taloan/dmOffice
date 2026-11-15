@@ -19,7 +19,8 @@ public sealed class StandReader : IDisposable
     private StandReader(string work, DataPaths paths, Vault vault, S3Backup.Manifest manifest) { _work = work; Paths = paths; Vault = vault; Manifest = manifest; }
 
     /// <summary>Stand öffnen: Datei „&lt;Zeit&gt;_&lt;Blob&gt;.dmb“, der Name gehört zur Entschlüsselung.</summary>
-    public static StandReader Open(string file, string? masterKey)
+    /// <param name="keyFile">Schlüsseldatei des Servers, wenn er ohne DMOFFICE_MASTER_KEY läuft (master.key im Datenverzeichnis)</param>
+    public static StandReader Open(string file, string? masterKey, string? keyFile = null)
     {
         var name = Path.GetFileNameWithoutExtension(file);
         if (S3Backup.ParseName(name) == null) throw new ArgumentException("Der Dateiname gehört zu keinem Core-Stand (<Zeit>_<Kennung>.dmb). Der Name darf nicht geändert sein.");
@@ -29,7 +30,7 @@ public sealed class StandReader : IDisposable
         {
             var paths = new DataPaths(work);
             // Nur Tests: Schlüssel aus einer Datei statt aus der Umgebung
-            if (RestoreTool.KeyFileForTests is { } keyFile) File.Copy(keyFile, Path.Combine(work, "master.key"));
+            if ((keyFile ?? RestoreTool.KeyFileForTests) is { } source && string.IsNullOrWhiteSpace(masterKey)) File.Copy(source, Path.Combine(work, "master.key"));
             var vault = new Vault(paths, masterKey);
             var store = new BlobStore(Path.Combine(work, "in"), S3Backup.KeyOf(vault.Key));
             var id = name[(name.IndexOf('_') + 1)..];
@@ -118,24 +119,43 @@ public static class RestoreTool
     internal static string? KeyFileForTests;
 
     private const string Usage = """
-        restore-tool users  --stand <datei.dmb>
-        restore-tool ls     --stand <datei.dmb> --user <login> [--path <ordner>] [--trash] [--versions <datei>]
-        restore-tool find   --stand <datei.dmb> --user <login> <text>
-        restore-tool get    --stand <datei.dmb> --user <login> --out <ordner> [--trash] [--version <nr>] [--files <ordner>] [--prefix <präfix>] <pfad>
+        restore stands                                  Stände am Ziel des Core-Backups
+        restore users                                   Benutzer im Stand
+        restore ls    <benutzer>:/<ordner>              Ordner und Dateien
+        restore ls    --trash <benutzer>:               Papierkorb
+        restore ls    --versions <benutzer>:/<datei>    frühere Versionen mit Nummer
+        restore find  <benutzer>: <text>                nach Namen suchen, auch im Papierkorb
+        restore copy  <benutzer>:/<pfad> <zielordner>   Datei oder Ordner entschlüsselt kopieren
+                      [--trash]  [--version <nr>]
 
-        DMOFFICE_MASTER_KEY muss gesetzt sein. Ohne --files gilt das Ziel aus den Einstellungen des Stands.
+        Welcher Stand:  ohne Angabe der neueste    --at <datum> der letzte bis zu diesem Tag (2026-11-04 oder 2026-11-04T03:00)
+        Woher:          im Container des Servers aus dessen Einstellungen
+                        --key <datei>   Wiederherstellungsschlüssel (Verwaltung → Backup-Strategie), wenn der Server weg ist
+                        --stand <datei.dmb>   eine Stand-Datei
+        Hauptschlüssel: im Container des Servers wie dort, sonst aus DMOFFICE_MASTER_KEY
         """;
 
     public static async Task<int> RunAsync(string[] args, TextWriter o, TextWriter e, CancellationToken ct)
     {
         var (cmd, opts, rest) = Parse(args);
-        if (cmd is not ("users" or "ls" or "find" or "get") || !opts.TryGetValue("stand", out var stand)) { await e.WriteLineAsync(Usage); return 2; }
-        var key = Environment.GetEnvironmentVariable("DMOFFICE_MASTER_KEY");
-        if (string.IsNullOrWhiteSpace(key) && KeyFileForTests == null) { await e.WriteLineAsync("DMOFFICE_MASTER_KEY ist nicht gesetzt."); return 2; }
-        if (!File.Exists(stand)) { await e.WriteLineAsync($"Den Stand {stand} gibt es nicht."); return 2; }
+        // Neue Schreibweise wie rclone: <benutzer>:/<pfad>; alte (--user, --path, get --out) gilt weiter
+        if (cmd == "copy") cmd = "get";
+        if (cmd is not ("users" or "ls" or "find" or "get" or "stands")) { await e.WriteLineAsync(Usage); return 2; }
+        if (opts.TryGetValue("versions", out var vRef) && UserPath(vRef) is { } vp) { opts["user"] = vp.User; opts["versions"] = vp.Path; }
+        if (rest.Count > 0 && UserPath(rest[0]) is { } up)
+        {
+            opts["user"] = up.User;
+            rest.RemoveAt(0);
+            if (cmd == "ls" && !opts.ContainsKey("versions")) opts["path"] = up.Path;
+            if (cmd == "get") { rest.Insert(0, up.Path); if (rest.Count > 1 && !opts.ContainsKey("out")) { opts["out"] = rest[1]; rest.RemoveAt(1); } }
+        }
+        string? temp = null;
         try
         {
-            using var reader = StandReader.Open(stand, key);
+            var (stand, key, keyFile, tempDir) = await StandAsync(opts, cmd == "stands" ? o : null, e, ct);
+            temp = tempDir;
+            if (stand == null) return cmd == "stands" ? 0 : 2;
+            using var reader = StandReader.Open(stand, key, keyFile);
             if (!reader.SupportedByTool) { await e.WriteLineAsync("Das Werkzeug liest Stände ab Version 2.0. Dieser Stand ist älter."); return 2; }
             var users = reader.Users();
             if (cmd == "users")
@@ -159,10 +179,97 @@ public static class RestoreTool
                     return await Get(reader, db, user, rest[0], outDir, opts, o, e, ct);
             }
         }
-        catch (Exception x) when (x is InvalidOperationException or InvalidDataException or ArgumentException or IOException or SqliteException or UnauthorizedAccessException)
+        catch (Exception x) when (x is InvalidOperationException or InvalidDataException or ArgumentException or IOException or SqliteException or UnauthorizedAccessException
+            or CryptographicException or Amazon.Runtime.AmazonServiceException or HttpRequestException)
         {
-            await e.WriteLineAsync(x.Message);
+            await e.WriteLineAsync(x is IOException or HttpRequestException or Amazon.Runtime.AmazonServiceException ? S3Remote.Describe(x) : x.Message);
             return 1;
+        }
+        finally { if (temp != null) try { Directory.Delete(temp, recursive: true); } catch (IOException) { } }
+    }
+
+    /// <summary>„anna:/Verträge/x.pdf“ → Benutzer und Pfad; ein Windows-Laufwerk („C:\…“) ist keiner.</summary>
+    internal static (string User, string Path)? UserPath(string arg)
+    {
+        var i = arg.IndexOf(':');
+        if (i <= 0 || (i == 1 && arg.Length > 2 && arg[2] is '\\' or '/')) return null;
+        return (arg[..i], arg[(i + 1)..]);
+    }
+
+    /// <summary>Wann: „2026-11-04“ (der Tag bis Mitternacht) oder mit Uhrzeit. Null: der neueste.</summary>
+    internal static S3Backup.Stand? Pick(List<S3Backup.Stand> stands, string? at)
+    {
+        if (string.IsNullOrWhiteSpace(at)) return stands.MaxBy(s => s.Created);
+        if (!DateTime.TryParse(at, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeLocal, out var when))
+            throw new ArgumentException($"--at {at}: bitte als Datum angeben, etwa 2026-11-04 oder 2026-11-04T03:00.");
+        if (at.Trim().Length <= 10) when = when.Date.AddDays(1).AddTicks(-1);
+        return stands.Where(s => s.Created.ToLocalTime() <= when).MaxBy(s => s.Created);
+    }
+
+    /// <summary>
+    /// Den Stand besorgen: --stand (Datei), --key (Zugangsdaten für den Notfall) oder die Einstellungen des Servers in diesem Container.
+    /// Bei „stands“ (list != null) nur auflisten. Gibt die Datei, den Hauptschlüssel und den Arbeitsordner zum Aufräumen zurück.
+    /// </summary>
+    private static async Task<(string? Stand, string? Key, string? KeyFile, string? Temp)> StandAsync(Dictionary<string, string> opts, TextWriter? list, TextWriter e, CancellationToken ct)
+    {
+        var key = Environment.GetEnvironmentVariable("DMOFFICE_MASTER_KEY");
+        if (opts.TryGetValue("stand", out var file))
+        {
+            if (string.IsNullOrWhiteSpace(key) && KeyFileForTests == null) { await e.WriteLineAsync("DMOFFICE_MASTER_KEY ist nicht gesetzt."); return (null, null, null, null); }
+            if (!File.Exists(file)) { await e.WriteLineAsync($"Den Stand {file} gibt es nicht."); return (null, null, null, null); }
+            return (file, key, null, null);
+        }
+        IBlobRemote remote;
+        string? prefix;
+        string? keyFile = null;
+        if (opts.TryGetValue("key", out var profileFile))
+        {
+            if (string.IsNullOrWhiteSpace(key) && KeyFileForTests == null) { await e.WriteLineAsync("DMOFFICE_MASTER_KEY ist nicht gesetzt - er gehört zum Wiederherstellungsschlüssel."); return (null, null, null, null); }
+            if (!File.Exists(profileFile)) { await e.WriteLineAsync($"Die Datei {profileFile} gibt es nicht."); return (null, null, null, null); }
+            var scratch = Path.Combine(Path.GetTempPath(), "dmoffice-key-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(scratch);
+            try
+            {
+                if (KeyFileForTests != null && string.IsNullOrWhiteSpace(key)) File.Copy(KeyFileForTests, Path.Combine(scratch, "master.key"));
+                var places = StorageProfile.Open(new Vault(new DataPaths(scratch), key, readOnly: true), File.ReadAllText(profileFile))
+                    ?? throw new InvalidDataException("In der Datei steht kein Wiederherstellungsschlüssel (Zeile „dmoffice-zugang:1:…“).");
+                var d = places.Core ?? places.Files ?? throw new InvalidDataException("In den Zugangsdaten steht kein Ziel.");
+                remote = S3Mirror.RemoteOf(d.Target, d.Endpoint, d.Region, d.Bucket, d.AccessKey, d.SecretKey, d.WebDavUrl, d.WebDavUser, d.WebDavPassword, d.Folder);
+                prefix = d.Prefix;
+            }
+            catch (CryptographicException) { throw new InvalidOperationException("Der Wiederherstellungsschlüssel passt nicht zu diesem Hauptschlüssel."); }
+            finally { try { Directory.Delete(scratch, recursive: true); } catch (IOException) { } }
+        }
+        else
+        {
+            // Im Container des Servers: Einstellungen und Schlüssel von dort, nur lesend
+            var dataDir = Environment.GetEnvironmentVariable("DMOFFICE_DATA") ?? "/data";
+            if (!File.Exists(Path.Combine(dataDir, "server.json")))
+            { await e.WriteLineAsync($"Hier läuft kein dmOffice-Server ({dataDir}). Mit --key <datei> den Wiederherstellungsschlüssel angeben oder mit --stand eine Stand-Datei."); return (null, null, null, null); }
+            var paths = new DataPaths(dataDir, Environment.GetEnvironmentVariable("DMOFFICE_BLOBS"));
+            var config = new ServerConfig(paths, new Vault(paths, key, readOnly: true));
+            if (!S3Backup.TargetConfigured(config)) { await e.WriteLineAsync("Auf diesem Server ist kein Core-Backup eingerichtet."); return (null, null, null, null); }
+            remote = S3Backup.RemoteOf(config);
+            prefix = S3Backup.PrefixOf(config.Current);
+            if (string.IsNullOrWhiteSpace(key)) keyFile = Path.Combine(dataDir, "master.key");
+        }
+        using (remote)
+        {
+            var stands = await S3Backup.ListAsync(remote, prefix, ct);
+            if (list != null)
+            {
+                foreach (var s in stands.OrderBy(s => s.Created)) await list.WriteLineAsync($"{s.Created.ToLocalTime():yyyy-MM-dd HH:mm}  {Size(s.Bytes),10}  {s.Name}");
+                if (stands.Count == 0) await e.WriteLineAsync("Am Ziel liegt kein Core-Stand.");
+                return (null, null, null, null);
+            }
+            if (Pick(stands, opts.GetValueOrDefault("at")) is not { } stand)
+            { await e.WriteLineAsync(stands.Count == 0 ? "Am Ziel liegt kein Core-Stand." : $"Bis {opts["at"]} gibt es keinen Stand."); return (null, null, null, null); }
+            await e.WriteLineAsync($"Stand vom {stand.Created.ToLocalTime():yyyy-MM-dd HH:mm}");
+            var temp = Path.Combine(Path.GetTempPath(), "dmoffice-restore-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(temp);
+            var path = Path.Combine(temp, stand.Name + ".dmb");
+            await remote.DownloadAsync(stand.Key, path, ct);
+            return (path, key, keyFile, temp);
         }
     }
 

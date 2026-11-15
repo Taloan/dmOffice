@@ -2,14 +2,15 @@ import { Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface
 import { useEffect, useMemo, useState } from 'react'
 import { ChevronDown16Regular, ChevronRight16Regular, Key20Regular } from '@fluentui/react-icons'
 import { api, fmtSize } from '../api'
+import { FormerTargets } from './FormerTargets'
 import { useApp } from '../App'
-import { locale, t, tError } from '../i18n'
+import { lang, locale, t, tError } from '../i18n'
 import { copyText, saveText } from '../shell/browser'
 import { AdminCol, AdminTable } from './AdminTable'
 import { AdminHeading } from './AdminHeading'
-import { Target, TargetFields, TargetValues, homeOnly, valuesOf } from './TargetFields'
+import { Target, TargetFields, TargetValues, valuesOf } from './TargetFields'
 
-const DOC_URL = 'https://github.com/Taloan/dmOffice/blob/master/docs/wiederherstellen.de.md'
+const docUrl = () => `https://github.com/Taloan/dmOffice/blob/master/docs/restore${lang === 'en' ? '' : '.de'}.md`
 
 interface CoreStatus { running: boolean; lastRun: string | null; lastError: string | null; lastName: string | null; lastBytes: number; otherServer?: string | null }
 interface FilesStatus { running: boolean; lastRun: string | null; lastError: string | null; uploaded: number; count: number; bytes: number; pending: number; completeSince: string | null; done: number; total: number }
@@ -34,7 +35,7 @@ function placeOf(x: { target: Target; endpoint: string | null; bucket: string | 
 /**
  * Verwaltung → Backup-Strategie: Übersicht, Core-Backup und Files-Backup. Das Storage Extender bleibt davon getrennt.
  * Beide Backups gehen wahlweise an das Ziel aus dem Storage Extender oder an ein anderes. Erklärungen im InfoLabel,
- * die Schritte zum Wiederherstellen in docs/wiederherstellen.de.md.
+ * die Schritte zum Wiederherstellen in docs/restore.de.md.
  */
 export function BackupStrategy() {
   const { fail, notify } = useApp()
@@ -144,6 +145,7 @@ export function BackupStrategy() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 720 }}>
+      <FormerTargets purposes={['backup', 'files']} />
       <AdminHeading first>{t('Übersicht')}</AdminHeading>
       {core.enabled && core.status.lastError && <MessageBar intent="warning" layout="multiline"><MessageBarBody>{t('Core-Backup gescheitert: {error}', { error: core.status.lastError })}</MessageBarBody></MessageBar>}
       {files.enabled && files.status.lastError && <MessageBar intent="warning" layout="multiline"><MessageBarBody>{t('Files-Backup gescheitert: {error}', { error: tError(files.status.lastError) })}</MessageBarBody></MessageBar>}
@@ -171,17 +173,17 @@ export function BackupStrategy() {
         {row(t('Hauptschlüssel'), t('Beim Administrator'), true)}
         {row(t('Externe Ordner'), t('Nicht enthalten'), true)}
       </div>
-      <Text size={200}>{t('Schreib dir den DMOFFICE_MASTER_KEY aus der Container-Vorlage auf, am besten in den Passwortmanager. Ohne ihn lässt sich kein Backup öffnen.')}</Text>
+      <Text size={200}>{t('Ohne den DMOFFICE_MASTER_KEY aus der Container-Vorlage lässt sich kein Backup öffnen.')}</Text>
 
       <AdminHeading><InfoLabel size="large" info={t('Sichert alles außer den Dateien selbst: Mails, Kalender, Kontakte, Aufgaben, Notizen, Chat, die Namen und Ordner der Dateien, Benutzer und Einstellungen. Jede Version ist vollständig.')}>{t('Core-Backup')}</InfoLabel></AdminHeading>
       {core.blocked && <Text size={200} style={muted}>{tError(core.blocked)}</Text>}
-      <Switch checked={core.enabled} disabled={!!core.blocked} onChange={(_, d) => saveCore({ enabled: d.checked })} label={core.enabled ? t('Core-Backup ist eingeschaltet') : t('Core-Backup einschalten')} />
+      <Switch checked={core.enabled} disabled={!!core.blocked} onChange={(_, d) => saveCore({ enabled: d.checked })} label={core.enabled ? t('Core-Backup ist aktiviert') : t('Core-Backup einschalten')} />
       {target(coreOwn, setCoreOwn, () => { setCoreTested(false); if (core.own) saveCoreTarget(false, false) }, t('Ziel'))}
       {(coreOwn || !st.configured) && <>
         <TargetFields target={coreTarget} onTarget={x => { setCoreTested(false); setCoreTarget(x) }} v={coreValues} onChange={(k, v) => { setCoreTested(false); setCoreValues(x => ({ ...x, [k]: v })) }}
           hasSecret={core.own && core.hasSecret} hasWebDavPassword={core.own && core.hasWebDavPassword} />
         <div><Button appearance="primary" disabled={busy} onClick={() => saveCoreTarget(true, true)}>{busy ? t('Prüfe …') : t('Speichern und testen')}</Button></div>
-        {coreTested && <MessageBar intent="success"><MessageBarBody>{t('Klappt – dmOffice kann dort schreiben, lesen und löschen.')}</MessageBarBody></MessageBar>}
+        {coreTested && <MessageBar intent="success"><MessageBarBody>{t('Verbindung geprüft: dmOffice kann dort schreiben, lesen und löschen.')}</MessageBarBody></MessageBar>}
       </>}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
         <Field label={t('Wie oft')}>
@@ -192,7 +194,7 @@ export function BackupStrategy() {
         <Field label={core.everyHours < 24 ? t('ab Uhrzeit') : t('Uhrzeit')}><Input type="time" value={at} onChange={(_, d) => setAt(d.value)} onBlur={() => at !== core.at && saveCore({ at })} style={{ width: 120 }} /></Field>
         <Field label={t('Versionen aufbewahren')}><Input type="number" min={1} value={count} onChange={(_, d) => setCount(d.value)} onBlur={() => { const n = Math.max(1, Math.round(Number(count)) || core.keepCount); setCount(String(n)); if (n !== core.keepCount) saveCore({ keepCount: n }) }} style={{ width: 100 }} /></Field>
         <Button disabled={!!core.blocked || core.status.running}
-          onClick={() => api.post('/api/admin/storage/backup/run').then(() => { notify(t('Sicherung gestartet')); setSt(o => (o ? { ...o, backup: { ...o.backup, status: { ...o.backup.status, running: true } } } : o)) }).catch(fail)}>
+          onClick={() => api.post('/api/admin/storage/backup/run').then(() => { notify(t('Backup gestartet')); setSt(o => (o ? { ...o, backup: { ...o.backup, status: { ...o.backup.status, running: true } } } : o)) }).catch(fail)}>
           {core.status.running ? t('Sichert …') : t('Jetzt sichern')}</Button>
       </div>
       {stands && stands.length > 0 && <>
@@ -203,26 +205,25 @@ export function BackupStrategy() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
           <Button appearance="transparent" size="small" icon={restoreOpen ? <ChevronDown16Regular /> : <ChevronRight16Regular />} style={{ alignSelf: 'flex-start', padding: 0, fontWeight: 600 }} onClick={() => setRestoreOpen(x => !x)}>{t('Wiederherstellung')}</Button>
           {restoreOpen && <>
-            <Text size={200}>{t('Nur auf ein leeres dmOffice, mit dem Hauptschlüssel. Einzelne Dateien holt das Werkzeug restore-tool.')} <Link href={DOC_URL} target="_blank" rel="noreferrer">{t('Anleitung')}</Link></Text>
+            <Text size={200}>{t('Nur auf ein leeres dmOffice, mit dem Hauptschlüssel. Einzelne Dateien holt das Werkzeug restore-tool.')} <Link href={docUrl()} target="_blank" rel="noreferrer">{t('Anleitung')}</Link></Text>
             {!st.profile?.at ? <Text size={200} style={{ color: tokens.colorPaletteMarigoldForeground1 }}>{t('Noch kein Wiederherstellungsschlüssel erstellt.')}</Text>
               : st.profile.current ? <Text size={200} style={muted}>{t('Wiederherstellungsschlüssel erstellt am {when}.', { when: when(st.profile.at) })}</Text>
-              : <Text size={200} style={{ color: tokens.colorPaletteMarigoldForeground1 }}>{t('Die Zugangsdaten zum Sicherungsort haben sich seit dem {when} geändert – Wiederherstellungsschlüssel neu erstellen.', { when: when(st.profile.at) })}</Text>}
-            {homeOnly(core.own ? core.target : st.target, (core.own ? core.target : st.target) === 'webdav' ? (core.own ? core.webDavUrl : st.webDavUrl) : (core.own ? core.endpoint : st.endpoint)) && <Text size={200} style={{ color: tokens.colorPaletteMarigoldForeground1 }}>{t('Der Sicherungsort liegt im Heimnetz – ein Server außerhalb erreicht ihn nicht.')}</Text>}
+              : <Text size={200} style={{ color: tokens.colorPaletteMarigoldForeground1 }}>{t('Die Zugangsdaten zum Backup-Ziel haben sich seit dem {when} geändert – Wiederherstellungsschlüssel neu erstellen.', { when: when(st.profile.at) })}</Text>}
             <div><Button icon={<Key20Regular />} onClick={makeProfile}>{t('Wiederherstellungsschlüssel erstellen')}</Button></div>
           </>}
         </div>
       )}
 
-      <AdminHeading><InfoLabel size="large" info={t('Legt eine eigene Kopie der Dateien an und überträgt vor jedem Core-Backup, was darin fehlt. Gelöschte Dateien bleiben für die Haltedauer in der Kopie. Jede Version des Core-Backups, die jünger ist als die Haltedauer, lässt sich vollständig wiederherstellen, auch wenn sie weggesichert wurde. Mit dem Ziel aus dem Storage Extender liegt die Kopie dort im eigenen Ordner files-backup.')}>{t('Files-Backup')}</InfoLabel></AdminHeading>
+      <AdminHeading><InfoLabel size="large" info={t('Legt eine eigene Kopie der Dateien an und überträgt vor jedem Core-Backup, was darin fehlt. Gelöschte Dateien bleiben für die Haltedauer in der Kopie. Jede Version des Core-Backups innerhalb der Haltedauer lässt sich damit vollständig wiederherstellen. Mit dem Ziel aus dem Storage Extender liegt die Kopie im Ordner files-backup.')}>{t('Files-Backup')}</InfoLabel></AdminHeading>
       {!core.enabled && <Text size={200} style={muted}>{t('Setzt das Core-Backup voraus.')}</Text>}
-      <Switch checked={files.wanted && core.enabled} disabled={!core.enabled || busy} onChange={(_, d) => saveFiles({ enabled: d.checked })} label={files.enabled ? t('Files-Backup ist eingeschaltet') : t('Files-Backup einschalten')} />
+      <Switch checked={files.wanted && core.enabled} disabled={!core.enabled || busy} onChange={(_, d) => saveFiles({ enabled: d.checked })} label={files.enabled ? t('Files-Backup ist aktiviert') : t('Files-Backup einschalten')} />
       {target(filesOwn, setFilesOwn, () => { setFilesTested(false); if (files.own) saveFiles({ own: false }) }, t('Ziel'))}
-      {!filesOwn && st.configured && !st.mirror && <Text size={200} style={muted}>{t('Dafür muss das Ziel im Storage Extender eingeschaltet sein.')}</Text>}
+      {!filesOwn && st.configured && !st.mirror && <Text size={200} style={muted}>{t('Dafür muss das Ziel im Storage Extender aktiviert sein.')}</Text>}
       {(filesOwn || !st.configured) && <>
         <TargetFields target={filesTarget} onTarget={x => { setFilesTested(false); setFilesTarget(x) }} v={filesValues} onChange={(k, v) => { setFilesTested(false); setFilesValues(x => ({ ...x, [k]: v })) }}
           hasSecret={files.own && files.hasSecret} hasWebDavPassword={files.own && files.hasWebDavPassword} />
         <div><Button appearance="primary" disabled={busy} onClick={() => saveFiles({ own: true }, true)}>{busy ? t('Prüfe …') : t('Speichern und testen')}</Button></div>
-        {filesTested && <MessageBar intent="success"><MessageBarBody>{t('Klappt – dmOffice kann dort schreiben, lesen und löschen.')}</MessageBarBody></MessageBar>}
+        {filesTested && <MessageBar intent="success"><MessageBarBody>{t('Verbindung geprüft: dmOffice kann dort schreiben, lesen und löschen.')}</MessageBarBody></MessageBar>}
       </>}
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
         <Field label={<InfoLabel info={t('Mindestens (Anzahl Versionen + 1) × Abstand. Für weggesicherte Versionen lässt sich mehr einstellen.')}>{t('Haltedauer in Tagen')}</InfoLabel>} hint={t('Mindestens {n} Tage', { n: files.minDays })}>
@@ -239,7 +240,7 @@ export function BackupStrategy() {
             <DialogBody>
               <DialogTitle>{t('Wiederherstellungsschlüssel')}</DialogTitle>
               <DialogContent>
-                <Text block style={{ marginBottom: 12 }}>{t('Im Passwortmanager neben dem DMOFFICE_MASTER_KEY ablegen oder als Datei speichern. Nur zusammen mit dem DMOFFICE_MASTER_KEY verwendbar.')}</Text>
+                <Text block style={{ marginBottom: 12 }}>{t('Nur zusammen mit dem DMOFFICE_MASTER_KEY verwendbar.')}</Text>
                 <div style={{ fontFamily: 'Consolas, monospace', fontSize: 12, wordBreak: 'break-all', padding: 12, background: tokens.colorNeutralBackground3, borderRadius: tokens.borderRadiusMedium, userSelect: 'all' }}>{profile}</div>
               </DialogContent>
               <DialogActions>

@@ -2,8 +2,9 @@ import {
   Button, Checkbox, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Dropdown, Field, Input, Option, Text, makeStyles, mergeClasses, tokens,
 } from '@fluentui/react-components'
 import { Add16Regular, ChevronLeft20Regular, ChevronRight20Regular, Book16Regular, Delete16Regular, Cart20Regular } from '@fluentui/react-icons'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, CalEvent, Collection, q } from '../api'
+import { askConfirm } from '../shell/context'
 import { composeItem, guessSection, parseItem } from '../tasks/shopParse'
 import { useApp } from '../App'
 import { locale, t } from '../i18n'
@@ -167,8 +168,14 @@ function MealDialog({ slot, cal, targets, recipes, noteId, onClose }: {
   const [target, setTarget] = useState<Collection | undefined>(() =>
     cal ?? targets.find(c => c.id === Number(localStorage.getItem(CAL_KEY))) ?? targets[0])
   const ro = !target || target.canWrite === false
+  // Geändert: Esc oder Klick daneben fragen nach, statt die Eingabe zu verwerfen
+  const dirty = !ro && (title !== (slot.ev?.title ?? '') || recipe !== (slot.ev?.recipe ?? ''))
+  const askClose = async () => { if (!dirty || await askConfirm('', t('Eingaben verwerfen?'), t('Verwerfen'))) onClose(false) }
+  // Speichern nur einmal, solange die Anfrage läuft (zweimal Enter)
+  const saving = useRef(false)
   const save = async () => {
-    if (!title.trim()) return
+    if (!title.trim() || saving.current) return
+    saving.current = true
     setBusy(true)
     try {
       const at = (h: number) => new Date(slot.day.getFullYear(), slot.day.getMonth(), slot.day.getDate(), h).toISOString()
@@ -179,14 +186,14 @@ function MealDialog({ slot, cal, targets, recipes, noteId, onClose }: {
       })
       if (!slot.ev) try { localStorage.setItem(CAL_KEY, String(target!.id)) } catch { /* egal */ }
       onClose(true)
-    } catch (e) { fail(e) } finally { setBusy(false) }
+    } catch (e) { fail(e) } finally { saving.current = false; setBusy(false) }
   }
   const remove = async () => {
     if (!slot.ev) return
     try { await api.del(`/api/pim/events/${slot.ev.calendar}/${encodeURIComponent(slot.ev.uri)}`); onClose(true) } catch (e) { fail(e) }
   }
   return (
-    <Dialog open onOpenChange={(_, d) => !d.open && onClose(false)}>
+    <Dialog open onOpenChange={(_, d) => { if (!d.open) askClose() }}>
       <DialogSurface style={{ maxWidth: 480 }}>
         <DialogBody>
           <DialogTitle>{meal.label()} · {slot.day.toLocaleDateString(locale, { weekday: 'long', day: 'numeric', month: 'long' })}</DialogTitle>

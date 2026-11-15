@@ -28,7 +28,7 @@ const isImage = (i: Item) => (i.mime ?? '').startsWith('image/')
 
 /**
  * Ein Foto aus der Galerie wählen (eigene Ablage und Galerie-Ordner): Vorschaubilder Monat für Monat, neueste zuerst,
- * oder nach Name, Ort, Stichwort suchen. Gibt den Pfad zurück („ext:…“ bei Galerie-Ordnern). Mit onPickMany: mehrere
+ * oder nach Name, Ort, Tag suchen. Gibt den Pfad zurück („ext:…“ bei Galerie-Ordnern). Mit onPickMany: mehrere
  * ankreuzen (auch über Monate hinweg) und mit „Übernehmen“ zurückgeben.
  */
 export function PickPhotoDialog({ title, onPick, onPickMany, onClose }: {

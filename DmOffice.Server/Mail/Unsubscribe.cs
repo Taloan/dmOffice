@@ -8,7 +8,8 @@ namespace DmOffice.Mail;
 /// <summary>
 /// Von Newslettern abmelden ueber die Kopfzeilen List-Unsubscribe (RFC 2369) und List-Unsubscribe-Post (RFC 8058).
 /// Reihenfolge wie bei Gmail/Outlook: One-Click per HTTPS-POST, sonst eine Mail an die mailto-Adresse, sonst bleibt
-/// nur der Link - den oeffnet der Browser bzw. die App, damit kein Server unbemerkt fremde Seiten aufruft.
+/// nur der Link - den oeffnet der Browser bzw. die App. Selbst ruft der Server Abmeldelinks nur auf, wenn die Person
+/// „Automatisch abmelden“ eingeschaltet hat (AutoUnsubscribe).
 /// </summary>
 public static class Unsubscribe
 {
@@ -75,9 +76,22 @@ public static class Unsubscribe
         return addrs.Length > 0 && addrs.All(IsPublic);
     }
 
-    private static bool IsPublic(IPAddress a)
+    /// <summary>Verbindung nur zu öffentlichen Adressen. Verbunden wird mit genau den geprüften Adressen,
+    /// nicht mit einer zweiten Namensauflösung.</summary>
+    internal static async ValueTask<Stream> ConnectPublicAsync(SocketsHttpConnectionContext ctx, CancellationToken ct)
     {
-        if (a.IsIPv4MappedToIPv6) a = a.MapToIPv4();
+        var host = ctx.DnsEndPoint.Host;
+        var addrs = IPAddress.TryParse(host, out var literal) ? [literal] : await Dns.GetHostAddressesAsync(host, ct);
+        if (addrs.Length == 0 || !addrs.All(IsPublic)) throw new HttpRequestException("Diese Adresse ist nicht erlaubt.");
+        var socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+        try { await socket.ConnectAsync(addrs, ctx.DnsEndPoint.Port, ct); return new NetworkStream(socket, ownsSocket: true); }
+        catch { socket.Dispose(); throw; }
+    }
+
+    internal static bool IsPublic(IPAddress a)
+    {
+        // Auch in IPv6 verpackte IPv4-Adressen (::ffff:…, NAT64, 6to4) als IPv4 prüfen
+        a = DmOffice.Storage.ExternalFolders.Embedded(a);
         if (IPAddress.IsLoopback(a) || a.IsIPv6LinkLocal || a.IsIPv6SiteLocal || a.IsIPv6Multicast
             || a.Equals(IPAddress.Any) || a.Equals(IPAddress.IPv6Any)) return false;
         if (a.AddressFamily == AddressFamily.InterNetwork)

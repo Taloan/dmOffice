@@ -414,6 +414,7 @@ public static class NotesApi
                 return ms.ToArray();
             }
             byte[]? image = form.Files.GetFile("image") is { Length: > 0 and <= RecipeScan.MaxPageBytes } img ? await Read(img) : null;
+            if (image != null) VirusScan.CheckBytes(image, scope.Space.User.Id, "Notizen/Rezept-Scan");
             var id = await RecipeScan.SaveAsync(scope.Space, scope.Db, scope.Vault, draft, folder, image, ct);
             sync.Kick(scope.Space.User.Id, TimeSpan.FromSeconds(10));
             return Results.Ok(new { id = scope.Wire(id) });
@@ -479,7 +480,18 @@ public static class NotesApi
             scope.Writable();
             var space = scope.Space;
             var db = scope.Db;
-            using var doc = await JsonDocument.ParseAsync(request.Body);
+            JsonDocument doc;
+            try { doc = await JsonDocument.ParseAsync(request.Body); }
+            catch (JsonException) { return Results.BadRequest(new { error = "Ungültiger Inhalt der Notiz." }); }
+            using var _ = doc;
+            // Erwartet: { blocks: [ { i } oder { html } ], plain, version? }
+            if (doc.RootElement.ValueKind != JsonValueKind.Object
+                || !doc.RootElement.TryGetProperty("blocks", out var blocks) || blocks.ValueKind != JsonValueKind.Array
+                || !doc.RootElement.TryGetProperty("plain", out var plainEl) || plainEl.ValueKind != JsonValueKind.String
+                || blocks.EnumerateArray().Any(b => b.ValueKind != JsonValueKind.Object
+                    || (b.TryGetProperty("i", out var bi) ? bi.ValueKind != JsonValueKind.Number
+                        : !b.TryGetProperty("html", out var bh) || bh.ValueKind != JsonValueKind.String)))
+                return Results.BadRequest(new { error = "Ungültiger Inhalt der Notiz." });
             // Pruefen und Speichern am Stueck: zwei Benutzer gleichzeitig duerfen sich nicht ueberschreiben
             lock (db)
             {
@@ -491,18 +503,17 @@ public static class NotesApi
                     ? "Die Notiz wurde inzwischen von jemand anderem geändert."
                     : "Die Notiz wurde inzwischen auf einem anderen Gerät geändert." });
             var html = new StringBuilder(split.Head);
-            foreach (var block in doc.RootElement.GetProperty("blocks").EnumerateArray())
+            foreach (var block in blocks.EnumerateArray())
             {
                 if (block.TryGetProperty("i", out var i))
                 {
-                    var n = i.GetInt32();
-                    if (n < 0 || n >= split.Blocks.Count) throw new ArgumentException("Block gibt es nicht.");
+                    if (!i.TryGetInt32(out var n) || n < 0 || n >= split.Blocks.Count) throw new ArgumentException("Block gibt es nicht.");
                     html.Append(Adjusted(split.Blocks[n], block));
                 }
                 else html.Append(Clean(block.GetProperty("html").GetString() ?? ""));
             }
             html.Append(split.Tail);
-            var plain = doc.RootElement.GetProperty("plain").GetString() ?? "";
+            var plain = plainEl.GetString() ?? "";
 
             var result = html.ToString();
             if (!ProtectedBlocks.Kept(note.Html, result))
@@ -612,11 +623,13 @@ public static class NotesApi
             scope.Writable();
             var space = scope.Space;
             var form = await request.ReadFormAsync(ct);
+            CheckRoom(space, form.Files.Sum(f => f.Length), form.Files.Select(f => f.Length).DefaultIfEmpty(0).Max());
             foreach (var file in form.Files)
             {
                 using var ms = new MemoryStream();
                 await file.CopyToAsync(ms, ct);
                 var data = ms.ToArray();
+                VirusScan.CheckBytes(data, space.User.Id, "Notizen/" + file.FileName);
                 scope.Db.AddAttachment(id, file.FileName, file.ContentType, data, await NotesSync.BlobNameAsync(space, data, ct, scope.Vault));
             }
             sync.Kick(space.User.Id, TimeSpan.FromSeconds(5));
@@ -641,13 +654,25 @@ public static class NotesApi
             var space = scope.Space;
             var form = await request.ReadFormAsync(ct);
             var file = form.Files.FirstOrDefault() ?? throw new ArgumentException("Kein Bild.");
+            CheckRoom(space, file.Length, file.Length);
             using var ms = new MemoryStream();
             await file.CopyToAsync(ms, ct);
             var data = ms.ToArray();
+            VirusScan.CheckBytes(data, space.User.Id, "Notizen/" + file.FileName);
             var name = await NotesSync.BlobNameAsync(space, data, ct, scope.Vault);
             scope.Db.PutBlob(name, data);
             return Results.Ok(new { name });
         }).DisableAntiforgery();
+    }
+
+    /// <summary>Anhänge und Bilder einer Notiz: höchstens 50 MB je Datei (sie liegen ganz im Speicher und in der Notizen-Datenbank)
+    /// und nur, solange die Grenze des Besitzers Platz lässt - wie beim Hochladen in die Dateiablage.</summary>
+    internal const long MaxNoteFile = 50L * 1024 * 1024;
+    private static void CheckRoom(UserSpace space, long total, long largest)
+    {
+        if (largest > MaxNoteFile) throw new ArgumentException("Zu groß für eine Notiz (höchstens 50 MB je Datei). Größere Dateien gehören in die Dateiablage.");
+        var quota = DmOffice.Dav.FileStore.Quota(space.Db);
+        if (quota > 0 && UserStorage.Counted(space.Db) + total > quota) throw new DmOffice.Dav.QuotaExceededException(quota);
     }
 
     private static object Members(Share sh, UserStore users, string? except = null) =>

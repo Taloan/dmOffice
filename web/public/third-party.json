@@ -885,6 +885,16 @@
      ]
     },
     {
+     "name": "SSH.NET",
+     "version": "2026.0.0",
+     "license": "MIT",
+     "url": "https://github.com/sshnet/SSH.NET",
+     "author": "Renci",
+     "texts": [
+      "MIT"
+     ]
+    },
+    {
      "name": "Ude.NetStandard",
      "version": "1.2.0",
      "license": "MPL-1.1 OR GPL-2.0-or-later OR LGPL-2.1-or-later",
@@ -2278,6 +2288,19 @@
      ]
     },
     {
+     "name": "YuNet",
+     "copyright": "Copyright (c) 2017 Max deGroot, Ellis Brown; Copyright (c) 2019 Zisian Wong, Shifeng Zhang; Copyright (c) 2020 Shiqi Yu",
+     "license": "MIT",
+     "url": "https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet",
+     "note": {
+      "de": "Gesichter finden in der Photo-Engine; Trainingsdaten: siehe photo-engine/models/README.md",
+      "en": "finding faces in the Photo Engine; training data: see photo-engine/models/README.md"
+     },
+     "texts": [
+      "MIT"
+     ]
+    },
+    {
      "name": "Haar-Kaskaden (OpenCV)",
      "copyright": "Copyright (C) 2000, Intel Corporation",
      "license": "Intel-OpenCV",
@@ -2295,6 +2318,18 @@
   {
    "id": "services",
    "entries": [
+    {
+     "name": "ClamAV",
+     "license": "GPL-2.0-only",
+     "url": "https://www.clamav.net",
+     "note": {
+      "de": "Virenprüfung über clamd",
+      "en": "virus scanning via clamd"
+     },
+     "texts": [
+      "GPL-2.0"
+     ]
+    },
     {
      "name": "Collabora Online (CODE)",
      "license": "MPL-2.0",

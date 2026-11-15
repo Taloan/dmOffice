@@ -7,7 +7,7 @@ import { api, Collection } from '../api'
 import { useApp } from '../App'
 import { t } from '../i18n'
 import { CALENDAR_KINDS } from './kinds'
-import { askConfirm } from '../shell/context'
+import { askConfirm, askText } from '../shell/context'
 
 const palette = ['#0F6CBD', '#13A10E', '#CA5010', '#C239B3', '#E3008C', '#986F0B', '#038387', '#8764B8', '#D13438', '#69797E']
 
@@ -27,9 +27,9 @@ export async function importInto(id: number, file: File) {
 /**
  * Kalender, Aufgabenliste oder Adressbuch loeschen - mit Rueckfrage (Name eintippen).
  * Aus der Aufgabenansicht wird ein Kalender mit Terminen nicht geloescht, dort nur die Aufgaben abgeschaltet.
- * true: geloescht bzw. geaendert.
+ * note: Zusatz in der Rueckfrage (z. B. letzter eigener Kalender). true: geloescht bzw. geaendert.
  */
-export async function removeCollection(collection: Collection, kind: 'calendars' | 'addressbooks', tasks?: boolean): Promise<boolean> {
+export async function removeCollection(collection: Collection, kind: 'calendars' | 'addressbooks', tasks?: boolean, note?: string): Promise<boolean> {
   const mixed = kind === 'calendars' && collection.components.includes('VEVENT') && collection.components.includes('VTODO')
   if (tasks && mixed) {
     const n = collection.tasks ?? 0
@@ -38,6 +38,7 @@ export async function removeCollection(collection: Collection, kind: 'calendars'
       t('In „{name}“ keine Aufgaben mehr führen?', { name: collection.name }),
       n === 1 ? t('Die 1 Aufgabe darin wird nicht mehr angezeigt.') : n ? t('Die {n} Aufgaben darin werden nicht mehr angezeigt.', { n }) : '',
       ev === 1 ? t('Der 1 Termin bleibt.') : t('Die {n} Termine bleiben.', { n: ev }),
+      note ?? '',
     ].filter(Boolean).join(' ')
     if (!await askConfirm('', msg)) return false
     await api.put(`/api/pim/collections/${collection.id}`, { components: 'VEVENT' })
@@ -47,9 +48,11 @@ export async function removeCollection(collection: Collection, kind: 'calendars'
   const what = kind === 'addressbooks' ? count(collection.count, '1 Kontakt', '{n} Kontakte')
     : [collection.events ? count(collection.events, '1 Termin', '{n} Termine') : '', collection.tasks ? count(collection.tasks, '1 Aufgabe', '{n} Aufgaben') : ''].filter(Boolean).join(t(' und '))
   const others = (collection.sharedWith ?? []).map(x => x.name).join(', ')
-  const answer = prompt((what ? t('„{name}“ endgültig löschen – mit {what}, auch auf allen verbundenen Geräten.', { name: collection.name, what }) : t('„{name}“ endgültig löschen, auch auf allen verbundenen Geräten.', { name: collection.name }))
+  // Löschen bestätigt erst der eingetippte Name
+  const answer = await askText(t('Endgültig löschen'), '', (what ? t('„{name}“ endgültig löschen – mit {what}, auch auf allen verbundenen Geräten.', { name: collection.name, what }) : t('„{name}“ endgültig löschen, auch auf allen verbundenen Geräten.', { name: collection.name }))
     + (others ? ' ' + t('{who} verliert den Zugriff.', { who: others }) : '')
-    + '\n\n' + t('Zum Bestätigen den Namen eingeben:'))
+    + (note ? ' ' + note : '')
+    + ' ' + t('Zum Bestätigen den Namen eingeben:'), t('Endgültig löschen'))
   if (answer?.trim() !== collection.name) return false
   await api.del(`/api/pim/collections/${collection.id}`)
   return true

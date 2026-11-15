@@ -18,7 +18,7 @@ interface TLState { key: string; buckets: TLBucket[]; total: number; shown: numb
 interface Row {
   i: string; s: number; m: number; t?: string; e: string; f?: number
   k?: number; w?: number; h?: number; d?: number; r?: number; c?: string; l?: string; fo?: number; a?: number; x?: number; o?: number
-  ti?: string; kw?: string; de?: string; la?: number; lo?: number; fv?: 1; ln?: 1; pp?: 1; ow?: string; cw?: boolean; so?: 1; st?: Row[]; lb?: string; pk?: number
+  ti?: string; kw?: string; de?: string; la?: number; lo?: number; fv?: 1; ln?: 1; pp?: 1; ow?: string; cw?: boolean; so?: 1; st?: Row[]; lb?: string; pk?: number; dp?: 1
 }
 
 function decode(r: Row, meta: Map<string, Meta>): Item {
@@ -27,6 +27,7 @@ function decode(r: Row, meta: Map<string, Meta>): Item {
     fileId: r.f, favorite: !!r.fv, shared: !!r.ln, sharedWith: !!r.pp, owner: r.ow ?? null, canWrite: r.cw ?? null, showOnly: r.so ? true : null,
   }
   if (r.st?.length) item.stack = r.st.map(x => decode(x, meta))
+  if (r.dp) item.dupe = true
   if (r.k != null || r.c != null || r.w != null || r.ti != null || r.kw != null || r.r != null || r.de != null || r.la != null || r.d != null || r.lb != null || r.pk != null) {
     meta.set(r.i, {
       key: r.i, taken: r.k, width: r.w, height: r.h, duration: r.d, rating: r.r, camera: r.c, lens: r.l, focal: r.fo, aperture: r.a, exposure: r.x, iso: r.o,
@@ -185,7 +186,7 @@ export function useFacets(enabled: boolean, cols: string[], ext: string, filter:
   return facets
 }
 
-/** Suche in der Galerie (eigene Fotos und Galerie-Ordner, auch Titel und Stichwörter): Einträge samt Bildangaben. */
+/** Suche in der Galerie (eigene Fotos und Galerie-Ordner, auch Titel und Tags): Einträge samt Bildangaben. */
 export async function searchGallery(term: string, query: TLQuery): Promise<{ items: Item[]; meta: Record<string, Meta> }> {
   const r = await getJson('/api/gallery/timeline/search?' + q({ q: term, stack: query.stack, ext: query.ext || undefined }))
   const meta = new Map<string, Meta>()

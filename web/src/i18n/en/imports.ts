@@ -5,8 +5,7 @@ export const imports: Record<string, string> = {
   'Importprofil löschen': 'Delete import profile',
   'Neues Importprofil': 'New import profile',
   'Noch keine Importprofile.': 'No import profiles yet.',
-  'Ein Importprofil sortiert neue Fotos aus Ordnern der eigenen Ablage oder aus externen Ordnern, etwa aus dem automatischen Hochladen der App, in einen Zielordner ein. Ordnerstruktur und Dateinamen folgen den Mustern des Profils. RAW, JPG und XMP-Datei eines Fotos bleiben zusammen.':
-    'An import profile sorts new photos from folders of your own storage or from external folders, for example from the app\'s automatic upload, into a target folder. Folder structure and file names follow the patterns of the profile. The RAW, JPG and XMP file of a photo stay together.',
+  'Ein Importprofil sortiert neue Fotos aus Ordnern der eigenen Ablage oder aus externen Ordnern in einen Zielordner ein. Ordnerstruktur und Dateinamen folgen den Mustern des Profils. RAW, JPG und XMP-Datei eines Fotos bleiben zusammen.': "An import profile sorts new photos from folders of your own storage or from external folders into a target folder. Folder structure and file names follow the profile's patterns. RAW, JPG and XMP file of a photo stay together.",
   'Das Importprofil „{name}“ wird gelöscht. Bereits einsortierte Fotos bleiben, wo sie sind.': 'The import profile “{name}” will be deleted. Photos already sorted stay where they are.',
   'Wird einsortiert …': 'Sorting …',
   'Zuletzt geprüft {when}: {n} Fotos einsortiert, insgesamt {total}': 'Last checked {when}: {n} photos sorted, {total} in total',
@@ -70,6 +69,7 @@ export const imports: Record<string, string> = {
   'Aus einem externen Ordner, der nur zum Lesen eingebunden ist, lässt sich nur kopieren.': 'Photos can only be copied from an external folder that is mounted read-only.',
   'Die Datei kam nicht unverändert am Ziel an.': 'The file did not arrive unchanged at the target.',
   'Der Zielordner liegt in einem Quellordner.': 'The target folder is inside a source folder.',
+  'Der Zielordner ist ein Systemordner.': 'The target folder is a system folder.',
   'Kein freier Name am Ziel.': 'No free name at the target.',
   'Die Datei kam nicht vollständig am Ziel an.': 'The file did not arrive completely at the target.',
 }

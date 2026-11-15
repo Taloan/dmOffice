@@ -24,6 +24,8 @@ lesen; ohne den Schlüssel öffnet niemand die Sicherung – auch dmOffice nicht
 
 ## Storage Extender
 
+Mit dem Storage Extender erweitert dmOffice die interne Dateiablage um einen externen Speicherort, beispielsweise ein NAS, eine Storage Box oder einen Object Storage. Dateien werden dort verschlüsselt gespeichert. Insgesamt stehen der lokale Speicherpool und die Speicherbegrenzung des Storage Extender zur Verfügung: 1 TB lokal und 1 TB im Storage Extender ergeben 2 TB.
+
 ### 1. Wo ist der zweite Ort?
 
 **Art:**
@@ -40,8 +42,7 @@ lesen; ohne den Schlüssel öffnet niemand die Sicherung – auch dmOffice nicht
 
 ### 2. Lokalen Speicherpool einstellen
 
-Der lokale Speicherpool ist der Teil des lokalen Speichervolumens, der zur Verfügung steht. Im Storage Extender liegen alle Dateien, im lokalen Speicherpool die zuletzt verwendeten. Passen alle Dateien in die Grenzen, liegen alle
-auch auf dem Server, und fehlende holt dmOffice von selbst zurück. Sonst füllt dmOffice den freien Speicherplatz automatisch mit den neuesten Dateien auf, und eine Datei, die nur im Storage Extender liegt, wird beim Öffnen geholt;
+Der lokale Speicherpool ist der Teil des lokalen Speichervolumens, der zur Verfügung steht. Passen alle Dateien hinein, liegen alle lokal, und fehlende holt dmOffice von selbst zurück. Sonst liegen lokal die zuletzt verwendeten Dateien, und eine Datei, die nur im Storage Extender liegt, wird beim Öffnen geholt;
 große Dateien werden durchgereicht statt abgelegt. Vorschaubilder, Mails, Kalender, Kontakte, Notizen und die Datenbanken bleiben
 immer lokal.
 
@@ -50,11 +51,24 @@ immer lokal.
   nicht weiter bereinigen, nimmt dmOffice keine neuen Dateien an.
 - **Für den lokalen Speicherpool höchstens nutzen**: optionale Obergrenze. Sie zählt nur Dateien; Vorschaubilder bleiben immer lokal und belegen zusätzlich Platz auf dem Volume.
 
-Die Grafik zeigt beim Verschieben der Regler, was geschieht: Rot sind Dateien, die bereinigt werden, gelb Dateien, die noch übertragen werden. Gespeichert wird erst mit **Übernehmen**. Den belegten und freien Platz im Storage Extender zeigt die Grafik nur bei einem Ordner als Ziel, S3 und WebDAV melden ihn nicht verlässlich.
+Beide Werte werden in GB oder TB eingegeben. Die Grafik zeigt vor dem Speichern, was geschieht: Rot sind Dateien, die bereinigt werden. Gespeichert wird erst mit **Übernehmen**.
+
+### 3. Storage Extender einstellen
+
+- **Speicherbegrenzung**: wie viel Speicherplatz dmOffice im Storage Extender höchstens belegt. Ohne Begrenzung ist er unbegrenzt.
+- **Belegung**:
+  - **Minimal – Strikt: sofort freigeben**: Dateien werden nur dann in den Storage Extender verschoben, wenn lokal der Platz fehlt. Liegen sie wieder lokal, wird die externe Kopie sofort entfernt.
+  - **Sparsam – Nur bei Bedarf**: Dateien werden nur dann in den Storage Extender verschoben, wenn lokal der Platz fehlt. Liegen sie später wieder lokal, wird die externe Kopie nach 7 Tagen entfernt.
+  - **Optimal – Kopien möglichst behalten** (Vorgabe): Dateien werden nur dann in den Storage Extender verschoben, wenn lokal der Platz fehlt. Externe Kopien bleiben erhalten, auch wenn die Dateien wieder lokal liegen. Erst wenn extern Platz benötigt wird, werden diese Kopien entfernt.
+  - **Maximal – Freien Platz ausnutzen**: Freier Speicherplatz im Storage Extender wird genutzt, um möglichst viele Dateien zusätzlich extern vorzuhalten. So entstehen weitere Kopien, solange ausreichend Platz vorhanden ist.
+
+Unter der Haube: Ist der lokale Speicherpool fast voll, haben die am längsten nicht verwendeten Dateien schon eine Kopie im Storage Extender, damit beim Bereinigen nichts unter Zeitdruck übertragen werden muss. Braucht der Storage Extender Platz, weicht zuerst die Kopie einer Datei, die auch lokal liegt und zuletzt verwendet wurde. Kopien, die bei Sparsam entfallen, werden erst nach 7 Tagen entfernt, bei Minimal sofort.
+
+Unter **Speicherplatz** stehen insgesamt, belegt und frei sowie die Belegung des Storage Extender. Unter **Dateien** steht, was nur lokal, an beiden Orten oder nur im Storage Extender liegt.
 
 Das Backup des Storage Extenders liegt in der Verantwortung des Administrators. Für ältere Stände der Dateien gibt es das Files-Backup.
 
-### 3. Einschalten
+### 4. Einschalten
 
 **Storage Extender einschalten.** Der erste Abgleich startet 30 Sekunden nach dem Serverstart, danach spätestens alle
 10 Minuten und sofort nach einer Änderung. Der Zustand zeigt „Zuletzt abgeglichen“ und wie viele Dateien im externen
@@ -93,7 +107,7 @@ wurde.
   am Ziel sorgt dafür, dass ein eingespieltes älteres Core-Backup das Konto wieder entfernt. Ein woandershin weggesichertes
   Core-Backup, das ohne dieses Ziel eingespielt wird, kennt den Vermerk nicht.
 
-Wiederherstellen und einzelne Dateien zurückholen: [Wiederherstellen](wiederherstellen.de.md).
+Wiederherstellen und einzelne Dateien zurückholen: [Wiederherstellen](restore.de.md).
 
 ## Core-Backup
 

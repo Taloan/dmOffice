@@ -127,7 +127,7 @@ public static class NextcloudApi
             ["enabled"] = true,
             ["display-name"] = space.User.DisplayName,
             ["displayname"] = space.User.DisplayName,
-            ["email"] = space.Settings.MailAccounts.FirstOrDefault()?.Email,
+            ["email"] = space.Settings.DefaultAccount()?.Email,
             ["quota"] = new
             {
                 free = quota > 0 ? Math.Max(0, quota - used) : -3,
@@ -369,6 +369,8 @@ public static class NextcloudApi
                 if (!string.IsNullOrWhiteSpace(code)) { Auth.Failed(ip); Auth.Failed(nameKey); await Task.Delay(700); }
                 return FlowPage(http, token, string.IsNullOrWhiteSpace(code) ? "Bitte den Code aus der Authenticator-App eingeben." : "Code falsch oder abgelaufen.");
             }
+            if (Oidc.PasswordBlocked(http.RequestServices.GetRequiredService<ServerConfig>(), u))
+                return FlowPage(http, token, "Die Anmeldung mit Passwort ist abgeschaltet. Ein App-Passwort lässt sich in dmOffice unter Einstellungen anlegen.");
             Auth.SucceededLogin(ip, nameKey);
             user = u;
         }

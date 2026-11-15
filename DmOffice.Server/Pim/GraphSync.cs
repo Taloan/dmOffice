@@ -282,13 +282,13 @@ public sealed class GraphEngine
         {
             if (pending.Op == "put" && obj != null && Local(obj) is DateTime local && (remoteModified == null || local > remoteModified))
             {
-                Conflict(coll.Id, title, "Fassung von Microsoft verworfen, die neuere aus dmOffice gilt");
+                Conflict(coll.Id, title, "Version von Microsoft verworfen, die neuere aus dmOffice gilt");
                 return;   // die lokale geht gleich zu Microsoft
             }
             Graph.Done(Db, coll.Id, row.Uri);
             Conflict(coll.Id, title, pending.Op == "delete"
                 ? "in dmOffice gelöscht, bei Microsoft geändert – wieder angelegt"
-                : "Fassung aus dmOffice verworfen, die neuere von Microsoft gilt");
+                : "Version aus dmOffice verworfen, die neuere von Microsoft gilt");
         }
         var uri = row?.Uri ?? PimStore.NewUri(coll.Kind == PimStore.AddressBook ? ".vcf" : ".ics");
         var data = build(obj?.Data);

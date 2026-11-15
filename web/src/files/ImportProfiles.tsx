@@ -34,7 +34,9 @@ const useStyles = makeStyles({
   preview: { fontStyle: 'italic', color: tokens.colorNeutralForeground3, fontSize: tokens.fontSizeBase200, wordBreak: 'break-all' },
   source: { display: 'flex', alignItems: 'center', gap: '6px' },
   browse: { border: `1px solid ${tokens.colorNeutralStroke2}`, borderRadius: tokens.borderRadiusMedium, height: '260px', overflowY: 'auto', padding: '4px' },
-  dir: { display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 6px', borderRadius: tokens.borderRadiusMedium, cursor: 'pointer', ':hover': { backgroundColor: tokens.colorNeutralBackground1Hover } },
+  dir: { display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 6px', borderRadius: tokens.borderRadiusMedium, cursor: 'pointer', ':hover': { backgroundColor: tokens.colorNeutralBackground1Hover },
+    '& > svg': { flexShrink: 0 }, ':focus-visible': { outline: `2px solid ${tokens.colorStrokeFocus2}`, outlineOffset: '-2px' } },
+  dirName: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 },
 })
 
 const show = (path: string) => path ? path.split('/').join(' › ') : t('Oberste Ebene')
@@ -75,7 +77,7 @@ export function ImportProfilesDialog({ onClose }: { onClose: (changed: boolean) 
           <DialogBody>
             <DialogTitle>{t('Importprofile')}</DialogTitle>
             <DialogContent style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <Text>{t('Ein Importprofil sortiert neue Fotos aus Ordnern der eigenen Ablage oder aus externen Ordnern, etwa aus dem automatischen Hochladen der App, in einen Zielordner ein. Ordnerstruktur und Dateinamen folgen den Mustern des Profils. RAW, JPG und XMP-Datei eines Fotos bleiben zusammen.')}</Text>
+              <Text>{t('Ein Importprofil sortiert neue Fotos aus Ordnern der eigenen Ablage oder aus externen Ordnern in einen Zielordner ein. Ordnerstruktur und Dateinamen folgen den Mustern des Profils. RAW, JPG und XMP-Datei eines Fotos bleiben zusammen.')}</Text>
               {data.profiles.length === 0 && <Text className={s.muted}>{t('Noch keine Importprofile.')}</Text>}
               {data.profiles.map(p => (
                 <div key={p.id} className={s.row}>
@@ -284,6 +286,8 @@ export function BrowseDialog({ mount, start, title, needPath, onPick, onClose }:
   const [path, setPath] = useState(start)
   const [dirs, setDirs] = useState<string[] | null>(null)
   const [reload, setReload] = useState(0)
+  // Wechseln leert die Liste sofort: ein zweiter Klick (Doppelklick) träfe sonst noch einen Eintrag des alten Ordners
+  const go = (p: string) => { setDirs(null); setPath(p) }
   // Neuer Ordner direkt hier, ohne Umweg über den Bereich Dateien
   const [naming, setNaming] = useState<string | null>(null)
   const create = async () => {
@@ -315,9 +319,11 @@ export function BrowseDialog({ mount, start, title, needPath, onPick, onClose }:
           <DialogContent style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <Text size={200} className={s.muted}>{show(path)}</Text>
             <div className={s.browse}>
-              {path && <div className={s.dir} onClick={() => setPath(path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '')}><ArrowUp20Regular />{t('Übergeordneter Ordner')}</div>}
+              {path && <div className={s.dir} role="button" tabIndex={0} onClick={() => go(path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '')}
+                onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.currentTarget.click() } }}><ArrowUp20Regular />{t('Übergeordneter Ordner')}</div>}
               {dirs === null ? <Spinner size="tiny" /> : dirs.map(d => (
-                <div key={d} className={s.dir} onClick={() => setPath(path ? `${path}/${d}` : d)}><Folder20Filled color="#E8A33D" />{d}</div>
+                <div key={d} className={s.dir} role="button" tabIndex={0} title={d} onClick={() => go(path ? `${path}/${d}` : d)}
+                  onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.currentTarget.click() } }}><Folder20Filled color="#E8A33D" /><span className={s.dirName}>{d}</span></div>
               ))}
             </div>
             {naming === null

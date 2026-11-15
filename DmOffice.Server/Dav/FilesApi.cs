@@ -258,7 +258,8 @@ public static partial class FilesApi
     /// <summary>Kennzeichen fuer die Oberflaeche: Favoriten, Links, Personenfreigaben - nur in der eigenen Ablage.</summary>
     /// <param name="Edits">Bearbeitete Fotos (PhotoEdits): Schlüssel → Fingerabdruck - hängt an den Etag, damit die Vorschaubilder neu kommen</param>
     /// <param name="DavHidden">Für WebDAV und Nextcloud ausgeblendete Ordner (samt dmVAULT, wenn der Tresor dort nicht bereitsteht)</param>
-    internal sealed record Marks(HashSet<long> Favorites, HashSet<long> Links, HashSet<long> People, Dictionary<string, string>? Edits = null, HashSet<long>? DavHidden = null)
+    /// <param name="DmsDocs">Dateien, die Dokumente im DMS sind (Kennzeichen in der Liste)</param>
+    internal sealed record Marks(HashSet<long> Favorites, HashSet<long> Links, HashSet<long> People, Dictionary<string, string>? Edits = null, HashSet<long>? DavHidden = null, HashSet<long>? DmsDocs = null)
     {
         public static readonly Marks None = new([], [], []);
     }
@@ -271,8 +272,11 @@ public static partial class FilesApi
         if (!Tresor.DavEnabled(me.User.Id) && FileStore.Get(me.Db, FileStore.SystemVault) is { } vault) hidden.Add(vault.FileId);
         return new Marks(FileStore.FavoriteIds(me.Db), FileStore.SharedIds(me.Db),
             http.RequestServices.GetRequiredService<FolderShareStore>().All().Where(s => s.Owner == me.User.Id).Select(s => s.Folder).ToHashSet(),
-            PhotoEdits.Fingerprints(me.Db), hidden);
+            PhotoEdits.Fingerprints(me.Db), hidden, DmsFileIds?.Invoke(me));
     }
+
+    /// <summary>fileids der Dokumente im DMS (offener Bereich) - gesetzt vom DMS; null, wenn das Kennzeichen aus ist.</summary>
+    public static Func<UserSpace, HashSet<long>?>? DmsFileIds { get; set; }
 
     /// <summary>Was die Oberflaeche fuer eine Datei braucht. f: wie der Benutzer sie sieht (Pfad und fileid umgerechnet).</summary>
     internal static object Item(FileEntry f, Marks? marks = null, FileMount? mount = null, string? snippet = null) => new
@@ -284,6 +288,8 @@ public static partial class FilesApi
         sharedWith = marks?.People.Contains(f.FileId) == true,
         // Für WebDAV und Nextcloud ausgeblendet (nur der markierte Ordner selbst)
         davHidden = f.IsDir && marks?.DavHidden?.Contains(f.FileId) == true ? true : (bool?)null,
+        // Dokument im DMS
+        dms = !f.IsDir && marks?.DmsDocs?.Contains(f.FileId) == true ? true : (bool?)null,
         owner = mount?.Owner.User.DisplayName,
         canWrite = mount?.CanWrite,
         showOnly = mount?.ShowOnly == true ? true : (bool?)null,
@@ -292,11 +298,17 @@ public static partial class FilesApi
     };
 
     /// <summary>Eintraege eines Ordners, wie der Benutzer sie sieht.</summary>
+    /// <summary>Eigene Ordner, die unter Dateien nicht erscheinen (Zielordner von DMS-Ablageprofilen) - gesetzt vom DMS.
+    /// Nur ausgeblendet: Der Ordner selbst bleibt erreichbar, auch über WebDAV.</summary>
+    public static Func<UserSpace, IReadOnlyCollection<string>>? HiddenFolders { get; set; }
+
     private static IEnumerable<object> List(HttpContext http, FileLoc loc)
     {
         if (loc.Virtual) return SharedFiles.Mounts(http).Select(m => Item(SharedFiles.MountEntry(m), null, m));
         var marks = MarksOf(http, loc);
-        var items = FileStore.Children(loc.Db, loc.Path).Where(f => !loc.Protected(f.Path) && !(!loc.Shared && SharedFiles.Hidden(http, f.Path)))
+        var hidden = loc.Shared ? [] : HiddenFolders?.Invoke(http.Space()) ?? [];
+        var items = FileStore.Children(loc.Db, loc.Path).Where(f => !loc.Protected(f.Path) && !(!loc.Shared && SharedFiles.Hidden(http, f.Path))
+                && !(f.IsDir && hidden.Contains(f.Path, StringComparer.OrdinalIgnoreCase)))
             .Select(f => Item(loc.Show(f), marks));
         // In der Wurzel steht "Mit mir geteilt" wie ein Ordner (Programme und die Handy-App zeigen es so ohne Aenderung), solange jemand etwas teilt
         if (!loc.Shared && loc.Path.Length == 0 && SharedFiles.Mounts(http) is { Count: > 0 } mounts)
@@ -332,8 +344,14 @@ public static partial class FilesApi
 
 
     /// <summary>Nur Bilder, PDF, Ton und Video im Browser zeigen - nie HTML oder SVG aus der Ablage unter dieser Adresse.</summary>
-    public static bool Inline(string mime) =>
-        mime.StartsWith("image/") && mime != "image/svg+xml" || mime == "application/pdf" || mime.StartsWith("audio/") || mime.StartsWith("video/");
+    public static bool Inline(string mime)
+    {
+        var m = MimeKey(mime);
+        return m.StartsWith("image/") && m != "image/svg+xml" || m == "application/pdf" || m.StartsWith("audio/") || m.StartsWith("video/");
+    }
+
+    /// <summary>Typ zum Vergleichen: ohne Parameter („; charset=…“), klein geschrieben.</summary>
+    public static string MimeKey(string mime) => (mime.IndexOf(';') is >= 0 and var i ? mime[..i] : mime).Trim().ToLowerInvariant();
 
     /// <summary>Gezeigte Inhalte als Dokument: ohne Skripte und ohne Zugriff auf die Seite.</summary>
     public const string SandboxCsp = "sandbox; default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'";
@@ -347,7 +365,7 @@ public static partial class FilesApi
         var m = mime is { Length: > 0 } x && x != "application/octet-stream" ? x : DavServer.Mime(name);
         var show = inline && (Inline(m) || m.StartsWith("text/plain", StringComparison.OrdinalIgnoreCase));
         http.Response.Headers["X-Content-Type-Options"] = "nosniff";
-        if (show && m != "application/pdf") http.Response.Headers["Content-Security-Policy"] = SandboxCsp;
+        if (show && MimeKey(m) != "application/pdf") http.Response.Headers["Content-Security-Policy"] = SandboxCsp;
         return show ? (m, null) : ("application/octet-stream", name);
     }
 
@@ -357,7 +375,7 @@ public static partial class FilesApi
     /// Nur gezeigt (Version 2): ausliefern nur, was der Browser selbst anzeigt (Bild, PDF, Ton, Video) oder Text -
     /// alles andere kaeme als Datei zum Speichern heraus. "Nur zeigen" ist kein Kopierschutz, aber kein Download-Knopf.
     /// </summary>
-    public static bool Viewable(FileEntry f) { var m = MimeOf(f); return Inline(m) || (m.StartsWith("text/") && m != "text/html"); }
+    public static bool Viewable(FileEntry f) { var m = MimeKey(MimeOf(f)); return Inline(m) || (m.StartsWith("text/") && m != "text/html"); }
 
     /// <summary>Datei ausliefern: aus der Datenbank gestreamt, mit Bereichen (Video spulen), ETag und Aenderungszeit.</summary>
     public static IResult Send(HttpContext http, UserDb db, FileEntry f, bool inline)
@@ -366,7 +384,7 @@ public static partial class FilesApi
         bool show = inline && Inline(mime);
         http.Response.Headers["X-Content-Type-Options"] = "nosniff";
         // Bild, Ton, Video direkt geoeffnet: als Dokument ohne Skripte und ohne Zugriff auf die Seite
-        if (show && mime != "application/pdf") http.Response.Headers["Content-Security-Policy"] = SandboxCsp;
+        if (show && MimeKey(mime) != "application/pdf") http.Response.Headers["Content-Security-Policy"] = SandboxCsp;
         http.Response.Headers.CacheControl = "private, no-cache";
         return Results.Stream(FileStore.OpenRead(db, f.Path), show ? mime : "application/octet-stream", show ? null : f.Name,
             new DateTimeOffset(DateTime.SpecifyKind(f.Modified, DateTimeKind.Utc)), new Microsoft.Net.Http.Headers.EntityTagHeaderValue(f.Etag.StartsWith('"') ? f.Etag : $"\"{f.Etag}\""),
@@ -612,11 +630,14 @@ public static partial class FilesApi
             var db = http.Space().Db;
             if (body.Items is not { } items) throw new ArgumentException("Keine Prüfsummen.");
             if (items.Length > FileHashes.MaxLookup) throw new ArgumentException($"Höchstens {FileHashes.MaxLookup} Prüfsummen auf einmal.");
-            var found = FileHashes.Lookup(db, items.Where(i => i.Sha256 != null).Select(i => (i.Sha256, i.Size)),
-                body.Dir is { } d ? FileStore.Normalize(d) : null);
+            var keys = items.Where(i => i.Sha256 != null).Select(i => (i.Sha256, i.Size)).ToList();
+            var found = FileHashes.Lookup(db, keys, body.Dir is { } d ? FileStore.Normalize(d) : null);
+            // Nur im Papierkorb: von der Person gelöscht - die App lädt solche Fotos nicht wieder hoch
+            var trashed = FileHashes.InTrash(db, keys.Where(k => !found.ContainsKey((k.Sha256.ToLowerInvariant(), k.Size))));
             return new
             {
                 found = found.Select(x => new { sha256 = x.Key.Sha256, size = x.Key.Size, path = x.Value }),
+                trashed = trashed.Select(x => new { sha256 = x.Sha256, size = x.Size }),
                 pending = FileHashes.PendingFiles(db),
             };
         });
@@ -791,12 +812,15 @@ public static partial class FilesApi
         });
 
         // Textdatei speichern (Bearbeiten im Browser, neue Textdatei); mit ETag: nur, wenn sie sich nicht geaendert hat
-        api.MapPost("/save", (SaveBody body, HttpContext http) =>
+        api.MapPost("/save", async (SaveBody body, HttpContext http) =>
         {
-            var loc = Loc(http, body.Path).Creatable();
-            var db = loc.Db;
             var data = Encoding.UTF8.GetBytes(body.Text ?? "");
             if (data.Length > 20 * 1024 * 1024) throw new ArgumentException("Zu groß für den Texteditor.");
+            // Tresor: verschlüsselt speichern, nie über die Dateiablage
+            if (TresorPaths.Is(body.Path)) return await TresorPaths.SaveText(http, body.Path, data, body.Create ? null : body.Etag, body.Create, http.RequestAborted);
+            if (CryptomatorPaths.Is(body.Path)) return await CryptomatorPaths.SaveText(http, body.Path, data, body.Create ? null : body.Etag, body.Create, http.RequestAborted);
+            var loc = Loc(http, body.Path).Creatable();
+            var db = loc.Db;
             try
             {
                 var (etag, _) = FileStore.Put(db, loc.Path, data, DavServer.Mime(loc.Path), ifMatch: body.Create ? null : body.Etag, ifNoneMatch: body.Create ? "*" : null);
@@ -927,6 +951,21 @@ public static partial class FilesApi
                     .Select(f => (File: f, Marks: marks));
             }).Take(limit).ToList();
             var items = named.Select(x => Item(x.File, x.Marks)).ToList();
+            // Auch über Kategorien und Tags (eigene Dateien)
+            if (!string.IsNullOrWhiteSpace(q) && areas.FirstOrDefault(a => !a.Shared) is { } own && FileCategories.Matching(own.Db, q.Trim()) is { Count: > 0 } labelled)
+            {
+                var seen = named.Select(x => x.File.Path).ToHashSet();
+                var marks = MarksOf(http, own);
+                foreach (var f in labelled.Chunk(400).SelectMany(ch => FileStore.ByFileIds(own.Db, $"SELECT fileid FROM files WHERE fileid IN ({string.Join(",", ch)})")))
+                {
+                    if (items.Count >= limit) break;
+                    var inside = own.Path.Length == 0 || f.Path.StartsWith(own.Path + "/", StringComparison.Ordinal);
+                    if (f.IsDir || !inside || own.Protected(f.Path) || SharedFiles.Under(http, f.Path) || !OfType(f)) continue;
+                    if (excluded.Count > 0 && FileKinds.UnderAny(excluded, f.Path)) continue;
+                    var shown = own.Show(f);
+                    if (seen.Add(shown.Path)) items.Add(Item(shown, marks));
+                }
+            }
             if (content == true && !string.IsNullOrWhiteSpace(q))
             {
                 // Im Inhalt gefunden - im Index des Besitzers (geteilte Ordner nur, wenn er die Inhaltssuche eingeschaltet hat)

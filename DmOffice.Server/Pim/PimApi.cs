@@ -161,6 +161,27 @@ public static class PimApi
             return result.OrderBy(e => e.Start).ToList();
         });
 
+        // Terminsuche in allen sichtbaren Kalendern (eigene und geteilte), ohne Zeitgrenze
+        api.MapGet("/events/search", (string q, string? calendars, HttpContext http) =>
+        {
+            if (!Features.On(Features.CalendarSearch)) return Results.NotFound();
+            var space = http.Space();
+            PimStore.EnsureDefaults(space.Db);
+            var ids = Ids(calendars) ?? PimStore.Collections(space.Db, PimStore.Calendar).Select(c => c.Id)
+                .Concat(SharedLists.WithMe(http).Where(x => x.Coll.Components.Contains("VEVENT")).Select(x => -(long)x.Share.Id)).ToList();
+            var now = DateTime.UtcNow;
+            var result = new List<EventDto>();
+            foreach (var id in ids)
+            {
+                ListRef r;
+                try { r = SharedLists.Resolve(http, id); } catch (KeyNotFoundException) { continue; }
+                result.AddRange(CalendarModel.Search(r.Space, new[] { r.Collection }, q ?? "", now).Select(e => Public(e, r)));
+            }
+            var upcoming = result.Where(e => CalendarModel.ParseIso(e.End, out _) > now).OrderBy(e => e.Start, StringComparer.Ordinal);
+            var earlier = result.Where(e => CalendarModel.ParseIso(e.End, out _) <= now).OrderByDescending(e => e.Start, StringComparer.Ordinal);
+            return Results.Ok(upcoming.Concat(earlier).Take(200).ToList());
+        });
+
         api.MapPost("/events", (EventInput body, HttpContext http) =>
         {
             // Einladungen nur fuer eigene Kalender (Organisator = eigenes Mailkonto)

@@ -76,14 +76,19 @@ public static class Auth
         var sid = CookieSessions.Of(http.User);
         var u = users.ById(id)!;
         CookieSessions.EndAll(http.RequestServices, id, sid, u.Stamp);
-        return http.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, WithSession(Principal(u, CookieAuthenticationDefaults.AuthenticationScheme), sid),
+        var principal = WithSession(Principal(u, CookieAuthenticationDefaults.AuthenticationScheme), sid);
+        return http.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, principal,
             new AuthenticationProperties { IsPersistent = true, ExpiresUtc = DateTimeOffset.UtcNow.AddDays(30) });
     }
 
     /// <summary>Neue Anmeldung im Browser: mit Eintrag in der Sitzungsliste.</summary>
-    public static Task SignInNew(HttpContext http, UserRecord u, AuthenticationProperties props) =>
-        http.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme,
-            WithSession(Principal(u, CookieAuthenticationDefaults.AuthenticationScheme), CookieSessions.Start(http, u.Id, u.Stamp)), props);
+    /// <returns>Kennung der neuen Sitzung (für Cookies, die an die Sitzung gebunden sind)</returns>
+    public static async Task<string?> SignInNew(HttpContext http, UserRecord u, AuthenticationProperties props)
+    {
+        var sid = CookieSessions.Start(http, u.Id, u.Stamp);
+        await http.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, WithSession(Principal(u, CookieAuthenticationDefaults.AuthenticationScheme), sid), props);
+        return sid;
+    }
 
     private static ClaimsPrincipal WithSession(ClaimsPrincipal p, string? sid)
     {
@@ -223,14 +228,20 @@ public static class Auth
     /// Schutz gegen CSRF von Nachbar-Seiten derselben Domain (SameSite=Lax schuetzt nur gegen fremde Domains): eine
     /// aendernde Anfrage (nicht GET/HEAD/OPTIONS), die per Anmelde-Cookie angemeldet ist, muss laut Browser von der
     /// eigenen Seite kommen. Sec-Fetch-Site setzt der Browser selbst (nicht von Skripten faelschbar) und haengt nicht
-    /// an Proxy- oder Host-Einstellungen. Fehlt der Kopf (alte Browser, Programme), wird nicht geblockt.
+    /// an Proxy- oder Host-Einstellungen. Fehlt der Kopf (alte Browser), zählt Origin: ein anderer Rechnername als der
+    /// eigene wird geblockt. Ohne beide Köpfe (Apps, Programme) wird nicht geblockt.
     /// </summary>
     public static bool CrossSiteCookieWrite(HttpContext http)
     {
         if (HttpMethods.IsGet(http.Request.Method) || HttpMethods.IsHead(http.Request.Method) || HttpMethods.IsOptions(http.Request.Method)) return false;
         if (http.User.Identity is not { IsAuthenticated: true, AuthenticationType: CookieAuthenticationDefaults.AuthenticationScheme }) return false;
         var site = http.Request.Headers["Sec-Fetch-Site"].ToString();
-        return site is "cross-site" or "same-site";
+        if (site.Length > 0) return site is "cross-site" or "same-site";
+        var origin = http.Request.Headers.Origin.ToString();
+        if (origin.Length == 0) return false;
+        // Nur der Rechnername zählt: hinter einem Proxy weicht der Port ab
+        return !Uri.TryCreate(origin, UriKind.Absolute, out var o)
+            || !string.Equals(o.Host, http.Request.Host.Host, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>WWW-Authenticate: Basic nur fuer DAV - im Browser loest der Kopf sonst ein Anmeldefenster aus.</summary>
@@ -317,7 +328,7 @@ public static class Auth
         catch (Exception e) when (e is not OutOfMemoryException) { return null; }
     }
 
-    private static void KnownBrowser(HttpContext http, UserRecord u)
+    internal static void KnownBrowser(HttpContext http, UserRecord u)
     {
         try
         {
@@ -362,10 +373,27 @@ public static class Auth
     /// </summary>
     private static bool LastAdmin(UserStore users, UserRecord u) => u.IsAdmin && users.All().Count(x => x.IsAdmin) <= 1;
 
-    public static IResult? Confirm(UserStore users, UserRecord u, string? password, string? code, bool needCode)
+    /// <summary>Wie ein Konto heikle Änderungen bestätigt: Passwort (und Code), ohne eigenes Passwort (über OIDC angelegt) nur
+    /// mit Code oder - ohne Zwei-Faktor - mit einer frischen Anmeldung beim Anbieter.</summary>
+    public static string ConfirmMode(UserRecord u) => !u.NoOwnPassword ? (u.TwoFactor ? "password+code" : "password") : u.TwoFactor ? "code" : "provider";
+
+    public static IResult? Confirm(UserStore users, UserRecord u, string? password, string? code, bool needCode, HttpContext? http = null)
     {
         var key = "confirm:" + u.Id;
         if (Blocked(key)) return Results.Json(new { error = "Zu viele Versuche, bitte kurz warten." }, statusCode: 429);
+        // Kein eigenes Passwort (über den Anbieter angelegt): der Code ersetzt das Passwort; ohne Zwei-Faktor eine frische
+        // Anmeldung beim Anbieter in dieser Sitzung (einmal verwendbar)
+        if (u.NoOwnPassword && u.OidcSubject != null)
+        {
+            if (u.TwoFactor)
+            {
+                if (!CheckSecondFactor(users, u, code ?? "")) { Failed(key, "Code zur Bestätigung"); return Results.BadRequest(new { error = "Code falsch." }); }
+                Succeeded(key);
+                return null;
+            }
+            if (http != null && Oidc.ConsumeReauth(u.Id, CookieSessions.Of(http.User))) return null;
+            return Results.Json(new { error = "Bitte zuerst bei OIDC bestätigen.", reauth = true }, statusCode: 403);
+        }
         if (string.IsNullOrEmpty(password) || !Passwords.Verify(password, u.PasswordHash))
         {
             Failed(key, "Passwort zur Bestätigung");
@@ -384,7 +412,7 @@ public static class Auth
     public record RestoreBody(string? Code, string? Endpoint, string? Region, string? Bucket, string? Prefix, string? AccessKey, string? SecretKey, string? Name = null,
         string? Target = null, string? WebDavUrl = null, string? WebDavUser = null, string? WebDavPassword = null, string? Folder = null);
     public record ProfileBody(string? Code, string? Text);
-    public record ChangeBody(string Old, string New);
+    public record ChangeBody(string? Old, string New, string? Code = null);
 
     public static void Map(WebApplication app)
     {
@@ -400,10 +428,14 @@ public static class Auth
                 setupCode = users.Empty && SetupCode != null,
                 // Demo-Server: Zugangsdaten für die Anmeldeseite und den Hinweis oben
                 demo = Demo.Enabled ? new { login = Demo.Login, password = Demo.Password } : null,
+                // Anmeldung über einen Identitätsanbieter: Beschriftung des Knopfs, null wenn nicht eingerichtet
+                oidc = Oidc.ButtonName(config),
+                // Anmeldename und Passwort nur für Administratoren: die Anmeldeseite zeigt zuerst den OIDC-Knopf
+                oidcOnly = Oidc.OnlyOidc(config),
                 // Release-Liste: in dieser Version nicht freigeschaltete Funktionen - Web und App blenden sie aus
                 featuresOff = Features.Off,
                 loggedIn = me != null,
-                user = me == null ? null : new { me.Id, me.Login, me.DisplayName, me.IsAdmin, me.TwoFactor, files = !me.FilesOff,
+                user = me == null ? null : new { me.Id, me.Login, me.DisplayName, me.IsAdmin, me.TwoFactor, files = !me.FilesOff, oidcLinked = me.OidcSubject != null,
                     // Audiothek: Modul eingeschaltet und nicht ohne Dateiablage
                     audio = DmOffice.Audio.AudioFolders.Enabled(me) }
             };
@@ -433,13 +465,14 @@ public static class Auth
                 if (string.IsNullOrWhiteSpace(body.Folder) || !Path.IsPathFullyQualified(body.Folder.Trim()) || !Directory.Exists(body.Folder.Trim()))
                     return Results.BadRequest(new { error = "Den Ordner gibt es auf dem Server nicht." });
             }
-            else if (!Uri.TryCreate((body.Target == "webdav" ? body.WebDavUrl : body.Endpoint)?.Trim(), UriKind.Absolute, out var u) || u.Scheme is not ("http" or "https"))
-                return Results.BadRequest(new { error = "Die Adresse muss mit http:// oder https:// beginnen." });
+            else if (body.Target == "webdav" ? !DmOffice.Storage.RemoteDrivers.ValidUrl(body.WebDavUrl)
+                     : !Uri.TryCreate(body.Endpoint?.Trim(), UriKind.Absolute, out var u) || u.Scheme is not ("http" or "https"))
+                return Results.BadRequest(new { error = body.Target == "webdav" ? DmOffice.Storage.RemoteDrivers.UrlProblem : "Die Adresse muss mit http:// oder https:// beginnen." });
             return null;
         }
         IBlobRemote RemoteFor(RestoreBody b) => b.Target switch
         {
-            "webdav" => new DmOffice.Storage.DriverRemote(new DmOffice.Storage.WebDavDriver(b.WebDavUrl!.Trim(), b.WebDavUser, b.WebDavPassword)),
+            "webdav" => new DmOffice.Storage.DriverRemote(DmOffice.Storage.RemoteDrivers.Open(b.WebDavUrl!.Trim(), b.WebDavUser, b.WebDavPassword)),
             "folder" => new DmOffice.Storage.DriverRemote(new DmOffice.Storage.FolderDriver(b.Folder!.Trim())),
             _ => S3Remote.Create((b.Endpoint ?? "").Trim().TrimEnd('/'), b.Region ?? "", (b.Bucket ?? "").Trim(), (b.AccessKey ?? "").Trim(), b.SecretKey ?? ""),
         };
@@ -537,7 +570,7 @@ public static class Auth
             catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
         });
 
-        api.MapPost("/login", async (LoginBody body, HttpContext http, UserStore users) =>
+        api.MapPost("/login", async (LoginBody body, HttpContext http, UserStore users, ServerConfig config) =>
         {
             var ip = Auth.IpKey(http.Connection.RemoteIpAddress);
             var nameKey = NameKey(body.Login ?? "");
@@ -556,6 +589,8 @@ public static class Auth
                 await Task.Delay(700);
                 return Results.Json(new { error = "Anmeldename oder Passwort falsch." }, statusCode: 401);
             }
+            // Anmeldung nur über den Anbieter: erst nach geprüftem Passwort sagen, sonst verriete die Antwort, welche Konten es gibt
+            if (Oidc.PasswordBlocked(config, u)) return Results.Json(new { error = Oidc.OnlyOidcError }, statusCode: 403);
             if (u.TwoFactor)
             {
                 // Passwort stimmt - ohne Code nur die Frage danach, keine Anmeldung
@@ -584,7 +619,7 @@ public static class Auth
             // Laufende 2FA nur ueber "Ausschalten" (mit Passwort und Code) ersetzen
             if (u.TwoFactor) return Results.BadRequest(new { error = "Zwei-Faktor-Anmeldung ist schon an - erst ausschalten." });
             // Mit dem Passwort bestätigt - sonst könnte eine übernommene Sitzung 2FA mit eigenem Gerät einschalten und aussperren
-            if (Confirm(users, u, body.Password, null, needCode: false) is { } refused) return refused;
+            if (Confirm(users, u, body.Password, null, needCode: false, http) is { } refused) return refused;
             var secret = Totp.NewSecret();
             users.Update(id, x => x.TotpPending = users.Wrap(secret));
             return Results.Ok(new { uri = Totp.Uri(secret, u.Login), secret = Totp.Base32(secret) });
@@ -619,7 +654,7 @@ public static class Auth
             var u = users.ById(id)!;
             if (!u.TwoFactor) return Results.BadRequest(new { error = "Zwei-Faktor-Anmeldung ist aus." });
             // Passwort und Code - neue Codes allein mit dem Passwort umgingen die Zwei-Faktor-Anmeldung dauerhaft
-            if (Confirm(users, u, body.Password, body.Code, needCode: true) is { } refused) return refused;
+            if (Confirm(users, u, body.Password, body.Code, needCode: true, http) is { } refused) return refused;
             var codes = Totp.NewRecoveryCodes();
             users.Update(id, x => x.RecoveryCodes = codes.Select(Passwords.TokenHash).ToList());
             SecurityNotice.Important(http.RequestServices, id, "neue Wiederherstellungscodes für die Zwei-Faktor-Anmeldung");
@@ -630,20 +665,21 @@ public static class Auth
         {
             var id = http.User.FindFirstValue(ClaimTypes.NameIdentifier)!;
             var u = users.ById(id)!;
-            if (Confirm(users, u, body.Password, body.Code, needCode: true) is { } refused) return refused;
+            if (Confirm(users, u, body.Password, body.Code, needCode: true, http) is { } refused) return refused;
             users.Update(id, x => { x.TotpSecret = null; x.TotpPending = null; x.RecoveryCodes.Clear(); x.NewStamp(); });
             await Reissue(http, users, id);
             SecurityNotice.Important(http.RequestServices, id, "Zwei-Faktor-Anmeldung ausgeschaltet");
             return Results.Ok();
         }).RequireAuthorization();
 
-        api.MapPost("/logout", async (HttpContext http) =>
+        api.MapPost("/logout", async (HttpContext http, ServerConfig config, IHttpClientFactory factory, Microsoft.AspNetCore.DataProtection.IDataProtectionProvider dp) =>
         {
             Tresor.Close(http);
             CryptomatorPaths.LockAccess(http);
             if (http.User.FindFirstValue(ClaimTypes.NameIdentifier) is { } me && CookieSessions.Of(http.User) is { } sid) CookieSessions.End(http.RequestServices, me, sid);
             await http.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
-            return Results.Ok();
+            // Über den Identitätsanbieter angemeldet: auf Wunsch auch dort abmelden (die Oberfläche leitet dorthin weiter)
+            return Results.Ok(new { redirect = await Oidc.EndSessionUrl(http, config, factory, dp) });
         });
 
         // Sitzungsliste: wo bin ich angemeldet (Browser); einzelne abmelden
@@ -667,10 +703,12 @@ public static class Auth
         {
             var id = http.User.FindFirstValue(ClaimTypes.NameIdentifier)!;
             var u = users.ById(id)!;
-            if (Confirm(users, u, body.Old, null, needCode: false) is { } refused) return refused;
+            // Auch mit OIDC verknüpfte Konten ändern ihr Passwort (es gilt für die Anmeldung mit Anmeldename und Passwort und zum Bestätigen);
+            // ohne eigenes Passwort bestätigen sie mit Code bzw. beim Anbieter
+            if (Confirm(users, u, body.Old, body.Code, needCode: false, http) is { } refused) return refused;
             if (body.New.Length < 8) return Results.BadRequest(new { error = "Mindestens 8 Zeichen." });
             // Neuer Stempel: alle anderen Sitzungen sind abgemeldet, diese bekommt ein neues Cookie
-            users.Update(id, x => { x.PasswordHash = Passwords.Hash(body.New); x.NewStamp(); });
+            users.Update(id, x => { x.PasswordHash = Passwords.Hash(body.New); x.NoOwnPassword = false; x.NewStamp(); });
             CryptomatorPaths.LockAll(id);
             await Reissue(http, users, id);
             SecurityNotice.Important(http.RequestServices, id, "Passwort geändert");
@@ -695,7 +733,7 @@ public static class Auth
             var id = http.User.FindFirstValue(ClaimTypes.NameIdentifier)!;
             var u = users.ById(id)!;
             if (LastAdmin(users, u)) return Results.BadRequest(new { error = "Du bist der einzige Admin. Lege zuerst einen weiteren Admin an." });
-            if (Confirm(users, u, body.Password, body.Code, needCode: true) is { } refused) return refused;
+            if (Confirm(users, u, body.Password, body.Code, needCode: true, http) is { } refused) return refused;
             AdminApi.DeleteUser(http.RequestServices, id);
             logs.CreateLogger("DmOffice.Auth").LogWarning("Konto {Id} wurde von seinem Inhaber gelöscht", id);
             await http.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);

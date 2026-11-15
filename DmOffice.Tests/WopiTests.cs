@@ -19,6 +19,8 @@ public sealed class FakeOffice : HttpMessageHandler
     public const string Url = "https://office.test";
     public RSA Key { get; } = RSA.Create(2048);
     public bool Down { get; set; }
+    /// <summary>Discovery ohne proof-key (Office-Server ohne Schluessel).</summary>
+    public bool NoProof { get; set; }
     public int Calls { get; private set; }
 
     public string Xml()
@@ -34,7 +36,7 @@ public sealed class FakeOffice : HttpMessageHandler
             + App("impress", ("pptx", "edit"), ("odp", "edit"))
             + App("draw", ("pdf", "view"))
             + "</net-zone>"
-            + $"<proof-key value=\"x\" modulus=\"{Convert.ToBase64String(p.Modulus!)}\" exponent=\"{Convert.ToBase64String(p.Exponent!)}\" oldvalue=\"\" oldmodulus=\"\" oldexponent=\"\"/>"
+            + (NoProof ? "" : $"<proof-key value=\"x\" modulus=\"{Convert.ToBase64String(p.Modulus!)}\" exponent=\"{Convert.ToBase64String(p.Exponent!)}\" oldvalue=\"\" oldmodulus=\"\" oldexponent=\"\"/>")
             + "</wopi-discovery>";
     }
 
@@ -340,6 +342,40 @@ public class WopiTests : IClassFixture<WopiFixture>
     }
 
     [Fact]
+    public async Task Speichern_unter_bei_geteilten_Dateien()
+    {
+        var db = _fx.Berta.Db;
+        FileStore.EnsureDir(db, "privat-wopi");
+        FileStore.Put(db, "privat-wopi/Einzeln.docx", OfficeTemplates.Create("docx"), null);
+        FileStore.EnsureDir(db, "team-wopi");
+        FileStore.Put(db, "team-wopi/Plan.docx", OfficeTemplates.Create("docx"), null);
+        var carl = _fx.Carl.User;
+        foreach (var path in new[] { "privat-wopi/Einzeln.docx", "team-wopi" })
+            Assert.Equal(HttpStatusCode.OK, (await _fx.Client().PutAsJsonAsync("/api/files/shares", new { path, members = new[] { carl.Id }, readOnly = Array.Empty<string>() })).StatusCode);
+
+        async Task<HttpResponseMessage> SaveAs(string path, string name)
+        {
+            var f = FileStore.Get(db, path)!;
+            var (token, _) = WopiTokens.Issue(_fx.Factory.Services, new WopiGrant(_fx.Berta.User.Id, f.FileId, true, "https://dm.test", "x", carl.Stamp, null, "C", V: carl.Id));
+            var src = "https://dm.test/wopi/files/" + WopiTokens.FileId(_fx.Berta.User.Id, f.FileId);
+            var info = await Json(await Send(HttpMethod.Get, src, "", token));
+            Assert.Equal(path.StartsWith("privat"), info.GetProperty("UserCanNotWriteRelative").GetBoolean());
+            return await Send(HttpMethod.Post, src, "", token, h =>
+            {
+                h.Headers.Add("X-WOPI-Override", "PUT_RELATIVE");
+                h.Headers.Add("X-WOPI-RelativeTarget", name);
+            }, new ByteArrayContent(Encoding.ASCII.GetBytes("%PDF-1.4")));
+        }
+
+        // Einzeln geteilte Datei: der Ordner daneben gehört nicht zur Freigabe
+        Assert.Equal(HttpStatusCode.Unauthorized, (await SaveAs("privat-wopi/Einzeln.docx", "Neu.pdf")).StatusCode);
+        Assert.Null(FileStore.Get(db, "privat-wopi/Neu.pdf"));
+        // Geteilter Ordner mit Bearbeitungsrecht: neue Datei darin
+        Assert.Equal(HttpStatusCode.OK, (await SaveAs("team-wopi/Plan.docx", "Plan.pdf")).StatusCode);
+        Assert.NotNull(FileStore.Get(db, "team-wopi/Plan.pdf"));
+    }
+
+    [Fact]
     public async Task Neue_Dokumente_sind_gueltige_Pakete()
     {
         foreach (var kind in new[] { "docx", "xlsx", "pptx" })
@@ -381,6 +417,53 @@ public class WopiTests : IClassFixture<WopiFixture>
         // Link geloescht: Token wertlos
         Assert.True((await _fx.Client().DeleteAsync("/api/files/links/" + link.GetProperty("id").GetString())).IsSuccessStatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, (await Send(HttpMethod.Get, src, "", token)).StatusCode);
+    }
+
+    [Fact]
+    public async Task Nur_gezeigt_und_begrenzte_Links_nur_mit_Nachweis()
+    {
+        var db = _fx.Berta.Db;
+        FileStore.EnsureDir(db, "zeigen-wopi");
+        FileStore.Put(db, "zeigen-wopi/Bericht.docx", OfficeTemplates.Create("docx"), null);
+        FileStore.Put(db, "zeigen-wopi/Info.docx", OfficeTemplates.Create("docx"), null);
+        var carl = _fx.Carl.User;
+        Assert.Equal(HttpStatusCode.OK, (await _fx.Client().PutAsJsonAsync("/api/files/shares",
+            new { path = "zeigen-wopi", members = new[] { carl.Id }, readOnly = new[] { carl.Id }, showOnly = new[] { carl.Id } })).StatusCode);
+        var shared = (await Json(await _fx.Client("carl").GetAsync("/api/files/shared"))).GetProperty("items").EnumerateArray()
+            .Select(x => x.GetProperty("path").GetString()!).Single(p => p.Contains("zeigen-wopi"));
+        var path = shared + "/Bericht.docx";
+        var f = FileStore.Get(db, "zeigen-wopi/Bericht.docx")!;
+        var src = "https://dm.test/wopi/files/" + WopiTokens.FileId(_fx.Berta.User.Id, f.FileId);
+        var link = await Json(await _fx.Client().PostAsJsonAsync("/api/files/links", new { path = "zeigen-wopi/Info.docx", mode = "read", maxDownloads = 5 }));
+        var lt = link.GetProperty("token").GetString()!;
+
+        // Office-Server mit Proof-Keys: oeffnen und Inhalt holen geht
+        var s = await Json(await _fx.Client("carl").PostAsJsonAsync("/api/office/open", new { path, view = true }));
+        var token = s.GetProperty("token").GetString()!;
+        Assert.Equal(HttpStatusCode.OK, (await Send(HttpMethod.Get, src, "/contents", token)).StatusCode);
+        Assert.NotEmpty((await Json(await _fx.Client(null).GetAsync($"/api/public/{lt}"))).GetProperty("office").EnumerateArray());
+
+        var discovery = _fx.Factory.Services.GetRequiredService<OfficeDiscovery>();
+        _fx.Office.NoProof = true;
+        discovery.Forget();
+        try
+        {
+            // Ohne Proof-Keys: nicht oeffnen, und auch ein vorhandenes Token liefert den Inhalt nicht
+            Assert.Equal(HttpStatusCode.Forbidden, (await _fx.Client("carl").PostAsJsonAsync("/api/office/open", new { path, view = true })).StatusCode);
+            var plain = await _fx.Client(null).GetAsync(new Uri(src).AbsolutePath + "/contents?access_token=" + Uri.EscapeDataString(token));
+            Assert.Equal(HttpStatusCode.Forbidden, plain.StatusCode);
+            // Link mit Abrufgrenze: keine Office-Ansicht, kein Abruf gezaehlt
+            Assert.Empty((await Json(await _fx.Client(null).GetAsync($"/api/public/{lt}"))).GetProperty("office").EnumerateArray());
+            Assert.Equal(HttpStatusCode.Forbidden, (await _fx.Client(null).PostAsync($"/api/public/{lt}/office", null)).StatusCode);
+            Assert.Equal(0, Links.Get(db, link.GetProperty("id").GetString()!)!.Downloads);
+            // Eigene Dateien gehen weiter
+            Assert.Equal(HttpStatusCode.OK, (await _fx.Client().PostAsJsonAsync("/api/office/open", new { path = "zeigen-wopi/Bericht.docx" })).StatusCode);
+        }
+        finally
+        {
+            _fx.Office.NoProof = false;
+            discovery.Forget();
+        }
     }
 
     [Fact]

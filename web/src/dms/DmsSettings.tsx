@@ -4,14 +4,15 @@ import {
 } from '@fluentui/react-components'
 import { Add20Regular, ArrowSync20Regular, Delete20Regular, Edit20Regular, Folder20Filled, FolderArrowRight20Regular, FolderLink20Filled, LockClosed20Filled } from '@fluentui/react-icons'
 import { useEffect, useState } from 'react'
-import { api, q } from '../api'
+import { api, featureOn, q } from '../api'
 import { useApp } from '../App'
 import { BrowseDialog, PatternField } from '../files/ImportProfiles'
 import { lang, t } from '../i18n'
 import { askConfirm } from '../shell/context'
 import { Hint, PageTitle } from '../settings/parts'
-import { Entry, Mount, ordered, Profile, Source, State } from './model'
+import { Entry, FolderRole, Mount, Profile, Source, State } from './model'
 import { DmsMailSourcesSettings } from './DmsMailSettings'
+import { EntrySelect } from './EntrySelect'
 
 const useStyles = makeStyles({
   row: { display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 0', borderBottom: `1px solid ${tokens.colorNeutralStroke2}` },
@@ -22,6 +23,7 @@ const useStyles = makeStyles({
   line: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' },
   grow: { flex: 1, minWidth: '160px' },
   list: { display: 'flex', flexDirection: 'column', maxWidth: '760px' },
+  busy: { color: tokens.colorPaletteGreenForeground1, animationName: { from: { transform: 'rotate(0deg)' }, to: { transform: 'rotate(360deg)' } }, animationDuration: '1.2s', animationIterationCount: 'infinite', animationTimingFunction: 'linear' },
 })
 
 const show = (path: string) => path ? path.split('/').join(' › ') : t('Oberste Ebene')
@@ -83,7 +85,7 @@ function EditProfile({ profile, onClose }: { profile: Profile | null; onClose: (
   const { fail } = useApp()
   const [f, setF] = useState<Profile>(() => profile ? { ...profile } : {
     id: '', name: '', target: 'files', folder: lang === 'en' ? 'Documents' : 'Dokumente', folders: '{correspondent}/{doc_year}', names: '{doc_date} {doctype} {title}',
-    unknown: t('Unbekannt'), follow: true, default: false, language: lang,
+    unknown: t('Unbekannt'), follow: true, default: false, hideInFiles: true, language: lang,
   })
   const set = (patch: Partial<Profile>) => setF(x => ({ ...x, ...patch }))
   const [preview, setPreview] = useState<string>('')
@@ -145,7 +147,7 @@ function EditProfile({ profile, onClose }: { profile: Profile | null; onClose: (
                   ? <Field label={t('Ordner im Tresor')}><Input value={f.folder} onChange={(_, d) => set({ folder: d.value })} /></Field>
                   : <Text>{show(f.folder)}</Text>}
                 {f.target === 'tresor' && <Text size={200} className={s.muted}>{t('Im Tresor: Texterkennung, Volltext und Einordnung nur bei offenem Tresor, nie mit KI. Ist er zu, wird Neues verschlüsselt abgelegt und beim nächsten Öffnen übernommen.')}</Text>}
-                {f.target === 'external' && <MessageBar intent="warning"><MessageBarBody>{t('Die Dokumente liegen im externen Ordner unverschlüsselt; jeder mit Zugriff auf die Freigabe kann sie lesen. Das Original einer Archivfassung liegt daneben im Unterordner „Original“. Versionen, Papierkorb und Freigabelinks der Dateiablage gibt es dort nicht; Löschen im DMS löscht draußen endgültig.')}</MessageBarBody></MessageBar>}
+                {f.target === 'external' && <MessageBar intent="warning"><MessageBarBody>{t('Die Dokumente liegen im externen Ordner unverschlüsselt. Das Original einer Archivfassung liegt daneben im Unterordner „Original“. Versionen, Papierkorb und Freigabelinks der Dateiablage gibt es dort nicht; Löschen im DMS löscht dort endgültig.')}</MessageBarBody></MessageBar>}
                 <PatternField label={t('Ordnerstruktur-Muster')} value={f.folders} onChange={v => set({ folders: v })} tokens={FOLDER_TOKENS} preview={undefined} />
                 <Field label={t('Inbox-Ordner')} hint={t('Bis zum Bestätigen liegen Dokumente flach in diesem Ordner unter dem Zielordner, erst dann nach dem Ordnerstruktur-Muster.')}>
                   <Input value={f.inboxFolder ?? '.INBOX'} onChange={(_, d) => set({ inboxFolder: d.value })} />
@@ -164,6 +166,8 @@ function EditProfile({ profile, onClose }: { profile: Profile | null; onClose: (
               {f.target === 'external' && <Checkbox checked={f.writeMeta ?? true} onChange={(_, d) => set({ writeMeta: !!d.checked })}
                 label={t('Angaben in die PDF schreiben: Titel, Korrespondent, Dokumenttyp, Datum und Tags stehen in den Metadaten der Archivfassung und werden nach Änderungen neu geschrieben.')} />}
               <Checkbox checked={f.default} onChange={(_, d) => set({ default: !!d.checked })} label={t('Standard beim Hochladen')} />
+              {featureOn('dmshide') && f.target === 'files' && <Checkbox checked={f.hideInFiles !== false} onChange={(_, d) => set({ hideInFiles: !!d.checked })}
+                label={t('Zielordner unter Dateien ausblenden: Die Ordner darin legt das DMS selbst an. Über WebDAV und Synchronisierungsprogramme bleibt der Ordner sichtbar.')} />}
             </DialogContent>
             <DialogActions>
               <Button onClick={() => onClose(false)}>{t('Abbrechen')}</Button>
@@ -196,12 +200,19 @@ export function DmsSourcesSettings() {
     api.get<Entry[]>('/api/dms/lists').then(setEntries).catch(() => {})
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
   const act = async (f: () => Promise<unknown>) => { try { await f(); load() } catch (e) { fail(e) } }
+  // Läuft eine Quelle, regelmäßig nachsehen, bis sie fertig ist
+  const running = !!list?.some(x => x.busy)
+  useEffect(() => {
+    if (!running) return
+    const id = window.setInterval(load, 2000)
+    return () => window.clearInterval(id)
+  }, [running]) // eslint-disable-line react-hooks/exhaustive-deps
   const remove = async (x: Source) => {
     if (await askConfirm(t('Quelle löschen'), t('Die Quelle „{name}“ wird gelöscht. Übernommene Dokumente bleiben.', { name: x.name }), t('Löschen')))
       act(() => api.del(`/api/dms/sources/${x.id}`))
   }
   const where = (x: Source) => (x.mount ? mounts.find(m => m.id === x.mount)?.name ?? x.mount : t('Eigene Ablage')) + ' › ' + show(x.folder)
-  const status = (x: Source) => x.error ? t('Fehler: {error}', { error: t(x.error) })
+  const status = (x: Source) => x.busy ? t('Wird geprüft …') : x.error ? t('Fehler: {error}', { error: t(x.error) })
     : x.lastRun ? t('Zuletzt geprüft {when}: {n} übernommen, {d} schon vorhanden, insgesamt {total}', { when: new Date(x.lastRun).toLocaleString(), n: x.lastCount, d: x.lastDuplicates, total: x.total })
     : t('Noch nicht geprüft.')
   return (
@@ -209,7 +220,7 @@ export function DmsSourcesSettings() {
       <PageTitle>{t('Quellen')}</PageTitle>
       <Hint>{t('Quellen legen, was sie finden, in die Warteschlange vom DMS; verarbeitet und abgelegt wird nach dem Ablageprofil der Quelle.')}</Hint>
       <Text size={400} weight="semibold">{t('Dateiordner')}</Text>
-      <Hint>{t('Aus einem überwachten Ordner übernimmt das DMS neue Dateien selbst, etwa vom Scanner. Eine Datei wird übernommen, aus der eigenen Ablage sobald sie fertig gespeichert ist, aus externen Ordnern wenn sie zwei Minuten unverändert liegt. Danach wird sie im Ordner entfernt (in der eigenen Ablage: in den Papierkorb). Aus externen Ordnern nur zum Lesen wird sie nicht entfernt; das DMS merkt sich, was übernommen ist.')}</Hint>
+      <Hint>{t('Aus einem überwachten Ordner übernimmt das DMS neue Dateien selbst. Eine Datei wird übernommen, aus der eigenen Ablage sobald sie fertig gespeichert ist, aus externen Ordnern wenn sie zwei Minuten unverändert liegt. Danach wird sie im Ordner entfernt (in der eigenen Ablage: in den Papierkorb). Aus externen Ordnern nur zum Lesen wird sie nicht entfernt; das DMS merkt sich, was übernommen ist.')}</Hint>
       <div className={s.list}>
         {list?.map(x => (
           <div key={x.id} className={s.row}>
@@ -221,7 +232,8 @@ export function DmsSourcesSettings() {
             <Tooltip content={t('Im Hintergrund regelmäßig prüfen')} relationship="label">
               <Switch checked={x.active} onChange={(_, d) => act(() => api.put(`/api/dms/sources/${x.id}`, { ...x, active: d.checked }))} />
             </Tooltip>
-            <Tooltip content={t('Jetzt prüfen')} relationship="label"><Button appearance="subtle" icon={<ArrowSync20Regular />} onClick={() => act(() => api.post(`/api/dms/sources/${x.id}/run`))} /></Tooltip>
+            <Tooltip content={x.busy ? t('Wird geprüft …') : t('Jetzt prüfen')} relationship="label"><Button appearance="subtle" icon={<ArrowSync20Regular className={x.busy ? s.busy : undefined} />}
+              onClick={() => { if (!x.busy) { setList(l => l?.map(y => y.id === x.id ? { ...y, busy: true } : y) ?? l); act(() => api.post(`/api/dms/sources/${x.id}/run`)) } }} /></Tooltip>
             <Tooltip content={t('Bearbeiten')} relationship="label"><Button appearance="subtle" icon={<Edit20Regular />} onClick={() => setEdit(x)} /></Tooltip>
             <Tooltip content={t('Löschen')} relationship="label"><Button appearance="subtle" icon={<Delete20Regular />} onClick={() => remove(x)} /></Tooltip>
           </div>
@@ -257,17 +269,8 @@ function EditSource({ source, profiles, mounts, entries, onClose }: {
       onClose(true)
     } catch (e) { fail(e) } finally { setBusy(false) }
   }
-  const pickList = (kind: 'correspondent' | 'doctype', value: string | null, onSel: (v: string | null) => void) => {
-    const opts = ordered(entries, kind)
-    return (
-      <Dropdown className={s.grow} value={value ? opts.find(o => o.entry.id === value)?.entry.name ?? '' : t('Keine Vorgabe')} selectedOptions={[value ?? '']}
-        onOptionSelect={(_, d) => onSel(d.optionValue || null)}>
-        <Option value="">{t('Keine Vorgabe')}</Option>
-        {opts.map(o => <Option key={o.entry.id} value={o.entry.id} text={o.entry.name}><span style={{ paddingLeft: o.depth * 12 }}>{o.entry.name}</span></Option>)}
-      </Dropdown>
-    )
-  }
-  const tagOpts = ordered(entries, 'tag')
+  const pickList = (kind: 'correspondent' | 'doctype', value: string | null, onSel: (v: string | null) => void) =>
+    <EntrySelect entries={entries} kind={kind} value={value} none={t('Keine Vorgabe')} placeholder={t('Keine Vorgabe')} onPick={id => onSel(id || null)} />
   return (
     <>
       <Dialog open onOpenChange={(_, d) => { if (!d.open) onClose(false) }}>
@@ -294,7 +297,7 @@ function EditSource({ source, profiles, mounts, entries, onClose }: {
                     <SpinButton style={{ width: 90 }} min={1} max={1440} value={f.every} onChange={(_, d) => set({ every: d.value ?? (Number(d.displayValue) || f.every) })} />
                     <Text>{t('Minuten auf neue Dateien prüfen')}</Text>
                   </div>
-                  <Text size={200} className={s.muted}>{t('Externe Ordner meldet niemand; sie werden im eingestellten Abstand geprüft.')}</Text>
+                  <Text size={200} className={s.muted}>{t('Externe Ordner werden im eingestellten Abstand geprüft.')}</Text>
                 </> : <Text size={200} className={s.muted}>{t('Neue Dateien übernimmt das DMS sofort, sobald sie fertig gespeichert sind.')}</Text>}
                 <Checkbox checked={f.active} label={t('Überwachung aktiv')} onChange={(_, d) => set({ active: !!d.checked })} />
               </div>
@@ -308,13 +311,11 @@ function EditSource({ source, profiles, mounts, entries, onClose }: {
                 <Field label={t('Korrespondent')}>{pickList('correspondent', f.correspondent, v => set({ correspondent: v }))}</Field>
                 <Field label={t('Dokumenttyp')}>{pickList('doctype', f.doctype, v => set({ doctype: v }))}</Field>
                 <Field label={t('Tags')}>
-                  <Dropdown multiselect value={f.tags.map(id => entries.find(e => e.id === id)?.name ?? '').join(', ')} selectedOptions={f.tags}
-                    onOptionSelect={(_, d) => set({ tags: d.selectedOptions })}>
-                    {tagOpts.map(o => <Option key={o.entry.id} value={o.entry.id} text={o.entry.name}><span style={{ paddingLeft: o.depth * 12 }}>{o.entry.name}</span></Option>)}
-                  </Dropdown>
+                  <EntrySelect entries={entries} kind="tag" values={f.tags} placeholder={t('Keine Vorgabe')} onPickMany={ids => set({ tags: ids })} />
                 </Field>
                 <Text size={200} className={s.muted}>{t('Vorgaben gelten vor Regeln, KI und Gelerntem.')}</Text>
               </div>
+              {featureOn('dmsfolders') && <SubfolderRoles source={f} onChange={set} />}
             </DialogContent>
             <DialogActions>
               <Button onClick={() => onClose(false)}>{t('Abbrechen')}</Button>
@@ -326,6 +327,60 @@ function EditSource({ source, profiles, mounts, entries, onClose }: {
         </DialogSurface>
       </Dialog>
     </>
+  )
+}
+
+const ROLES: { value: FolderRole; label: string }[] = [
+  { value: 'tag', label: 'Als Tag' }, { value: 'correspondent', label: 'Als Korrespondent' }, { value: 'doctype', label: 'Als Dokumenttyp' }, { value: 'none', label: 'Nicht übernehmen' },
+]
+
+/** Unterordner der Quelle: was der Ordnername für die Dokumente darin bedeutet. */
+function SubfolderRoles({ source: f, onChange }: { source: Source; onChange: (patch: Partial<Source>) => void }) {
+  const s = useStyles()
+  const [rows, setRows] = useState<{ path: string; files: number; role: FolderRole }[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => {
+    setRows(null); setError(null)
+    if (!f.useFolders || !f.folder) return
+    api.get<{ path: string; files: number; role: FolderRole }[]>(`/api/dms/sources/subfolders?${q({ mount: f.mount, folder: f.folder })}`)
+      .then(list => {
+        setRows(list)
+        // Vorbelegung festhalten, damit später hinzukommende Dateien gleich behandelt werden
+        const folders = { ...(f.folders ?? {}) }
+        for (const r of list) if (!folders[r.path]) folders[r.path] = r.role
+        onChange({ folders })
+      })
+      .catch(e => setError(e instanceof Error ? e.message : String(e)))
+  }, [f.useFolders, f.mount, f.folder]) // eslint-disable-line react-hooks/exhaustive-deps
+  const role = (path: string, fallback: FolderRole) => f.folders?.[path] ?? fallback
+  return (
+    <div className={s.section}>
+      <Text className={s.head}>{t('Unterordner')}</Text>
+      <Checkbox checked={!!f.useFolders} label={t('Namen der Unterordner übernehmen')} onChange={(_, d) => onChange({ useFolders: !!d.checked })} />
+      <Text size={200} className={s.muted}>
+        {t('Jedes Dokument erhält die Namen der Ordner, in denen es liegt, als Tag, Korrespondent oder Dokumenttyp. Fehlende Einträge legt das DMS an. Beim Korrespondenten und Dokumenttyp gilt der innerste Ordner. Unterordner, die nach dem Übernehmen leer sind, werden gelöscht.')}
+      </Text>
+      {f.useFolders && !f.folder && <Text className={s.muted}>{t('Noch kein Ordner gewählt.')}</Text>}
+      {f.useFolders && error && <Text className={s.muted}>{t(error)}</Text>}
+      {f.useFolders && rows && rows.length === 0 && <Text className={s.muted}>{t('Dieser Ordner enthält keine Unterordner mit Dateien.')}</Text>}
+      {f.useFolders && rows && rows.length > 0 && <div style={{ maxHeight: 320, overflowY: 'auto' }}>
+        {rows.map(r => {
+          const depth = r.path.split('/').length - 1
+          const v = role(r.path, r.role)
+          return (
+            <div key={r.path} className={s.line} style={{ padding: '2px 0' }}>
+              <Text className={s.grow} style={{ paddingLeft: depth * 16 }} title={show(r.path)}>
+                {r.path.split('/').pop()} <span className={s.muted}>({r.files})</span>
+              </Text>
+              <Dropdown style={{ minWidth: 170 }} value={t(ROLES.find(x => x.value === v)!.label)} selectedOptions={[v]}
+                onOptionSelect={(_, d) => onChange({ folders: { ...(f.folders ?? {}), [r.path]: d.optionValue as FolderRole } })}>
+                {ROLES.map(x => <Option key={x.value} value={x.value}>{t(x.label)}</Option>)}
+              </Dropdown>
+            </div>
+          )
+        })}
+      </div>}
+    </div>
   )
 }
 
@@ -343,7 +398,7 @@ export function DmsAssignSettings() {
   return (
     <>
       <PageTitle>{t('Einordnung')}</PageTitle>
-      <Hint>{t('Neue Dokumente bekommen Korrespondent, Dokumenttyp und Tags in dieser Reihenfolge: Vorgaben der Quelle, Regeln der Einträge, KI (wenn eingeschaltet), Gelerntes („Automatisch“). Gelernt wird aus geprüften Dokumenten: Bestätigen und Ändern in der Inbox.')}</Hint>
+      <Hint>{t('Neue Dokumente bekommen Korrespondent, Dokumenttyp und Tags in dieser Reihenfolge: Vorgaben der Quelle, Regeln der Einträge, KI (wenn aktiviert), Gelerntes („Automatisch“). Gelernt wird aus geprüften Dokumenten: Bestätigen und Ändern in der Inbox.')}</Hint>
       <PageTitle>{t('KI beim Import')}</PageTitle>
       {state.aiAllowed ? <>
         <Switch checked={state.ai} label={t('Beim Import mit KI einordnen')} onChange={(_, d) => toggle(d.checked)} />

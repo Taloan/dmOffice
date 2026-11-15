@@ -132,4 +132,46 @@ public class DmsTresorTests : IClassFixture<ChatFixture>
         Assert.DoesNotContain(".INBOX", rentDoc.GetProperty("path").GetString());
         Tresor.Delete(id);
     }
+
+    [Fact]
+    public async Task Bestaetigt_mit_Korrespondent_unter_Ober_eintrag_landet_im_Tresor_nach_Muster()
+    {
+        var id = _fx.Id("cleo");
+        Tresor.Delete(id);
+        var c = _fx.As("cleo");
+        await Json(await c.PostAsJsonAsync("/api/tresor/setup", new { password = "tresor-pass-1", name = "Testhandy" }));
+        var profiles = await Json(await c.GetAsync("/api/dms/profiles"));
+        var files = profiles.EnumerateArray().First(p => p.GetProperty("target").GetString() == "files").GetProperty("id").GetString()!;
+        var profile = (await Json(await c.PostAsJsonAsync("/api/dms/profiles", new
+        {
+            name = "Tresor", target = "tresor", folder = "DMS", folders = "{correspondent}/{doc_year}", names = "{doc_date} {doctype} {title}", unknown = "Unbekannt", follow = true, inbox = ".INBOX", language = "de",
+        }))).GetProperty("id").GetString()!;
+        var parent = (await Json(await c.PostAsJsonAsync("/api/dms/lists", new { kind = Dms.Dms.Correspondent, name = "21_Finanzamt", match = Dms.Dms.None }))).GetProperty("id").GetString();
+        var child = (await Json(await c.PostAsJsonAsync("/api/dms/lists", new { kind = Dms.Dms.Correspondent, name = "Finanzen", parent, match = Dms.Dms.None }))).GetProperty("id").GetString();
+
+        await Json(await Upload(c, files, "logo.txt", "Logo Fotografie Rechnungskopf vom 09.11.2026"));
+        await DmsImport.ProcessQueueAsync(_fx.Space("cleo"), DmsHost.Current!, 100, default);
+        var doc = (await Json(await c.GetAsync("/api/dms/docs?q=Rechnungskopf"))).GetProperty("items")[0].GetProperty("id").GetInt64();
+        await Json(await c.PostAsJsonAsync("/api/dms/docs/batch", new { ids = new[] { doc }, change = new { correspondent = child, confirm = true } }));
+        // Wie ein Bild mit PDF-Fassung: das Original liegt getrennt (original_blob), abgelegt ist die Archivfassung
+        var sp = _fx.Space("cleo");
+        var ob = await sp.Db.Blobs.WriteAsync(new MemoryStream(Encoding.UTF8.GetBytes("PNG-Original")), long.MaxValue, () => new IOException(), default);
+        sp.Db.Exec("UPDATE dms_docs SET original_blob = $b, original_name = 'logo.png', archive = 1 WHERE id = $d", ("$b", ob.Id), ("$d", doc));
+        var moved = await Json(await c.PostAsJsonAsync("/api/dms/docs/move-area", new { ids = new[] { doc }, to = "tresor", profile }));
+        Assert.True(moved.GetProperty("moved").GetInt32() == 1, moved.ToString());
+        Assert.Equal(0, (await Json(await c.GetAsync("/api/dms/docs?q=Rechnungskopf"))).GetProperty("total").GetInt32());
+        var t = (await Json(await c.GetAsync("/api/dms/docs?area=tresor&q=Rechnungskopf"))).GetProperty("items")[0];
+        Assert.False(t.GetProperty("inbox").GetBoolean());
+        Assert.DoesNotContain(".INBOX", t.GetProperty("path").GetString());
+
+        // Zwei Verarbeitungen desselben Dokuments gleichzeitig (Verschieben und Hintergrund): nur eine Datei, kein „ (2)“
+        await Json(await Upload(c, profile, "Doppelt.txt", "Doppelt Probe vom 08.11.2026"));
+        var store = DmsStore.ForTresor(sp.Db, Tresor.DbOf(id)!);
+        var queued = Convert.ToInt64(store.Scalar("SELECT id FROM dms_docs WHERE state = 'queued' ORDER BY id DESC LIMIT 1"));
+        await Task.WhenAll(DmsImport.ProcessAsync(sp, DmsHost.Current!, queued, default, store), DmsImport.ProcessAsync(sp, DmsHost.Current!, queued, default, store));
+        var once = (await Json(await c.GetAsync("/api/dms/docs?area=tresor&q=Probe"))).GetProperty("items")[0].GetProperty("path").GetString()!;
+        Assert.DoesNotContain("(2)", once);
+        Assert.Equal(1, Convert.ToInt32(store.Scalar("SELECT COUNT(*) FROM dms_docs WHERE state = 'done' AND title LIKE '%Doppelt%'")));
+        Tresor.Delete(id);
+    }
 }

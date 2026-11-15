@@ -17,7 +17,9 @@ const useStyles = makeStyles({
 })
 
 /** Dateien aus der eigenen Dateiablage zum Anhaengen waehlen: Ordner oeffnen, Dateien ankreuzen, mit Vorschaubildern. */
-export function StoredFilesDialog({ onPick, onClose }: { onPick: (items: Item[]) => void; onClose: () => void }) {
+export function StoredFilesDialog({ onPick, onClose, action }: { onPick: (items: Item[]) => void; onClose: () => void
+  /** Beschriftung des Knopfs mit {n}; Vorgabe „Anfügen ({n})“ */
+  action?: string }) {
   const s = useStyles()
   const [path, setPath] = useState('')
   const [items, setItems] = useState<Item[] | null>(null)
@@ -55,7 +57,7 @@ export function StoredFilesDialog({ onPick, onClose }: { onPick: (items: Item[])
           </DialogContent>
           <DialogActions>
             <Button onClick={onClose}>{t('Abbrechen')}</Button>
-            <Button appearance="primary" disabled={!picked.length} onClick={() => onPick(picked)}>{t('Anfügen ({n})', { n: picked.length })}</Button>
+            <Button appearance="primary" disabled={!picked.length} onClick={() => onPick(picked)}>{action ? action.replace('{n}', String(picked.length)) : t('Anfügen ({n})', { n: picked.length })}</Button>
           </DialogActions>
         </DialogBody>
       </DialogSurface>

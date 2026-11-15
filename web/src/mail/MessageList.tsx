@@ -1,12 +1,15 @@
 import { Avatar, Button, Spinner, Text, makeStyles, mergeClasses, tokens } from '@fluentui/react-components'
 import { Attach16Regular, Flag16Filled, Flag16Regular, ArrowReply16Regular, ArrowForward16Regular, ShieldError16Regular } from '@fluentui/react-icons'
 import { useEffect, useMemo, useRef } from 'react'
-import { addrText, Folder, MailItem } from '../api'
+import { addrText, featureOn, Folder, MailItem } from '../api'
 import { Snippet } from '../shell/Snippet'
 import { fmtDate } from '../shell/hooks'
 import { folderLabel } from './FolderPane'
 import { usePrefs } from '../prefs'
 import { CategoryChips } from './Categories'
+import { AliasHint } from './CatchallFolders'
+import { Expiry, ExpiryTag } from './ExpiryMenu'
+import { mailAccountType } from './dragTypes'
 import { locale, t } from '../i18n'
 
 const useStyles = makeStyles({
@@ -67,6 +70,8 @@ interface Props {
   onToggleFlag: (i: MailItem) => void
   /** Wann eine zurueckgelegte Mail wiederkommt (Wiedervorlage). */
   snoozeOf?: (i: MailItem) => string | undefined
+  /** Entfernen nach Zeit: Sanduhr mit Zeitpunkt */
+  expiryOf?: (i: MailItem) => Expiry | undefined
   /** Klick auf einen Kategorie-Badge: Kategorie von dieser Mail entfernen. */
   onRemoveCategory?: (i: MailItem, key: string) => void
   /** Rechtsklick: Mail (ggf. erst auswaehlen) und Mausposition. */
@@ -90,7 +95,7 @@ const inboxZero = () => [
   t('Alles abgearbeitet. Der Rest des Tages gehört dir.'),
 ]
 
-export function MessageList({ items, selected, onSelect, loading, showFolder, folders, more, onMore, onToggleFlag, snoozeOf, onContextMenu, onRemoveCategory, empty, onOpen, grouped = true }: Props) {
+export function MessageList({ items, selected, onSelect, loading, showFolder, folders, more, onMore, onToggleFlag, snoozeOf, expiryOf, onContextMenu, onRemoveCategory, empty, onOpen, grouped = true }: Props) {
   // Einmal je Anzeige auswuerfeln, nicht bei jedem Neuzeichnen
   const saying = useMemo(() => { const l = inboxZero(); return l[Math.floor(Math.random() * l.length)] }, [empty])
   const s = useStyles()
@@ -109,8 +114,12 @@ export function MessageList({ items, selected, onSelect, loading, showFolder, fo
     shownSel.current = id
   }, [selected, items])
   // Textgroesse und Abstand (Einstellungen -> E-Mail -> Nachrichtenliste)
-  const zoom = prefs.textSize === 'small' ? 0.92 : prefs.textSize === 'large' ? 1.12 : 1
-  const padY = prefs.density === 'compact' ? 3 : prefs.density === 'roomy' ? 12 : 8
+  // Die Liste folgt nur „Abstände“; Zoom gibt es für den Mailtext im Lesebereich
+  const zoom = 1
+  const density = prefs.listDensity ?? prefs.density ?? 'normal'
+  const padY = density === 'compact' ? 2 : density === 'roomy' ? 14 : 7
+  const avatarSize = density === 'compact' ? 24 : density === 'roomy' ? 40 : 32
+  const rowGap = density === 'compact' ? 0 : density === 'roomy' ? 4 : 1
   const avatars = prefs.showAvatars ?? true
   const preview = prefs.showPreview ?? true
 
@@ -154,7 +163,7 @@ export function MessageList({ items, selected, onSelect, loading, showFolder, fo
         const folder = showFolder ? folders[item.account]?.find(f => f.path === item.folder) : undefined
         return [header,
           <div key={item.id} data-mail={item.id} role="option" aria-selected={isSel}
-            className={mergeClasses(s.item, !item.seen && s.unread, isSel && s.selected)} style={{ paddingTop: padY, paddingBottom: padY }}
+            className={mergeClasses(s.item, !item.seen && s.unread, isSel && s.selected)} style={{ paddingTop: padY, paddingBottom: padY, fontSize: density === 'compact' ? 13 : undefined }}
             onClick={e => click(e, item)} onDoubleClick={() => onOpen?.(item)} draggable
             onContextMenu={e => {
               if (!onContextMenu) return
@@ -166,10 +175,13 @@ export function MessageList({ items, selected, onSelect, loading, showFolder, fo
             onDragStart={e => {
               const ids = isSel ? selected : [item.id]
               e.dataTransfer.setData('application/x-dmoffice-mail', JSON.stringify({ account: item.account, ids }))
-              e.dataTransfer.effectAllowed = 'move'
+              // Postfach als eigener Typ: beim Ziehen sind nur die Typen lesbar, nicht die Daten (Ordner anderer Postfächer sind kein Ziel)
+              e.dataTransfer.setData(mailAccountType(item.account), '')
+              // Ziehen verschiebt, mit Strg kopiert (auch in andere Postfächer)
+              e.dataTransfer.effectAllowed = featureOn('mailmove') ? 'copyMove' : 'move'
             }}>
-            {avatars && <Avatar name={item.from?.name || item.from?.address || '?'} size={32} color="colorful" />}
-            <div className={s.body}>
+            {avatars && <Avatar name={item.from?.name || item.from?.address || '?'} size={avatarSize as 24 | 32 | 40} color="colorful" />}
+            <div className={s.body} style={{ gap: rowGap }}>
               <div className={s.row}>
                 <span className={mergeClasses(s.from, !item.seen && s.bold)}>{addrText(item.from) || t('(ohne Absender)')}</span>
                 {item.answered && <ArrowReply16Regular />}
@@ -183,11 +195,13 @@ export function MessageList({ items, selected, onSelect, loading, showFolder, fo
                 <span className={mergeClasses(s.subject, !item.seen && s.bold, !item.seen && s.brand)}>{item.subject || t('(ohne Betreff)')}</span>
                 <span className={s.date}>{fmtDate(item.date)}</span>
               </div>
-              {(preview || unsure || folder || item.keywords?.length > 0) && <div className={s.row}>
+              {(preview || unsure || folder || item.alias || item.keywords?.length > 0 || expiryOf?.(item)) && <div className={s.row}>
                 <CategoryChips keywords={item.keywords} onRemove={onRemoveCategory ? k => onRemoveCategory(item, k) : undefined} />
                 {snoozeOf?.(item) && <span className={s.tag} title={t('Wiedervorlage')}>⏰ {fmtDate(snoozeOf(item)!)}</span>}
+                {expiryOf?.(item) && <ExpiryTag e={expiryOf(item)!} className={s.tag} />}
                 {unsure && <span className={mergeClasses(s.tag, s.unsure)}><ShieldError16Regular style={{ verticalAlign: -3 }} /> {t('unsicher')}</span>}
                 {folder && <span className={s.tag} title={folder.path}>{folderLabel(folder)}</span>}
+                {item.alias && <AliasHint className={s.tag} address={item.alias} state={item.aliasState} sender={item.from?.name} />}
                 {preview && !item.match && <span className={s.preview}>{item.preview || (item.cached ? '' : '…')}</span>}
               </div>}
               {item.match && <div className={s.row}>

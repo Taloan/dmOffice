@@ -63,7 +63,7 @@ export const TILE_INFOS: Record<string, { label: () => string; value: (i: Named,
     m.focal ? num(m.focal, 0) + 'mm' : undefined] },
   camera: { label: () => t('Kamera und Objektiv'), value: (_, m) => [m?.camera ?? '', m?.lens ?? undefined] },
   title: { label: () => t('Titel'), value: (_, m) => [m?.title ?? ''] },
-  keywords: { label: () => t('Stichwörter'), value: (_, m) => [m?.keywords?.split('\n').join(', ') ?? ''] },
+  keywords: { label: () => t('Tags'), value: (_, m) => [m?.keywords?.split('\n').join(', ') ?? ''] },
   rating: { label: () => t('Bewertung'), value: (_, m) => [m?.rating ? '★'.repeat(m.rating) : ''] },
   dims: { label: () => t('Abmessungen'), value: (_, m) => [dimsOf(m)] },
 }
@@ -87,7 +87,7 @@ export const ATTRS: Record<FilterAttr, { label: () => string; values: (i: Named,
   aperture: { label: () => t('Blende'), values: (_, m) => [m?.aperture ? String(m.aperture) : ''], show: v => fmtAperture(+v), order: 'num' },
   exposure: { label: () => t('Belichtungszeit'), values: (_, m) => [m?.exposure ? String(m.exposure) : ''], show: v => fmtExposure(+v), order: 'num' },
   iso: { label: () => t('ISO'), values: (_, m) => [m?.iso ? String(m.iso) : ''], show: v => `ISO ${v}`, order: 'num' },
-  keyword: { label: () => t('Stichwort'), values: (_, m) => m?.keywords ? m.keywords.split('\n') : [''], order: 'alpha' },
+  keyword: { label: () => t('Tags'), values: (_, m) => m?.keywords ? m.keywords.split('\n') : [''], order: 'alpha' },
   title: { label: () => t('Titel'), values: (_, m) => [m?.title?.trim() ?? ''], show: v => v === '' ? t('Ohne Titel') : v, order: 'alpha' },
   description: { label: () => t('Beschreibung'), values: (_, m) => [m?.description?.trim() ?? ''], show: v => v === '' ? t('Ohne Beschreibung') : v, order: 'alpha' },
   rating: { label: () => t('Bewertung'), values: (_, m) => [String(m?.rating ?? 0)], show: v => v === '0' ? t('Ohne Bewertung') : '★'.repeat(+v), order: 'desc' },
@@ -102,10 +102,10 @@ export const ATTRS: Record<FilterAttr, { label: () => string; values: (i: Named,
   },
 }
 export const PRESETS: { label: () => string; cols: FilterAttr[] }[] = [
-  { label: () => t('Datum, Kamera, Objektiv, Stichwort'), cols: ['year', 'camera', 'lens', 'keyword'] },
+  { label: () => t('Datum, Kamera, Objektiv, Tags'), cols: ['year', 'camera', 'lens', 'keyword'] },
   { label: () => t('Aufnahme: Brennweite, Blende, Belichtung, ISO'), cols: ['focal', 'aperture', 'exposure', 'iso'] },
   { label: () => t('Zeit und Art: Jahr, Monat, Bewertung, Dateityp'), cols: ['year', 'month', 'rating', 'type'] },
-  { label: () => t('Auswahl: Bewertung, Farbmarkierung, Jahr, Stichwort'), cols: ['rating', 'label', 'year', 'keyword'] },
+  { label: () => t('Auswahl: Bewertung, Farbmarkierung, Jahr, Tags'), cols: ['rating', 'label', 'year', 'keyword'] },
 ]
 export const DEFAULT_FILTER_COLS: FilterAttr[] = PRESETS[0].cols
 export const cleanFilterCols = (c?: string[]): FilterAttr[] => c?.length === 4 && c.every(x => x in ATTRS) ? c as FilterAttr[] : DEFAULT_FILTER_COLS

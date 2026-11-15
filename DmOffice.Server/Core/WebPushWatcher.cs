@@ -48,7 +48,7 @@ public sealed class WebPushWatcher(WebPush web, Spaces spaces, IServiceProvider 
             bool On(string k) => !doc.RootElement.TryGetProperty(k, out var v) || v.ValueKind != JsonValueKind.False;
             return (On("notifyMail"), On("notifyCalendar"));
         }
-        catch (JsonException) { return (true, true); }
+        catch (Exception e) when (e is JsonException or InvalidOperationException) { return (true, true); }
     }
 
     /// <summary>Neue ungelesene Mail im Posteingang: eine Benachrichtigung je Konto und Runde (die neueste, „+ n weitere“).</summary>

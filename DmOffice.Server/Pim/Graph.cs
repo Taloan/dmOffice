@@ -22,7 +22,7 @@ public sealed class GraphLink
     public string? DeltaLink { get; set; }
     public DateTime? LastSync { get; set; }
     public string? LastError { get; set; }
-    /// <summary>Zuletzt aufgeloeste Konflikte ("Titel: Fassung von Microsoft verworfen"), hoechstens 20.</summary>
+    /// <summary>Zuletzt aufgeloeste Konflikte ("Titel: Version von Microsoft verworfen"), hoechstens 20.</summary>
     public List<string> Conflicts { get; set; } = new();
 }
 

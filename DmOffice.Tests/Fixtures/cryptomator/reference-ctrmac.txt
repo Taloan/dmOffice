@@ -1,0 +1,6 @@
+D	/Ordner ä	0	-
+D	/Ordner ä/tiefer	0	-
+F	/Hallo.txt	16	eb68af3fadc48bf9afd1b36a5edf71a130bd7fa927e7cad1f0dc73a7001a214c
+F	/Ordner ä/Lang ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ ÄÖÜ .txt	4	5cf7d7ec1cb5c221981f277051f7f82a82e155b53c76ab9b6f75fde9641f6fa0
+F	/Ordner ä/tiefer/drei Blöcke.bin	66770	aec75f639c5e78f5b49514b5f1d81d38522d90d88f4bcb904f7da578f3b27b31
+F	/leer.bin	0	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855

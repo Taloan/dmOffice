@@ -36,17 +36,17 @@ export function ModulesAdmin() {
     <>
       <AdminHeading>{t('Module')}</AdminHeading>
       {list?.filter(m => m.released).map(m => (
-        <Switch key={m.id} checked={m.on} disabled={busy} label={t('{name} eingeschaltet', { name: names[m.id]?.() ?? m.id })} onChange={(_, d) => toggle(m.id, d.checked)} />
+        <Switch key={m.id} checked={m.on} disabled={busy} label={t('{name} aktiviert', { name: names[m.id]?.() ?? m.id })} onChange={(_, d) => toggle(m.id, d.checked)} />
       ))}
-      <Hint>{t('Gilt für alle Benutzer. Ausgeschaltet fehlt das Modul in Web und App, seine Hintergrundarbeit ruht; gespeicherte Inhalte bleiben erhalten.')}</Hint>
+      <Hint>{t('Gilt für alle Benutzer. Ist ein Modul deaktiviert, fehlt es in Web und App und seine Hintergrundarbeit ruht. Gespeicherte Inhalte bleiben erhalten.')}</Hint>
       {engine && (engine.builtIn || engine.external) && <>
         <AdminHeading>{t('Photo-Engine')}</AdminHeading>
         {engine.external
           ? <Hint>{t('dmOffice verwendet eine Photo-Engine auf einem anderen Rechner (PHOTO_ENGINE_URL).')}</Hint>
           : <>
-            <Switch checked={engine.on} disabled={busy} label={t('Photo-Engine eingeschaltet')}
+            <Switch checked={engine.on} disabled={busy} label={t('Photo-Engine aktiviert')}
               onChange={(_, d) => { setBusy(true); api.put<EngineState>('/api/admin/photo-engine', { on: d.checked }).then(setEngine).catch(fail).finally(() => setBusy(false)) }} />
-            <Hint>{t('Rechnet auf diesem Server die RAW-Entwicklung und Bearbeitungsvorschläge. Ausgeschaltet fehlen diese Funktionen. Fotos ohne RAW lassen sich weiter bearbeiten.')}</Hint>
+            <Hint>{t('Rechnet auf diesem Server die RAW-Entwicklung und Bearbeitungsvorschläge. Ist die Photo-Engine deaktiviert, fehlen diese Funktionen. Fotos ohne RAW lassen sich weiter bearbeiten.')}</Hint>
           </>}
       </>}
     </>

@@ -21,6 +21,8 @@ export function phishText(f: PhishFinding): string {
       return f.detail === 'sender'
         ? t('Die Absenderadresse gehört zu {domain}. Das sieht aus wie {like}, ist es aber nicht.', { domain: f.domain ?? '', like: f.like ?? '' })
         : t('Ein Link führt zu {domain}. Das sieht aus wie {like}, ist es aber nicht.', { domain: f.domain ?? '', like: f.like ?? '' })
+    case 'virus':
+      return t('Der Virenscanner hat in dieser Mail Schadsoftware gefunden ({name}). Die Anhänge sind gesperrt.', { name: f.detail ?? '' })
     case 'freemail-org':
       return f.detail === 'not-to-me'
         ? t('„{name}“ klingt nach einer Firma oder einem Dienst, schreibt aber von einem kostenlosen Postfach ({sender}). Die Mail ist dazu nicht an dich adressiert, sondern an jemand anderen – typisch für Massenversand.', { name: f.like ?? '', sender: f.domain ?? '' })

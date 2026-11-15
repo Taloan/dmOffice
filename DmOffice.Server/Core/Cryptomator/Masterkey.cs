@@ -15,6 +15,8 @@ public sealed class Masterkey : IDisposable
     public const int KeyLength = 32;
     public byte[] EncKey { get; }
     public byte[] MacKey { get; }
+    /// <summary>Tresor mit SIV_CTRMAC (ältere Cryptomator-Versionen): Dateiinhalte mit AES-CTR und HMAC statt AES-GCM.</summary>
+    public bool CtrMac { get; set; }
 
     public Masterkey(byte[] encKey, byte[] macKey)
     {
@@ -131,13 +133,13 @@ public static class MasterkeyFile
 
 /// <summary>
 /// vault.cryptomator: JWT (HS256, signiert mit Verschlüsselungs- und MAC-Masterkey) mit Format 8, Grenze für Namenskürzung
-/// und SIV_GCM. Der Kopf nennt in <c>kid</c>, wo der Masterkey liegt.
+/// und SIV_GCM (neue Tresore) bzw. SIV_CTRMAC (ältere). Der Kopf nennt in <c>kid</c>, wo der Masterkey liegt.
 /// </summary>
 public static class VaultConfig
 {
     public const string FileName = "vault.cryptomator";
     public const int Format = 8;
-    public const string CipherCombo = "SIV_GCM";
+    public const string CipherCombo = "SIV_GCM", CipherComboCtrMac = "SIV_CTRMAC";
     public const string MasterkeyKid = "masterkeyfile:" + MasterkeyFile.FileName;
     public const int DefaultShorteningThreshold = 220;
 
@@ -200,7 +202,8 @@ public static class VaultConfig
             r.GetProperty("cipherCombo").GetString() ?? "", r.TryGetProperty("jti", out var j) ? j.GetString() ?? "" : "",
             head.RootElement.TryGetProperty("kid", out var k) ? k.GetString() ?? "" : "");
         if (cfg.Format != Format) throw new FormatException($"Vault-Format {cfg.Format} wird nicht unterstützt (nur {Format}).");
-        if (cfg.CipherCombo != CipherCombo) throw new FormatException($"Verfahren {cfg.CipherCombo} wird nicht unterstützt (nur {CipherCombo}).");
+        if (cfg.CipherCombo is not (CipherCombo or CipherComboCtrMac))
+            throw new FormatException($"Verfahren {cfg.CipherCombo} wird nicht unterstützt (nur {CipherCombo} und {CipherComboCtrMac}).");
         return cfg;
     }
 }

@@ -9,10 +9,10 @@ Stand: Version 2. Gilt für Fotos in der eigenen Ablage und in Galerie-Ordnern (
 dmOffice schreibt Angaben dorthin, wo andere Programme (Lightroom, darktable, digiKam, Windows) sie lesen, ohne exiftool:
 
 - **JPEG:** in die Datei selbst. Ersetzt werden nur die Metadaten-Abschnitte (EXIF, XMP), die Bilddaten bleiben Byte für
-  Byte gleich. Der Ort kommt ins EXIF-GPS, Titel, Bildunterschrift, Bewertung und Stichwörter ins XMP.
+  Byte gleich. Der Ort kommt ins EXIF-GPS, Titel, Bildunterschrift, Bewertung und Tags ins XMP.
 - **RAW:** nie in die Datei. Änderungen kommen in die XMP-Datei daneben: eine vorhandene `foto.arw.xmp` oder `foto.xmp`,
   sonst eine neue `foto.xmp`. Angaben anderer Programme darin (Lightroom-Entwicklung, darktable-Verlauf, hierarchische
-  Stichwörter …) bleiben erhalten.
+  Tags …) bleiben erhalten.
 - Nach dem Schreiben liest dmOffice das Ergebnis zurück und prüft es (Bilddaten gleich, Aufnahmezeit und Kamera wie
   vorher, Ort wie gewollt). Schlägt die Prüfung fehl, bleibt die Datei unverändert.
 
@@ -21,18 +21,18 @@ Galerie-Ordner müssen dafür beschreibbar eingebunden sein. Für RAW-Fotos in e
 
 Beim Lesen geht eine XMP-Datei den Angaben im Foto vor, und XMP geht IPTC vor.
 
-## Titel, Bildunterschrift, Bewertung, Stichwörter
+## Titel, Bildunterschrift, Bewertung, Tags
 
-Ein oder mehrere Fotos markieren → im Menüband *Angaben* oder im Kontextmenü *Titel, Stichwörter, Bewertung …* (App:
+Ein oder mehrere Fotos markieren → im Menüband *Angaben* oder im Kontextmenü *Titel, Tags, Bewertung …* (App:
 Auswahl → Menü). Bei mehreren Fotos:
 
 - Felder, die man nicht anfasst, bleiben bei jedem Foto, wie sie sind. Ein Feld mit unterschiedlichen Werten zeigt
   „Unterschiedlich“.
-- Stichwörter zeigen, wie viele der Fotos sie haben („Berge (3/5)“). Hinzugefügte bekommen alle markierten Fotos,
-  entfernte verlieren alle. Entfernen nimmt sie auch aus Lightrooms hierarchischen Stichwörtern, damit sie nicht
+- Tags zeigen, wie viele der Fotos sie haben („Berge (3/5)“). Hinzugefügte bekommen alle markierten Fotos,
+  entfernte verlieren alle. Entfernen nimmt sie auch aus Lightrooms hierarchischen Tags, damit sie nicht
   zurückkommen.
 
-Die Suche in der Galerie findet Titel, Bildunterschriften und Stichwörter.
+Die Suche in der Galerie findet Titel, Bildunterschriften und Tags.
 
 ## Ort
 

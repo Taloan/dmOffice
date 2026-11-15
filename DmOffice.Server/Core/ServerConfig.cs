@@ -3,11 +3,42 @@ using System.Text.Json;
 namespace DmOffice.Core;
 
 /// <summary>Einstellungen fuer den ganzen Server (nicht je Benutzer) - data/server.json.</summary>
+/// <summary>Identitätsanbieter (OpenID Connect). Das Client-Geheimnis ist mit dem Hauptschlüssel eingepackt.</summary>
+public sealed class OidcSettings
+{
+    public bool Enabled { get; set; }
+    /// <summary>Beschriftung des Knopfs „Anmelden mit …“</summary>
+    public string? Name { get; set; }
+    /// <summary>Aussteller-Adresse (issuer), etwa https://sso.example.org/realms/dmoffice</summary>
+    public string? Issuer { get; set; }
+    public string? ClientId { get; set; }
+    public string? ClientSecret { get; set; }
+    /// <summary>Unbekannte Konten beim ersten Anmelden anlegen (sonst nur verknüpfte)</summary>
+    public bool AutoCreate { get; set; }
+    /// <summary>Nur Mitglieder dieser Gruppe (Claim „groups“) bekommen ein neues Konto; leer: alle</summary>
+    public string? Group { get; set; }
+    /// <summary>Benutzer dürfen die Verknüpfung selbst lösen und legen dabei ein eigenes Passwort fest</summary>
+    public bool AllowUnlink { get; set; }
+    /// <summary>Beim Abmelden in dmOffice auch beim Anbieter abmelden (sonst ist man beim nächsten Klick ohne Abfrage wieder drin)</summary>
+    public bool LogoutAtProvider { get; set; } = true;
+    /// <summary>Anmeldung nur über den Anbieter: Anmeldename und Passwort gelten nur noch für Administratoren (Notzugang, falls der Anbieter ausfällt)</summary>
+    public bool OnlyOidc { get; set; }
+}
+
 public sealed class ServerSettings
 {
     /// <summary>Speicher fuer Dateien (WebDAV, Dateien-Ansicht, notizi-Abgleich) je Benutzer in MB. 0: unbegrenzt. Vorgabe 100 GB.</summary>
     public long DefaultFileQuotaMb { get; set; } = 100 * 1024;
 
+    /// <summary>Virenprüfung mit ClamAV (clamd über TCP). Aus, bis der Admin sie einschaltet (VirusScan).</summary>
+    public bool ClamAv { get; set; }
+    /// <summary>Rechner von clamd, etwa „clamav“ (Container im selben Netz) oder eine IP.</summary>
+    public string? ClamAvHost { get; set; }
+    public int ClamAvPort { get; set; } = 3310;
+    /// <summary>Größere Dateien werden nicht geprüft (clamd: StreamMaxLength, Vorgabe 100 MB).</summary>
+    public int ClamAvMaxMb { get; set; } = 100;
+    /// <summary>Ohne erreichbaren Scanner nichts annehmen (sonst: weiter mit Eintrag im Protokoll).</summary>
+    public bool ClamAvRequired { get; set; }
 
     /// <summary>Office-Server (Collabora/CODE, ONLYOFFICE) fuer das Bearbeiten im Browser, etwa https://office.example.org.
     /// Leer: abgeschaltet. dmOffice liest dort /hosting/discovery.</summary>
@@ -21,6 +52,10 @@ public sealed class ServerSettings
 
     /// <summary>Kopfzeile fuer das JWT (ONLYOFFICE: JWT_HEADER), Vorgabe Authorization.</summary>
     public string? OfficeJwtHeader { get; set; }
+
+
+    /// <summary>Anmeldung über einen Identitätsanbieter (OpenID Connect), zusätzlich zu Anmeldename und Passwort.</summary>
+    public OidcSettings Oidc { get; set; } = new();
 
     /// <summary>Hoechstwerte fuer die Aufbewahrung, die Benutzer unter Einstellungen -> Dateien nicht ueberschreiten.</summary>
     public FileLimits FileLimits { get; set; } = new();
@@ -51,6 +86,12 @@ public sealed class ServerSettings
     public bool ExternalOneDriveForUsers { get; set; }
     /// <summary>Benutzer duerfen eigene pCloud-Ordner einbinden (pCloud-API, Anmeldung je Ordner mit der eigenen pCloud-App des Benutzers).</summary>
     public bool ExternalPCloudForUsers { get; set; }
+
+    /// <summary>Benutzer dürfen eigene SFTP-Ordner einbinden (eigener Schalter neben WebDAV; Heimnetz-Regel wie bei WebDAV).</summary>
+    public bool ExternalSftpForUsers { get; set; }
+
+    /// <summary>Frühere Ziele mit alten Daten (FormerTargets): bis gelöscht oder vergessen.</summary>
+    public List<FormerTarget> FormerTargets { get; set; } = new();
     /// <summary>Früher: Schalter der Audiothek - nur noch für die einmalige Übernahme in <see cref="ModulesOff"/>.</summary>
     public bool Audio { get; set; }
     /// <summary>Vom Admin ausgeschaltete Module (Features.Modules): weg aus der Leiste, API 404, Hintergrundarbeit ruht.
@@ -154,6 +195,10 @@ public sealed class ServerSettings
     public int S3MinFreePercent { get; set; } = 10;
     /// <summary>So viele GB bleiben auf dem lokalen Speichervolumen immer frei. Null: frueher in Prozent eingestellt (<see cref="S3MinFreePercent"/>).</summary>
     public double? S3MinFreeGb { get; set; }
+    /// <summary>Belegung des Storage Extender: min, opt oder max (S3Mirror.UsageOf). Null: max - so verhielt er sich bis 2.0, alles wird übertragen.</summary>
+    public string? S3Usage { get; set; }
+    /// <summary>Speicherbegrenzung des Storage Extender in GB; null: unbegrenzt.</summary>
+    public double? S3SizeGb { get; set; }
 }
 
 /// <summary>Hoechstwerte je Benutzer; 0 = keine Vorgabe (der Benutzer darf auch "unbegrenzt"). Vorgaben: Versionen und Papierkorb
@@ -220,6 +265,12 @@ public sealed class ServerConfig
         return null;
     }
 
+    /// <summary>Client-Geheimnis des Identitätsanbieters im Klartext, null wenn keins.</summary>
+    public string? OidcSecret() => Unwrapped(Current.Oidc.ClientSecret);
+
+    public void SetOidcSecret(string? value) => Update(s => s.Oidc.ClientSecret =
+        string.IsNullOrEmpty(value) || _vault == null ? null : _vault.Wrap(System.Text.Encoding.UTF8.GetBytes(value)));
+
     /// <summary>Passwort des WebDAV-Ziels im Klartext, null wenn keins.</summary>
     public string? StorageWebDavPassword() => Unwrapped(Current.StorageWebDavPassword);
 
@@ -256,6 +307,12 @@ public sealed class ServerConfig
 
     public void SetAiApiKey(string? key) => Update(s => s.AiApiKey =
         string.IsNullOrEmpty(key) || _vault == null ? null : _vault.Wrap(System.Text.Encoding.UTF8.GetBytes(key)));
+
+    /// <summary>Geheimnis mit dem Hauptschlüssel einpacken (zum Speichern in den Einstellungen), null wenn leer oder ohne Schlüssel.</summary>
+    public string? Wrap(string? value) => string.IsNullOrEmpty(value) || _vault == null ? null : _vault.Wrap(System.Text.Encoding.UTF8.GetBytes(value));
+
+    /// <summary>Eingepacktes Geheimnis im Klartext (frühere Ziele), null wenn keins.</summary>
+    public string? Unwrap(string? wrapped) => Unwrapped(wrapped);
 
     private string? Unwrapped(string? wrapped)
     {

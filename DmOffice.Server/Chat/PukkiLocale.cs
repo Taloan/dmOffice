@@ -37,7 +37,7 @@ public static partial class Pukki
             using var doc = JsonDocument.Parse(json);
             return doc.RootElement.TryGetProperty("language", out var l) && l.ValueKind == JsonValueKind.String && l.GetString() == "en";
         }
-        catch (JsonException) { return false; }
+        catch (Exception e) when (e is JsonException or InvalidOperationException) { return false; }
     }
 
     private sealed class Scope(bool before, IDisposable? zone) : IDisposable

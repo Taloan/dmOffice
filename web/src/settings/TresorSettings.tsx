@@ -143,7 +143,7 @@ export function TresorSettings() {
         <ChangePassword />
       </Section>
 
-      <Section title={t('Wiederherstellung')} hint={t('Mit einem Wiederherstellungscode oder dem Wiederherstellungsschlüssel öffnest du den Tresor, wenn du das Tresor-Passwort vergessen hast.')}>
+      <Section title={t('tresor|Wiederherstellung')} hint={t('Mit einem Wiederherstellungscode oder dem Wiederherstellungsschlüssel öffnest du den Tresor, wenn du das Tresor-Passwort vergessen hast.')}>
         <div className={s.form}>
           <Text>{t('Noch gültige Wiederherstellungscodes: {n} von 10', { n: st.codesLeft ?? 0 })}</Text>
           <div className={s.row}>

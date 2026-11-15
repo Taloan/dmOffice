@@ -504,6 +504,9 @@ public static class ImportProfiles
                     // Ein Muster, das zurück in einen Quellordner führt, sortierte dieselben Fotos immer wieder um
                     if (p.Sources.Any(src => src.Mount == p.Mount && (src.Path.Length == 0 || folder == src.Path || FileStore.InRoot(folder, src.Path))))
                         throw new InvalidOperationException("Der Zielordner liegt in einem Quellordner.");
+                    // Aus Bildangaben gebildete Ordner: nie in Systemordner der eigenen Ablage (notizi, System-Tresor)
+                    if (target is OwnLoc && FileStore.IsSystem(db, folder))
+                        throw new InvalidOperationException("Der Zielordner ist ein Systemordner.");
                     // In einen externen Ordner, der Galerie-Ordner ist: gleich mit Bildangaben und Vorschaubild in die Galerie, aus der
                     // Datei, die wir gerade in der Hand haben - sonst läse das Einlesen sie über das Netz noch einmal
                     Func<Item, string, byte[]?, Task>? toGallery = target is ExtLoc toExt ? async (f, dest, data) =>

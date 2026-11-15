@@ -214,6 +214,21 @@ public class OnlyOfficeTests : IClassFixture<OnlyOfficeFixture>
     }
 
     [Fact]
+    public async Task Begrenzter_Link_Datei_nur_mit_JWT()
+    {
+        var db = _fx.Berta.Db;
+        FileStore.Put(db, "Begrenzt.docx", OfficeTemplates.Create("docx"), null);
+        var link = await Json(await _fx.Client().PostAsJsonAsync("/api/files/links", new { path = "Begrenzt.docx", mode = "read", maxDownloads = 3 }));
+        var s = await Json(await _fx.Client(false).PostAsync($"/api/public/{link.GetProperty("token").GetString()}/office", null));
+        var cfg = Jwt.Read(s.GetProperty("config").GetProperty("token").GetString(), FakeDocs.Secret)!;
+        var fileUrl = Local((string)cfg["document"]!["url"]!);
+        Assert.Equal(HttpStatusCode.Forbidden, (await _fx.Client(false).GetAsync(fileUrl)).StatusCode);
+        var signed = new HttpRequestMessage(HttpMethod.Get, fileUrl);
+        signed.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Jwt.Sign(new JsonObject { ["url"] = fileUrl }, FakeDocs.Secret));
+        Assert.Equal(HttpStatusCode.OK, (await _fx.Client(false).SendAsync(signed)).StatusCode);
+    }
+
+    [Fact]
     public void Jwt_wie_ONLYOFFICE()
     {
         var token = Jwt.Sign(new JsonObject { ["a"] = 1 }, "s");

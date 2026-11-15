@@ -93,7 +93,7 @@ public static class ExternalFolders
 
     /// <param name="Search">Server-Mount, in dem gesucht werden kann</param>
     /// <param name="Available">Gerade erreichbar (nur in Listen, die es prüfen - siehe <see cref="WithReachAsync"/>)</param>
-    public sealed record Mount(string Id, string Name, string Kind, bool ReadOnly, bool Search = false, bool Available = true, string? Account = null, string? Access = null, string? Path = null);
+    public sealed record Mount(string Id, string Name, string Kind, bool ReadOnly, bool Search = false, bool Available = true, string? Account = null, string? Access = null, string? Path = null, bool Sftp = false);
 
     // ---------------- Erreichbarkeit ----------------
     // Ein Ordner auf dem Server kann fehlen (Freigabe nicht eingehängt, NAS aus), ein WebDAV-Ordner offline sein. Geprüft wird mit
@@ -167,7 +167,7 @@ public static class ExternalFolders
 
     /// <summary>Die externen Ziele (Zugänge), soweit die Verwaltung ihre Art erlaubt.</summary>
     public static List<Mount> TargetsOf(UserSpace space, ServerConfig config) =>
-        Own(space).Where(m => m.Access == null && Allowed(config.Current, m)).Select(m => new Mount(m.Id, m.Name, m.KindOrDefault, false, Account: AccountOf(m))).ToList();
+        Own(space).Where(m => m.Access == null && Allowed(config.Current, m)).Select(m => new Mount(m.Id, m.Name, m.KindOrDefault, false, Account: AccountOf(m), Sftp: RemoteDrivers.IsSftp(m.Url))).ToList();
 
     private static string? AccountOf(UserMount m) => m.Account ?? (Uri.TryCreate(m.Url, UriKind.Absolute, out var u) ? u.Host : null);
 
@@ -243,7 +243,7 @@ public static class ExternalFolders
         var own = Own(space);
         foreach (var m in own.Where(x => x.Access != null))
             if (own.FirstOrDefault(a => a.Id == m.Access) is { } acc && Allowed(s, acc))
-                list.Add(new Mount(m.Id, m.Name, acc.KindOrDefault, false, Account: AccountOf(acc), Access: acc.Id, Path: m.Path));
+                list.Add(new Mount(m.Id, m.Name, acc.KindOrDefault, false, Account: AccountOf(acc), Access: acc.Id, Path: m.Path, Sftp: RemoteDrivers.IsSftp(acc.Url)));
         return list;
     }
 
@@ -271,7 +271,7 @@ public static class ExternalFolders
                 {
                     UserMount.OneDrive => OneDrive(space, acc),
                     UserMount.PCloud => PCloudFolders.Driver(acc),
-                    _ => new WebDavDriver(acc.Url, acc.User, acc.Password, s.ExternalWebDavPrivate ? Open_ : Public),
+                    _ => RemoteDrivers.Open(acc.Url, acc.User, acc.Password, s.ExternalWebDavPrivate ? Open_ : Public, AllowFor(s)),
                 };
                 if (m.Access != null && StoragePath.Clean(m.Path).Length > 0) d = new SubfolderDriver(d, StoragePath.Clean(m.Path));
                 return (d, false, m.Include);
@@ -286,8 +286,14 @@ public static class ExternalFolders
         {
             UserMount.OneDrive => s.ExternalOneDriveForUsers,
             UserMount.PCloud => s.ExternalPCloudForUsers,
-            _ => s.ExternalWebDavForUsers,
+            _ => KindAllowed(s, m.Url),
         };
+
+    /// <summary>WebDAV oder SFTP (nach der Adresse) für eigene Ordner erlaubt?</summary>
+    public static bool KindAllowed(ServerSettings s, string? url) =>
+        RemoteDrivers.IsSftp(url) ? s.ExternalSftpForUsers && Features.On(Features.Sftp) : s.ExternalWebDavForUsers;
+
+    public static bool SftpOffered(ServerConfig config) => config.Current.ExternalSftpForUsers && Features.On(Features.Sftp);
 
     // ---------------- OneDrive ----------------
 
@@ -324,6 +330,9 @@ public static class ExternalFolders
 
     private static readonly SemaphoreSlim ThumbGate = new(2);
 
+    /// <summary>Erlaubte Adressen für SFTP-Ziele der Benutzer - dieselbe Regel wie bei WebDAV (Heimnetz nur, wenn der Admin es erlaubt).</summary>
+    public static Func<IPAddress, bool> AllowFor(ServerSettings s) => s.ExternalWebDavPrivate ? a => !NeverAllowed(a) : a => !Private(a);
+
     /// <summary>Verbindung für WebDAV-Ziele der Benutzer (auch Datensicherung): Heimnetz nur, wenn der Admin es erlaubt.</summary>
     public static HttpClient ClientFor(ServerConfig config) => config.Current.ExternalWebDavPrivate ? Open_ : Public;
 
@@ -354,7 +363,7 @@ public static class ExternalFolders
     }
 
     /// <summary>In IPv6 verpackte IPv4-Adressen auspacken: ::ffff:a.b.c.d, ::a.b.c.d, NAT64 (64:ff9b::/96), 6to4 (2002::/16).</summary>
-    private static IPAddress Embedded(IPAddress a)
+    internal static IPAddress Embedded(IPAddress a)
     {
         if (a.IsIPv4MappedToIPv6) return a.MapToIPv4();
         if (a.AddressFamily != AddressFamily.InterNetworkV6) return a;
@@ -408,8 +417,15 @@ public static class ExternalFolders
     /// <summary>Kopieren in einen Ordner desselben externen Ordners (To: der Ordner, in den kopiert wird).</summary>
     public record CopyBody(string Mount, List<string> Paths, string To);
 
-    /// <summary>Datei oder Ordner samt Inhalt kopieren - lesen und schreiben über den Treiber, das kann jeder Dienst.</summary>
-    private static async Task CopyAsync(IStorageDriver d, string from, string to, CancellationToken ct)
+    /// <summary>So tief verschachtelt kopiert /copy höchstens.</summary>
+    private const int MaxCopyDepth = 64;
+
+    /// <summary>
+    /// Datei oder Ordner samt Inhalt kopieren - lesen und schreiben über den Treiber, das kann jeder Dienst. Kennt der Treiber
+    /// aufgelöste Orte (Server-Ordner), wird ein Ordner, der über eine Verknüpfung wieder auf einen gerade kopierten Ordner
+    /// oder ein Ziel dieses Kopierens zeigt, übersprungen. Unabhängig davon endet es nach <see cref="MaxCopyDepth"/> Ebenen.
+    /// </summary>
+    internal static async Task CopyAsync(IStorageDriver d, string from, string to, CancellationToken ct, HashSet<string>? seen = null, int depth = 0)
     {
         var stat = await d.StatAsync(from, ct) ?? throw new KeyNotFoundException("„" + from + "“ gibt es nicht.");
         if (!stat.IsDir)
@@ -418,9 +434,14 @@ public static class ExternalFolders
             await d.WriteAsync(to, s, ct);
             return;
         }
+        if (depth >= MaxCopyDepth) throw new InvalidOperationException("Zu tief verschachtelt - kopiert wird höchstens " + MaxCopyDepth + " Ebenen tief.");
+        var real = d as IRealPaths;
+        seen ??= new HashSet<string>(StringComparer.Ordinal);
+        if (real?.RealPath(from) is { } rf && !seen.Add(rf)) return;
         await d.MkdirAsync(to, ct);
+        if (real?.RealPath(to) is { } rt) seen.Add(rt);
         foreach (var e in await d.ListAsync(from, ct))
-            await CopyAsync(d, StoragePath.Join(from, e.Name), StoragePath.Join(to, e.Name), ct);
+            await CopyAsync(d, StoragePath.Join(from, e.Name), StoragePath.Join(to, e.Name), ct, seen, depth + 1);
     }
 
     /// <summary>OneDrive wird angeboten: der Admin erlaubt es und die Microsoft-Anmeldung ist eingerichtet.</summary>
@@ -436,8 +457,10 @@ public static class ExternalFolders
     /// <summary>Verbindung zu einem WebDAV-Ziel prüfen (auflisten) - in Tests ersetzbar.</summary>
     public static Func<UserMount, ServerConfig, CancellationToken, Task> CheckWebDav { get; set; } = async (m, config, ct) =>
     {
-        using var d = new WebDavDriver(m.Url, m.User, m.Password, ClientFor(config));
-        await d.ListAsync("", ct);
+        using var d = RemoteDrivers.Open(m.Url, m.User, m.Password, ClientFor(config), AllowFor(config.Current));
+        // Gibt es den angegebenen Ordner noch nicht, legt dmOffice ihn an (Verbindung und Rechte sind damit zugleich geprüft)
+        try { await d.ListAsync("", ct); }
+        catch (KeyNotFoundException) { await d.MkdirAsync("", ct); await d.ListAsync("", ct); }
     };
 
     /// <summary>
@@ -476,8 +499,9 @@ public static class ExternalFolders
             mounts = await WithReachAsync(http.Space(), config, MountsOf(http.Space(), config)),
             // Externe Ziele (Einstellungen → Externe Ziele): Zugänge, aus denen man in Dateien und der Datensicherung wählt
             targets = TargetsOf(http.Space(), config),
-            canAdd = (config.Current.ExternalWebDavForUsers || OneDriveOffered(config) || PCloudFolders.Offered(config)),
+            canAdd = (config.Current.ExternalWebDavForUsers || SftpOffered(config) || OneDriveOffered(config) || PCloudFolders.Offered(config)),
             webDav = config.Current.ExternalWebDavForUsers,
+            sftp = SftpOffered(config),
             oneDrive = OneDriveOffered(config),
             pCloud = PCloudFolders.Offered(config),
         });
@@ -529,7 +553,8 @@ public static class ExternalFolders
         api.MapPost("/mounts", async (AddBody body, HttpContext http, ServerConfig config, CancellationToken ct) =>
         {
             var space = http.Space();
-            if (!config.Current.ExternalWebDavForUsers) return Results.Json(new { error = "Eigene WebDAV-Ordner sind nicht freigeschaltet." }, statusCode: 403);
+            if (!KindAllowed(config.Current, body.Url))
+                return Results.Json(new { error = RemoteDrivers.IsSftp(body.Url) ? "Eigene SFTP-Ordner sind nicht freigeschaltet." : "Eigene WebDAV-Ordner sind nicht freigeschaltet." }, statusCode: 403);
             if (string.IsNullOrWhiteSpace(body.Name)) return Results.BadRequest(new { error = "Bitte einen Namen angeben." });
             var mount = new UserMount { Name = body.Name.Trim(), Kind = UserMount.WebDav, Url = body.Url.Trim(), User = body.User?.Trim(), Password = body.Password };
             try { await CheckWebDav(mount, config, ct); }
@@ -567,6 +592,8 @@ public static class ExternalFolders
                     return Results.BadRequest(new { error = "Für eine neue Adresse oder einen anderen Benutzer bitte das Passwort eingeben." });
                 if (!string.IsNullOrEmpty(body.Password)) next.Password = body.Password;
                 if (next.Url.Length == 0) return Results.BadRequest(new { error = "Bitte eine Adresse angeben." });
+                // Von WebDAV zu SFTP (oder umgekehrt) nur, wenn auch die neue Art freigeschaltet ist
+                if (!KindAllowed(config.Current, next.Url)) return Results.Json(new { error = "Diese Art eigener Ordner ist nicht freigeschaltet." }, statusCode: 403);
                 if (next.Url != old.Url || next.User != old.User || next.Password != old.Password)
                 {
                     try { await CheckWebDav(next, config, ct); }
@@ -803,6 +830,7 @@ public static class ExternalFolders
 
         api.MapPost("/copy", async (CopyBody body, HttpContext http, ServerConfig config, CancellationToken ct) =>
         {
+            if (body.Paths is not { Count: > 0 }) return Results.BadRequest(new { error = "Nichts ausgewählt." });
             var (d, ro) = Open(http.Space(), config, body.Mount);
             using (d)
             {
@@ -825,6 +853,7 @@ public static class ExternalFolders
 
         api.MapPost("/delete", async (DeleteBody body, HttpContext http, ServerConfig config, CancellationToken ct) =>
         {
+            if (body.Paths is not { Count: > 0 }) return Results.BadRequest(new { error = "Nichts ausgewählt." });
             var (d, ro) = Open(http.Space(), config, body.Mount);
             using (d)
             {

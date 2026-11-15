@@ -368,7 +368,7 @@ public static class SmartMail
         return removed;
     }
 
-    /// <summary>Neue Mails im Posteingang (letzte 14 Tage) einmal pruefen - nach jedem Sync-Lauf.</summary>
+    /// <summary>Neue Mails im Posteingang und in den Ordnern der Catchall-Aliase (letzte 14 Tage) einmal pruefen - nach jedem Sync-Lauf.</summary>
     public static int Scan(UserSpace space, MailAccount account)
     {
         var db = space.Db;
@@ -378,8 +378,14 @@ public static class SmartMail
         db.Exec("CREATE TABLE IF NOT EXISTS smart_done (account TEXT NOT NULL, message_id TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(account, message_id)) WITHOUT ROWID");
         var since = DateTimeOffset.UtcNow.AddDays(-Days).ToUnixTimeMilliseconds();
         db.Exec("DELETE FROM smart_done WHERE at < $s", ("$s", since - 30L * 86400000));
-        // Posteingang (dazu weitere Ordner, hier keine)
+        // Posteingang und - im Postfach der Catchall-Aliase - die Ordner der Aliase und Domains: dort landen deren Mails direkt
         var extra = new List<string>();
+        var aliases = CatchallAliases.Load(db);
+        if (CatchallAliases.ActiveFor(aliases, account.Id))
+        {
+            extra.AddRange(CatchallAliases.List(db).Select(x => x.Folder).OfType<string>());
+            extra.AddRange(aliases.Domains.Select(d => CatchallAliases.DomainFolder(db, d)).OfType<string>());
+        }
         var folders = string.Join(",", extra.Distinct().Select((_, i) => "$f" + i));
         var args = new List<(string, object?)> { ("$a", account.Id), ("$s", since) };
         args.AddRange(extra.Distinct().Select((x, i) => ("$f" + i, (object?)x)));

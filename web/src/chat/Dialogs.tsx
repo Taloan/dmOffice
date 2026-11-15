@@ -53,7 +53,7 @@ function PeopleChooser({ people, chosen, toggle, exclude = [] }: { people: Perso
       <Input contentBefore={<Search20Regular />} placeholder={t('Personen suchen')} value={filter} onChange={(_, d) => setFilter(d.value)} style={{ width: '100%' }} />
       <div className={s.list}>
         {people == null && <Spinner size="small" />}
-        {people != null && shown.length === 0 && <div className={s.empty}>{t('Keine weiteren Personen auf diesem Server.')}</div>}
+        {people != null && shown.length === 0 && <div className={s.empty}>{filter && people.some(p => !exclude.includes(p.id)) ? t('Keine Treffer.') : t('Keine weiteren Personen auf diesem Server.')}</div>}
         {shown.map(p => (
           <label key={p.id} className={s.row}>
             <Checkbox checked={chosen.includes(p.id)} onChange={() => toggle(p.id)} />
@@ -188,7 +188,7 @@ export function FilePickerDialog({ onClose, onPick }: { onClose: () => void; onP
           <DialogTitle>{t('Dateiablage')}</DialogTitle>
           <DialogContent>
             <div className={s.path}>
-              <Button size="small" appearance="subtle" icon={<ArrowUp20Regular />} disabled={!path} onClick={() => setPath(parentOf(path))} aria-label={t('Nach oben')} />
+              <Button size="small" appearance="subtle" icon={<ArrowUp20Regular />} disabled={!path} onClick={() => setPath(parentOf(path))} aria-label={t('folder|Nach oben')} />
               <Folder20Regular /> <span>{path || t('Dateien')}</span>
             </div>
             <div className={s.list}>
@@ -266,7 +266,7 @@ export function SaveRefDialog({ kind, name, onClose, onSave }: { kind: 'file' | 
             {kind === 'file' ? (
               <>
                 <div className={s.path}>
-                  <Button size="small" appearance="subtle" icon={<ArrowUp20Regular />} disabled={!path} onClick={() => setPath(parentOf(path))} aria-label={t('Nach oben')} />
+                  <Button size="small" appearance="subtle" icon={<ArrowUp20Regular />} disabled={!path} onClick={() => setPath(parentOf(path))} aria-label={t('folder|Nach oben')} />
                   <Folder20Regular /> <span>{path || t('Dateien')}</span>
                 </div>
                 <div className={s.list}>
@@ -632,7 +632,7 @@ export function FolderRefDialog({ message, index, name, canSave, onClose }: { me
           <DialogTitle>{name}</DialogTitle>
           <DialogContent>
             <div className={s.path}>
-              <Button size="small" appearance="subtle" icon={<ArrowUp20Regular />} disabled={!path} onClick={() => setPath(parentOf(path))} aria-label={t('Nach oben')} />
+              <Button size="small" appearance="subtle" icon={<ArrowUp20Regular />} disabled={!path} onClick={() => setPath(parentOf(path))} aria-label={t('folder|Nach oben')} />
               <Folder20Regular /> <span>{path ? name + ' / ' + path : name}</span>
             </div>
             <div className={s.list}>

@@ -3,7 +3,7 @@ import {
 } from '@fluentui/react-components'
 import { Add20Regular, Delete20Regular, ArrowUp20Regular, ArrowDown20Regular, Dismiss16Regular, Add16Regular, Play16Regular } from '@fluentui/react-icons'
 import { useEffect, useRef, useState } from 'react'
-import { Account, api, ApiError, Folder } from '../api'
+import { Account, api, ApiError, featureOn, Folder } from '../api'
 import { useApp } from '../App'
 import { CategoryDot, useCategories } from '../mail/Categories'
 import { RuleSource, sourceValue, takeRuleSource } from '../mail/ruleFromMail'
@@ -22,11 +22,11 @@ interface Condition { field: string; op: string; value: string }
 interface Action { type: string; value: string }
 interface Rule { id: string; name: string; enabled: boolean; accountId: string | null; match: 'all' | 'any'; conditions: Condition[]; actions: Action[] }
 
-const fields = [['from', t('Von')], ['to', t('An/Cc')], ['subject', t('Betreff')], ['body', t('Text')], ['any', t('irgendwo')], ['header:List-Id', t('Kopfzeile List-Id')]]
+const fields = [['from', t('Von')], ['to', t('An/Cc')], ['subject', t('Betreff')], ['body', t('mail|Text')], ['any', t('irgendwo')], ['header:List-Id', t('Kopfzeile List-Id')]]
 const ops = [['contains', t('enthält')], ['notContains', t('enthält nicht')], ['equals', t('ist genau')], ['startsWith', t('beginnt mit')], ['endsWith', t('endet mit')], ['regex', t('passt auf (Regex)')]]
 const actions = [['move', t('Verschieben nach')], ['copy', t('Kopieren nach')], ['forward', t('Weiterleiten an')], ['markRead', t('Als gelesen markieren')],
   ['flag', t('Kennzeichnen')], ['category', t('Kategorie zuweisen')], ['delete', t('Löschen (Papierkorb)')],
-  ['stop', t('Keine weiteren Regeln')]]
+  ['trashAfter', t('In den Papierkorb nach … Tagen')], ['destroyAfter', t('Vernichten nach … Tagen')], ['stop', t('Keine weiteren Regeln')]]
 const label = (list: string[][], k: string) => list.find(x => x[0] === k)?.[1] ?? k
 
 export function RulesSettings() {
@@ -41,9 +41,12 @@ export function RulesSettings() {
   const [sources, setSources] = useState<Record<string, RuleSource>>({})
   const [running, setRunning] = useState<string | null>(null)
   const fresh = useRef<HTMLDivElement | null>(null)
+  // Stand auf dem Server: der Ein/Aus-Schalter speichert sofort nur sich selbst, andere Änderungen bleiben beim „Speichern“
+  const saved = useRef<Rule[]>([])
 
   useEffect(() => {
     api.get<Rule[]>('/api/settings/rules').then(list => {
+      saved.current = list
       const src = takeRuleSource()
       if (!src) { setRules(list); return }
       // "Regel erstellen" in der Mail: Newsletter nach List-Id, sonst nach Absender
@@ -65,13 +68,13 @@ export function RulesSettings() {
   if (!rules) return null
   const update = (i: number, p: Partial<Rule>) => { setRules(rules.map((r, j) => (j === i ? { ...r, ...p } : r))); setDirty(true) }
   const save = async () => {
-    try { await api.put('/api/settings/rules', rules); setDirty(false); notify(t('Regeln gespeichert')); return true }
+    try { await api.put('/api/settings/rules', rules); saved.current = rules; setDirty(false); notify(t('Regeln gespeichert')); return true }
     catch (e) {
       // Neue Weiterleitung: nur mit dem Anmelde-Passwort, bei Zwei-Faktor auch dem Code
       if (e instanceof ApiError && e.status === 403 && e.data?.confirm) {
         const c = await askPassword(t('Neue Weiterleitung bestätigen'), !!me?.twoFactor)
         if (!c) return false
-        try { await api.put('/api/settings/rules', { rules, password: c.password, code: c.code }); setDirty(false); notify(t('Regeln gespeichert')); return true }
+        try { await api.put('/api/settings/rules', { rules, password: c.password, code: c.code }); saved.current = rules; setDirty(false); notify(t('Regeln gespeichert')); return true }
         catch (e2) { fail(e2); return false }
       }
       fail(e); return false
@@ -85,6 +88,22 @@ export function RulesSettings() {
       const res = await api.post<{ checked: number; matched: number }>(`/api/settings/rules/${r.id}/run`)
       notify(res.matched === 1 ? t('1 Mail getroffen') : t('{n} Mails getroffen', { n: res.matched }), t('{n} Mails im Posteingang geprüft', { n: res.checked }))
     } catch (e) { fail(e) } finally { setRunning(null) }
+  }
+  /** Regel ein- oder ausschalten: gilt sofort (wie der Junk-Filter). Eine noch nicht gespeicherte Regel wird erst mit „Speichern“ angelegt. */
+  const toggle = async (i: number, enabled: boolean) => {
+    const id = rules[i].id
+    const was = saved.current.find(r => r.id === id)
+    // Nur der Schalter weicht ab: danach ist nichts mehr ungespeichert
+    const onlySwitch = JSON.stringify(rules.map(r => r.id === id ? { ...r, enabled } : r)) === JSON.stringify(saved.current.map(r => r.id === id ? { ...r, enabled } : r))
+    setRules(rules.map((r, j) => (j === i ? { ...r, enabled } : r)))
+    if (!was) { setDirty(true); return }
+    const next = saved.current.map(r => r.id === id ? { ...r, enabled } : r)
+    try {
+      await api.put('/api/settings/rules', next)
+      saved.current = next
+      if (onlySwitch) setDirty(false)
+      notify(enabled ? t('Regel eingeschaltet') : t('Regel ausgeschaltet'))
+    } catch (e) { fail(e); setRules(rs => rs ? rs.map(r => r.id === id ? { ...r, enabled: was.enabled } : r) : rs) }
   }
   const add = () => {
     setRules([...rules, { id: newId(), name: t('Neue Regel'), enabled: true, accountId: null, match: 'all',
@@ -109,7 +128,7 @@ export function RulesSettings() {
         return (
           <Card key={r.id} className={s.rule} ref={sources[r.id] ? fresh : undefined}>
             <div className={s.head}>
-              <Switch checked={r.enabled} onChange={(_, d) => update(i, { enabled: d.checked })} />
+              <Switch checked={r.enabled} onChange={(_, d) => toggle(i, d.checked)} title={t('Ein- und Ausschalten gilt sofort')} />
               <Input value={r.name} onChange={(_, d) => update(i, { name: d.value })} style={{ flex: 1 }} appearance="underline" />
               <Dropdown style={{ minWidth: 180 }} value={r.accountId ? accounts.find(a => a.id === r.accountId)?.name ?? '' : t('Alle Konten')}
                 selectedOptions={[r.accountId ?? '']} onOptionSelect={(_, d) => update(i, { accountId: d.optionValue || null })}>
@@ -152,7 +171,7 @@ export function RulesSettings() {
               return (
                 <div key={ai} className={s.line}>
                   <Dropdown style={{ minWidth: 200 }} value={label(actions, a.type)} selectedOptions={[a.type]} onOptionSelect={(_, d) => setA({ type: d.optionValue!, value: d.optionValue === 'trashAfter' ? '7' : d.optionValue === 'destroyAfter' ? '30' : '' })}>
-                    {actions.map(([k, l]) => <Option key={k} value={k}>{l}</Option>)}
+                    {actions.filter(([k]) => featureOn('mailexpiry') || (k !== 'trashAfter' && k !== 'destroyAfter')).map(([k, l]) => <Option key={k} value={k}>{l}</Option>)}
                   </Dropdown>
                   {(a.type === 'move' || a.type === 'copy') && (
                     <Dropdown style={{ minWidth: 240 }} value={a.value} selectedOptions={[a.value]} onOptionSelect={(_, d) => setA({ value: d.optionValue! })} placeholder={t('Ordner wählen')}>
@@ -165,6 +184,12 @@ export function RulesSettings() {
                       {categories.map(c => <Option key={c.key} value={c.key} text={c.name}><CategoryDot color={c.color} /> {c.name}</Option>)}
                     </Dropdown>
                   )}
+                  {(a.type === 'trashAfter' || a.type === 'destroyAfter') && <>
+                    <Input type="number" min={1} max={3650} style={{ width: 90 }} value={a.value} onChange={(_, d) => setA({ value: d.value })} />
+                    <Text size={200} className={s.muted}>{a.type === 'destroyAfter'
+                      ? t('Tage ab Eingang – danach endgültig gelöscht, auch auf dem Mailserver, ohne Papierkorb.')
+                      : t('Tage ab Eingang – bis dahin lässt es sich an der Mail zurücknehmen.')}</Text>
+                  </>}
                   {a.type === 'forward' && <Input style={{ flex: 1, minWidth: 240 }} placeholder={t('adresse@beispiel.de, …')} value={a.value} onChange={(_, d) => setA({ value: d.value })} />}
                   <Button appearance="subtle" icon={<Dismiss16Regular />} onClick={() => update(i, { actions: r.actions.filter((_, k) => k !== ai) })} aria-label={t('Entfernen')} />
                 </div>
@@ -208,7 +233,7 @@ export function SpamSettings() {
     try { const r = await api.post('/api/settings/spam/train-folders'); notify(t('Gelernt'), t('{spam} Junk, {ham} gute Mails', { spam: r.spam, ham: r.ham })); load() } catch (e) { fail(e) }
   }
   const reset = async () => {
-    if (!await askConfirm('', t('Alles Gelernte vergessen?'))) return
+    if (!await askConfirm('', t('Alles Gelernte vergessen?'), t('Vergessen'))) return
     try { await api.post('/api/settings/spam/reset'); load() } catch (e) { fail(e) }
   }
   const ready = data.trainedSpam >= st.minTrained && data.trainedHam >= st.minTrained
@@ -233,11 +258,11 @@ export function SpamSettings() {
       <Switch label={t('Aus den Mails sicherer Absender lernen')} checked={st.learnKnown ?? true} disabled={!st.enabled}
         onChange={(_, d) => save({ learnKnown: d.checked })} />
       <Text size={200} className={s.muted}>
-        {t('Sicher ist, wer im Adressbuch steht oder eine Mail von dir bekommen hat (Gesendet-Ordner aller Konten). Ihre Mails kommen nie in Junk-E-Mail und werden auf Wunsch als gut gelernt. Deine eigenen Adressen zählen nicht – Junk mit gefälschtem eigenem Absender ist häufig.')}
+        {t('Sicher ist, wer im Adressbuch steht oder eine Mail von dir bekommen hat (Gesendet-Ordner aller Konten). Ihre Mails kommen nie in Junk-E-Mail und werden auf Wunsch als gut gelernt. Deine eigenen Adressen zählen nicht.')}
       </Text>
       <SafeSenders list={data.safe ?? []} onChange={load} />
       <Field label={t('Aus dem Junk-Ordner des Mailanbieters lernen')}
-        hint={t('Was der Mailanbieter in Junk gelegt hat und dort nach drei Tagen noch liegt, wird als Junk gelernt. Ausgenommen sind sichere Absender und nachweislich echte Mails von Google, Microsoft, PayPal & Co. – die Filter der Anbieter irren sich auch.')}>
+        hint={t('Was der Mailanbieter in Junk gelegt hat und dort nach drei Tagen noch liegt, wird als Junk gelernt. Ausgenommen sind sichere Absender und nachweislich echte Mails großer Anbieter wie Google, Microsoft und PayPal.')}>
         <Dropdown disabled={!st.enabled} style={{ maxWidth: 260 }}
           value={junkHours(st.junkFolderHours ?? 24)} selectedOptions={[String(st.junkFolderHours ?? 24)]}
           onOptionSelect={(_, d) => save({ junkFolderHours: Number(d.optionValue) })}>
@@ -250,7 +275,7 @@ export function SpamSettings() {
         <Switch label={t('Beim gemeinsamen Junk-Wissen mitmachen')} checked={st.shareJunk ?? true} disabled={!st.enabled}
           onChange={(_, d) => save({ shareJunk: d.checked })} />
         <Text size={200} className={s.muted}>
-          {t('Klickt jemand auf diesem Server „Junk“, merkt sich dmOffice nur unlesbare Prüfsummen der Mail. Kommt dieselbe Mail bei anderen an, landet sie dort schneller in Junk. Gute Mails und Inhalte werden nie geteilt; „Kein Junk“ nimmt die eigene Meldung zurück.')}
+          {t('Klickt jemand auf diesem Server „Junk“, merkt sich dmOffice nur unlesbare Prüfsummen der Mail. Kommt dieselbe Mail bei anderen an, landet sie dort schneller in Junk. „Kein Junk“ nimmt die eigene Meldung zurück.')}
         </Text>
       </>}
       <Field label={t('Ab {n} in Junk-E-Mail verschieben', { n: Math.round(st.spamCutoff * 100) })}>
@@ -265,7 +290,7 @@ export function SpamSettings() {
       </div>
       <Text size={200} className={s.muted}>{t('„Aus Ordnern lernen“: Junk-E-Mail als Junk, Posteingang und Gesendet als gut – nur Mails, die schon vollständig hier liegen.')}</Text>
       <Text size={500} weight="semibold" style={{ marginTop: 12 }}>{t('Spamlisten')}</Text>
-      <Text className={s.muted}>{t('Öffentliche Sperrlisten bekannter Spam-Server und -Domains. Ein Treffer fließt in die Bewertung ein; gefragt wird nur nach Adresse und Domain, nie nach Inhalten.')}</Text>
+      <Text className={s.muted}>{t('Öffentliche Sperrlisten bekannter Spam-Server und -Domains. Ein Treffer fließt in die Bewertung ein; gefragt wird nur nach Adresse und Domain.')}</Text>
       {(data.lists as { id: string; name: string; kind: string; spamhaus: boolean }[]).map(l => {
         const on = (st.lists ?? []).includes(l.id)
         const junk = (st.listsJunk ?? []).includes(l.id)
@@ -287,9 +312,36 @@ export function SpamSettings() {
 
 const junkHours = (h: number) => h <= 0 ? t('Nie') : h === 6 ? t('Alle 6 Stunden') : t('Einmal am Tag')
 
+/**
+ * Liste von Absendern (Adresse oder @Domain) als Chips mit × - gleiche Bedienung für alle solchen Listen. Mit onAdd: Eingabefeld
+ * und „Hinzufügen“ darüber; was man eintippt, filtert zugleich die Chips (lange Listen).
+ */
+function SenderChips({ list, onRemove, onAdd, empty }: { list: string[]; onRemove: (entry: string) => void; onAdd?: (entry: string) => Promise<boolean>; empty?: string }) {
+  const s = useStyles()
+  const [entry, setEntry] = useState('')
+  const q = entry.trim().toLowerCase()
+  const shown = q ? list.filter(e => e.toLowerCase().includes(q)) : list
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {onAdd && <form style={{ display: 'flex', gap: 8, maxWidth: 480 }} onSubmit={async e => { e.preventDefault(); if (await onAdd(entry.trim())) setEntry('') }}>
+        <Input style={{ flex: 1 }} placeholder={t('adresse@beispiel.de oder @beispiel.de')} value={entry} onChange={(_, d) => setEntry(d.value)} />
+        <Button type="submit" disabled={!entry.includes('@')}>{t('Hinzufügen')}</Button>
+      </form>}
+      {list.length === 0 ? <Text size={200} className={s.muted}>{empty ?? t('Noch keine.')}</Text>
+        : <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {shown.map(e => (
+            <Badge key={e} size="large" appearance="outline" shape="rounded">
+              {e}
+              <Button appearance="transparent" size="small" className={s.muted} aria-label={t('„{entry}“ entfernen', { entry: e })} onClick={() => onRemove(e)}>×</Button>
+            </Badge>
+          ))}
+        </div>}
+    </div>
+  )
+}
+
 /** Selbst eingetragene sichere Absender (nach „Kein Junk“ angeboten) - gelten nur für Mails, die der Mailserver als echt bestätigt hat. */
 function SafeSenders({ list, onChange }: { list: string[]; onChange: () => void }) {
-  const s = useStyles()
   const { fail } = useApp()
   if (list.length === 0) return null
   const remove = async (entry: string) => {
@@ -298,14 +350,7 @@ function SafeSenders({ list, onChange }: { list: string[]; onChange: () => void 
   return (
     <Field label={t('Selbst eingetragene sichere Absender')}
       hint={t('Gelten nur, wenn der Mailserver bestätigt hat, dass die Mail wirklich vom Absender kommt – eine gefälschte Absenderadresse bekommt das Vertrauen nicht.')}>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-        {list.map(e => (
-          <Badge key={e} size="large" appearance="outline" shape="rounded">
-            {e}
-            <Button appearance="transparent" size="small" className={s.muted} aria-label={t('„{entry}“ entfernen', { entry: e })} onClick={() => remove(e)}>×</Button>
-          </Badge>
-        ))}
-      </div>
+      <SenderChips list={list} onRemove={remove} />
     </Field>
   )
 }
@@ -315,11 +360,10 @@ function TrustedImages() {
   const s = useStyles()
   const { fail } = useApp()
   const [list, setList] = useState<string[]>([])
-  const [entry, setEntry] = useState('')
   const load = () => api.get<string[]>('/api/settings/trusted-images').then(setList).catch(fail)
   useEffect(() => { load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
-  const add = async () => {
-    try { await api.post('/api/settings/trusted-images', { entry }); setEntry(''); load() } catch (e) { fail(e) }
+  const add = async (entry: string) => {
+    try { await api.post('/api/settings/trusted-images', { entry }); load(); return true } catch (e) { fail(e); return false }
   }
   const remove = async (e: string) => {
     try { await api.post('/api/settings/trusted-images/remove', { entry: e }); load() } catch (err) { fail(err) }
@@ -328,16 +372,7 @@ function TrustedImages() {
     <>
       <Text weight="semibold" size={400} style={{ marginTop: 16 }}>{t('Sichere Absender für Bilder')}</Text>
       <Text className={s.muted}>{t('Bei diesen Absendern lädt dmOffice Bilder aus dem Internet ohne Nachfrage. Hinzufügen geht auch direkt in einer Mail über „Bilder anzeigen ▾“.')}</Text>
-      <form style={{ display: 'flex', gap: 8, maxWidth: 480 }} onSubmit={e => { e.preventDefault(); add() }}>
-        <Input style={{ flex: 1 }} placeholder={t('adresse@beispiel.de oder @beispiel.de')} value={entry} onChange={(_, d) => setEntry(d.value)} />
-        <Button type="submit" disabled={!entry.includes('@')}>{t('Hinzufügen')}</Button>
-      </form>
-      {list.length === 0 ? <Text size={200} className={s.muted}>{t('Noch keine.')}</Text> : list.map(e => (
-        <div key={e} className={s.line} style={{ maxWidth: 480 }}>
-          <Text style={{ flex: 1 }}>{e}</Text>
-          <Button appearance="subtle" icon={<Dismiss16Regular />} onClick={() => remove(e)} aria-label={t('Entfernen')} />
-        </div>
-      ))}
+      <SenderChips list={list} onRemove={remove} onAdd={add} />
     </>
   )
 }

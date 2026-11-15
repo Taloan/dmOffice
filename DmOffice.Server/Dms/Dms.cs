@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS dms_docs (id INTEGER PRIMARY KEY AUTOINCREMENT, filei
 CREATE INDEX IF NOT EXISTS dms_docs_fileid ON dms_docs(fileid);
 CREATE INDEX IF NOT EXISTS dms_docs_sha ON dms_docs(sha256);
 CREATE TABLE IF NOT EXISTS dms_doc_tags (doc INTEGER NOT NULL, tag TEXT NOT NULL, auto INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(doc, tag)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS dms_doc_tags_off (doc INTEGER NOT NULL, tag TEXT NOT NULL, PRIMARY KEY(doc, tag)) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS dms_doc_tags_tag ON dms_doc_tags(tag);
 CREATE TABLE IF NOT EXISTS dms_text (doc INTEGER PRIMARY KEY, body TEXT NOT NULL, method TEXT NOT NULL);
 CREATE VIRTUAL TABLE IF NOT EXISTS dms_fts USING fts5(title, body, tokenize = 'unicode61 remove_diacritics 2');
@@ -91,7 +92,9 @@ CREATE TABLE IF NOT EXISTS dms_seen (source TEXT NOT NULL, path TEXT NOT NULL, e
         // Angaben noch in die PDF zu schreiben
         foreach (var (col, type) in new[] { ("pl", "INTEGER NOT NULL DEFAULT 0"), ("pl_correspondent", "TEXT NULL"), ("pl_doctype", "TEXT NULL"), ("pl_tags", "TEXT NULL"),
                      ("ext_mount", "TEXT NULL"), ("ext_path", "TEXT NULL"), ("ext_original", "TEXT NULL"), ("ext_sha", "TEXT NULL"), ("meta_dirty", "INTEGER NOT NULL DEFAULT 0"),
-                     ("role", "TEXT NULL"), ("role_since", "INTEGER NULL"), ("amount", "INTEGER NULL"), ("fixed", "INTEGER NOT NULL DEFAULT 0") })
+                     ("role", "TEXT NULL"), ("role_since", "INTEGER NULL"), ("amount", "INTEGER NULL"), ("fixed", "INTEGER NOT NULL DEFAULT 0"),
+                     // Betrag von Hand gesetzt (auch geleert): die Erkennung fasst ihn nicht mehr an
+                     ("amount_set", "INTEGER NOT NULL DEFAULT 0") })
             if (!have.Contains(col)) db.Exec($"ALTER TABLE dms_docs ADD COLUMN {col} {type}");
         // Wer eine Rolle gerade innehat - für das ganze DMS (offener Bereich und Tresor), darum in der Benutzerdatenbank
         (db is DmsStore ds ? ds.User : db).Exec("CREATE TABLE IF NOT EXISTS dms_roles (role TEXT PRIMARY KEY, tresor INTEGER NOT NULL, doc INTEGER NOT NULL, since INTEGER NOT NULL)");
@@ -227,6 +230,14 @@ CREATE TABLE IF NOT EXISTS dms_seen (source TEXT NOT NULL, path TEXT NOT NULL, e
         return e with { Parent = newParent, Name = n, Color = col, Match = m, MatchText = t, CaseSensitive = cs };
     }
 
+    /// <summary>Wie viele Dokumente den Eintrag selbst tragen (ohne Unterbegriffe) - an diesen entfernt ihn ein Löschen.</summary>
+    public static int DocsWith(UserDb db, string id)
+    {
+        Ensure(db);
+        return Convert.ToInt32(db.Scalar("SELECT COUNT(*) FROM (SELECT id FROM dms_docs WHERE correspondent = $i OR doctype = $i OR role = $i UNION SELECT doc FROM dms_doc_tags WHERE tag = $i)",
+            ("$i", id)) ?? 0);
+    }
+
     /// <summary>Löschen: Unterbegriffe rücken eine Ebene hoch, an den Dokumenten verschwindet der Eintrag, die Dokumente bleiben.</summary>
     public static List<long> Delete(UserDb db, string id)
     {
@@ -360,7 +371,8 @@ CREATE TABLE IF NOT EXISTS dms_seen (source TEXT NOT NULL, path TEXT NOT NULL, e
         if (f.Profile != null) { where.Add("d.profile = $pr"); args.Add(("$pr", f.Profile)); }
         if (f.Mime != null) { where.Add("d.mime LIKE $mi"); args.Add(("$mi", f.Mime + "%")); }
         var join = "";
-        var order = "COALESCE(d.doc_date, date(d.imported, 'unixepoch')) DESC, d.id DESC";
+        // Gleicher Wert: der zuletzt importierte zuerst (bzw. in der gewählten Richtung), dann die Kennung
+        var order = "COALESCE(d.doc_date, date(d.imported, 'unixepoch')) DESC, d.imported DESC, d.id DESC";
         if (f.Sort != null && SortKeys.Contains(f.Sort))
         {
             var dir = f.Desc ? "DESC" : "ASC";
@@ -388,14 +400,18 @@ CREATE TABLE IF NOT EXISTS dms_seen (source TEXT NOT NULL, path TEXT NOT NULL, e
                 "type" => "d.mime",
                 _ => "d.source",
             };
-            order = $"{key} {dir}, d.id {dir}";
+            order = $"{key} {dir}, d.imported {dir}, d.id {dir}";
         }
         if (!string.IsNullOrWhiteSpace(f.Query) && Search.TextIndex.FtsQuery(f.Query) is { Length: > 0 } match)
         {
-            join = "JOIN dms_fts x ON x.rowid = d.id";
-            where.Add("dms_fts MATCH $q");
+            // Treffer im Titel oder Text, außerdem im Dateinamen (Original und abgelegt): sonst findet „pfx“ oder „steuer2014“ nichts,
+            // weil der Titel die Endung nicht enthält. Treffer im Text zuerst, nach Relevanz
+            const string rank = "(SELECT bm25(dms_fts, 4.0, 1.0) FROM dms_fts WHERE dms_fts MATCH $q AND rowid = d.id)";
+            var name = f.Query.Trim().TrimStart('*').Replace("!", "!!").Replace("%", "!%").Replace("_", "!_");
+            where.Add("(d.id IN (SELECT rowid FROM dms_fts WHERE dms_fts MATCH $q) OR d.original_name LIKE $n ESCAPE '!' OR d.placed_path LIKE $n ESCAPE '!')");
             args.Add(("$q", match));
-            if (f.Sort == null) order = "bm25(dms_fts, 4.0, 1.0)";
+            args.Add(("$n", "%" + name + "%"));
+            if (f.Sort == null) order = $"{rank} IS NULL, {rank}, d.id DESC";
         }
         var sqlWhere = string.Join(" AND ", where);
         var total = Convert.ToInt32(db.Scalar($"SELECT COUNT(*) FROM dms_docs d {join} WHERE {sqlWhere}", args.ToArray()) ?? 0);
@@ -504,12 +520,10 @@ CREATE TABLE IF NOT EXISTS dms_seen (source TEXT NOT NULL, path TEXT NOT NULL, e
 
     /// <summary>Änderung von Hand. Null = unverändert; Korrespondent/Dokumenttyp "" = keiner; Datum "" = keins.</summary>
     public sealed record Change(string? Title = null, string? DocDate = null, string? Correspondent = null, string? Doctype = null,
-        List<string>? Tags = null, List<string>? AddTags = null, List<string>? RemoveTags = null, bool? Confirm = null, string? Role = null, string? Amount = null);
+        List<string>? Tags = null, List<string>? AddTags = null, List<string>? RemoveTags = null, bool? Confirm = null, string? Role = null, string? Amount = null,
+        string? DocPeriod = null);
 
     // ---------------- Fixiert ----------------
-
-    /// <summary>Gesetzt von Bereichen, die Dokumente verknüpfen: Grund, warum die Fixierung bleiben muss, sonst null.</summary>
-    public static Func<DmsStore, long, string?>? FixedReason { get; set; }
 
     /// <summary>Fixieren: Das Dokument muss in der Ablage liegen (ein noch wartendes geht nur über <see cref="Fix"/>).</summary>
     public static void SetFixed(DmsStore db, long id, bool on)
@@ -518,7 +532,6 @@ CREATE TABLE IF NOT EXISTS dms_seen (source TEXT NOT NULL, path TEXT NOT NULL, e
         var doc = Get(db, id);
         if (on && doc.Trashed) throw new ArgumentException("Ein Dokument im Papierkorb lässt sich nicht fixieren.");
         if (on && doc.State == "queued") throw new ArgumentException("Das Dokument wird noch verarbeitet. Bitte später fixieren.");
-        if (!on && FixedReason?.Invoke(db, id) is { } reason) throw new ArgumentException(reason);
         Fix(db, id, on);
     }
 
@@ -579,6 +592,16 @@ CREATE TABLE IF NOT EXISTS dms_seen (source TEXT NOT NULL, path TEXT NOT NULL, e
         }
         var title = c.Title == null ? null : CleanText(c.Title);
         if (title is { Length: > 300 }) title = title[..300];
+        // Jahr („2018“) oder Monat („2018-03“) setzen, Tag (und Monat) des bisherigen Datums bleiben; ohne Datum gilt das Importdatum
+        int periodYear = 0, periodMonth = 0;
+        if (c.DocPeriod is { Length: > 0 })
+        {
+            var m = System.Text.RegularExpressions.Regex.Match(c.DocPeriod, @"^(\d{4})(?:-(\d{2}))?$");
+            if (!m.Success) throw new ArgumentException("Ungültiges Datum.");
+            periodYear = int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);
+            periodMonth = m.Groups[2].Success ? int.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture) : 0;
+            if (periodYear < 1000 || periodMonth > 12 || (m.Groups[2].Success && periodMonth < 1)) throw new ArgumentException("Ungültiges Datum.");
+        }
 
         long? amount = null;
         if (c.Amount is { Length: > 0 })
@@ -590,7 +613,7 @@ CREATE TABLE IF NOT EXISTS dms_seen (source TEXT NOT NULL, path TEXT NOT NULL, e
         {
             if (doc.State == "queued") continue;
             // Der Betrag ändert nichts an der Ablage
-            if (c.Amount != null) db.Exec("UPDATE dms_docs SET amount = $a WHERE id = $d", ("$a", amount), ("$d", doc.Id));
+            if (c.Amount != null) db.Exec("UPDATE dms_docs SET amount = $a, amount_set = 1 WHERE id = $d", ("$a", amount), ("$d", doc.Id));
             HashSet<string>? tokens = null;
             HashSet<string> Tok() => tokens ??= DmsAssign.Tokens(db, doc.Id);
             void Learn(string entry, bool positive)
@@ -609,6 +632,18 @@ CREATE TABLE IF NOT EXISTS dms_seen (source TEXT NOT NULL, path TEXT NOT NULL, e
             {
                 db.Exec("UPDATE dms_docs SET doc_date = $t WHERE id = $d", ("$t", date), ("$d", doc.Id));
                 any = true;
+            }
+            if (periodYear > 0 && c.DocDate == null)
+            {
+                var from = doc.DocDate != null && DateOnly.TryParseExact(doc.DocDate, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var was)
+                    ? was : DateOnly.FromDateTime(doc.Imported);
+                var month = periodMonth > 0 ? periodMonth : from.Month;
+                var moved = new DateOnly(periodYear, month, Math.Min(from.Day, DateTime.DaysInMonth(periodYear, month))).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                if (moved != doc.DocDate)
+                {
+                    db.Exec("UPDATE dms_docs SET doc_date = $t WHERE id = $d", ("$t", moved), ("$d", doc.Id));
+                    any = true;
+                }
             }
             foreach (var (kind, value, before, autoBefore, column) in new[]
                      { (Correspondent, c.Correspondent, doc.Correspondent, doc.AutoCorrespondent, "correspondent"), (Doctype, c.Doctype, doc.Doctype, doc.AutoDoctype, "doctype") })
@@ -645,17 +680,29 @@ CREATE TABLE IF NOT EXISTS dms_seen (source TEXT NOT NULL, path TEXT NOT NULL, e
                 foreach (var t in had.Except(want))
                 {
                     db.Exec("DELETE FROM dms_doc_tags WHERE doc = $d AND tag = $t", ("$d", doc.Id), ("$t", t));
+                    // Von Hand entfernt: das Neu-Einordnen setzt ihn nicht wieder
+                    db.Exec("INSERT OR IGNORE INTO dms_doc_tags_off(doc, tag) VALUES($d, $t)", ("$d", doc.Id), ("$t", t));
                     Learn(t, false);
                     any = true;
                 }
                 foreach (var t in want)
                 {
+                    // Nur einzelne Tags hinzugefügt oder entfernt (× und + in der Liste): die übrigen bleiben, wie sie sind - unbestätigte
+                    // werden dadurch weder bestätigt noch gelernt. Mit der ganzen Liste (Detailansicht) gilt jeder enthaltene als bestätigt.
+                    if (c.Tags == null && !(c.AddTags?.Contains(t) ?? false)) continue;
                     var wasAuto = doc.Tags.FirstOrDefault(x => x.Id == t)?.Auto;
+                    db.Exec("DELETE FROM dms_doc_tags_off WHERE doc = $d AND tag = $t", ("$d", doc.Id), ("$t", t));
                     if (wasAuto == false) continue;
                     db.Exec("INSERT INTO dms_doc_tags(doc, tag, auto) VALUES($d, $t, 0) ON CONFLICT(doc, tag) DO UPDATE SET auto = 0", ("$d", doc.Id), ("$t", t));
                     Learn(t, true);
                     if (wasAuto == null) any = true;
                 }
+            }
+            // Zurück in die Inbox (zum Überarbeiten): wieder unbestätigt; Gelerntes bleibt, die Datei wandert in den Inbox-Ordner
+            if (c.Confirm == false && !doc.Inbox)
+            {
+                db.Exec("UPDATE dms_docs SET inbox = 1 WHERE id = $d", ("$d", doc.Id));
+                any = true;
             }
             if (c.Confirm == true)
             {
@@ -676,9 +723,10 @@ CREATE TABLE IF NOT EXISTS dms_seen (source TEXT NOT NULL, path TEXT NOT NULL, e
     /// Offene Inbox-Dokumente neu einordnen. Jede Änderung (Bestätigen, Zuordnen, neuer, umbenannter oder verschobener Eintrag)
     /// kann Regeln und Gelerntes anders entscheiden lassen. Geändert wird nur, was noch automatisch ist (nicht von Hand gesetzt,
     /// keine Vorgabe der Quelle): ein Vorschlag der KI für einen neuen Korrespondenten wird zugeordnet, sobald es den Eintrag gibt;
-    /// sonst gilt die neue Entscheidung aus Regeln und Gelerntem - in beide Richtungen: Korrespondent, Dokumenttyp und Tags, die nur aus
-    /// Gelerntem stammen, fallen weg, sobald das Gelernte sie nicht mehr stützt (etwa weil sie bei ähnlichen Dokumenten geändert oder
-    /// abgewählt wurden); Vorschläge der KI bleiben.
+    /// sonst gilt die neue Entscheidung aus Regeln und Gelerntem. Ab 2.1 (dmsrelearn) gilt das in beide Richtungen: Korrespondent,
+    /// Dokumenttyp und Tags, die nur aus Gelerntem stammen, fallen weg, sobald das Gelernte sie nicht mehr stützt (etwa weil sie bei
+    /// ähnlichen Dokumenten geändert oder abgewählt wurden); Vorschläge der KI bleiben, bei Tags nur, solange der Tag nie von Hand abgewählt wurde. Fehlt der Betrag und wurde er nie von Hand gesetzt,
+    /// wird er aus dem Text ermittelt (dmsamount).
     /// Liefert die geänderten Dokumente (zum neu Ablegen).
     /// </summary>
     public static List<long> Reassess(DmsStore db)
@@ -689,6 +737,9 @@ CREATE TABLE IF NOT EXISTS dms_seen (source TEXT NOT NULL, path TEXT NOT NULL, e
         var ids = db.Query($"SELECT id FROM dms_docs d WHERE ((inbox = 1 AND state <> 'queued') OR (ai_suggestion IS NOT NULL AND ai_suggestion <> '')) AND {db.Visible()}",
             r => r.GetInt64(0));
         var changed = new List<long>();
+        // Einträge, die von Hand mindestens einmal abgewählt wurden (einmal je Durchlauf gelesen)
+        HashSet<string>? rejected = null;
+        HashSet<string> Rejected() => rejected ??= db.Query("SELECT DISTINCT entry FROM dms_trained WHERE label = -1", x => x.GetString(0)).ToHashSet();
         foreach (var doc in ByIds(db, ids))
         {
             var any = false;
@@ -708,6 +759,8 @@ CREATE TABLE IF NOT EXISTS dms_seen (source TEXT NOT NULL, path TEXT NOT NULL, e
                 continue;
             }
             var text = Text(db, doc.Id) ?? "";
+            if (doc.Amount == null && Features.On(Features.DmsAmount) && DmsAssign.FindAmount(text) is { } found)
+                db.Exec("UPDATE dms_docs SET amount = $a WHERE id = $d AND amount IS NULL AND amount_set = 0", ("$a", found), ("$d", doc.Id));
             var r = DmsAssign.Decide(db, text + "\n" + Path.GetFileNameWithoutExtension(doc.OriginalName), doc.OriginalName, doc.Sender, null);
             foreach (var (value, before, auto, column) in new[]
                      { (suggested ?? r.Correspondent, doc.Correspondent, doc.AutoCorrespondent, "correspondent"), (r.Doctype, doc.Doctype, doc.AutoDoctype, "doctype") })
@@ -716,7 +769,7 @@ CREATE TABLE IF NOT EXISTS dms_seen (source TEXT NOT NULL, path TEXT NOT NULL, e
                 if (value == null)
                 {
                     // Nur gelernt und nicht mehr gestützt: wieder offen
-                    if (before != null && !doc.ByAi)
+                    if (before != null && !doc.ByAi && Features.On(Features.DmsRelearn))
                     {
                         db.Exec($"UPDATE dms_docs SET {column} = NULL, auto_{column} = 0 WHERE id = $d", ("$d", doc.Id));
                         any = true;
@@ -727,16 +780,28 @@ CREATE TABLE IF NOT EXISTS dms_seen (source TEXT NOT NULL, path TEXT NOT NULL, e
                 db.Exec($"UPDATE dms_docs SET {column} = $v, auto_{column} = 1 WHERE id = $d", ("$v", value), ("$d", doc.Id));
                 any = true;
             }
-            foreach (var t in r.Tags.Where(t => doc.Tags.All(x => x.Id != t)))
+            var off = db.Query("SELECT tag FROM dms_doc_tags_off WHERE doc = $d", x => x.GetString(0), ("$d", doc.Id)).ToHashSet();
+            foreach (var t in r.Tags.Where(t => doc.Tags.All(x => x.Id != t) && !off.Contains(t)))
             {
                 db.Exec("INSERT OR IGNORE INTO dms_doc_tags(doc, tag, auto) VALUES($d, $t, 1)", ("$d", doc.Id), ("$t", t));
                 any = true;
             }
-            // Gelernte Tags, die das Gelernte nicht mehr stützt, fallen weg (Tags der KI bleiben, die prüft nur der Mensch)
-            if (!doc.ByAi)
-                foreach (var t in doc.Tags.Where(x => x.Auto && !r.Tags.Contains(x.Id)))
+            // Gelernte Tags, die das Gelernte nicht mehr stützt, fallen weg. Tags der KI bleiben, außer der Tag wurde schon einmal von
+            // Hand abgewählt: dann reicht der Vorschlag der KI allein nicht mehr, nur noch das Gelernte zählt
+            if (Features.On(Features.DmsRelearn))
+                foreach (var t in doc.Tags.Where(x => x.Auto && !r.Tags.Contains(x.Id) && (!doc.ByAi || Rejected().Contains(x.Id))))
                 {
                     db.Exec("DELETE FROM dms_doc_tags WHERE doc = $d AND tag = $t AND auto = 1", ("$d", doc.Id), ("$t", t.Id));
+                    any = true;
+                }
+            // Höchstens MaxAutoTags automatisch gesetzte Tags (gelernt oder von der KI): die wahrscheinlichsten bleiben, per Regel
+            // gesetzte zählen nicht mit
+            var rule = r.FixedTags ?? [];
+            var autoNow = db.Query("SELECT tag FROM dms_doc_tags WHERE doc = $d AND auto = 1", x => x.GetString(0), ("$d", doc.Id)).Where(x => !rule.Contains(x)).ToList();
+            if (autoNow.Count > DmsAssign.MaxAutoTags)
+                foreach (var t in autoNow.OrderByDescending(x => r.Probs?.GetValueOrDefault(x) ?? 0).Skip(DmsAssign.MaxAutoTags))
+                {
+                    db.Exec("DELETE FROM dms_doc_tags WHERE doc = $d AND tag = $t AND auto = 1", ("$d", doc.Id), ("$t", t));
                     any = true;
                 }
             if (any) changed.Add(doc.Id);
@@ -752,6 +817,35 @@ CREATE TABLE IF NOT EXISTS dms_seen (source TEXT NOT NULL, path TEXT NOT NULL, e
         if (key.Length == 0) return null;
         return all.Where(e => e.Kind == kind && Key(e.Name) == key).OrderBy(e => e.Parent == null ? 0 : 1).FirstOrDefault();
     }
+
+    /// <summary>
+    /// Eintrag nach Namen wie <see cref="FindByName"/>, sonst nach ähnlichem Namen: ohne Rechtsform (GmbH, AG, e. K. …), Satzzeichen und
+    /// Groß- und Kleinschreibung gleich, oder ein Name ist ganz im anderen enthalten (ab fünf Zeichen). Bei mehreren ähnlichen: keiner.
+    /// </summary>
+    public static DmsEntry? FindSimilar(IEnumerable<DmsEntry> all, string kind, string name)
+    {
+        var list = all.Where(e => e.Kind == kind).ToList();
+        if (FindByName(list, kind, name) is { } exact) return exact;
+        var key = SimilarKey(name);
+        if (key.Length < 3) return null;
+        var same = list.Where(e => SimilarKey(e.Name) == key).OrderBy(e => e.Parent == null ? 0 : 1).ToList();
+        if (same.Count > 0) return same[0];
+        var within = list.Where(e => SimilarKey(e.Name) is { Length: >= 5 } k && key.Length >= 5 && (Words(key).Contains(Words(k)) || Words(k).Contains(Words(key)))).ToList();
+        return within.Count == 1 ? within[0] : null;
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex LegalForm = new(
+        @"\b(gmbh\s*&\s*co\.?\s*kg|gmbh|mbh|ag|kg|ohg|gbr|ug|haftungsbeschränkt|e\.\s*k\.?|e\.\s*v\.?|eg|se|ltd|limited|inc|llc|co|corp|sarl|sas|bv)(?=\W|$)\.?",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    private static string SimilarKey(string name)
+    {
+        var s = LegalForm.Replace(name.ToLowerInvariant(), " ");
+        return string.Join(" ", new string(s.Select(c => char.IsLetterOrDigit(c) ? c : ' ').ToArray()).Split(' ', StringSplitOptions.RemoveEmptyEntries));
+    }
+
+    // Ganze Wörter: „muster“ steckt in „muster technik“, aber nicht in „mustermann“
+    private static string Words(string key) => " " + key + " ";
 
     /// <summary>Schon so gelernt: nichts; anders gelernt: umlernen.</summary>
     internal static void Train(DmsStore db, long doc, HashSet<string> tokens, string entry, bool positive)

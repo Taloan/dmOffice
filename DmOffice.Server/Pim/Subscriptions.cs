@@ -31,31 +31,34 @@ public static class Subscriptions
         sub.LastFetch is not DateTime last || (sub.Interval != 0 && now - last >= TimeSpan.FromMinutes(Math.Max(15, sub.Interval)));
 
     private const string Key = "pim.subscriptions";
+    private const string Unreachable = "Kalender nicht erreichbar.";
     private const long MaxBytes = 20 * 1024 * 1024;
 
     private static readonly HttpClient Http = new(new SocketsHttpHandler
     {
         AllowAutoRedirect = true, MaxAutomaticRedirections = 5, AutomaticDecompression = DecompressionMethods.All,
-        // Keine Adressen auf dem Server selbst (localhost, Link-Local wie 169.254.169.254)
+        // Ziele wie bei eigenen WebDAV-Ordnern: Heimnetz nur, wenn die Verwaltung es erlaubt; der Server selbst und
+        // link-lokale Adressen nie. Verbunden wird mit genau den geprüften Adressen.
         ConnectCallback = async (ctx, ct) =>
         {
             var addrs = await Dns.GetHostAddressesAsync(ctx.DnsEndPoint.Host, ct);
-            var ip = addrs.FirstOrDefault(a => !Blocked(a)) ?? throw new HttpRequestException("Diese Adresse ist nicht erlaubt.");
-            var socket = new Socket(ip.AddressFamily, SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
-            try { await socket.ConnectAsync(new IPEndPoint(ip, ctx.DnsEndPoint.Port), ct); return new NetworkStream(socket, ownsSocket: true); }
+            var ok = addrs.Where(Allowed).ToArray();
+            if (ok.Length == 0) throw new NotAllowedException();
+            var socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+            try { await socket.ConnectAsync(ok, ctx.DnsEndPoint.Port, ct); return new NetworkStream(socket, ownsSocket: true); }
             catch { socket.Dispose(); throw; }
         },
     }) { Timeout = TimeSpan.FromSeconds(30) };
 
     static Subscriptions() => Http.DefaultRequestHeaders.UserAgent.ParseAdd("dmOffice-Kalenderabo/1.0");
 
-    private static bool Blocked(IPAddress a) => BlockedCore(a.IsIPv4MappedToIPv6 ? a.MapToIPv4() : a);
+    /// <summary>Erlaubt die Verwaltung Adressen im Heimnetz (Einstellung der eigenen WebDAV-Ordner)? Program setzt es.</summary>
+    public static Func<bool> HomeNet { get; set; } = () => false;
 
-    // ::ffff:127.0.0.1 erst auf IPv4 abbilden - IsLoopback erkennt die gemappte Form nicht
-    private static bool BlockedCore(IPAddress a) =>
-        IPAddress.IsLoopback(a) || a.IsIPv6LinkLocal ||
-        (a.AddressFamily == AddressFamily.InterNetwork && a.GetAddressBytes() is [169, 254, ..]) ||
-        a.Equals(IPAddress.Any) || a.Equals(IPAddress.IPv6Any);
+    internal static bool Allowed(IPAddress a) =>
+        HomeNet() ? !DmOffice.Storage.ExternalFolders.NeverAllowed(a) : !DmOffice.Storage.ExternalFolders.Private(a);
+
+    private sealed class NotAllowedException() : Exception("Diese Adresse ist nicht erlaubt.");
 
     public static List<Subscription> All(UserDb db) => db.GetJson<List<Subscription>>(Key);
     private static void Save(UserDb db, List<Subscription> list) => db.SetJson(Key, list);
@@ -100,7 +103,7 @@ public static class Subscriptions
                 Update(db, coll.Id, s => { s.LastFetch = DateTime.UtcNow; s.LastError = null; });
                 return -1;
             }
-            if (!res.IsSuccessStatusCode) throw new HttpRequestException($"Der Server antwortet mit Fehler {(int)res.StatusCode}.");
+            if (!res.IsSuccessStatusCode) throw new HttpRequestException(Unreachable);
             if (res.Content.Headers.ContentLength > MaxBytes) throw new InvalidOperationException("Der Kalender ist zu groß (über 20 MB).");
             await using var stream = await res.Content.ReadAsStreamAsync(ct);
             using var buffer = new MemoryStream();
@@ -143,8 +146,9 @@ public static class Subscriptions
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
-            // Keine Socket-Einzelheiten zurueckgeben - sie verraten, welche Adressen und Ports im Netz antworten
-            var msg = ex is TaskCanceledException ? "Zeitüberschreitung beim Abrufen." : ex.InnerException is SocketException || ex is HttpRequestException { StatusCode: null } ? "Keine Verbindung zum Kalender-Server." : ex.Message;
+            // Keine Einzelheiten zur Verbindung (Statuscode, Zeitüberschreitung, Socket) - sie verraten, welche Adressen und Ports antworten
+            var msg = ex is NotAllowedException || ex.InnerException is NotAllowedException ? "Diese Adresse ist nicht erlaubt."
+                : ex is HttpRequestException or TaskCanceledException or IOException || ex.InnerException is SocketException ? Unreachable : ex.Message;
             Update(db, coll.Id, s => { s.LastFetch = DateTime.UtcNow; s.LastError = msg; });
             throw new InvalidOperationException(msg, ex);
         }

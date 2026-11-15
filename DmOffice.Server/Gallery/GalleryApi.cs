@@ -153,7 +153,8 @@ public static class GalleryApi
         api.MapGet("/places", async (string q, IHttpClientFactory f, CancellationToken ct) => await DmOffice.Chat.PukkiBriefing.PlacesAsync(f.CreateClient(), q, ct));
 
         // Einstellungen → Galerie: Angaben in die Fotos schreiben (XMP) oder nur in die eigene Datenbank
-        api.MapGet("/settings", (HttpContext http) => Results.Ok(new { writeXmp = http.Space().Settings.PhotoWriteXmp }));
+        GallerySave.Map(api);
+        api.MapGet("/settings", (HttpContext http) => Results.Ok(new { writeXmp = http.Space().Settings.PhotoWriteXmp && !Demo.Enabled, demo = Demo.Enabled }));
         api.MapPut("/settings", (GallerySettingsBody body, HttpContext http) =>
         {
             http.Space().UpdateSettings(s => s.PhotoWriteXmp = body.WriteXmp);
@@ -182,12 +183,19 @@ public static class GalleryApi
             var b = v.Buckets.FirstOrDefault(b => b.Items.Any(e => e.Id == id || e.Stack?.Any(x => x.Id == id) == true));
             return b == null ? Results.NotFound(new { error = "Dieses Foto gibt es nicht mehr." }) : Results.Ok(new { k = b.Key });
         });
-        api.MapGet("/timeline/all", async (bool? stack, HttpContext http, ServerConfig config) =>
+        api.MapGet("/timeline/all", async (bool? stack, bool? dupes, HttpContext http, ServerConfig config) =>
         {
             var v = await GalleryTimeline.ViewAsync(http, config, GalleryTimeline.ParseQuery("taken", true, stack ?? false, null, null));
+            // Handy-App: flache Liste, Doppelte mit Verweis auf das Foto oben im Stapel („du“) - sie stapelt selbst
+            if (dupes == true && stack != true && Features.On(Features.GalleryDupes))
+            {
+                var stacked = await GalleryTimeline.ViewAsync(http, config, GalleryTimeline.ParseQuery("taken", true, true, null, null));
+                var of = GalleryTimeline.DupesOf(stacked);
+                return GalleryTimeline.Send(http, GalleryTimeline.EtagOf([.. GalleryTimeline.BucketsJson(stacked), .. GalleryTimeline.BucketsJson(v)]), () => GalleryTimeline.AllJson(v, of));
+            }
             return GalleryTimeline.Send(http, GalleryTimeline.EtagOf(GalleryTimeline.BucketsJson(v)), () => GalleryTimeline.AllJson(v));
         });
-        // Handy-App: Gruppen nach Quelle - je Gruppe Name und Fotos (die App gruppiert nach Datum selbst)
+        // Handy-App: Gruppen nach Quelle, Kategorie oder Tag - je Gruppe Name und Fotos (die App gruppiert nach Datum selbst)
         api.MapGet("/timeline/groups", async (string group, HttpContext http, ServerConfig config) =>
         {
             var v = await GalleryTimeline.ViewAsync(http, config, GalleryTimeline.ParseQuery("taken", true, false, null, null, group));
@@ -205,7 +213,8 @@ public static class GalleryApi
         {
             if (string.IsNullOrWhiteSpace(q)) return Results.Ok(new { items = Array.Empty<object>() });
             var v = await GalleryTimeline.ViewAsync(http, config, GalleryTimeline.ParseQuery("taken", true, stack, ext, null));
-            return Results.Bytes(GalleryTimeline.SearchJson(v, q.Trim()), "application/json");
+            return Results.Bytes(GalleryTimeline.SearchJson(v, q.Trim(),
+                labelled: DmOffice.Dav.FileCategories.Matching(http.Space().Db, q.Trim())), "application/json");
         });
         api.MapGet("/timeline/facets", async (string cols, string? ext, string? filter, HttpContext http, ServerConfig config) =>
         {
@@ -296,4 +305,5 @@ public static class GalleryApi
                 : Results.Stream(stream, "application/octet-stream", name, enableRangeProcessing: stream.CanSeek);
         }
     }
+
 }

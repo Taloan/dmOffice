@@ -24,6 +24,12 @@ export interface Item {
   snippet?: string | null
   /** Galerie: weitere Dateien desselben Stapels (RAW zum JPG); das Item selbst ist das JPG */
   stack?: Item[]
+  /** Im Stapel: dasselbe Foto an anderer Stelle (etwa in einem Galerie-Ordner) - Aktionen auf den Stapel nehmen es nicht mit */
+  dupe?: boolean
+  /** Aufgeklappter Stapel: Stelle im Stapel („2/3“) und das Foto oben im Stapel */
+  stackPos?: { n: number; of: number; lead: string }
+  /** Die Datei ist ein Dokument im DMS */
+  dms?: boolean | null
   /** Ordner ist ein eigener Cryptomator-Tresor (vault.cryptomator darin) */
   vault?: boolean
   /** Eigener Cryptomator-Tresor, gerade offen */
@@ -56,8 +62,23 @@ export function stackPhotos<T extends Item>(list: T[]): T[] {
   }
   return out
 }
-/** Stapel auflösen: das Item und seine RAW-Dateien. */
-export const unstack = <T extends Item>(list: T[]): Item[] => list.flatMap(i => [i, ...(i.stack ?? [])])
+/** Kennzeichen eines Stapels: die RAW-Endungen, bei Doppelten zusätzlich die Anzahl der Kopien („RAF · 2×“). */
+export const stackLabel = (i: Item) => {
+  const own = [...new Set((i.stack ?? []).filter(x => !x.dupe).map(x => extOf(x.name).slice(1).toUpperCase()))].join('+')
+  const copies = 1 + (i.stack ?? []).filter(x => x.dupe && LEAD_EXT.includes(extOf(x.name))).length
+  return [own, copies > 1 ? `${copies}×` : ''].filter(Boolean).join(' · ')
+}
+/** Aufgeklappte Stapel als einzelne Kacheln: das Foto oben im Stapel zuerst, dann die übrigen, jedes mit seiner Stelle („1/3“). */
+export function openStacks<T extends Item>(list: T[], open: Set<string>): T[] {
+  if (!open.size) return list
+  return list.flatMap(i => {
+    if (!i.stack?.length || !open.has(i.path)) return [i]
+    const all: Item[] = [{ ...i, stack: undefined }, ...i.stack]
+    return all.map((x, k) => ({ ...x, stackPos: { n: k + 1, of: all.length, lead: i.path } }) as T)
+  })
+}
+/** Stapel auflösen: das Item und seine RAW-Dateien - ohne Doppelte an anderer Stelle (die bleiben, wo sie sind). */
+export const unstack = <T extends Item>(list: T[]): Item[] => list.flatMap(i => [i, ...(i.stack ?? []).filter(x => !x.dupe)])
 
 
 /** Name des virtuellen Ordners in der Wurzel, solange andere etwas mit mir teilen. */

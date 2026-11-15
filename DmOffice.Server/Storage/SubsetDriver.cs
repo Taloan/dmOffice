@@ -5,7 +5,7 @@ namespace DmOffice.Storage;
 /// Oben erscheinen nur diese Ordner; alles darunter geht normal. Pfade außerhalb gibt es nicht, und oben lässt sich
 /// nichts anlegen, verschieben oder löschen.
 /// </summary>
-public sealed class SubsetDriver(IStorageDriver inner, IEnumerable<string> include) : IStorageDriver
+public sealed class SubsetDriver(IStorageDriver inner, IEnumerable<string> include) : IStorageDriver, IRealPaths
 {
     private readonly HashSet<string> _include = new(include, StringComparer.Ordinal);
 
@@ -35,5 +35,6 @@ public sealed class SubsetDriver(IStorageDriver inner, IEnumerable<string> inclu
     public Task DeleteAsync(string path, CancellationToken ct) => inner.DeleteAsync(Write(path), ct);
     public Task MoveAsync(string from, string to, CancellationToken ct) => inner.MoveAsync(Write(from), Write(to), ct);
     public Task<DriverSpace?> SpaceAsync(CancellationToken ct) => inner.SpaceAsync(ct);
+    public string? RealPath(string path) => inner is IRealPaths r ? r.RealPath(Read(path)) : null;
     public void Dispose() => inner.Dispose();
 }

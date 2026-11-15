@@ -53,7 +53,7 @@ export function LogAdmin() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      <Text>{t('Warnungen und Fehler des Servers seit dem letzten Start, dazu gebremste (429) und fehlgeschlagene (5xx) Anfragen. Das vollständige Protokoll steht im Container (docker logs).')}</Text>
+      <Text>{t('Warnungen und Fehler des Servers seit dem letzten Start, dazu gebremste (429) und fehlgeschlagene (5xx) Anfragen.')}</Text>
       {data && <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>{t('Server gestartet {when} · {n} Einträge', { when: new Date(data.since).toLocaleString(locale), n: data.entries.length })}</Text>}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
         <Dropdown value={level === 'all' ? t('Alle') : levelText(level)} selectedOptions={[level]} onOptionSelect={(_, d) => setLevel(d.optionValue as typeof level)} style={{ minWidth: 140 }}>

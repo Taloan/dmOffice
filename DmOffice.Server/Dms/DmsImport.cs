@@ -110,6 +110,15 @@ public static class DmsImport
                 else
                 {
                     if (info.Given != null) throw new ArgumentException("Für die Übernahme in den Tresor muss der Tresor offen sein.");
+                    // Virenscanner an: vor dem verschlüsselten Ablegen prüfen (danach kann ihn niemand mehr lesen, bis der Tresor offen ist)
+                    if (Core.VirusScan.Enabled)
+                    {
+                        var copy = new MemoryStream();
+                        await data.CopyToAsync(copy, ct);
+                        Core.VirusScan.CheckBytes(copy.ToArray(), space.User.Id, "DMS/" + name);
+                        copy.Position = 0;
+                        data = copy;
+                    }
                     await DropAsync(space, data, name, mime, info, ct);
                     return new Result(0, false, true);
                 }
@@ -118,6 +127,9 @@ public static class DmsImport
         var db = store ?? space.Db;
         Dms.Ensure(db);
         var blob = await db.Blobs.WriteAsync(data, MaxBytes, () => new ArgumentException($"Die Datei ist zu groß (höchstens {MaxBytes / 1024 / 1024} MB)."), ct);
+        // Virenscanner an (Verwaltung → Sicherheit): vor dem Eintragen prüfen; Fund → nicht aufgenommen, die Quelle meldet den Grund
+        try { Core.VirusScan.CheckBlob(db.Blobs, space.User.Id, blob, "DMS/" + name); }
+        catch { if (blob.Id != null) db.Blobs.Delete(blob.Id); throw; }
         var sha = Dav.FileStore.Hex(blob.Sha256);
         if (await ExistingAsync(space, db, sha, ct) is { } existing)
         {
@@ -203,9 +215,25 @@ public static class DmsImport
     }
 
     /// <summary>Ein Dokument: Text, Archivfassung, Einordnung, Ablage.</summary>
+    /// <summary>
+    /// Je Dokument nur eine Verarbeitung zur Zeit: Beim Verschieben in den Tresor verarbeitet das Verschieben die neue Kopie selbst, während die
+    /// Hintergrundverarbeitung dasselbe Dokument greifen kann. Liefen beide, lag die Datei zweimal da („ (2)“) - eine davon im Inbox-Ordner,
+    /// abgelegt mit dem Stand vor „bestätigt“ - und das Ablegen nach dem Muster übersprang das noch nicht fertige Dokument.
+    /// Wer zweiter kommt, wartet und findet das Dokument fertig vor.
+    /// </summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> Working = new();
+
     public static async Task ProcessAsync(UserSpace space, DmsHost host, long id, CancellationToken ct, DmsStore? store = null)
     {
         var db = store ?? space.Db;
+        var gate = Working.GetOrAdd(space.User.Id + (db.Tresor ? ":t:" : ":f:") + id, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct);
+        try { await ProcessLockedAsync(space, host, id, ct, db); }
+        finally { gate.Release(); }
+    }
+
+    private static async Task ProcessLockedAsync(UserSpace space, DmsHost host, long id, CancellationToken ct, DmsStore db)
+    {
         var row = db.Query("SELECT original_blob, original_name, mime, sender, profile, presets, tries, source FROM dms_docs WHERE id = $d AND state = 'queued'",
             r => (Blob: r.IsDBNull(0) ? null : r.GetString(0), Name: r.GetString(1), Mime: r.IsDBNull(2) ? null : r.GetString(2), Sender: r.IsDBNull(3) ? null : r.GetString(3),
                 Profile: r.IsDBNull(4) ? null : r.GetString(4), Pending: r.IsDBNull(5) ? null : r.GetString(5), Tries: r.GetInt32(6), Source: r.GetString(7)), ("$d", id))
@@ -293,6 +321,7 @@ public static class DmsImport
         var date = ai?.DocDate ?? DmsAssign.FindDate(text, today)?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
             ?? (fileDate is { } fd ? DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(fd, DateTimeKind.Utc), space.Zone)).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) : null);
         var title = Dms.CleanText(ai?.Title ?? DmsAssign.Title(row.Name, text, subject));
+        var amount = Features.On(Features.DmsAmount) ? DmsAssign.FindAmount(text) : null;
 
         // Ablegen
         var profile = DmsFiling.Find(space, row.Profile) ?? DmsFiling.Default(space);
@@ -301,9 +330,10 @@ public static class DmsImport
         using (var tx = conn.BeginTransaction())
         {
             UserDb.Exec(conn, @"UPDATE dms_docs SET title = $t, doc_date = $dd, correspondent = $c, doctype = $y, auto_correspondent = $ac, auto_doctype = $ay,
-                by_ai = $ai, ai_suggestion = $as, sender = $snd WHERE id = $d",
+                by_ai = $ai, ai_suggestion = $as, sender = $snd, amount = CASE WHEN amount_set = 1 THEN amount ELSE COALESCE($am, amount) END
+                WHERE id = $d",
                 ("$t", title), ("$dd", date), ("$c", correspondent), ("$y", doctype), ("$ac", correspondent != null && !decided.FixedCorrespondent ? 1 : 0),
-                ("$ay", doctype != null && !decided.FixedDoctype ? 1 : 0), ("$ai", byAi ? 1 : 0), ("$as", suggestion), ("$snd", sender), ("$d", id));
+                ("$ay", doctype != null && !decided.FixedDoctype ? 1 : 0), ("$ai", byAi ? 1 : 0), ("$as", suggestion), ("$snd", sender), ("$am", amount), ("$d", id));
             UserDb.Exec(conn, "DELETE FROM dms_doc_tags WHERE doc = $d", ("$d", id));
             foreach (var t in tags)
                 UserDb.Exec(conn, "INSERT OR IGNORE INTO dms_doc_tags(doc, tag, auto) VALUES($d, $t, $a)", ("$d", id), ("$t", t), ("$a", fixedTags.Contains(t) ? 0 : 1));
@@ -546,7 +576,6 @@ public static class DmsImport
         var doc = Dms.Get(from, id);
         if (!IsPlaced(doc)) return Moved.NotPlaced;
         // Eine Verknüpfung zeigt auf das Dokument dieses Bereichs; im anderen Bereich bekäme es eine neue Kennung
-        if (doc.Fixed && Dms.FixedReason?.Invoke(from, id) is { } linked) throw new InvalidOperationException(linked);
         var target = to.Tresor ? "tresor" : "files";
         // Aus dem Tresor: Dateiablage oder externer Ordner (beides offener Bereich); in den Tresor: nur Ziel Tresor
         var profile = DmsFiling.Find(space, profileId) is { } p && (p.Target == target || (target == "files" && p.Target == "external")) ? p
@@ -656,6 +685,20 @@ public static class DmsImport
         var path = DmsFiling.SamePlace(now.Value.Path, wanted) ? now.Value.Path : files.Move(space, db, doc.FileId, wanted);
         db.Exec("UPDATE dms_docs SET placed_path = $p, manual = 0 WHERE id = $d", ("$p", path), ("$d", id));
         return path;
+    }
+
+    /// <summary>
+    /// Wohin gehört das Dokument nach seiner Vorgabe (Ordner- und Namensmuster des Ablageprofils)? Gibt den Pfad zurück, wenn er vom
+    /// jetzigen abweicht, sonst null. Nicht für Unbestätigte (Inbox), Fixierte, noch nicht Verarbeitete und Dokumente ohne Datei.
+    /// Rechnet nur - verschoben wird mit „Nach Vorgabe ablegen“ bzw. automatisch, wenn das Profil „Ablage folgt den Angaben“ hat.
+    /// </summary>
+    public static string? Misplaced(UserSpace space, DmsStore db, DmsDoc doc)
+    {
+        if (doc.Inbox || doc.Fixed || doc.State != "done" || string.IsNullOrEmpty(doc.Path) || doc.FileId == 0 && doc.Mount == null) return null;
+        var profile = DmsFiling.Find(space, doc.Profile) ?? DmsFiling.Default(space);
+        if (doc.Mount != null && (profile.Target != "external" || profile.Mount != doc.Mount)) return null;
+        var wanted = DmsFiling.PathFor(profile, DmsFiling.FactsOf(space, doc, SourceName(space, doc.Source, doc, db)), Path.GetExtension(doc.Path), false);
+        return DmsFiling.SamePlace(doc.Path, wanted) ? null : wanted;
     }
 
     /// <summary>
@@ -884,7 +927,7 @@ public static class DmsImport
         using (var conn = db.Open())
         using (var tx = conn.BeginTransaction())
         {
-            foreach (var sql in new[] { "DELETE FROM dms_doc_tags WHERE doc = $d", "DELETE FROM dms_text WHERE doc = $d", "DELETE FROM dms_fts WHERE rowid = $d", "DELETE FROM dms_tiles WHERE doc = $d", "DELETE FROM dms_docs WHERE id = $d" })
+            foreach (var sql in new[] { "DELETE FROM dms_doc_tags WHERE doc = $d", "DELETE FROM dms_doc_tags_off WHERE doc = $d", "DELETE FROM dms_text WHERE doc = $d", "DELETE FROM dms_fts WHERE rowid = $d", "DELETE FROM dms_tiles WHERE doc = $d", "DELETE FROM dms_docs WHERE id = $d" })
                 UserDb.Exec(conn, sql, ("$d", id));
             tx.Commit();
         }

@@ -165,8 +165,10 @@ public static class OnlyOffice
             if (Resolve(http, t) is not { } r) return Results.StatusCode(401);
             // Nur gezeigt (Version 2): die Adresse steht in der Konfiguration im Browser - mit Geheimnis gibt es die Datei
             // nur fuer den Document Server, der seine Abrufe signiert (Kopf mit JWT)
-            if (r.Grant.X && config.OfficeJwtSecret() is { Length: > 0 } secret)
+            if (WopiApi.Restricted(r.Space.Db, r.Grant))
             {
+                // Ohne Geheimnis kein Nachweis: nur gezeigte Dateien und begrenzte Links gibt es dann nicht
+                if (config.OfficeJwtSecret() is not { Length: > 0 } secret) return Results.StatusCode(403);
                 var header = http.Request.Headers[config.Current.OfficeJwtHeader is { Length: > 0 } h ? h : "Authorization"].ToString();
                 if (header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) header = header[7..];
                 if (Jwt.Read(header, secret) == null) return Results.StatusCode(403);

@@ -1,3 +1,4 @@
+using DmOffice.Core;
 using System.Text;
 using DmOffice.Search;
 
@@ -39,8 +40,7 @@ public static class DmsArchive
         var tools = Ocr.Current;
         if (!tools.Available) return new(null, "", tools.Reason ?? "Keine Texterkennung.");
         if (!CanMakeSearchable(ext)) return new(null, "", "Dateityp ohne Texterkennung");
-        var dir = Path.Combine(Path.GetTempPath(), "dmoffice-dms-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(dir);
+        var dir = WorkDir.Create("dms");
         try
         {
             var pagesPdf = new List<string>();
@@ -113,7 +113,7 @@ public static class DmsArchive
         catch (Exception e) { return new(null, "", Short(e.Message)); }
         finally
         {
-            try { Directory.Delete(dir, true); } catch { /* beim nächsten Mal */ }
+            WorkDir.Delete(dir);
         }
     }
 
@@ -121,8 +121,7 @@ public static class DmsArchive
     public static byte[]? Unite(List<byte[]> pdfs, CancellationToken ct)
     {
         if (PdfUnite.Value == null) return null;
-        var dir = Path.Combine(Path.GetTempPath(), "dmoffice-dms-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(dir);
+        var dir = WorkDir.Create("dms");
         try
         {
             var files = pdfs.Select((p, i) => { var f = Path.Combine(dir, $"{i}.pdf"); File.WriteAllBytes(f, p); return f; }).ToList();
@@ -134,7 +133,7 @@ public static class DmsArchive
         catch (Exception) { return null; }
         finally
         {
-            try { Directory.Delete(dir, true); } catch { /* beim nächsten Mal */ }
+            WorkDir.Delete(dir);
         }
     }
 
@@ -160,8 +159,7 @@ public static class DmsArchive
     public static byte[]? ToPdfA(byte[] pdf, CancellationToken ct, PdfInfo? info = null)
     {
         if (!PdfAAvailable) return null;
-        var dir = Path.Combine(Path.GetTempPath(), "dmoffice-pdfa-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(dir);
+        var dir = WorkDir.Create("pdfa");
         try
         {
             var input = Path.Combine(dir, "in.pdf");
@@ -189,7 +187,7 @@ public static class DmsArchive
         catch (Exception) { return null; }
         finally
         {
-            try { Directory.Delete(dir, true); } catch { /* beim nächsten Mal */ }
+            WorkDir.Delete(dir);
         }
     }
 

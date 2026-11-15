@@ -1,8 +1,9 @@
 import {
   Badge, Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Field, Input, MessageBar, MessageBarActions, MessageBarBody,
-  Switch, Text, makeStyles, mergeClasses, tokens, SpinButton, Select, Radio, RadioGroup, ProgressBar,
+  Switch, Tab, TabList, Text, makeStyles, mergeClasses, tokens, SpinButton, Select, Radio, RadioGroup, ProgressBar,
 } from '@fluentui/react-components'
-import { ChevronDown16Regular, ChevronRight16Regular, PersonAdd20Regular, Delete20Regular, Key20Regular, ShieldDismiss20Regular, Edit16Regular, Eye20Regular, EyeOff20Regular } from '@fluentui/react-icons'
+import { ChevronDown16Regular, ChevronRight16Regular, PersonAdd20Regular, Delete20Regular, Key20Regular, ShieldDismiss20Regular, Edit16Regular, Eye20Regular, EyeOff20Regular,
+  People20Regular, Storage20Regular, AppsListDetail20Regular, Settings20Regular } from '@fluentui/react-icons'
 import { useEffect, useState, useRef } from 'react'
 import { api, featureOn, fmtSize } from '../api'
 import { useApp } from '../App'
@@ -17,6 +18,9 @@ import { ChatRightsAdmin } from '../chat/ChatSettings'
 import { AiAdmin } from './AiAdmin'
 import { SpamListsAdmin } from './SpamListsAdmin'
 import { SpamRulesAdmin } from './SpamRulesAdmin'
+import { VirusAdmin } from './VirusAdmin'
+import { OidcAdmin } from './OidcAdmin'
+import { OidcUserDialog } from './OidcUserDialog'
 import { SecurityAdmin } from './SecurityAdmin'
 import { StorageAdmin } from './StorageAdmin'
 import { BackupStrategy } from './BackupStrategy'
@@ -25,10 +29,10 @@ import { LogAdmin } from './LogAdmin'
 import { PlainBackupAdmin } from './PlainBackupAdmin'
 import { DbHealthAdmin } from './DbHealthAdmin'
 import { ModulesAdmin } from '../settings/ModuleSettings'
-import { askConfirm } from '../shell/context'
+import { askConfirm, askText } from '../shell/context'
 
 const useStyles = makeStyles({
-  // Links die Seiten der Verwaltung (wie die Einstellungen), rechts die gewählte Seite
+  // Links die Bereiche der Verwaltung, rechts oben die Seiten des Bereichs als Reiter
   root: { flex: 1, display: 'flex', minWidth: 0, minHeight: 0, '@media (max-width: 767px)': { flexDirection: 'column' } },
   nav: {
     width: '220px', flexShrink: 0, borderRight: `1px solid ${tokens.colorNeutralStroke2}`, padding: '20px 8px', display: 'flex', flexDirection: 'column', gap: '2px', overflowY: 'auto',
@@ -36,17 +40,21 @@ const useStyles = makeStyles({
   },
   navGroup: { fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3, padding: '12px 10px 4px', fontWeight: tokens.fontWeightSemibold },
   navItem: {
-    textAlign: 'left', border: 'none', background: 'none', color: 'inherit', font: 'inherit', padding: '7px 10px', borderRadius: tokens.borderRadiusMedium, cursor: 'pointer',
+    textAlign: 'left', border: 'none', background: 'none', color: 'inherit', font: 'inherit', padding: '8px 10px', borderRadius: tokens.borderRadiusMedium, cursor: 'pointer',
+    display: 'flex', alignItems: 'center', gap: '10px',
     ':hover': { backgroundColor: tokens.colorNeutralBackground1Hover },
   },
   navOn: { backgroundColor: tokens.colorNeutralBackground1Selected, fontWeight: tokens.fontWeightSemibold },
   mobileNav: { display: 'none', padding: '12px 12px 0', '@media (max-width: 767px)': { display: 'block' } },
+  tabs: { '@media (max-width: 767px)': { display: 'none' } },
   page: { flex: 1, overflowY: 'auto', padding: '24px 32px', display: 'flex', flexDirection: 'column', gap: '16px', minWidth: 0, '@media (max-width: 767px)': { padding: '12px' } },
   form: { display: 'flex', flexDirection: 'column', gap: '12px' },
 })
 
 interface User {
   id: string; login: string; displayName: string; isAdmin: boolean; created: string; size: number; twoFactor: boolean
+  /** Anmeldung über OIDC: verknüpft, vorgemerkter Name beim Anbieter, noch ohne eigenes Passwort */
+  oidcLinked?: boolean; oidcExpected?: string | null; oidcInvite?: string | null; noOwnPassword?: boolean
   /** null: Vorgabe; 0: unbegrenzt */
   fileQuotaMb: number | null; fileQuota: number; files: number | null
   /** Dateiablage abgeschaltet - notizi-Abgleich geht weiter */
@@ -93,20 +101,26 @@ export default function AdminView() {
   const [adding, setAdding] = useState(false)
   // Seite gemerkt fuer den naechsten Besuch; fruehere Reiter-Namen gelten weiter
   const [tab, setTab] = useState<string>(() => { try { const v = localStorage.getItem('dmoffice.admin.tab') ?? 'users'; return v === 'files' ? 'quota' : v } catch { return 'users' } })
-  const groups: { label: string; pages: [string, string][] }[] = [
-    { label: t('Benutzer'), pages: [['users', t('Benutzer')]] },
-    { label: t('Server'), pages: [['quota', t('Kontingente und Grenzen')], ['storage', t('Storage Extender')], ['backup', t('Backup-Strategie')]] },
-    { label: t('Server-Mounts'), pages: [['serverfolders', t('Lokale Server-Mounts')]] },
-    { label: t('Für Benutzer freigeben'), pages: [['external', t('Benutzer-Mounts')], ['plainbackup', t('Benutzer-Datenexport')]] },
+  // Vier Bereiche links; ihre Seiten oben als Reiter (früher alle Seiten untereinander - das Menü wurde zu lang)
+  const groups: { key: string; label: string; icon: React.ReactNode; pages: [string, string][] }[] = [
+    { key: 'people', label: t('Benutzer'), icon: <People20Regular />, pages: [['users', t('Benutzer')], ...(featureOn('oidc') ? [['sso', t('Anmeldung (OIDC)')] as [string, string]] : [])] },
+    { key: 'space', label: t('Speicher'), icon: <Storage20Regular />, pages: [['quota', t('Kontingente und Grenzen')], ['storage', t('Storage Extender')], ['backup', t('Backup-Strategie')],
+      ['serverfolders', t('Server-Mounts')], ['external', t('Benutzer-Mounts')], ['plainbackup', t('Benutzer-Datenexport')]] },
     // Office nur mit eingeschaltetem Modul (Hauptschalter: System → Module)
-    { label: t('Dienste'), pages: [...(featureOn('office') ? [['office', t('Office im Browser')] as [string, string]] : []), ['chat', t('Chat')], ['mail', t('E-Mail')], ['ai', t('KI')]] },
-    { label: t('System'), pages: [['modules', t('Module')], ['security', t('Sicherheit')], ['log', t('Protokoll')], ['updates', t('Updates')], ['db', t('Datenbanken')]] },
+    { key: 'services', label: t('Dienste'), icon: <AppsListDetail20Regular />, pages: [...(featureOn('office') ? [['office', t('Office im Browser')] as [string, string]] : []), ['chat', t('Chat')], ['mail', t('E-Mail')], ['ai', t('KI')]] },
+    { key: 'system', label: t('System'), icon: <Settings20Regular />, pages: [['modules', t('Module')], ['security', t('Sicherheit')], ['log', t('Protokoll')], ['updates', t('Updates')], ['db', t('Datenbanken')]] },
   ]
   const allPages = groups.flatMap(g => g.pages)
-  const pageLabel = allPages.find(p => p[0] === tab)?.[1] ?? allPages[0][1]
+  const group = groups.find(g => g.pages.some(p => p[0] === tab)) ?? groups[0]
+  // Je Bereich die zuletzt gewählte Seite: ein Klick auf den Bereich führt dorthin zurück
+  const lastOf = (g: typeof groups[number]) => { try { const v = localStorage.getItem('dmoffice.admin.last.' + g.key); if (v && g.pages.some(p => p[0] === v)) return v } catch { /* egal */ } return g.pages[0][0] }
   // Gemerkte Seite gibt es nicht mehr (frühere Seite „Audiothek“, Modul ausgeschaltet): Benutzer
   useEffect(() => { if (!allPages.some(p => p[0] === tab)) setTab('users') }, [tab, allPages.length]) // eslint-disable-line react-hooks/exhaustive-deps
-  const pick = (v: string) => { setTab(v); try { localStorage.setItem('dmoffice.admin.tab', v) } catch { /* egal */ } }
+  const pick = (v: string) => {
+    setTab(v)
+    const g = groups.find(x => x.pages.some(p => p[0] === v))
+    try { localStorage.setItem('dmoffice.admin.tab', v); if (g) localStorage.setItem('dmoffice.admin.last.' + g.key, v) } catch { /* egal */ }
+  }
   // Seiten mit Formularen zum Speichern bleiben beim Wechsel erhalten (nur ausgeblendet), halb Ausgefülltes geht nicht verloren
   const [kept, setKept] = useState<string[]>([])
   useEffect(() => { if (['backup', 'office', 'ai'].includes(tab)) setKept(k => k.includes(tab) ? k : [...k, tab]) }, [tab])
@@ -122,6 +136,7 @@ export default function AdminView() {
     } catch (e) { fail(e) }
   }
   const [quotaUser, setQuotaUser] = useState<User | null>(null)
+  const [oidcUser, setOidcUser] = useState<User | null>(null)
   /** mb: null = Vorgabe, 0 = unbegrenzt, sonst eigene Grenze in MB */
   const saveQuota = async (u: User, mb: number | null) => {
     try {
@@ -133,12 +148,12 @@ export default function AdminView() {
 
   /** Alte master.key nach dem Umstieg auf DMOFFICE_MASTER_KEY - erst nach Rückfrage. */
   async function deleteOldKey() {
-    if (!await askConfirm(t('Datei master.key löschen'), t('Hast du die Datei master.key heruntergeladen? Ohne die Datei master.key lassen sich Sicherungen von vor dem Umstieg nicht mehr zurückspielen.'), t('Löschen'))) return
+    if (!await askConfirm(t('Datei master.key löschen'), t('Hast du die Datei master.key heruntergeladen? Ohne die Datei master.key lassen sich Backups von vor dem Umstieg nicht mehr zurückspielen.'), t('Löschen'))) return
     try { await api.del('/api/admin/old-master-key'); setStatus({ ...status, oldKeyFile: false }); notify(t('Datei gelöscht')) } catch (e) { fail(e) }
   }
 
   const resetPassword = async (u: User) => {
-    const password = prompt(t('Neues Passwort für {login} (mindestens 8 Zeichen):', { login: u.login }))
+    const password = await askText(t('Passwort setzen'), '', t('Neues Passwort für {login} (mindestens 8 Zeichen):', { login: u.login }))
     if (!password) return
     try { await api.put(`/api/admin/users/${u.id}`, { password }); notify(t('Passwort gesetzt'), t('{login} bekommt eine Nachricht.', { login: u.login })) } catch (e) { fail(e) }
   }
@@ -155,15 +170,19 @@ export default function AdminView() {
   const toggleAi = async (u: User) => {
     try { await api.put(`/api/admin/users/${u.id}`, { aiAllowed: !u.aiAllowed }); load() } catch (e) { fail(e) }
   }
+  const [removeUser, setRemoveUser] = useState<User | null>(null)
   const remove = async (u: User) => {
-    if (prompt(t('Alles von {login} wird gelöscht. Zum Bestätigen den Anmeldenamen eingeben:', { login: u.login })) !== u.login) return
-    try { await api.del(`/api/admin/users/${u.id}`); load() } catch (e) { fail(e) }
+    try { await api.del(`/api/admin/users/${u.id}`); setRemoveUser(null); load() } catch (e) { fail(e) }
   }
   const userCols: AdminCol<User>[] = [
     { key: 'login', label: () => t('Anmeldename'), width: 130, sort: u => u.login, render: u => u.login },
     { key: 'name', label: () => t('Name'), width: 150, sort: u => u.displayName, render: u => u.displayName },
-    { key: 'role', label: () => t('Rolle'), width: 130, sort: u => (u.isAdmin ? 0 : 1), render: u => <Switch checked={u.isAdmin} disabled={u.id === me.id} label={u.isAdmin ? t('Admin') : t('Benutzer')} onChange={() => toggleAdmin(u)} /> },
+    { key: 'role', label: () => t('Rolle'), width: 150, sort: u => (u.isAdmin ? 0 : 1), render: u => <Switch checked={u.isAdmin} disabled={u.id === me.id} label={{ children: u.isAdmin ? t('Admin') : t('Benutzer'), style: { whiteSpace: 'nowrap' } }} onChange={() => toggleAdmin(u)} /> },
     { key: 'twoFactor', label: () => '2FA', width: 70, sort: u => (u.twoFactor ? 0 : 1), render: u => (u.twoFactor ? <Badge color="success">{t('an')}</Badge> : <Badge color="informative" appearance="outline">{t('aus')}</Badge>) },
+    ...(featureOn('oidc') ? [{ key: 'oidc', label: () => 'OIDC', width: 150, sort: (u: User) => (u.oidcLinked ? 0 : u.oidcExpected || u.oidcInvite ? 1 : 2), render: (u: User) => (
+      <Button appearance="subtle" size="small" icon={<Edit16Regular />} onClick={() => setOidcUser(u)} title={t('Anmeldung über OIDC')} style={{ justifyContent: 'flex-start' }}>
+        {u.oidcLinked ? t('verknüpft') : u.oidcInvite ? t('eingeladen') : u.oidcExpected ? t('vorgemerkt: {name}', { name: u.oidcExpected }) : '–'}
+      </Button>) } as AdminCol<User>] : []),
     { key: 'db', label: () => t('Datenbank'), width: 100, sort: u => u.size, render: u => fmtSize(u.size) },
     { key: 'files', label: () => t('Dateiablage'), width: 100, sort: u => (u.filesOff ? 1 : 0), render: u => <Switch checked={!u.filesOff} onChange={() => toggleFiles(u)} aria-label={t('Dateiablage')}
       title={u.filesOff ? t('Dateiablage aus – nur der notizi-Abgleich geht') : t('Dateiablage an')} /> },
@@ -182,7 +201,7 @@ export default function AdminView() {
     { key: 'actions', label: () => '', width: 130, fixed: true, render: u => <>
       <Button appearance="subtle" icon={<Key20Regular />} onClick={() => resetPassword(u)} title={t('Passwort setzen')} aria-label={t('Passwort setzen')} />
       {u.twoFactor && <Button appearance="subtle" icon={<ShieldDismiss20Regular />} onClick={() => reset2fa(u)} title={t('2FA zurücksetzen')} aria-label={t('2FA zurücksetzen')} />}
-      {u.id !== me.id && <Button appearance="subtle" icon={<Delete20Regular />} onClick={() => remove(u)} title={t('Löschen')} aria-label={t('Löschen')} />}
+      {u.id !== me.id && <Button appearance="subtle" icon={<Delete20Regular />} onClick={() => setRemoveUser(u)} title={t('Löschen')} aria-label={t('Löschen')} />}
     </> },
   ]
 
@@ -190,10 +209,9 @@ export default function AdminView() {
     <div className={s.root}>
       <nav className={s.nav} aria-label={t('Verwaltung')}>
         <Text size={500} weight="semibold" style={{ padding: '0 10px 4px' }}>{t('Verwaltung')}</Text>
-        {groups.map(g => <div key={g.label} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-          <span className={s.navGroup}>{g.label}</span>
-          {g.pages.map(([k, label]) => <button key={k} className={mergeClasses(s.navItem, tab === k && s.navOn)} aria-current={tab === k ? 'page' : undefined} onClick={() => pick(k)}>{label}</button>)}
-        </div>)}
+        <div style={{ height: 8 }} />
+        {groups.map(g => <button key={g.key} className={mergeClasses(s.navItem, group.key === g.key && s.navOn)} aria-current={group.key === g.key ? 'page' : undefined}
+          onClick={() => pick(lastOf(g))}>{g.icon}{g.label}</button>)}
       </nav>
       <div className={s.mobileNav}>
         <Select value={tab} onChange={(_, d) => pick(d.value)} aria-label={t('Seite der Verwaltung')}>
@@ -201,13 +219,16 @@ export default function AdminView() {
         </Select>
       </div>
       <div className={s.page}>
-      <Text size={600} weight="semibold">{pageLabel}</Text>
-      {tab === 'users' && <SetupHints onBackup={() => pick('backup')} />}
+      <Text size={600} weight="semibold">{group.label}</Text>
+      {/* Seiten des Bereichs als Reiter (am Rechner; auf dem Handy wählt die Liste oben die Seite) */}
+      {group.pages.length > 1 && <TabList className={s.tabs} selectedValue={tab} onTabSelect={(_, d) => pick(d.value as string)} style={{ marginTop: -8, flexWrap: 'wrap' }}>
+        {group.pages.map(([k, label]) => <Tab key={k} value={k}>{label}</Tab>)}
+      </TabList>}
       {/* Schlüssel als Datei ist für eine Installation zu Hause in Ordnung - nur ein ruhiger Tipp bei der Sicherung */}
       {status?.keyInDataDir && tab === 'backup' && (
         <MessageBar intent="info" layout="multiline" style={{ flexShrink: 0 }}>
           <MessageBarBody>
-            {t('Der Hauptschlüssel liegt als Datei master.key im Datenverzeichnis und wird mit ihm gesichert. Für eine Installation zu Hause ist das in Ordnung. Wer Sicherungen außer Haus aufbewahrt, legt ihn besser getrennt ab.')}{' '}
+            {t('Der Hauptschlüssel liegt als Datei master.key im Datenverzeichnis. Das Core-Backup enthält ihn nicht.')}{' '}
             <a href={lang === 'en' ? 'https://github.com/Taloan/dmOffice/blob/master/README.md#data-and-keys' : 'https://github.com/Taloan/dmOffice/blob/master/README.de.md#daten-und-schl%C3%BCssel'} target="_blank" rel="noopener">{t('So geht’s')}</a>
           </MessageBarBody>
         </MessageBar>
@@ -215,7 +236,7 @@ export default function AdminView() {
       {status?.oldKeyFile && tab === 'backup' && (
         <MessageBar intent="info" layout="multiline" style={{ flexShrink: 0 }}>
           <MessageBarBody>
-            {t('Der Umstieg auf DMOFFICE_MASTER_KEY ist erledigt. Die Datei master.key liegt noch im Datenverzeichnis. Die Datei master.key wird nur gebraucht, um eine Sicherung von vor dem Umstieg zurückzuspielen. Lade die Datei master.key herunter und bewahre sie bei diesen Sicherungen auf. Danach kannst du die Datei master.key hier löschen.')}
+            {t('Der Umstieg auf DMOFFICE_MASTER_KEY ist erledigt. Die Datei master.key im Datenverzeichnis wird nur noch gebraucht, um Backups von vor dem Umstieg zurückzuspielen.')}
           </MessageBarBody>
           <MessageBarActions>
             <Button as="a" href="/api/admin/old-master-key" download="master.key">{t('Herunterladen')}</Button>
@@ -226,14 +247,17 @@ export default function AdminView() {
       {tab === 'users' && <>
       <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
         <Button appearance="primary" icon={<PersonAdd20Regular />} onClick={() => setAdding(true)}>{t('Benutzer anlegen')}</Button>
-        <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>{t('Das Kontingent umfasst alles, was ein Benutzer belegt. Du stellst es je Benutzer in der Spalte „Kontingent“ ein; die Vorgabe steht unter „Kontingent und Grenzen“. Die Spalte „Datenbank“ zeigt davon nur Mails, Kalender, Kontakte und Notizen, ohne die Dateien.')}</Text>
+        <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>{t('Das Kontingent umfasst alles, was ein Benutzer belegt. Die Spalte „Datenbank“ zeigt nur die Größe seiner Datenbank.')}</Text>
       </div>
-      <AdminTable id="users" cols={userCols} rows={users} rowKey={u => u.id} initialSort={{ col: 'login', desc: false }} />
+      {/* Volle Höhe: die Seite rollt als Ganzes, die Tabelle schrumpft nicht auf wenige Zeilen */}
+      <div style={{ flexShrink: 0 }}><AdminTable id="users" cols={userCols} rows={users} rowKey={u => u.id} initialSort={{ col: 'login', desc: false }} /></div>
+      {/* Einrichtungshinweise unter der Tabelle, damit sie die Benutzerliste nicht nach unten schieben */}
+      <SetupHints onBackup={() => pick('backup')} />
       </>}
       {tab === 'quota' && status && <>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 640 }}>
           <AdminHeading first>{t('Kontingent (Vorgabe)')}</AdminHeading>
-          <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>{t('Das Kontingent gilt für alle Benutzer, denen kein individuelles Kontingent zugewiesen wurde. Es umfasst den gesamten Speicherplatz, den ein Benutzer belegt. 0 = unbegrenzt. Abweichende Kontingente kannst du unter „Benutzer“ in der Spalte „Kontingent“ für jeden Benutzer einzeln festlegen.')}</Text>
+          <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>{t('Das Kontingent gilt für alle Benutzer ohne eigenes Kontingent und umfasst den gesamten Speicherplatz, den ein Benutzer belegt. 0 = unbegrenzt.')}</Text>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <SizeInput mb={defaultQuota} onChange={setDefaultQuota} />
             <Button disabled={defaultQuota === status.defaultFileQuotaMb} onClick={saveDefaultQuota}>{t('Übernehmen')}</Button>
@@ -255,9 +279,13 @@ export default function AdminView() {
       {tab === 'mail' && <><SpamListsAdmin /><SpamRulesAdmin /></>}
       {keptPage('ai', <AiAdmin />)}
       {tab === 'security' && <SecurityAdmin />}
+      {tab === 'security' && featureOn('clamav') && <VirusAdmin />}
+      {tab === 'sso' && featureOn('oidc') && <OidcAdmin />}
       {status && <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>{t('Datenverzeichnis: {dir}', { dir: status.dataDir })}</Text>}
       {adding && <NewUser onClose={c => { setAdding(false); if (c) load() }} />}
       </div>
+      {oidcUser && <OidcUserDialog user={oidcUser} onClose={c => { setOidcUser(null); if (c) load() }} />}
+      {removeUser && <DeleteUserDialog user={removeUser} onDelete={() => remove(removeUser)} onClose={() => setRemoveUser(null)} />}
       {quotaUser && <QuotaDialog user={quotaUser} defaultMb={status?.defaultFileQuotaMb ?? 0} onSave={mb => saveQuota(quotaUser, mb)} onClose={() => setQuotaUser(null)} />}
     </div>
   )
@@ -352,15 +380,15 @@ function OfficeSettings() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 720 }}>
       <AdminHeading>{t('Office im Browser')}</AdminHeading>
       <Text size={200}>
-        {t('Word-, Excel- und PowerPoint-Dateien (auch ODF) direkt in der Dateiablage bearbeiten – mit einem eigenen Office-Server: Collabora Online/CODE (empfohlen, auch auf dem Handy) oder ONLYOFFICE Docs.')}{' '}
+        {t('Word-, Excel- und PowerPoint-Dateien (auch ODF) in der Dateiablage bearbeiten, mit einem eigenen Office-Server: Collabora Online/CODE oder ONLYOFFICE Docs.')}{' '}
         <a href="https://github.com/Taloan/dmOffice/blob/master/docs/office.md" target="_blank" rel="noreferrer">{t('Anleitung (Unraid, Docker)')}</a>
       </Text>
-      <Field label={t('Adresse des Office-Servers')} hint={t('Mit https, erreichbar für den Browser und für dmOffice, etwa https://office.example.org. Leer = aus.')}>
+      <Field label={t('Adresse des Office-Servers')} hint={t('Muss für den Browser und für dmOffice erreichbar sein. Leer = aus.')}>
         <Input value={url} placeholder="https://office.example.org" onChange={(_, d) => setUrl(d.value)} />
       </Field>
       {mixed && (
         <MessageBar intent="warning"><MessageBarBody>
-          {t('dmOffice läuft über https, der Office-Server über http – der Browser blockiert den Editor dann (gemischte Inhalte), und unterwegs ist eine Adresse im Heimnetz nicht erreichbar. Besser: eigene Subdomain mit Zertifikat am Reverse Proxy.')}
+          {t('dmOffice läuft über https, der Office-Server über http. Der Browser blockiert den Editor dann als gemischten Inhalt.')}
         </MessageBarBody></MessageBar>
       )}
       <Button appearance="transparent" size="small" icon={advanced ? <ChevronDown16Regular /> : <ChevronRight16Regular />} aria-expanded={advanced} style={{ alignSelf: 'flex-start', padding: 0, fontWeight: 600 }} onClick={() => setAdvanced(x => !x)}>{t('Fortgeschritten')}</Button>
@@ -371,7 +399,7 @@ function OfficeSettings() {
       <Field label={t('JWT-Kopfzeile (optional)')} hint={t('Nur wenn am Document Server JWT_HEADER geändert ist. Vorgabe: Authorization.')}>
         <Input value={header} placeholder="Authorization" onChange={(_, d) => setHeader(d.value)} />
       </Field>
-      <Field label={t('Adresse von dmOffice für den Office-Server (optional)')} hint={t('Nur nötig, wenn der Office-Server dmOffice unter einer anderen Adresse erreicht als der Browser (kein Hairpin-NAT). Bei Collabora muss sie in der aliasgroup1 stehen.')}>
+      <Field label={t('Adresse von dmOffice für den Office-Server (optional)')} hint={t('Nur nötig, wenn der Office-Server dmOffice unter einer anderen Adresse erreicht als der Browser. Bei Collabora muss sie in der aliasgroup1 stehen.')}>
         <Input value={wopiBase} placeholder={location.origin} onChange={(_, d) => setWopiBase(d.value)} />
       </Field>
       </>}
@@ -394,6 +422,32 @@ function OfficeSettings() {
 }
 
 /** Kontingent fuer die Dateien eines Benutzers: Vorgabe der Verwaltung, unbegrenzt oder eine eigene Grenze. */
+/** Benutzer löschen: erst nach Eintippen des Anmeldenamens. */
+function DeleteUserDialog({ user, onDelete, onClose }: { user: User; onDelete: () => Promise<void>; onClose: () => void }) {
+  const [typed, setTyped] = useState('')
+  const [busy, setBusy] = useState(false)
+  const ok = typed.trim() === user.login
+  const go = async () => { if (!ok || busy) return; setBusy(true); try { await onDelete() } finally { setBusy(false) } }
+  return (
+    <Dialog open onOpenChange={(_, d) => { if (!d.open) onClose() }}>
+      <DialogSurface style={{ maxWidth: 460 }}>
+        <DialogBody>
+          <DialogTitle>{t('Benutzer {login} löschen', { login: user.login })}</DialogTitle>
+          <DialogContent>
+            <Field label={t('Alles von {login} wird gelöscht. Zum Bestätigen den Anmeldenamen eingeben:', { login: user.login })}>
+              <Input value={typed} autoFocus autoComplete="off" onChange={(_, d) => setTyped(d.value)} onKeyDown={e => { if (e.key === 'Enter') go() }} />
+            </Field>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={onClose}>{t('Abbrechen')}</Button>
+            <Button appearance="primary" disabled={!ok || busy} onClick={go}>{t('Endgültig löschen')}</Button>
+          </DialogActions>
+        </DialogBody>
+      </DialogSurface>
+    </Dialog>
+  )
+}
+
 function QuotaDialog({ user, defaultMb, onSave, onClose }: { user: User; defaultMb: number; onSave: (mb: number | null) => void; onClose: () => void }) {
   type Mode = 'default' | 'unlimited' | 'own'
   const [mode, setMode] = useState<Mode>(user.fileQuotaMb == null ? 'default' : user.fileQuotaMb === 0 ? 'unlimited' : 'own')
@@ -417,7 +471,7 @@ function QuotaDialog({ user, defaultMb, onSave, onClose }: { user: User; default
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               <Text size={200}>{effectiveMb > 0 ? t('{used} von {quota} belegt', { used: fmtSize(used), quota: fmtSize(effectiveMb * 1024 * 1024) }) : t('{size} belegt, keine Grenze', { size: fmtSize(used) })}</Text>
               {effectiveMb > 0 && used > effectiveMb * 1024 * 1024 && (
-                <MessageBar intent="warning"><MessageBarBody>{t('{login} belegt schon mehr. Alles Vorhandene bleibt, aber es werden keine neuen Mails mehr abgerufen und keine Dateien mehr gespeichert, bis wieder Platz frei ist (Mails löschen, Aufbewahrung, Papierkorb, frühere Versionen). Frühere Versionen und der Papierkorb werden bei Bedarf zuerst gelöscht.', { login: user.login })}</MessageBarBody></MessageBar>
+                <MessageBar intent="warning"><MessageBarBody>{t('{login} belegt schon mehr. Vorhandene Daten bleiben erhalten. Neue Mails werden erst wieder abgerufen und neue Dateien erst wieder gespeichert, wenn Platz frei ist. Frühere Versionen und der Papierkorb werden bei Bedarf zuerst gelöscht.', { login: user.login })}</MessageBarBody></MessageBar>
               )}
               {effectiveMb > 0 && <ProgressBar value={share} thickness="medium" color={share > 0.9 ? 'error' : share > 0.75 ? 'warning' : 'brand'} />}
             </div>

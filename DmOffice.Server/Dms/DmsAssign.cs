@@ -70,7 +70,14 @@ public static class DmsAssign
     /// <summary>Ergebnis der Zuweisung für ein neues Dokument.</summary>
     /// <summary>Fixed*: aus Vorgabe oder Regel (gilt vor KI und Gelerntem); Tags: aus Vorgabe oder Regel bzw. gelernt.</summary>
     public sealed record Result(string? Correspondent, string? Doctype, List<string> Tags, bool ByAi, string? Title = null, string? DocDate = null,
-        string? NewCorrespondent = null, bool FixedCorrespondent = false, bool FixedDoctype = false, List<string>? FixedTags = null);
+        string? NewCorrespondent = null, bool FixedCorrespondent = false, bool FixedDoctype = false, List<string>? FixedTags = null,
+        IReadOnlyDictionary<string, double?>? Probs = null);
+
+    /// <summary>
+    /// Höchstens so viele automatisch gesetzte Tags je Dokument (gelernt oder von der KI), die wahrscheinlichsten. Von Hand und per Regel
+    /// gesetzte zählen nicht mit. Ohne Grenze schlugen Tags, die oft gemeinsam vorkommen (etwa „Version 2014“ bis „Version 2026“), im Bündel an.
+    /// </summary>
+    public const int MaxAutoTags = 3;
 
     /// <summary>Vorgaben der Quelle (Korrespondent, Dokumenttyp, Tags).</summary>
     public sealed record Presets(string? Correspondent = null, string? Doctype = null, List<string>? Tags = null);
@@ -98,14 +105,17 @@ public static class DmsAssign
         }
         var fixedTags = (presets?.Tags ?? []).Where(t => all.Any(e => e.Id == t && e.Kind == Dms.Tag)).ToHashSet();
         var tags = new HashSet<string>(fixedTags);
+        var learned = new List<string>();
         foreach (var e in all.Where(e => e.Kind == Dms.Tag))
         {
             if (e.Match is not (Dms.Auto or Dms.None) && Matches(e, text, sender)) { tags.Add(e.Id); fixedTags.Add(e.Id); }
-            else if (e.Match == Dms.Auto && Learner.Decide(probs.GetValueOrDefault(e.Id)) == true) tags.Add(e.Id);
+            else if (e.Match == Dms.Auto && Learner.Decide(probs.GetValueOrDefault(e.Id)) == true) learned.Add(e.Id);
         }
+        // Gelernte Tags: nur die wahrscheinlichsten
+        tags.UnionWith(learned.Where(x => !tags.Contains(x)).OrderByDescending(x => probs.GetValueOrDefault(x) ?? 0).Take(MaxAutoTags));
         var (c, cf) = Single(Dms.Correspondent, presets?.Correspondent);
         var (t, tf) = Single(Dms.Doctype, presets?.Doctype);
-        return new Result(c, t, Deepest(all, tags), false, FixedCorrespondent: cf, FixedDoctype: tf, FixedTags: [.. fixedTags]);
+        return new Result(c, t, Deepest(all, tags), false, FixedCorrespondent: cf, FixedDoctype: tf, FixedTags: [.. fixedTags], Probs: probs);
     }
 
     /// <summary>Nur die genauesten: fällt ein Eintrag mit einem seiner Unterbegriffe zusammen, bleibt der Unterbegriff.</summary>
@@ -188,6 +198,48 @@ public static class DmsAssign
     /// <summary>Davor ein Hinweis, dass es nicht das Datum des Dokuments ist (Geburtstag, Fälligkeit, Zeitraum).</summary>
     private static readonly Regex NotDocDate = new(@"(geb\.?|geboren|geburtsdatum|birth|born|fällig|zahlbar|bis|gültig|valid|ab|seit)\W{0,3}$",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    /// <summary>Bezeichnungen des Gesamtbetrags, die genaueste zuerst.</summary>
+    private static readonly string[] AmountLabels = ["summe brutto", "bruttosumme", "bruttobetrag", "rechnungsbetrag", "gesamtbetrag", "endbetrag",
+        "zahlbetrag", "zu zahlen", "zahlungsbetrag", "gesamtsumme", "rechnungssumme", "amount due", "total due", "grand total", "gesamt", "summe", "total"];
+
+    /// <summary>Geldbetrag: 34,80 · 1.234,56 · 1 234,56 · 34.80 · 1,234.56 (immer zwei Nachkommastellen), optional mit € oder EUR.</summary>
+    private static readonly Regex Money = new(@"(?<![\d.,])(\d{1,3}(?:[.,\u00a0 ]\d{3})*|\d+)[.,](\d{2})(?![\d])\s*(€|EUR)?", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    /// <summary>
+    /// Gesamtbetrag einer Rechnung oder eines Belegs in Cent: der Betrag hinter der genauesten Bezeichnung („Summe brutto“, „Rechnungsbetrag“
+    /// …), steht er nicht in derselben Zeile, der erste in der nächsten. Zeilen mit „netto“, „Zwischensumme“ oder Steuer zählen nicht. Bei
+    /// mehreren Treffern derselben Bezeichnung der letzte (die Summe steht unten). Ohne Bezeichnung: null - geraten wird nicht.
+    /// </summary>
+    public static long? FindAmount(string text)
+    {
+        var lines = text.Split('\n');
+        static long? Cents(Match m)
+        {
+            var whole = Regex.Replace(m.Groups[1].Value, @"[.,\u00a0 ]", "");
+            return long.TryParse(whole, NumberStyles.None, CultureInfo.InvariantCulture, out var w) && w < 1_000_000_000 ? w * 100 + int.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture) : null;
+        }
+        static bool Skip(string l) => (l.Contains("netto") && !l.Contains("brutto")) || l.Contains("zwischensumme") || l.Contains("mwst") || l.Contains("ust.")
+            || l.Contains("umsatzsteuer") || l.Contains("steuer") || l.Contains("rabatt") || l.Contains("skonto");
+        foreach (var label in AmountLabels)
+        {
+            long? found = null;
+            for (var i = 0; i < lines.Length; i++)
+            {
+                var l = lines[i].ToLowerInvariant();
+                var at = l.IndexOf(label, StringComparison.Ordinal);
+                if (at < 0 || Skip(l)) continue;
+                // Nur als eigenes Wort („gesamt“ nicht in „insgesamt“ … doch: „Insgesamt“ ist auch eine Summe; „total“ nicht in „totalschaden“)
+                if (at + label.Length < l.Length && char.IsLetter(l[at + label.Length]) && label is "total" or "summe") continue;
+                var after = Money.Matches(lines[i][(at + label.Length)..]).Select(Cents).LastOrDefault(c => c is > 0);
+                if (after == null && i + 1 < lines.Length && !Skip(lines[i + 1].ToLowerInvariant()))
+                    after = Money.Matches(lines[i + 1]).Select(Cents).FirstOrDefault(c => c is > 0);
+                if (after != null) found = after;
+            }
+            if (found != null) return found;
+        }
+        return null;
+    }
 
     /// <summary>Datum des Dokuments: das beste der plausiblen Daten (<see cref="FindDates"/>), sonst null.</summary>
     public static DateOnly? FindDate(string text, DateOnly today) => FindDates(text, today).FirstOrDefault()?.Date;

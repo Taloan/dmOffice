@@ -3,6 +3,8 @@ import { useState } from 'react'
 import { FolderOpen20Regular } from '@fluentui/react-icons'
 import { t } from '../i18n'
 import { ServerFolderDialog } from './ServerFolderDialog'
+import { featureOn } from '../api'
+import { SftpFields, isSftp } from '../files/SftpFields'
 
 // Ein Ziel (S3, WebDAV, Ordner auf dem Server) - für den Storage Extender und für ein eigenes Core-Backup-Ziel
 export type Target = 's3' | 'webdav' | 'folder'
@@ -29,25 +31,34 @@ export function TargetFields({ target, onTarget, v, onChange, hasSecret, hasWebD
 }) {
   const [browse, setBrowse] = useState(false)
   const set = (k: keyof TargetValues) => (_: unknown, d: { value: string }) => onChange(k, d.value)
+  // SFTP läuft auf dem Server als WebDAV-Ziel mit sftp://-Adresse - hier eine eigene Art
+  const sftp = target === 'webdav' && isSftp(v.webDavUrl)
+  const pick = (value: string) => {
+    if (value === 'sftp') { onTarget('webdav'); if (!isSftp(v.webDavUrl)) onChange('webDavUrl', 'sftp://') }
+    else { if (value === 'webdav' && isSftp(v.webDavUrl)) onChange('webDavUrl', ''); onTarget(value as Target) }
+  }
   return <>
     <Field label={t('Art')}>
-      <RadioGroup value={target} onChange={(_, d) => onTarget(d.value as Target)} disabled={kindLocked}>
-        <Radio value="folder" label={t('Ordner auf dem Server – etwa eine Freigabe')} />
-        <Radio value="webdav" label={t('WebDAV – etwa Nextcloud oder eine Storage Box')} />
-        <Radio value="s3" label={t('S3 – etwa Garage, MinIO oder Hetzner Object Storage')} />
+      <RadioGroup value={sftp ? 'sftp' : target} onChange={(_, d) => pick(d.value)} disabled={kindLocked}>
+        <Radio value="folder" label={t('Ordner auf dem Server')} />
+        <Radio value="webdav" label={t('WebDAV')} />
+        {(featureOn('sftp') || sftp) && <Radio value="sftp" label={t('SFTP')} />}
+        <Radio value="s3" label={t('S3')} />
       </RadioGroup>
     </Field>
-    {target === 'webdav' && <>
-      <Field label={t('Adresse')} hint={t('Der Ordner dort, etwa https://cloud.example.org/remote.php/dav/files/anna/dmoffice/ – fehlt er, legt dmOffice ihn an.')}>
+    {sftp && <SftpFields url={v.webDavUrl} onUrl={x => onChange('webDavUrl', x)} user={v.webDavUser} onUser={x => onChange('webDavUser', x)}
+      secret={v.webDavPassword} onSecret={x => onChange('webDavPassword', x)} hasSecret={hasWebDavPassword} admin />}
+    {target === 'webdav' && !sftp && <>
+      <Field label={t('Adresse')}>
         <Input value={v.webDavUrl} onChange={set('webDavUrl')} />
       </Field>
       <Field label={t('Benutzername')}><Input value={v.webDavUser} onChange={set('webDavUser')} autoComplete="off" /></Field>
-      <Field label={t('Passwort')} hint={hasWebDavPassword ? t('Ein Passwort ist gespeichert – leer lassen, um es zu behalten.') : t('Am besten ein eigenes App-Passwort nur dafür.')}>
+      <Field label={t('Passwort')} hint={hasWebDavPassword ? t('Ein Passwort ist gespeichert – leer lassen, um es zu behalten.') : undefined}>
         <Input type="password" autoComplete="new-password" value={v.webDavPassword} onChange={set('webDavPassword')} placeholder={hasWebDavPassword ? '••••••••' : ''} />
       </Field>
     </>}
     {target === 'folder' && (
-      <Field label={t('Ordner')} hint={t('Die Platte muss in der Container-Vorlage unter /external eingebunden sein. Ein Ordner auf derselben Platte wie dmOffice hilft nicht, wenn diese Platte kaputtgeht.')}>
+      <Field label={t('Ordner')} hint={t('Die Platte muss in der Container-Vorlage unter /external eingebunden sein.')}>
         <Input value={v.folder} onChange={set('folder')} placeholder="/external/backup"
           contentAfter={<Button size="small" appearance="transparent" icon={<FolderOpen20Regular />} onClick={() => setBrowse(true)} aria-label={t('Ordner auf dem Server wählen')} title={t('Ordner auf dem Server wählen')} />} />
       </Field>

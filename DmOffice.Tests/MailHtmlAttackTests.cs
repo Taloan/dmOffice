@@ -36,4 +36,32 @@ public class MailHtmlAttackTests
         Assert.Contains("Bitte bestätigen:", result);
         Assert.Contains("Anmelden", result);
     }
+
+    [Theory]
+    [InlineData("<img src=\"/&#9;/tracker.example/x.gif\">")]
+    [InlineData("<img src=\"/&#10;/tracker.example/x.gif\">")]
+    [InlineData("<img src=\"/&#13;/tracker.example/x.gif\">")]
+    [InlineData("<img src=\"&#1;//tracker.example/x.gif\">")]
+    public void Bildadressen_werden_wie_im_Browser_gelesen(string html)
+    {
+        var r = MailHtml.Sanitize(html, allowRemote: false, _ => null);
+        Assert.True(r.HasRemoteImages);
+        Assert.DoesNotContain("src=", r.Html.Replace("data-remote-src=", ""));
+    }
+
+    [Fact]
+    public void Schema_mit_Tab_laedt_kein_Bild()
+    {
+        var r = MailHtml.Sanitize("<img src=\"ht&#9;tps://tracker.example/x.gif\">", allowRemote: false, _ => null);
+        Assert.DoesNotContain("src=", r.Html.Replace("data-remote-src=", ""));
+    }
+
+    [Fact]
+    public void Eigene_Bildadressen_bleiben()
+    {
+        var r = MailHtml.Sanitize("<img src=\"/api/mail/a/part?uid=1\"><img src=\"data:image/png;base64,iVBORw0KGgo=\">", allowRemote: false, _ => null);
+        Assert.False(r.HasRemoteImages);
+        Assert.Contains("src=\"/api/mail/a/part?uid=1\"", r.Html);
+        Assert.Contains("src=\"data:image/png", r.Html);
+    }
 }

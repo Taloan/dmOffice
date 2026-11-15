@@ -28,6 +28,8 @@ public sealed class DmsProfile
     public bool Follow { get; set; } = true;
     /// <summary>Vorbelegt beim Hochladen, für Mail und Teilen.</summary>
     public bool Default { get; set; }
+    /// <summary>Zielordner (Dateiablage) unter Dateien nicht anzeigen - die Ordnerstruktur dort pflegt das DMS (Features.DmsHide).</summary>
+    public bool HideInFiles { get; set; } = true;
     /// <summary>Sprache der Oberfläche beim Speichern: „de“ oder „en“ (Monatsnamen).</summary>
     public string Language { get; set; } = "de";
 }

@@ -64,8 +64,9 @@ export async function uploadChunked(file: File, name: string, onBytes?: (loaded:
 }
 
 /** Abschliessen in die Dateiablage - Antwort wie /api/files/upload. */
-export const finishToFiles = (id: string, path: string, conflict: string, onXhr?: (x: XMLHttpRequest | null) => void) =>
-  call('POST', `/api/files/uploads/${id}/finish?path=${encodeURIComponent(path)}&conflict=${encodeURIComponent(conflict)}`, undefined, undefined, onXhr)
+export const finishToFiles = (id: string, path: string, conflict: string, onXhr?: (x: XMLHttpRequest | null) => void, mtime?: number) =>
+  call('POST', `/api/files/uploads/${id}/finish?path=${encodeURIComponent(path)}&conflict=${encodeURIComponent(conflict)}`
+    + (mtime && mtime > 0 ? `&mtime=${Math.round(mtime)}` : ''), undefined, undefined, onXhr)
 
 /** Abschliessen als Chat-Anhang - Antwort: die neue Nachricht. */
 export const finishToChat = (id: string, room: number, params: Record<string, string>) =>

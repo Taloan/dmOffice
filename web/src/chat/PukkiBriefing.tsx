@@ -48,7 +48,7 @@ export function PukkiBriefingSection() {
         onChange={(_, d) => save({ weather: d.checked })} />
       <Field label={t('Ort')} hint={s.place ? t('Gewählt: {place}', { place: s.place }) : t('Erst einen Ort suchen und wählen, dann lässt sich das Wetter einschalten.')}>
         <div style={{ display: 'flex', gap: 8, maxWidth: 420 }}>
-          <Input value={query} placeholder={t('z. B. Vöhringen')} onChange={(_, d) => setQuery(d.value)} onKeyDown={e => { if (e.key === 'Enter') search() }} style={{ flex: 1 }} />
+          <Input value={query} placeholder={t('z. B. Musterstadt')} onChange={(_, d) => setQuery(d.value)} onKeyDown={e => { if (e.key === 'Enter') search() }} style={{ flex: 1 }} />
           <Button onClick={search} disabled={query.trim().length < 2}>{t('Suchen')}</Button>
         </div>
       </Field>
@@ -84,7 +84,7 @@ export function PukkiBriefingSection() {
         </Field>
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
           <Field label={t('Zuerst mit diesen Wörtern')} hint={t('mit Komma getrennt')}>
-            <Input value={s.prefer ?? ''} onChange={(_, d) => setS({ ...s, prefer: d.value })} onBlur={() => save({ prefer: s.prefer })} placeholder={t('z. B. Vöhringen, Unraid')} />
+            <Input value={s.prefer ?? ''} onChange={(_, d) => setS({ ...s, prefer: d.value })} onBlur={() => save({ prefer: s.prefer })} placeholder={t('z. B. Musterstadt, Unraid')} />
           </Field>
           <Field label={t('Ohne diese Wörter')} hint={t('mit Komma getrennt')}>
             <Input value={s.exclude ?? ''} onChange={(_, d) => setS({ ...s, exclude: d.value })} onBlur={() => save({ exclude: s.exclude })} placeholder={t('z. B. Fußball')} />

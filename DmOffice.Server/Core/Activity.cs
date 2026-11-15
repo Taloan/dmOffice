@@ -16,7 +16,7 @@ public static class Activity
         FilesBlobs = "files-blobs", FilesHashes = "files-hashes", FilesCleanup = "files-cleanup", TextIndex = "text-index", Thumbs = "thumbs",
         NotesSync = "notes-sync", Subscriptions = "subscriptions", Compact = "compact",
         StorageSync = "storage-sync", CoreBackup = "core-backup", FilesBackup = "files-backup", MountIndex = "mount-index", FilesMeta = "files-meta", GalleryScan = "gallery-scan", GalleryImport = "gallery-import", AudioScan = "audio-scan", GalleryProxies = "gallery-proxies", PhotoWrite = "photo-write", PhotoAuto = "photo-auto",
-        Migration = "migration", Graph = "graph", Backup = "pre-update-backup", DbHealth = "db-health", FilesTransfer = "files-transfer", Dms = "dms";
+        Migration = "migration", Graph = "graph", Backup = "pre-update-backup", DbHealth = "db-health", FilesTransfer = "files-transfer", Dms = "dms", GallerySave = "gallery-save", StorageCleanup = "storage-cleanup";
 
     /// <summary>Eine Zeile der Anzeige. State: running, waiting (liegt an, laeuft gerade nicht), error, idle.</summary>
     public sealed record Item(string Id, string State, long? Done, long? Total, long? Pending, string? Detail,

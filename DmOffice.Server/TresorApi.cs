@@ -353,7 +353,10 @@ public static class TresorApi
         api.MapDelete("/", async (HttpContext http, UserStore users) =>
         {
             var u = Me(http, users);
-            var body = await http.Request.ReadFromJsonAsync<DeleteBody>(http.RequestAborted);
+            DeleteBody? body;
+            // Ohne oder mit unlesbarem Inhalt: wie ohne Passwort
+            try { body = await http.Request.ReadFromJsonAsync<DeleteBody>(http.RequestAborted); }
+            catch (System.Text.Json.JsonException) { body = null; }
             if (!Tresor.Exists(u.Id)) return Results.BadRequest(new { error = "Es ist kein Tresor eingerichtet." });
             var key = FailKey(u);
             if (Auth.Blocked(key)) return Results.Json(new { error = "Zu viele Versuche, bitte kurz warten." }, statusCode: 429);

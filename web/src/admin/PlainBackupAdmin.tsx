@@ -62,7 +62,7 @@ export function PlainBackupAdmin() {
   })
   return (
     <div className={s.root}>
-      <Text size={200} className={s.muted}>{t('Mit dem Datenexport legt jede Person ihre Daten entschlüsselt und lesbar an einem eigenen Ziel ab, etwa per WebDAV nach pCloud. Eingerichtet wird er unter Einstellungen → Konto → Datenexport. Ziel und Zugangsdaten der Personen erscheinen hier nicht.')}</Text>
+      <Text size={200} className={s.muted}>{t('Mit dem Datenexport legt jede Person ihre Daten entschlüsselt und lesbar an einem eigenen Ziel ab. Eingerichtet wird er unter Einstellungen → Konto → Datenexport.')}</Text>
       <Switch checked={allowed} onChange={(_, d) => set(d.checked)} label={t('Benutzer dürfen den Datenexport einrichten')} />
       {!allowed && <Text size={200} className={s.muted}>{t('Gesperrt: eingerichtete Datenexporte ruhen, ihre Einstellungen und Ziele bleiben unberührt.')}</Text>}
       <div className={s.table}>

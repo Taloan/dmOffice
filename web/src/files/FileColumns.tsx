@@ -31,7 +31,7 @@ export const COLS: Record<ColKey, { label: () => string; width: number; sort?: S
   dims: { label: () => t('Abmessungen'), width: 120 },
   duration: { label: () => t('Dauer'), width: 80 },
   rating: { label: () => t('Bewertung'), width: 90 },
-  keywords: { label: () => t('Stichwörter'), width: 180 },
+  keywords: { label: () => t('Tags'), width: 180 },
 }
 export const DEFAULT_COLS: ColPref[] = [{ key: 'modified', width: 160 }, { key: 'kind', width: 110 }, { key: 'size', width: 100 }]
 const DRAG_COL = 'application/x-dmoffice-column'
@@ -117,7 +117,7 @@ export function ColumnMenu({ cols, onChange, at, onClose, trigger, labels }: {
   if (trigger) return <Menu>{trigger}<MenuPopover>{list}</MenuPopover></Menu>
   return (
     <Menu open={!!at} onOpenChange={(_, d) => { if (!d.open) onClose?.() }}
-      positioning={{ target: at ? { getBoundingClientRect: () => ({ x: at.x, y: at.y, left: at.x, top: at.y, right: at.x, bottom: at.y, width: 0, height: 0, toJSON: () => '' }) } as any : undefined }}>
+      positioning={{ autoSize: 'height', target: at ? { getBoundingClientRect: () => ({ x: at.x, y: at.y, left: at.x, top: at.y, right: at.x, bottom: at.y, width: 0, height: 0, toJSON: () => '' }) } as any : undefined }}>
       <MenuPopover>{list}</MenuPopover>
     </Menu>
   )

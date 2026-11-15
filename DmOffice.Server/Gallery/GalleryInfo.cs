@@ -31,7 +31,7 @@ public static class GalleryInfo
         if (fields.Label != null && !PhotoMeta.IsLabel(fields.Label)) throw new ArgumentException("Unbekannte Farbe.");
         if (!fields.HasXmpOnly && !fields.HasGps) throw new ArgumentException("Nichts zu ändern.");
         if ((body.AddKeywords?.Count ?? 0) + (body.RemoveKeywords?.Count ?? 0) > 200 || (body.AddKeywords ?? []).Any(k => k.Length > 200))
-            throw new ArgumentException("Zu viele oder zu lange Stichwörter.");
+            throw new ArgumentException("Zu viele oder zu lange Tags.");
         if (body.Rating is < 0 or > 5) throw new ArgumentException("Bewertung 0 bis 5.");
         if (body.Title?.Length > 500 || body.Description?.Length > 4000) throw new ArgumentException("Der Text ist zu lang.");
         var failed = new List<Failure>();
@@ -42,8 +42,9 @@ public static class GalleryInfo
         if (fields.Pick != null)
             foreach (var id in items) PhotoMarks.Set(db, id, new PhotoMeta.Fields(Pick: fields.Pick), null);
         var rest = fields with { Pick = null };
-        // Angaben nur in der Datenbank (Einstellungen → Galerie); der Ort geht weiter in die Datei (Verorten)
-        if (!space.Settings.PhotoWriteXmp && rest.HasXmpOnly)
+        // Angaben nur in der Datenbank (Einstellungen → Galerie); der Ort geht weiter in die Datei (Verorten).
+        // Demo: nie in Dateien schreiben - ein gemeinsames Konto, Eingaben von Fremden gehören nicht in Dateien
+        if ((!space.Settings.PhotoWriteXmp || Demo.Enabled) && rest.HasXmpOnly)
         {
             foreach (var id in items) PhotoMarks.Set(db, id, rest with { Lat = null, Lon = null }, null);
             rest = new PhotoMeta.Fields(rest.Lat, rest.Lon);
@@ -72,7 +73,8 @@ public static class GalleryInfo
                 failed.Add(new Failure(id, name, e.Message));
             }
         }
-        if (write.Count > 0) Later(space, () => WriteFilesAsync(space, config, write, rest));
+        // Demo: nur Index (der Ort gilt bis zum nächsten Zurücksetzen), keine Datei
+        if (write.Count > 0 && !Demo.Enabled) Later(space, () => WriteFilesAsync(space, config, write, rest));
         return failed;
     }
 

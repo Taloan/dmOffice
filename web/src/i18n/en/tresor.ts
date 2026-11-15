@@ -1,5 +1,15 @@
 // Tresor (docs/tresor-konzept.md)
 export const tresor: Record<string, string> = {
+  // Korrekturen 2.1: Sicherheitsprotokoll
+  'Tresor eingerichtet': 'Vault set up',
+  'Tresor für WebDAV und Nextcloud ausgeblendet': 'Vault hidden in WebDAV and Nextcloud',
+  'Tresor für WebDAV und Nextcloud eingeblendet': 'Vault shown in WebDAV and Nextcloud',
+  'Tresor: Fingerabdruck oder Gesicht hinterlegt': 'Vault: fingerprint or face added',
+  'Tresor: Passkey hinterlegt': 'Vault: passkey added',
+  'Tresor: neue Wiederherstellungscodes': 'Vault: new recovery codes',
+  'Tresor: neuer Wiederherstellungsschlüssel': 'Vault: new recovery key',
+  'Tresor: notizi-Datenbank in den Tresor verschoben': 'Vault: notizi database moved into the vault',
+  'Tresor: notizi-Datenbank aus dem Tresor geholt': 'Vault: notizi database taken out of the vault',
   'Einen neuen Wiederherstellungsschlüssel erzeugen? Der bisherige gilt danach nicht mehr.': 'Create a new recovery key? The previous one will no longer work.',
   'Wiederherstellungsschlüssel neu erzeugen': 'Create new recovery key',
   'Der Ordner „dmVAULT“ ist für Nextcloud und WebDAV sichtbar.': 'The folder “dmVAULT” is visible to Nextcloud and WebDAV.',
@@ -50,7 +60,7 @@ export const tresor: Record<string, string> = {
   'Der Tresor ist auf diesem Gerät offen.': 'The vault is open on this device.',
   'Der Tresor ist auf diesem Gerät geschlossen.': 'The vault is closed on this device.',
   'Tresor-Passwort ändern': 'Change vault password',
-  'Wiederherstellung': 'Recovery',
+  'tresor|Wiederherstellung': 'Recovery',
   'Mit einem Wiederherstellungscode oder dem Wiederherstellungsschlüssel öffnest du den Tresor, wenn du das Tresor-Passwort vergessen hast.': 'If you forget the vault password, you can open the vault with a recovery code or the recovery key.',
   'Noch gültige Wiederherstellungscodes: {n} von 10': 'Recovery codes still valid: {n} of 10',
   'Zehn neue Codes erzeugen? Die bisherigen gelten danach nicht mehr.': 'Create ten new codes? The current ones will stop working.',
@@ -88,7 +98,7 @@ export const tresor: Record<string, string> = {
   'Tresor – geschlossen': 'Vault – closed',
   'Tresor geschlossen': 'Vault closed',
   '{login} – Tresor': '{login} – vault',
-  'Dieser Passkey kann den Tresor nicht öffnen: er liefert keinen Schlüssel (WebAuthn-Erweiterung PRF). Windows Hello in einer aktuellen Version, Passkeys von Google oder Apple und viele Sicherheitsschlüssel können das.': 'This passkey cannot open the vault: it does not provide a key (WebAuthn PRF extension). Windows Hello in a current version, passkeys from Google or Apple and many security keys can do this.',
+  'Dieser Passkey kann den Tresor nicht öffnen, weil er keinen Schlüssel liefert (WebAuthn-Erweiterung PRF).': 'This passkey cannot open the vault because it does not provide a key (WebAuthn extension PRF).',
   'Der Passkey hat keinen Schlüssel geliefert. Bitte einen anderen Passkey verwenden.': 'The passkey did not provide a key. Please use a different passkey.',
   'Der Passkey hat keinen Schlüssel geliefert.': 'The passkey did not provide a key.',
   'Mit Passkey oder Windows Hello öffnen': 'Open with passkey or Windows Hello',
@@ -138,4 +148,6 @@ export const tresor: Record<string, string> = {
   'Größer als die Grenze für ZIP-Downloads ({limit}). Den Tresor bitte über den Datenexport mit WebDAV-Ziel exportieren.': 'Larger than the limit for ZIP downloads ({limit}). Please save the vault with a data export to a WebDAV target.',
   'Herunterladen als ZIP': 'Download as ZIP',
   'Höchstens (Downloadkorb, „Tresor herunterladen“)': 'At most (download basket, “Download vault”)',
+  "„{name}“ endgültig löschen? Im Tresor gibt es keinen Papierkorb, das lässt sich nicht rückgängig machen.": "Permanently delete “{name}”? The vault has no recycle bin; this cannot be undone.",
+  "{n} Elemente endgültig löschen? Im Tresor gibt es keinen Papierkorb, das lässt sich nicht rückgängig machen.": "Permanently delete {n} items? The vault has no recycle bin; this cannot be undone.",
 }

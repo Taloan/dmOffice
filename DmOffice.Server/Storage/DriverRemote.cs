@@ -43,6 +43,24 @@ public sealed class DriverRemote(IStorageDriver driver) : IBlobRemote
 
     public Task DeleteAsync(string key, CancellationToken ct) => driver.DeleteAsync(key, ct);
 
+    /// <summary>Ordner, WebDAV, SFTP: je Ordner direkt unter dem Präfix einmal löschen (rekursiv) statt Datei für Datei - nie oberhalb des Präfixes.</summary>
+    public async Task DeleteManyAsync(string prefix, IReadOnlyList<string> keys, IProgress<int> progress, CancellationToken ct)
+    {
+        var p = prefix.Length == 0 || prefix.EndsWith('/') ? prefix : prefix + "/";
+        foreach (var group in keys.Where(k => k.StartsWith(p, StringComparison.Ordinal)).GroupBy(k =>
+        {
+            var rest = k[p.Length..];
+            return p + (rest.Contains('/') ? rest[..rest.IndexOf('/')] : rest);
+        }))
+        {
+            await driver.DeleteAsync(group.Key, ct);
+            progress.Report(group.Count());
+        }
+        // Der Ordner des Präfixes selbst, wenn er jetzt leer ist
+        if (p.Length > 0 && await driver.StatAsync(p.TrimEnd('/'), ct) is { IsDir: true } && (await driver.ListAsync(p.TrimEnd('/'), ct)).Count == 0)
+            await driver.DeleteAsync(p.TrimEnd('/'), ct);
+    }
+
     public async Task DownloadAsync(string key, string file, CancellationToken ct)
     {
         await using var s = await driver.OpenReadAsync(key, ct);

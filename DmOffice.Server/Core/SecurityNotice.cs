@@ -36,7 +36,7 @@ public static class SecurityNotice
         log.LogWarning("Sicherheit: {What} für {User} durch {Admin}", what, u.Login, admin?.Login ?? adminId);
 
         var text = $"🔐 {by} hat in der Verwaltung an deinem Konto etwas geändert: {what}. " +
-                   "Warst du das nicht selbst oder hattest du nicht darum gebeten, wende dich bitte an deinen Administrator. Das Sicherheitsprotokoll steht unter Einstellungen → Sicherheit.";
+                   "Falls du das nicht selbst warst und auch nicht darum gebeten hast, wende dich bitte an deinen Administrator. Das Sicherheitsprotokoll steht unter Einstellungen → Sicherheit.";
         try
         {
             var chat = services.GetRequiredService<ChatStore>();
@@ -62,7 +62,7 @@ public static class SecurityNotice
         var log = services.GetRequiredService<ILoggerFactory>().CreateLogger("DmOffice.Security");
         log.LogInformation("Sicherheit: {What} für {User}", what, u.Login);
         var text = (login ? $"🔐 Neue Anmeldung an deinem Konto: {what}." : $"🔐 An deinem Konto wurde gerade geändert: {what}.")
-            + " Warst du das nicht, bitte sofort das Passwort ändern und unter Einstellungen → Sicherheit sowie Einstellungen → Geräte & Sync prüfen.";
+            + " Falls du das nicht warst, ändere bitte sofort dein Passwort und prüfe Einstellungen → Sicherheit sowie Einstellungen → Geräte & Sync.";
         try
         {
             var chat = services.GetRequiredService<ChatStore>();
@@ -74,7 +74,7 @@ public static class SecurityNotice
         try
         {
             var space = services.GetRequiredService<Spaces>().Get(userId);
-            var account = space.Settings.MailAccounts.FirstOrDefault(a => a.Email.Length > 0 && a.SmtpHost.Length > 0);
+            var account = space.Settings.AccountsDefaultFirst().FirstOrDefault(a => a.Email.Length > 0 && a.SmtpHost.Length > 0);
             if (account == null) return;
             var en = account.Language == "en";
             var m = new MimeMessage();
@@ -89,7 +89,7 @@ public static class SecurityNotice
                 Text = en
                     ? (login ? $"New sign-in to your dmOffice account: {what}" : $"Your dmOffice account was just changed: {what}") + "\n\nIf this was not you, change your password right away and check Settings → Security and Settings → Devices & sync.\n\n" +
                       "This mail was sent by dmOffice from your own mail account to yourself."
-                    : (login ? $"Neue Anmeldung an deinem dmOffice-Konto: {what}" : $"An deinem dmOffice-Konto wurde gerade geändert: {what}") + "\n\nWarst du das nicht, bitte sofort das Passwort ändern und unter Einstellungen → Sicherheit sowie Einstellungen → Geräte & Sync prüfen.\n\n" +
+                    : (login ? $"Neue Anmeldung an deinem dmOffice-Konto: {what}" : $"An deinem dmOffice-Konto wurde gerade geändert: {what}") + "\n\nFalls du das nicht warst, ändere bitte sofort dein Passwort und prüfe Einstellungen → Sicherheit sowie Einstellungen → Geräte & Sync.\n\n" +
                       "Diese Mail hat dmOffice über dein eigenes Mailkonto an dich selbst geschickt.",
             };
             MailQueue.Add(space.Db, account.Id, account.Id, new MailCompose.Draft { To = account.Email, Subject = m.Subject }, m, DateTime.UtcNow);
@@ -113,11 +113,11 @@ public static class SecurityNotice
         }
     }
 
-    /// <summary>Mail an sich selbst über das erste Mailkonto mit Versand (Postausgang). Ohne Mailkonto: nur Chat.</summary>
+    /// <summary>Mail an sich selbst über das Standard-Mailkonto (sonst das nächste mit Versand, Postausgang). Ohne Mailkonto: nur Chat.</summary>
     private static void MailToSelf(IServiceProvider services, string userId, string what, string by)
     {
         var space = services.GetRequiredService<Spaces>().Get(userId);
-        var account = space.Settings.MailAccounts.FirstOrDefault(a => a.Email.Length > 0 && a.SmtpHost.Length > 0);
+        var account = space.Settings.AccountsDefaultFirst().FirstOrDefault(a => a.Email.Length > 0 && a.SmtpHost.Length > 0);
         if (account == null) return;
         var en = account.Language == "en";
         var m = new MimeMessage();

@@ -66,6 +66,8 @@ public interface IDmsSources
     Task<(List<DmsSourceFile> Files, bool ReadOnly)> ListAsync(UserSpace space, string? mount, string folder, CancellationToken ct);
     Task<Stream> OpenReadAsync(UserSpace space, string? mount, string path, CancellationToken ct);
     Task DeleteAsync(UserSpace space, string? mount, string path, CancellationToken ct);
+    /// <summary>Ordner löschen, wenn er leer ist (nach dem Übernehmen aus Unterordnern). True, wenn gelöscht.</summary>
+    Task<bool> DeleteIfEmptyAsync(UserSpace space, string? mount, string folder, CancellationToken ct);
     /// <summary>Externe Ordner, die die Person sieht: Kennung und Name.</summary>
     List<(string Id, string Name)> Mounts(UserSpace space);
 }
@@ -283,6 +285,24 @@ public sealed class DmsHost(ServerConfig config) : IDmsFiles, IDmsText, IDmsAi, 
             if (ro) return;
             await driver.DeleteAsync(path, ct);
             ExternalFolders.Changed(space, mount, FileStore.Parent(path) ?? "");
+        }
+    }
+
+    public async Task<bool> DeleteIfEmptyAsync(UserSpace space, string? mount, string folder, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(mount))
+        {
+            if (folder.Length == 0 || FileStore.Get(space.Db, folder) is not { IsDir: true } || FileStore.Children(space.Db, folder).Count > 0) return false;
+            return FileStore.Delete(space.Db, folder);
+        }
+        var (driver, ro) = ExternalFolders.Open(space, config, mount);
+        using (driver)
+        {
+            // Der Treiber löscht Ordner samt Inhalt: nur, wenn er wirklich leer ist
+            if (ro || folder.Length == 0 || await driver.StatAsync(folder, ct) is not { IsDir: true } || (await driver.ListAsync(folder, ct)).Count > 0) return false;
+            await driver.DeleteAsync(folder, ct);
+            ExternalFolders.Changed(space, mount, FileStore.Parent(folder) ?? "");
+            return true;
         }
     }
 

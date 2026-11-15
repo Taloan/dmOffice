@@ -18,6 +18,8 @@ var dataDir = Environment.GetEnvironmentVariable("DMOFFICE_DATA")
 var paths = new DataPaths(dataDir, Environment.GetEnvironmentVariable("DMOFFICE_BLOBS"));
 // Hintergrundarbeit: wann sie zuletzt fertig wurde, über einen Neustart hinweg
 DmOffice.Core.Activity.Init(paths.Root);
+// Zwischendateien der Werkzeuge unter dem Datenverzeichnis; Reste eines abgebrochenen Laufs weg
+DmOffice.Core.WorkDir.Init(paths.Root);
 // Aus einer S3-Sicherung wiederhergestellt (Ersteinrichtung): jetzt an seinen Platz, bevor etwas die Dateien oeffnet
 var restoredFiles = S3Backup.ApplyPending(paths);
 var vault = new Vault(paths, Environment.GetEnvironmentVariable("DMOFFICE_MASTER_KEY"));
@@ -49,6 +51,7 @@ builder.Services.AddHostedService<FilesCleanup>();
 // Lernende Kategorien: alte Smart Inbox übernehmen, übernommene Zuordnungen als Schlagwort zum Mailserver
 builder.Services.AddHostedService<DmOffice.Mail.LabelJob>();
 builder.Services.AddHostedService<DmOffice.Dav.FileMetaJob>();
+builder.Services.AddHostedService<DmOffice.Dav.FileCategoryJob>();
 builder.Services.AddHostedService<DmOffice.Dms.DmsJob>();
 // Alte Dateiinhalte aus den Datenbanken in den BlobStore (einmalig, unterbrechbar)
 builder.Services.AddHostedService<BlobMigration>();
@@ -67,6 +70,7 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<S3Backup>());
 builder.Services.AddHostedService<DmOffice.Storage.PlainBackupService>();
 // Naechtliche Pruefung aller Datenbanken (integrity_check, kaputte Indizes neu aufbauen)
 builder.Services.AddSingleton<DbHealth>();
+builder.Services.AddSingleton<DbRescue>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<DbHealth>());
 builder.Services.AddHostedService<ThumbAhead>();
 builder.Services.AddSingleton<DmOffice.Storage.ExternalIndex>();
@@ -91,8 +95,10 @@ builder.Services.AddHostedService<DmOffice.Dav.UploadJanitor>();
 // Einzeln geteilte Notizen (Version 2): data/noteshares.json
 builder.Services.AddSingleton<DmOffice.Notes.NoteShareStore>();
 // Newsletter abmelden (One-Click): keine Umleitungen - sie koennten ins eigene Netz fuehren
-builder.Services.AddHttpClient("unsub").ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false });
-builder.Services.AddHttpClient("discover").ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false });
+builder.Services.AddHttpClient("unsub").ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false, ConnectCallback = DmOffice.Mail.Unsubscribe.ConnectPublicAsync });
+builder.Services.AddHttpClient("oidc", c => { c.Timeout = TimeSpan.FromSeconds(15); c.MaxResponseContentBufferSize = 1024 * 1024; }).ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false });
+// Autoconfig: nur öffentliche Adressen, verbunden mit der geprüften Adresse
+builder.Services.AddHttpClient("discover").ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false, ConnectCallback = DmOffice.Mail.Unsubscribe.ConnectPublicAsync });
 builder.Services.AddHttpClient("e2e").ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false });
 // Office-Server (Collabora/ONLYOFFICE): Discovery lesen - keine Umleitungen, kurze Wartezeit
 builder.Services.AddHttpClient("office", c => c.Timeout = TimeSpan.FromSeconds(15)).ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false });
@@ -230,9 +236,13 @@ if (app.Services.GetRequiredService<UserStore>().Empty) Auth.EnsureSetupCode(app
     // Tags und Cover der Audiothek auf Server-Ordnern: einmal für alle
     DmOffice.Audio.AudioFolders.Shared = app.Services.GetRequiredService<DmOffice.Audio.AudioShared>();
     // Kleine Vorschaubilder der externen Ordner: eigener Zwischenspeicher unter data/cache/external
+    // Virenprüfung (aus, bis der Admin sie unter Verwaltung → Sicherheit einschaltet)
     // Gemeinsames Junk-Wissen (Fingerabdrücke) für Spamfilter und Mailabruf
     DmOffice.Mail.JunkPrints.Shared = app.Services.GetRequiredService<DmOffice.Mail.JunkPrints>();
     DmOffice.Mail.SpamRules.Config = app.Services.GetRequiredService<ServerConfig>();
+    DmOffice.Core.VirusScan.Config = app.Services.GetRequiredService<ServerConfig>();
+    DmOffice.Core.VirusScan.DataRoot = app.Services.GetRequiredService<DataPaths>().Root;
+    DmOffice.Core.VirusScan.Log = app.Logger;
     DmOffice.Storage.ExternalFolders.Thumbs = new DmOffice.Gallery.GalleryProxies(Path.Combine(app.Services.GetRequiredService<DataPaths>().Root, "cache", "external"),
         app.Services.GetRequiredService<Vault>().Key);
     DmOffice.Dav.FileStore.CacheRoom = mirror.CacheRoom;
@@ -406,6 +416,8 @@ else app.Logger.LogWarning("DMOFFICE_SECURITY=off: das Security Center sperrt ni
 // abgewiesene Anfragen zaehlen). DMOFFICE_ANON_LIMIT=off schaltet sie ab, eine Zahl setzt Anfragen je Minute.
 if (AnonThrottle.FromEnvironment() is { } anonThrottle) AnonThrottle.Use(app, anonThrottle);
 else app.Logger.LogWarning("DMOFFICE_ANON_LIMIT=off: Anfragen ohne Anmeldung werden nicht gebremst.");
+// Release-Liste: Pfade nicht freigeschalteter Funktionen antworten mit 404, vor der Autorisierung auch ohne Anmeldung
+DmOffice.Core.Features.Use(app);
 app.UseAuthorization();
 // Demo: Mailkonten, Versand, Freigabelinks, Einladungen, Passwort und Zwei-Faktor gesperrt
 if (Demo.Enabled) app.Use(Demo.Guard);
@@ -415,8 +427,6 @@ app.Use(async (ctx, next) =>
     if (!Auth.DeviceRequestAllowed(ctx)) { ctx.Response.StatusCode = 403; return; }
     await next();
 });
-// Release-Liste: Pfade nicht freigeschalteter Funktionen antworten mit 404
-DmOffice.Core.Features.Use(app);
 app.UseRateLimiter();
 // PDF-Vorschau als Seitenbilder: Download-Adressen mit pdfpages / pdfpage
 DmOffice.Dav.PdfPages.Use(app);
@@ -468,6 +478,11 @@ app.Use(async (ctx, next) =>
 });
 
 Auth.Map(app);
+Oidc.Map(app);
+DmOffice.Storage.SftpApi.Map(app);
+DmOffice.Storage.SftpDriver.KnownHosts = Path.Combine(paths.Root, "sftp-known-hosts.json");
+// Kalender-Abos: Heimnetz wie bei eigenen WebDAV-Ordnern nur mit Erlaubnis der Verwaltung
+{ var subConfig = app.Services.GetRequiredService<ServerConfig>(); DmOffice.Pim.Subscriptions.HomeNet = () => subConfig.Current.ExternalWebDavPrivate; }
 TresorApi.Map(app);
 TresorFiles.Map(app);
 DmOffice.Notes.TresorNotizi.Register();
@@ -481,10 +496,12 @@ ActivityApi.Map(app);
 AppDownload.Map(app);
 UpdateApi.Map(app);
 MailApi.Map(app);
+DmOffice.Mail.MailExpiryApi.Map(app);
 PimApi.Map(app);
 DmOffice.Pim.GraphApi.Map(app);
 NotesApi.Map(app);
 FilesApi.Map(app);
+FileCategoriesApi.Map(app);
 DmOffice.Dms.DmsApi.Map(app);
 DmOffice.Mail.MailToDms.Map(app);
 DmOffice.Storage.ExternalFolders.Map(app);
@@ -504,11 +521,13 @@ DmOffice.Gallery.AlbumApi.Map(app);
 DmOffice.Gallery.AlbumLinksApi.Map(app);
 DmOffice.Dashboard.DashboardApi.Map(app);
 DmOffice.Mail.SmartInboxApi.Map(app);
+DmOffice.Mail.CatchallAliasesApi.Map(app);
+DmOffice.Mail.OpenPgpApi.Map(app);
 DmOffice.Notes.NoteSharesApi.Map(app);
 DavServer.Map(app);
 NextcloudApi.Map(app);
 
-app.MapGet("/api/health", () => Results.Ok(new { ok = true, version = DmOffice.SettingsApi.Version(), release = DmOffice.SettingsApi.Release() }));
+app.MapGet("/api/health", () => Results.Ok(new { ok = true, version = DmOffice.SettingsApi.Version(), release = DmOffice.Core.Features.Shown, releaseExtra = DmOffice.Core.Features.ShownExtra }));
 
 // Service Worker auch ohne Dateiendung: Reverse-Proxys mit Asset-Cache (Nginx Proxy Manager
 // "Cache Assets") halten *.js trotz no-cache bis zu einem Tag fest - dann kaeme kein Update an.

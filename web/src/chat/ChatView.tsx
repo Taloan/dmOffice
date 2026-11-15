@@ -10,7 +10,7 @@ import {
   CalendarLtr20Regular, TaskListSquareLtr20Regular, Person20Regular, Mic20Regular, Location20Regular, Open20Regular, CheckmarkCircle20Regular,
 } from '@fluentui/react-icons'
 import { Fragment, lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { api, fmtSize, q } from '../api'
+import { api, demoMode, fmtSize, q } from '../api'
 import { useApp } from '../App'
 import { t, tError, locale } from '../i18n'
 import { fmtDate, fmtDay, fmtTime } from '../shell/hooks'
@@ -267,6 +267,15 @@ export default function ChatView() {
   const [unreadOnly, setUnreadOnly] = useState(false)
   const shown = rooms.filter(r => (!filter || r.title.toLowerCase().includes(filter.toLowerCase())) && (!unreadOnly || r.unread > 0 || r.id === selected))
   const { fail, notify } = useApp()
+  // Unterhaltung aus der Adresse gibt es nicht: erst neu laden (eben angelegt), dann Hinweis statt leerer Ansicht
+  const missing = useRef<number | null>(null)
+  useEffect(() => {
+    if (!chat.rooms || !selected || chat.rooms.some(r => r.id === selected)) { missing.current = null; return }
+    if (missing.current !== selected) { missing.current = selected; chat.refresh(); return }
+    missing.current = null
+    notify(t('Unterhaltung nicht gefunden.'), undefined, 'warning')
+    history.replaceState(null, '', '#/chat'); setSelected(null); setFocus(null)
+  }, [selected, chat.rooms]) // eslint-disable-line react-hooks/exhaustive-deps
   const roomCall = async (call: () => Promise<unknown>) => { try { await call(); await chat.refresh(); chatStatusChanged() } catch (e) { fail(e) } }
   // Rechtsklick auf eine Unterhaltung: dieselben Befehle wie im Menüband, ohne sie erst zu öffnen
   const cm = useContextMenu<ChatRoom>()
@@ -610,7 +619,14 @@ function Conversation({ room, chat, onBack, focus }: { room: ChatRoom; chat: Ret
     }, { enableHighAccuracy: true, timeout: 20000, maximumAge: 60000 })
   }
 
+  // Senden nur einmal, solange die Anfrage läuft (zweimal schnell Enter, Doppelklick)
+  const sending = useRef(false)
   const send = async () => {
+    if (sending.current) return
+    sending.current = true
+    try { await sendNow() } finally { sending.current = false }
+  }
+  const sendNow = async () => {
     const value = text.trim()
     if (staged.length && !editing) {
       const files = staged
@@ -636,16 +652,18 @@ function Conversation({ room, chat, onBack, focus }: { room: ChatRoom; chat: Ret
       return
     }
     if (!value) return
+    // Feld sofort leeren: was während des Sendens schon weitergetippt wird, bleibt stehen; schlägt es fehl, kommt der Text zurück
+    setText('')
     try {
       if (editing) chat.put(await api.put<ChatMessage>(`/api/chat/messages/${editing.id}`, { text: value }))
       else chat.put(await api.post<ChatMessage>(`/api/chat/rooms/${room.id}/messages`, { ...fromDevice(), text: value, replyTo: reply?.id }))
       atBottom.current = true
-      setText(''); setReply(null); setEditing(null)
+      setReply(null); setEditing(null)
       chatStatusChanged()
     } catch (e) {
       // Ohne Verbindung: neue Nachricht in den Postausgang - geht raus, sobald der Server antwortet
-      if (!editing && offline(e)) { atBottom.current = true; queue(me.id, room.id, value, reply?.id); setText(''); setReply(null) }
-      else fail(e)
+      if (!editing && offline(e)) { atBottom.current = true; queue(me.id, room.id, value, reply?.id); setReply(null) }
+      else { setText(x => x || value); fail(e) }
     }
     input.current?.focus()
   }
@@ -754,7 +772,8 @@ function Conversation({ room, chat, onBack, focus }: { room: ChatRoom; chat: Ret
   }
   const onPaste = (e: React.ClipboardEvent) => {
     const files = [...e.clipboardData.files]
-    if (files.length) { e.preventDefault(); stage(files) }
+    // Demo: keine Dateien hochladen (ein gemeinsames Konto)
+    if (files.length) { e.preventDefault(); if (!demoMode.on) stage(files) }
   }
 
   // Gruppenraeume (Stufe 4)
@@ -815,9 +834,9 @@ function Conversation({ room, chat, onBack, focus }: { room: ChatRoom; chat: Ret
       <div className={s.convMain}>
       <SpacesBar spaces={sp.spaces} />
       <div ref={scroller} className={mergeClasses(s.scroll, dragging && s.drop)} onScroll={onScroll} style={{ backgroundColor: tint(room.color) }}
-        onDragOver={e => { if (e.dataTransfer.types.includes('Files')) { e.preventDefault(); setDragging(true) } }}
+        onDragOver={e => { if (!demoMode.on && e.dataTransfer.types.includes('Files')) { e.preventDefault(); setDragging(true) } }}
         onDragLeave={() => setDragging(false)}
-        onDrop={e => { e.preventDefault(); setDragging(false); stage([...e.dataTransfer.files]) }}>
+        onDrop={e => { e.preventDefault(); setDragging(false); if (!demoMode.on) stage([...e.dataTransfer.files]) }}>
         {list == null && <Spinner size="small" />}
         {list?.map((m, i) => {
           const day = fmtDay(new Date(m.created))
@@ -1002,11 +1021,11 @@ function Conversation({ room, chat, onBack, focus }: { room: ChatRoom; chat: Ret
           <MenuPopover>
             <MenuList>
               {/* Von diesem Geraet: wird hochgeladen und liegt dann in "Chat"; aus dmOffice: liegt schon auf dem Server, die Nachricht zeigt darauf */}
-              <MenuGroup>
+              {!demoMode.on && <><MenuGroup>
                 <MenuGroupHeader title={t('Wird hochgeladen und liegt dann in deinem Ordner „Chat“')}>{t('Von diesem Gerät')}</MenuGroupHeader>
                 <MenuItem icon={<DocumentArrowUp20Regular />} onClick={() => fileInput.current?.click()}>{t('Datei oder Foto hochladen')}</MenuItem>
               </MenuGroup>
-              <MenuDivider />
+              <MenuDivider /></>}
               <MenuGroup>
                 <MenuGroupHeader title={t('Liegt schon auf dem Server – die Nachricht zeigt nur darauf')}>{t('Aus dmOffice')}</MenuGroupHeader>
                 {me.files !== false && <MenuItem icon={<ImageMultiple20Regular />} onClick={() => setPicker('gallery')}>{t('Galerie')}</MenuItem>}

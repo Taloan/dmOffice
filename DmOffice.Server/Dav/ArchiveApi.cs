@@ -131,6 +131,7 @@ public static partial class FilesApi
         {
             try { return await next(ctx); }
             catch (ArchivePasswordException ex) { return Results.Json(new { error = ex.Message, password = true, wrong = ex.Wrong }, statusCode: 403); }
+            catch (VirusFoundException ex) { return Results.Json(new { error = ex.Message }, statusCode: 422); }
             catch (QuotaExceededException ex) { return Results.Json(new { error = ex.Message }, statusCode: 507); }
             catch (DavConflictException ex) { return Results.Conflict(new { error = ex.Message }); }
         });
@@ -223,6 +224,8 @@ public static partial class FilesApi
                     var blob = await a.Me.Db.Blobs.WriteAsync(file.Body, room, () => new ArchiveException("Das Archiv würde zu groß zum Ändern."), ct);
                     try
                     {
+                        // Virenprüfung wie beim Hochladen in die Ablage
+                        VirusScan.CheckBlob(a.Me.Db, blob, a.Shown + "/" + inner);
                         ArchiveEdits.SetFile(a.Me.Db, s, inner, blob);
                     }
                     catch { if (blob.Id != null) a.Me.Db.Blobs.Delete(blob.Id); throw; }
@@ -272,6 +275,7 @@ public static partial class FilesApi
             var blob = a.Me.Db.Blobs.Write(data);
             try
             {
+                VirusScan.CheckBlob(a.Me.Db, blob, a.Shown + "/" + inner);
                 ArchiveEdits.SetFile(a.Me.Db, s, inner, blob);
             }
             catch { if (blob.Id != null) a.Me.Db.Blobs.Delete(blob.Id); throw; }
@@ -322,7 +326,7 @@ public static partial class FilesApi
         }));
 
         // Entpacken in die Ablage: markierte Einträge (Ordner samt Inhalt) oder alles im aktuellen Ordner des Archivs.
-        // Vorhandenes wird nicht überschrieben (Nummer dran). Jede Datei geht durch PutAsync: Kontingent wie beim Hochladen.
+        // Vorhandenes wird nicht überschrieben (Nummer dran). Jede Datei geht durch PutAsync: Kontingent und Virenprüfung wie beim Hochladen.
         arc.MapPost("/extract", async (ArchiveExtractBody body, HttpContext http, CancellationToken ct) =>
         {
             var a = OpenArc(http, body.Path);
@@ -353,8 +357,8 @@ public static partial class FilesApi
                     await FileStore.PutAsync(target.Db, dest, data, DavServer.Mime(dest), ct: ct);
                     done++;
                 }
-                // Einzelne Datei abgelehnt (kaputt, Name belegt): weiter mit den anderen; voll oder falsches Passwort: Schluss
-                catch (Exception ex) when (ex is ArchiveException or DavConflictException or ArgumentException)
+                // Einzelne Datei abgelehnt (Virus, kaputt, Name belegt): weiter mit den anderen; voll oder falsches Passwort: Schluss
+                catch (Exception ex) when (ex is VirusFoundException or ArchiveException or DavConflictException or ArgumentException)
                 {
                     failed.Add(new { entry = p, error = ex.Message });
                 }

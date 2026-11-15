@@ -5,12 +5,13 @@ import {
 } from '@fluentui/react-components'
 import { Add20Regular, ArrowSync20Regular, Delete20Regular, Edit20Regular } from '@fluentui/react-icons'
 import { useEffect, useState } from 'react'
-import { api, q } from '../api'
+import { api, defaultAccount, q } from '../api'
 import { useApp } from '../App'
 import { lang, t } from '../i18n'
 import { askConfirm } from '../shell/context'
 import { Hint, PageTitle } from '../settings/parts'
-import { Entry, ordered, Profile } from './model'
+import { Entry, Profile } from './model'
+import { EntrySelect } from './EntrySelect'
 
 interface Account { id: string; name: string; folders: { path: string; name: string }[] }
 interface MailSource {
@@ -98,7 +99,7 @@ function EditMailSource({ source, accounts, profiles, entries, onClose }: {
   const s = useStyles()
   const { fail } = useApp()
   const [f, setF] = useState<MailSource>(() => source ? { ...source } : {
-    id: '', name: '', account: accounts[0]?.id ?? '', folder: 'INBOX', maxAgeDays: 30, active: true, order: 100, stop: false,
+    id: '', name: '', account: defaultAccount(accounts)?.id ?? '', folder: 'INBOX', maxAgeDays: 30, active: true, order: 100, stop: false,
     filterFrom: '', filterTo: '', filterSubject: '', filterBody: '', scope: 'attachments', allParts: false, include: '*.pdf', exclude: '',
     action: 'none', actionFolder: null, titleFrom: 'filename', correspondentMode: 'none', correspondent: null, doctype: null, tags: [],
     profile: profiles.find(p => p.default)?.id ?? profiles[0]?.id ?? null, every: 10, lastRun: null, error: null, lastCount: 0, total: 0,
@@ -119,16 +120,8 @@ function EditMailSource({ source, accounts, profiles, entries, onClose }: {
       {folders.map(x => <Option key={x.path} value={x.path} text={x.name}>{x.path}</Option>)}
     </Dropdown>
   )
-  const pick = (kind: 'correspondent' | 'doctype', value: string | null, onSel: (v: string | null) => void) => {
-    const opts = ordered(entries, kind)
-    return (
-      <Dropdown value={value ? opts.find(o => o.entry.id === value)?.entry.name ?? '' : t('Keine Vorgabe')} selectedOptions={[value ?? '']} onOptionSelect={(_, d) => onSel(d.optionValue || null)}>
-        <Option value="">{t('Keine Vorgabe')}</Option>
-        {opts.map(o => <Option key={o.entry.id} value={o.entry.id} text={o.entry.name}><span style={{ paddingLeft: o.depth * 12 }}>{o.entry.name}</span></Option>)}
-      </Dropdown>
-    )
-  }
-  const tagOpts = ordered(entries, 'tag')
+  const pick = (kind: 'correspondent' | 'doctype', value: string | null, onSel: (v: string | null) => void) =>
+    <EntrySelect entries={entries} kind={kind} value={value} none={t('Keine Vorgabe')} placeholder={t('Keine Vorgabe')} onPick={id => onSel(id || null)} />
   return (
     <Dialog open onOpenChange={(_, d) => { if (!d.open) onClose(false) }}>
       <DialogSurface style={{ maxWidth: 760 }}>
@@ -208,9 +201,7 @@ function EditMailSource({ source, accounts, profiles, entries, onClose }: {
                 {f.correspondentMode === 'preset' && <Field label={t('Vorgegebener Korrespondent')}>{pick('correspondent', f.correspondent, v => set({ correspondent: v }))}</Field>}
                 <Field label={t('Dokumenttyp')}>{pick('doctype', f.doctype, v => set({ doctype: v }))}</Field>
                 <Field label={t('Tags')}>
-                  <Dropdown multiselect value={f.tags.map(id => entries.find(e => e.id === id)?.name ?? '').join(', ')} selectedOptions={f.tags} onOptionSelect={(_, d) => set({ tags: d.selectedOptions })}>
-                    {tagOpts.map(o => <Option key={o.entry.id} value={o.entry.id} text={o.entry.name}><span style={{ paddingLeft: o.depth * 12 }}>{o.entry.name}</span></Option>)}
-                  </Dropdown>
+                  <EntrySelect entries={entries} kind="tag" values={f.tags} placeholder={t('Keine Vorgabe')} onPickMany={ids => set({ tags: ids })} />
                 </Field>
               </div>
               {f.correspondentMode === 'sender' && <Text size={200} className={s.muted}>{t('Gibt es zum Absender noch keinen Korrespondenten, legt das DMS einen mit der Zuweisung „Absender“ an.')}</Text>}

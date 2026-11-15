@@ -103,4 +103,22 @@ public class FeaturesTests : IClassFixture<FilesServerFixture>
         }
         finally { Features.Set(before); await c.DeleteAsync("/api/dashboard?device=desktop"); }
     }
+
+    [Fact]
+    public void Angezeigte_Version_folgt_den_freigeschalteten_Funktionen()
+    {
+        string D(string env) { var (v, e) = Features.Display("2.0", List, Features.Compute("2.0", List, env)); return v + "|" + string.Join(",", e); }
+        Assert.Equal("2.0|", D(""));
+        Assert.Equal("2.3|", D("+neu"));              // alle 2.3-Funktionen frei: 2.3
+        Assert.Equal("2.0|spaeter", D("+spaeter"));            // nur eine Funktion aus 2.4: 2.0 plus spaeter
+        Assert.Equal("2.4|intern", D("all"));                  // alles: höchste Version plus die nie freigegebene
+    }
+
+    [Fact]
+    public void Versionsnummer_schaltet_alles_bis_dahin_frei()
+    {
+        Assert.Equal(new[] { "intern", "spaeter" }, Features.Compute("2.0", List, "2.3").OrderBy(x => x));
+        Assert.Equal(new[] { "intern" }, Features.Compute("2.0", List, "2.3,+spaeter").OrderBy(x => x));
+        Assert.Equal("2.3|", string.Join("|", new[] { Features.Display("2.0", List, Features.Compute("2.0", List, "2.3")).Shown, "" }));
+    }
 }

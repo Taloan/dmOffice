@@ -12,7 +12,7 @@ namespace DmOffice.Dav;
 /// Datenbank dessen, der ändert (Schlüssel „archive.edit:…“), hinzugefügte Inhalte als Blobs in seinem BlobStore - ein Neustart
 /// verliert nichts. Nach <see cref="Idle"/> ohne Änderung (spätestens <see cref="MaxAge"/> nach der ersten) wird aufgeräumt:
 /// unverknüpfte Blobs löscht <see cref="FileStore.SweepBlobs"/> nach einem Tag, darum muss der Stand vorher weg sein.
-/// Gespeichert wird als neues ZIP über <see cref="FileStore.PutAsync"/>: das bisherige bleibt als Version.
+/// Gespeichert wird als neues ZIP über <see cref="FileStore.PutAsync"/>: das bisherige bleibt als Version, die Virenprüfung läuft.
 /// </summary>
 public static class ArchiveEdits
 {

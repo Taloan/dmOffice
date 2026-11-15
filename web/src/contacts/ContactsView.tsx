@@ -19,7 +19,7 @@ import { RibbonButton, RibbonDivider, RibbonHeader, useSidePane } from '../shell
 import { BackBar, SidePane, useBackClose, useIsMobile, useMobileStyles } from '../shell/mobile'
 import { usePrefs } from '../prefs'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { api, Collection, Contact } from '../api'
+import { Account, api, Collection, Contact } from '../api'
 import { useApp } from '../App'
 import { CollectionDialog, importInto, removeCollection } from '../calendar/CollectionDialog'
 import { locale, t } from '../i18n'
@@ -56,6 +56,15 @@ const emailTypes = [['work', t('Arbeit')], ['home', t('Privat')], ['other', t('A
 const phoneTypes = [['cell', t('Mobil')], ['work', t('Arbeit')], ['home', t('Privat')], ['fax', t('Fax')], ['other', t('Andere')]]
 const typeLabel = (list: string[][], type: string) => list.find(x => x[0] === type)?.[1] ?? type
 
+/** Erstes Schriftzeichen (Graphem) - ein Emoji besteht aus mehreren UTF-16-Einheiten */
+const firstChar = (text: string) => {
+  if (!text) return ''
+  try { for (const x of new Intl.Segmenter().segment(text)) return x.segment } catch { /* aeltere Browser */ }
+  return Array.from(text)[0] ?? ''
+}
+/** Lange Namen und Adressen: umbrechen statt quer rollen */
+const wrap: React.CSSProperties = { overflowWrap: 'anywhere', minWidth: 0 }
+
 const empty = (book: number): Contact => ({
   id: '', book, uri: '', etag: '', displayName: '', prefix: '', given: '', additional: '', family: '', suffix: '', nickname: '',
   org: '', department: '', title: '', emails: [{ type: 'work', value: '' }], phones: [{ type: 'cell', value: '' }], addresses: [],
@@ -82,8 +91,15 @@ export default function ContactsView() {
   const mobile = useIsMobile()
   const ms = useMobileStyles()
   const open = !!(edit || selected)
-  const closeDetail = () => { setEdit(null); setSelected(null) }
+  // Formular mit Änderungen: vor dem Verlassen nachfragen (Klick auf anderen Kontakt, Esc, Abbrechen, Zurück)
+  const formDirty = useRef(false)
+  const mayLeave = (): boolean | Promise<boolean> => !edit || !formDirty.current || askConfirm('', t('Änderungen verwerfen?'), t('Verwerfen'))
+  const closeDetail = async () => { if (!await mayLeave()) return; setEdit(null); setSelected(null) }
   useBackClose(open, closeDetail)
+  // Ohne Mailkonto führt „E-Mail“ ins Leere: Knöpfe dann gesperrt (null: noch nicht geladen)
+  const [hasMail, setHasMail] = useState<boolean | null>(null)
+  useEffect(() => { api.get<Account[]>('/api/mail/accounts').then(a => setHasMail(a.length > 0)).catch(() => setHasMail(null)) }, [])
+  const noMail = hasMail === false ? t('Kein Mailkonto eingerichtet.') : undefined
   const sortKey = (c: Contact) => (sort === 'family' ? c.family || c.displayName : sort === 'org' ? c.org || '~' + c.displayName : c.displayName).trim()
   const importTo = (id: number | undefined) => {
     if (!id) return
@@ -128,7 +144,7 @@ export default function ContactsView() {
   }
 
   const remove = async (c: Contact) => {
-    if (!await askConfirm('', t('„{name}“ löschen? Es gibt dafür keinen Papierkorb, nur direkt danach „Rückgängig“.', { name: c.displayName }))) return
+    // Keine Rückfrage: danach gibt es „Rückgängig“
     try {
       const r = await api.del(`/api/pim/contacts/${c.book}/${encodeURIComponent(c.uri)}`) as { undo?: string } | undefined
       setSelected(null); load()
@@ -155,12 +171,17 @@ export default function ContactsView() {
     const c = filtered.find(x => x.id === mx.selected[0])
     if (c) { setSelected(c); setEdit(null) }
   }, [mx.selected]) // eslint-disable-line react-hooks/exhaustive-deps
-  const clickRow = (e: React.MouseEvent, c: Contact) => {
-    mx.click(e, c.id)
-    if (!(e.ctrlKey || e.metaKey || e.shiftKey)) { setSelected(c); setEdit(null) }
-    else setSelected(null)
+  const clickRow = async (e: React.MouseEvent, c: Contact) => {
+    const mods = { ctrlKey: e.ctrlKey, metaKey: e.metaKey, shiftKey: e.shiftKey }
+    if (!await mayLeave()) return
+    mx.click(mods, c.id)
+    if (!(mods.ctrlKey || mods.metaKey || mods.shiftKey)) { setSelected(c); setEdit(null) }
+    else { setSelected(null); setEdit(null) }
     listRef.current?.focus({ preventScroll: true })
   }
+  /** Kontakt öffnen bzw. bearbeiten - ein geändertes Formular erst nach Rückfrage verlassen */
+  const openContact = async (c: Contact) => { if (await mayLeave()) { setSelected(c); setEdit(null) } }
+  const editContact = async (c: Contact) => { if (await mayLeave()) full(c).then(setEdit).catch(fail) }
   const rowMenu = (e: React.MouseEvent, c: Contact) => {
     const ids = mx.selected.includes(c.id) ? mx.selected : [c.id]
     mx.pick(c.id)
@@ -187,7 +208,7 @@ export default function ContactsView() {
   const removeMany = async (list: Contact[]) => {
     if (!list.length) return
     if (list.length === 1) { remove(list[0]); return }
-    if (!await askConfirm('', t('{n} Kontakte löschen? Es gibt dafür keinen Papierkorb, nur direkt danach „Rückgängig“.', { n: list.length }))) return
+    if (!await askConfirm('', t('{n} Kontakte löschen? Es gibt dafür keinen Papierkorb, nur direkt danach „Rückgängig“.', { n: list.length }), t('Löschen'))) return
     const gone: { c: Contact; data: string }[] = []
     try {
       for (const c of list) {
@@ -228,17 +249,24 @@ export default function ContactsView() {
   const deleteBook = async (b: Collection) => {
     try { if (await removeCollection(b, 'addressbooks')) { if (book === b.id) setBook('all'); load() } } catch (err) { fail(err) }
   }
-  const newContact = (b?: number) => { setSelected(null); setEdit(empty(b ?? (book === 'all' ? books[0]?.id : book))) }
-  const onListKey = (e: React.KeyboardEvent) => {
+  const newContact = async (b?: number) => {
+    if (!await mayLeave()) return
+    setSelected(null); setEdit(empty(b ?? (book === 'all' ? books[0]?.id : book)))
+  }
+  const onListKey = async (e: React.KeyboardEvent) => {
     if (isTyping(e)) return
     const k = e.key
     if (k === 'Delete') { e.preventDefault(); removeMany(picked) }
-    else if (k === 'Escape') { mx.clear(); closeDetail() }
+    else if (k === 'Escape') { if (await mayLeave()) { mx.clear(); setEdit(null); setSelected(null) } }
     else if (e.ctrlKey && k.toLowerCase() === 'a') { e.preventDefault(); mx.all() }
     else if (e.ctrlKey && k.toLowerCase() === 'n') { e.preventDefault(); newContact() }
-    else if (k === 'Enter' && picked.length === 1) { e.preventDefault(); setSelected(picked[0]); setEdit(null) }
-    else if (k === 'F2' && picked.length === 1) { e.preventDefault(); full(picked[0]).then(setEdit).catch(fail) }
-    else if (k === 'ArrowDown' || k === 'ArrowUp') { e.preventDefault(); mx.step(k === 'ArrowDown' ? 1 : -1, e.shiftKey) }
+    else if (k === 'Enter' && picked.length === 1) { e.preventDefault(); openContact(picked[0]) }
+    else if (k === 'F2' && picked.length === 1) { e.preventDefault(); editContact(picked[0]) }
+    else if (k === 'ArrowDown' || k === 'ArrowUp') {
+      e.preventDefault()
+      const dir = k === 'ArrowDown' ? 1 : -1, shift = e.shiftKey
+      if (await mayLeave()) mx.step(dir, shift)
+    }
   }
 
   const ctxMenu = () => {
@@ -274,9 +302,9 @@ export default function ContactsView() {
     const inBooks = new Set(sel.map(c => c.book))
     return <>
       {!one && <MenuItem disabled>{t('{n} Kontakte ausgewählt', { n: sel.length })}</MenuItem>}
-      {one && <MenuItem icon={<Open20Regular />} onClick={() => { setSelected(one); setEdit(null) }}>{t('Öffnen')}</MenuItem>}
-      {one && <MenuItem icon={<Edit20Regular />} onClick={() => full(one).then(setEdit).catch(fail)}>{t('Bearbeiten')}</MenuItem>}
-      <MenuItem icon={mails.length > 1 ? <People20Regular /> : <Mail20Regular />} disabled={!mails.length} onClick={() => writeMail(mails)}>{t('E-Mail senden')}</MenuItem>
+      {one && <MenuItem icon={<Open20Regular />} onClick={() => openContact(one)}>{t('Öffnen')}</MenuItem>}
+      {one && <MenuItem icon={<Edit20Regular />} onClick={() => editContact(one)}>{t('Bearbeiten')}</MenuItem>}
+      <MenuItem icon={mails.length > 1 ? <People20Regular /> : <Mail20Regular />} disabled={!mails.length || hasMail === false} title={noMail} onClick={() => writeMail(mails)}>{t('E-Mail senden')}</MenuItem>
       <MenuItem icon={allVip ? <Star20Filled /> : <Star20Regular />} onClick={() => setVip(sel, !allVip)}>{allVip ? t('Nicht mehr VIP') : t('Als VIP markieren')}</MenuItem>
       <MenuDivider />
       <TargetMenu kind="move" targets={books.filter(b => !(inBooks.size === 1 && inBooks.has(b.id))).map(b => ({ id: b.id, label: b.name }))} onPick={id => transfer(sel, Number(id), false)} />
@@ -312,8 +340,9 @@ export default function ContactsView() {
         start={<>
           <RibbonButton primary icon={<PersonAdd20Regular />} label={t('Neuer Kontakt')} onClick={() => newContact()} />
           <RibbonDivider />
-          <RibbonButton icon={<Mail20Regular />} label={t('E-Mail')} disabled={!detail?.emails[0]} onClick={() => detail?.emails[0] && writeMail(detail.emails[0].value)} />
-          <RibbonButton icon={<Edit20Regular />} label={t('Bearbeiten')} disabled={!detail} onClick={() => detail && setEdit(detail)} />
+          <RibbonButton icon={<Mail20Regular />} label={t('contact|E-Mail')} disabled={!detail?.emails[0]} disabledFocusable={!!detail?.emails[0] && hasMail === false} title={noMail}
+            onClick={() => detail?.emails[0] && hasMail !== false && writeMail(detail.emails[0].value)} />
+          <RibbonButton icon={<Edit20Regular />} label={t('Bearbeiten')} disabled={!detail} onClick={() => detail && !edit && setEdit(detail)} />
           <RibbonButton icon={<Delete20Regular />} label={t('Löschen')} disabled={!detail && !picked.length} onClick={() => picked.length > 1 ? removeMany(picked) : detail && remove(detail)} />
           <RibbonDivider />
           <RibbonButton icon={<BookAdd20Regular />} label={t('Neues Adressbuch')} onClick={() => setBookDialog('new')} />
@@ -371,7 +400,7 @@ export default function ContactsView() {
         <div className={s.items} ref={listRef} tabIndex={-1} onKeyDown={onListKey}
           onContextMenu={e => cm.open(e, { kind: 'list' })}>
           {!contacts ? <Spinner /> : filtered.length === 0 ? <Text style={{ padding: 16, display: 'block' }}>{t('Keine Kontakte.')}</Text> : filtered.map(c => {
-            const letter = (sortKey(c).replace(/^~/, '')[0] || '#').toUpperCase()
+            const letter = (firstChar(sortKey(c).replace(/^~/, '')) || '#').toUpperCase()
             const head = letter !== last ? <div key={'l' + letter} className={s.letter}>{letter}</div> : null
             last = letter
             return [head,
@@ -379,8 +408,11 @@ export default function ContactsView() {
                 onContextMenu={e => rowMenu(e, c)} draggable={!mobile}
                 onDragStart={e => { e.dataTransfer.setData(DRAG, JSON.stringify(mx.selected.includes(c.id) ? mx.selected : [c.id])); e.dataTransfer.effectAllowed = 'copyMove' }}>
                 <Avatar name={c.displayName} size={32} color="colorful" />
-                <div style={{ minWidth: 0 }}>
-                  <div>{c.displayName}{c.vip && <Star12Filled style={{ marginLeft: 4, color: tokens.colorPaletteYellowForeground1 }} />}</div>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', minWidth: 0 }}>
+                    <span title={c.displayName} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.displayName}</span>
+                    {c.vip && <Star12Filled style={{ marginLeft: 4, flexShrink: 0, color: tokens.colorPaletteYellowForeground1 }} />}
+                  </div>
                   <div className={s.sub}>{c.emails[0]?.value || c.org || c.phones[0]?.value}</div>
                 </div>
               </div>]
@@ -390,18 +422,19 @@ export default function ContactsView() {
       <div className={mergeClasses(mobile && open && ms.full)} style={mobile && !open ? { display: 'none' } : { display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, minHeight: 0 }}>
       {mobile && <BackBar onBack={closeDetail} title={edit ? (edit.id ? t('Bearbeiten') : t('Neuer Kontakt')) : detail?.displayName} />}
       <div className={s.detail}>
-        {edit ? <ContactForm initial={edit} books={books} onSave={save} onCancel={() => setEdit(null)} />
+        {edit ? <ContactForm key={edit.id || 'new'} initial={edit} books={books} onSave={save} dirtyRef={formDirty} onCancel={async () => { if (await mayLeave()) setEdit(null) }} />
           : detail ? (
             <>
               <div className={s.head}>
                 <Avatar name={detail.displayName} image={detail.photo ? { src: detail.photo } : undefined} size={96} color="colorful" />
-                <div>
+                <div style={wrap}>
                   <Text size={700} weight="semibold" block>{detail.displayName}</Text>
                   {(detail.title || detail.org) && <Text block>{[detail.title, detail.org, detail.department].filter(Boolean).join(' · ')}</Text>}
                 </div>
               </div>
-              <Toolbar style={{ marginBottom: 12, padding: 0 }}>
-                {detail.emails[0] && <ToolbarButton icon={<Mail20Regular />} onClick={() => writeMail(detail.emails[0].value)}>{t('E-Mail')}</ToolbarButton>}
+              <Toolbar style={{ marginBottom: 12, padding: 0, flexWrap: 'wrap' }}>
+                {detail.emails[0] && <ToolbarButton icon={<Mail20Regular />} disabledFocusable={hasMail === false} title={noMail}
+                  onClick={() => hasMail !== false && writeMail(detail.emails[0].value)}>{t('contact|E-Mail')}</ToolbarButton>}
                 <ToolbarButton icon={<Edit20Regular />} onClick={() => setEdit(detail)}>{t('Bearbeiten')}</ToolbarButton>
                 {/* VIP: in der App gibt es Benachrichtigungen "nur von VIPs", der Prio-Posteingang zeigt sie immer */}
                 <ToolbarButton icon={detail.vip ? <Star20Filled color={tokens.colorPaletteYellowForeground1} /> : <Star20Regular />}
@@ -409,20 +442,20 @@ export default function ContactsView() {
                 <ToolbarButton icon={<Delete20Regular />} onClick={() => remove(detail)}>{t('Löschen')}</ToolbarButton>
               </Toolbar>
               {detail.emails.map((e, i) => (
-                <div key={'e' + i} className={s.row}><Mail20Regular /><span className={s.label}>{typeLabel(emailTypes, e.type)}</span><Link onClick={() => writeMail(e.value)}>{e.value}</Link></div>
+                <div key={'e' + i} className={s.row}><Mail20Regular /><span className={s.label}>{typeLabel(emailTypes, e.type)}</span>{hasMail === false ? <span style={wrap}>{e.value}</span> : <Link style={wrap} onClick={() => writeMail(e.value)}>{e.value}</Link>}</div>
               ))}
               {detail.phones.map((p, i) => (
-                <div key={'p' + i} className={s.row}><Call20Regular /><span className={s.label}>{typeLabel(phoneTypes, p.type)}</span><Link href={`tel:${p.value}`}>{p.value}</Link></div>
+                <div key={'p' + i} className={s.row}><Call20Regular /><span className={s.label}>{typeLabel(phoneTypes, p.type)}</span><Link style={wrap} href={`tel:${p.value}`}>{p.value}</Link></div>
               ))}
               {detail.addresses.map((a, i) => (
                 <div key={'a' + i} className={s.row}><Location20Regular /><span className={s.label}>{typeLabel(emailTypes, a.type)}</span>
-                  <span>{a.street}<br />{[a.zip, a.city].filter(Boolean).join(' ')}{a.region ? `, ${a.region}` : ''}<br />{a.country}</span></div>
+                  <span style={wrap}>{a.street}<br />{[a.zip, a.city].filter(Boolean).join(' ')}{a.region ? `, ${a.region}` : ''}<br />{a.country}</span></div>
               ))}
-              {detail.org && <div className={s.row}><Building20Regular /><span className={s.label}>{t('Firma')}</span>{detail.org}</div>}
+              {detail.org && <div className={s.row}><Building20Regular /><span className={s.label}>{t('Firma')}</span><span style={wrap}>{detail.org}</span></div>}
               {detail.birthday && <div className={s.row}><Gift20Regular /><span className={s.label}>{t('Geburtstag')}</span>{new Date(detail.birthday).toLocaleDateString(locale)}</div>}
               {/* Nur http(s) verlinken - eine vCard aus fremder Quelle koennte javascript: als Webadresse haben */}
-              {detail.urls.map((u, i) => <div key={'u' + i} className={s.row}><Globe20Regular /><span className={s.label}>{t('Web')}</span>{/^https?:\/\//i.test(u.trim()) ? <Link href={u} target="_blank" rel="noopener noreferrer">{u}</Link> : <span>{u}</span>}</div>)}
-              {detail.note && <div className={s.row}><span className={s.label}>{t('Notiz')}</span><span style={{ whiteSpace: 'pre-wrap' }}>{detail.note}</span></div>}
+              {detail.urls.map((u, i) => <div key={'u' + i} className={s.row}><Globe20Regular /><span className={s.label}>{t('Web')}</span>{/^https?:\/\//i.test(u.trim()) ? <Link style={wrap} href={u} target="_blank" rel="noopener noreferrer">{u}</Link> : <span style={wrap}>{u}</span>}</div>)}
+              {detail.note && <div className={s.row}><span className={s.label}>{t('Notiz')}</span><span style={{ ...wrap, whiteSpace: 'pre-wrap' }}>{detail.note}</span></div>}
             </>
           ) : <Text style={{ color: tokens.colorNeutralForeground3 }}>{picked.length > 1 ? t('{n} Kontakte ausgewählt', { n: picked.length }) : t('Wähle einen Kontakt aus.')}</Text>}
       </div>
@@ -436,9 +469,24 @@ export default function ContactsView() {
   )
 }
 
-function ContactForm({ initial, books, onSave, onCancel }: { initial: Contact; books: Collection[]; onSave: (c: Contact) => void; onCancel: () => void }) {
+function ContactForm({ initial, books, onSave, onCancel, dirtyRef }: {
+  initial: Contact; books: Collection[]; onSave: (c: Contact) => Promise<void>; onCancel: () => void
+  /** true, sobald etwas geändert ist - für die Rückfrage beim Verlassen */
+  dirtyRef: React.MutableRefObject<boolean>
+}) {
   const s = useStyles()
   const [c, setC] = useState<Contact>({ ...initial, moveTo: initial.book })
+  const [start] = useState(() => JSON.stringify({ ...initial, moveTo: initial.book }))
+  dirtyRef.current = JSON.stringify(c) !== start
+  useEffect(() => () => { dirtyRef.current = false }, [dirtyRef])
+  // Speichern nur einmal, solange die Anfrage läuft (Doppelklick, zweimal Enter)
+  const saving = useRef(false)
+  const [busy, setBusy] = useState(false)
+  const submit = async () => {
+    if (saving.current) return
+    saving.current = true; setBusy(true)
+    try { await onSave(c) } finally { saving.current = false; setBusy(false) }
+  }
   const set = (p: Partial<Contact>) => setC(x => ({ ...x, ...p }))
   const photoInput = useRef<HTMLInputElement>(null)
 
@@ -461,7 +509,11 @@ function ContactForm({ initial, books, onSave, onCancel }: { initial: Contact; b
   )
 
   return (
-    <form onSubmit={e => { e.preventDefault(); onSave(c) }}>
+    <form onSubmit={e => { e.preventDefault(); submit() }} onKeyDown={e => {
+      // Strg+S speichert, Esc bricht ab (mit Rückfrage bei Änderungen); offene Auswahlliste schließt Esc selbst
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 's') { e.preventDefault(); submit() }
+      else if (e.key === 'Escape' && !e.defaultPrevented && (e.target as HTMLElement).getAttribute('aria-expanded') !== 'true') { e.preventDefault(); onCancel() }
+    }}>
       <div className={s.head}>
         <Avatar name={c.displayName || `${c.given} ${c.family}`} image={c.photo ? { src: c.photo } : undefined} size={96} color="colorful"
           onClick={() => photoInput.current?.click()} style={{ cursor: 'pointer' }} />
@@ -490,7 +542,7 @@ function ContactForm({ initial, books, onSave, onCancel }: { initial: Contact; b
         <Field label={t('Anzeigename')} hint={t('leer: aus Vor- und Nachname')} className={s.full}><Input value={c.displayName} onChange={(_, d) => set({ displayName: d.value })} /></Field>
         <Field label={t('Firma')}><Input value={c.org} onChange={(_, d) => set({ org: d.value })} /></Field>
         <Field label={t('Position')}><Input value={c.title} onChange={(_, d) => set({ title: d.value })} /></Field>
-        {listEditor('emails', emailTypes, t('E-Mail'), t('E-Mail hinzufügen'), 'work')}
+        {listEditor('emails', emailTypes, t('contact|E-Mail'), t('E-Mail hinzufügen'), 'work')}
         {listEditor('phones', phoneTypes, t('Telefon'), t('Telefon hinzufügen'), 'cell')}
         <Text className={s.section}>{t('Adressen')}</Text>
         {c.addresses.map((a, i) => {
@@ -525,7 +577,7 @@ function ContactForm({ initial, books, onSave, onCancel }: { initial: Contact; b
           </Field>
         )}
         <div className={s.full} style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-          <Button appearance="primary" type="submit">{t('Speichern')}</Button>
+          <Button appearance="primary" type="submit" disabled={busy}>{t('Speichern')}</Button>
           <Button onClick={onCancel}>{t('Abbrechen')}</Button>
         </div>
       </div>

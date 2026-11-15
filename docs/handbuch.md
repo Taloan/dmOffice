@@ -98,11 +98,11 @@ Je Konto lässt sich festlegen:
 
 ![Kategorisieren](img/de/mail-kategorien.png)
 
-Kategorien sind farbige Schlagworte für Mails. dmOffice speichert sie als **IMAP-Schlagwort** auf dem Mailserver – sie sind also auch in Thunderbird oder auf einem zweiten dmOffice zu sehen, wenn dort dasselbe Schlagwort verwendet wird.
+Kategorien sind farbige Tags für Mails. dmOffice speichert sie als **IMAP-Tag** auf dem Mailserver – sie sind also auch in Thunderbird oder auf einem zweiten dmOffice zu sehen, wenn dort dasselbe Tag verwendet wird.
 
 - *Kategorisieren ▾* im Menüband oder im Rechtsklick-Menü.
 - Verwalten unter *Einstellungen* → *E-Mail* → *Kategorien*: Name, Farbe, Reihenfolge. Umbenennen ändert nur die Anzeige, die Mails behalten ihre Kategorie.
-- Gmail nimmt keine eigenen Schlagworte an; dort meldet dmOffice das.
+- Gmail nimmt keine eigenen Tags an; dort meldet dmOffice das.
 
 ![Kategorien verwalten](img/de/einstellungen-kategorien.png)
 
@@ -111,6 +111,15 @@ Kategorien sind farbige Schlagworte für Mails. dmOffice speichert sie als **IMA
 ![Wiedervorlage](img/de/mail-wiedervorlage.png)
 
 Eine Mail für später zurücklegen: *Wiedervorlage* → *In 1 Stunde*, *Heute Abend*, *Morgen*, *Nächste Woche* … oder ein eigenes Datum. Die Mail verschwindet in den Ordner *Wiedervorlage* und taucht zur gewählten Zeit **ungelesen oben im Posteingang** wieder auf. Mit *Wiedervorlage aufheben* kommt sie sofort zurück.
+
+### Entfernen nach Zeit
+
+Im Menü einer Mail (Rechtsklick, *…* im Lesebereich, in der App das Menü oben rechts): *In den Papierkorb nach …* oder *Vernichten nach …* – *1 Tag*, *7 Tage*, *30 Tage* oder *Am …* mit Datum und Uhrzeit. Im Web geht das auch für mehrere markierte Mails. Bis dahin bleibt die Mail, wo sie ist, und zeigt eine Sanduhr: „Wird am … in den Papierkorb verschoben“ bzw. „Wird am … vernichtet“. *Zurücknehmen* geht jederzeit bis zum Zeitpunkt.
+
+- **In den Papierkorb:** Die Mail kommt in den Papierkorb des Kontos und lässt sich dort wiederherstellen.
+- **Vernichten:** Die Mail wird auf dem Mailserver gelöscht und sofort getilgt, ohne Papierkorb. In dmOffice verschwinden auch Zwischenspeicher, Suchindex und Anhang-Kopien. Vorher fragt dmOffice einmal nach.
+
+Ausgeführt wird auf dem Server, auch wenn kein Gerät offen ist. Wurde die Mail inzwischen verschoben, findet dmOffice sie über ihre Message-ID. **Grenze:** dmOffice erreicht nur das Postfach auf dem Mailserver. Kopien auf anderen Geräten, beim Absender oder in Sicherungen des Mail-Anbieters bleiben, wie sie sind.
 
 ### Schreiben
 
@@ -129,7 +138,7 @@ Eine Mail für später zurücklegen: *Wiedervorlage* → *In 1 Stunde*, *Heute A
 
 ### Regeln
 
-*Einstellungen* → *E-Mail* → *Regeln*. Eine Regel prüft neue Mails im Posteingang (Absender, Empfänger, Betreff, Text, Kopfzeile) und kann verschieben, kopieren, weiterleiten, als gelesen markieren, kennzeichnen, eine Kategorie zuweisen oder löschen. Jede Mail durchläuft die Regeln **einmal** – auch wenn sie später wieder im Posteingang landet.
+*Einstellungen* → *E-Mail* → *Regeln*. Eine Regel prüft neue Mails im Posteingang (Absender, Empfänger, Betreff, Text, Kopfzeile) und kann verschieben, kopieren, weiterleiten, als gelesen markieren, kennzeichnen, eine Kategorie zuweisen, löschen oder die Mail nach X Tagen in den Papierkorb legen bzw. vernichten (gezählt ab Eingang, siehe *Entfernen nach Zeit*). Jede Mail durchläuft die Regeln **einmal** – auch wenn sie später wieder im Posteingang landet.
 
 ![Regeln](img/de/einstellungen-regeln.png)
 
@@ -273,6 +282,8 @@ Die native Android-App (Android 8 und neuer) bringt dmOffice aufs Handy. Sie lie
 - **Speicherplatz freigeben:** zeigt Fotos und Videos, die dmOffice als gesichert bestätigt hat (per Prüfsumme, und seitdem unverändert), und löscht sie auf Wunsch vom Handy. Kurz vor dem Löschen fragt die App den Server noch einmal; in dmOffice bleiben die Dateien. Die jüngsten Tage kann man auf dem Handy behalten.
 - **Android-Kalender und -Kontakte:** auf Wunsch in Kalender und Kontakte des Handys gespiegelt, damit andere Apps sie sehen.
 - **Sicherheit:** verschlüsselte lokale Datenbank, optionale App-Sperre per Fingerabdruck, Gesicht oder PIN.
+
+Technik, Bauen und optionales Push: [apps/mobile/README.de.md](../apps/mobile/README.de.md).
 
 ---
 

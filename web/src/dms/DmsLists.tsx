@@ -3,9 +3,9 @@ import {
   MenuPopover, Option, Text, Tooltip, makeStyles, mergeClasses, tokens,
 } from '@fluentui/react-components'
 import {
-  Add20Regular, ArrowMove20Regular, Delete20Regular, DocumentSearch20Regular, Edit20Regular, MoreHorizontal20Regular, Rename20Regular, Search20Regular,
+  Add20Regular, ArrowMove20Regular, Delete20Regular, DocumentSearch20Regular, Edit20Regular, MoreHorizontal20Regular, Rename20Regular, Search20Regular, Sparkle20Regular,
 } from '@fluentui/react-icons'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { useApp } from '../App'
 import { lang, t } from '../i18n'
@@ -52,7 +52,7 @@ type MenuAt = { x: number; y: number; kind: Kind; entry: Entry | null; extra?: {
  * „Umbenennen …“, „Verschieben unter …“, „Löschen …“ (ohne Eintrag: „Neuer Eintrag …“), dazu Ziehen und Ablegen eines Eintrags
  * auf einen anderen (= darunter einordnen). ui gehört einmal in die Seite.
  */
-export function useEntryActions(entries: Entry[], onChanged: () => void) {
+export function useEntryActions(entries: Entry[], onChanged: () => void, ai?: (kind: Kind, entry: Entry | null) => void) {
   const { fail, notify } = useApp()
   const [menu, setMenu] = useState<MenuAt | null>(null)
   const [edit, setEdit] = useState<{ kind: Kind; entry: Entry | null; parent: string | null } | null>(null)
@@ -69,14 +69,20 @@ export function useEntryActions(entries: Entry[], onChanged: () => void) {
     if (parent && below(entries, e.id).has(parent)) { notify(t('Ein Eintrag kann nicht unter sich selbst liegen.')); return }
     put(e, { parent: parent ?? '' })
   }
+  /** Dokumente, die den Eintrag selbst tragen (e.count zählt die Unterbegriffe mit, die beim Löschen bleiben). */
+  const usage = (e: Entry) => api.get<{ docs: number }>(`/api/dms/lists/${e.id}/usage`).then(r => r.docs).catch(() => e.count)
   const remove = async (e: Entry) => {
-    if (!await askConfirm(t('{kind} löschen', { kind: kindLabel(e.kind) }), e.count === 1 ? t('„{name}“ wird gelöscht und an 1 Dokument entfernt. Das Dokument bleibt; Untereinträge rücken eine Ebene hoch.', { name: e.name }) : t('„{name}“ wird gelöscht und an {n} Dokumenten entfernt. Die Dokumente bleiben; Untereinträge rücken eine Ebene hoch.', { name: e.name, n: e.count }), t('Löschen'))) return
+    const n = await usage(e)
+    const text = n === 0 ? t('„{name}“ wird gelöscht. Untereinträge rücken eine Ebene hoch.', { name: e.name })
+      : n === 1 ? t('„{name}“ wird gelöscht und an 1 Dokument entfernt. Das Dokument bleibt; Untereinträge rücken eine Ebene hoch.', { name: e.name })
+      : t('„{name}“ wird gelöscht und an {n} Dokumenten entfernt. Die Dokumente bleiben; Untereinträge rücken eine Ebene hoch.', { name: e.name, n })
+    if (!await askConfirm(t('{kind} löschen', { kind: kindLabel(e.kind) }), text, t('Löschen'))) return
     try { await api.del(`/api/dms/lists/${e.id}`); onChanged() } catch (x) { fail(x) }
   }
 
   /** Mehrere auf einmal; true: gelöscht. */
   const removeMany = async (list: Entry[]) => {
-    const docs = list.reduce((n, e) => n + e.count, 0)
+    const docs = (await Promise.all(list.map(usage))).reduce((n, d) => n + d, 0)
     const text = docs === 0 ? t('{n} Einträge werden gelöscht. Untereinträge rücken eine Ebene hoch.', { n: list.length })
       : t('{n} Einträge werden gelöscht und an den Dokumenten entfernt ({d} Zuordnungen). Die Dokumente bleiben; Untereinträge rücken eine Ebene hoch.', { n: list.length, d: docs })
     if (!await askConfirm(t('{n} Einträge löschen', { n: list.length }), text, t('Löschen'))) return false
@@ -112,18 +118,23 @@ export function useEntryActions(entries: Entry[], onChanged: () => void) {
   const m = menu
   const ui = <>
     {m && <Menu open onOpenChange={(_, d) => { if (!d.open) setMenu(null) }}
-      positioning={{ target: { getBoundingClientRect: () => ({ x: m.x, y: m.y, top: m.y, left: m.x, bottom: m.y, right: m.x, width: 0, height: 0 }) } as any }}>
+      positioning={{ autoSize: 'height', target: { getBoundingClientRect: () => ({ x: m.x, y: m.y, top: m.y, left: m.x, bottom: m.y, right: m.x, width: 0, height: 0 }) } as any }}>
       <MenuPopover>
         <MenuList>
           {m.entry ? <>
             <MenuItem icon={<Add20Regular />} onClick={() => newEntry(m.kind, m.entry!.id)}>{t('Neuer Untereintrag …')}</MenuItem>
-            <MenuItem icon={<Rename20Regular />} onClick={() => rename(m.entry!)}>{t('Umbenennen …')}</MenuItem>
-            <MenuItem icon={<ArrowMove20Regular />} onClick={() => setMoving(m.entry)}>{t('Verschieben unter …')}</MenuItem>
             <MenuItem icon={<Edit20Regular />} onClick={() => editEntry(m.entry!)}>{t('Bearbeiten …')}</MenuItem>
+            <MenuItem icon={<Rename20Regular />} onClick={() => rename(m.entry!)}>{t('Umbenennen …')}</MenuItem>
+            {ai && m.kind !== 'role' && <MenuItem icon={<Sparkle20Regular />} onClick={() => ai(m.kind, m.entry)}>{t('Zuordnung mit KI prüfen …')}</MenuItem>}
+            {m.extra?.length ? <><MenuDivider />{m.extra.map(x => <MenuItem key={x.label} onClick={x.onClick}>{x.label}</MenuItem>)}<MenuDivider /></> : null}
+            <MenuItem icon={<ArrowMove20Regular />} onClick={() => setMoving(m.entry)}>{t('Verschieben unter …')}</MenuItem>
             <MenuDivider />
             <MenuItem icon={<Delete20Regular />} onClick={() => remove(m.entry!)}>{t('Löschen …')}</MenuItem>
-          </> : <MenuItem icon={<Add20Regular />} onClick={() => newEntry(m.kind)}>{t('Neuer Eintrag …')}</MenuItem>}
-          {m.extra?.length ? <><MenuDivider />{m.extra.map(x => <MenuItem key={x.label} onClick={x.onClick}>{x.label}</MenuItem>)}</> : null}
+          </> : <>
+            <MenuItem icon={<Add20Regular />} onClick={() => newEntry(m.kind)}>{t('Neuer Eintrag …')}</MenuItem>
+            {ai && m.kind !== 'role' && <MenuItem icon={<Sparkle20Regular />} onClick={() => ai(m.kind, null)}>{t('Ohne Zuordnung mit KI einordnen …')}</MenuItem>}
+          </>}
+          {!m.entry && m.extra?.length ? <><MenuDivider />{m.extra.map(x => <MenuItem key={x.label} onClick={x.onClick}>{x.label}</MenuItem>)}</> : null}
         </MenuList>
       </MenuPopover>
     </Menu>}
@@ -175,11 +186,20 @@ const LIST_COLS: Record<string, ColDef> = {
   parent: { label: () => t('Übergeordneter Eintrag'), width: 180 },
 }
 const LIST_DEFAULT = ['name', 'match', 'count', 'lastUsed']
+/** Rollen: werden nur von Hand gesetzt und gehören genau einem Dokument - statt der Zuweisung steht das Dokument da. */
+const ROLE_COLS: Record<string, ColDef> = {
+  name: LIST_COLS.name,
+  holder: { label: () => t('Dokument'), width: 280, sort: 'holder' },
+  lastUsed: LIST_COLS.lastUsed,
+}
+const ROLE_DEFAULT = ['name', 'holder', 'lastUsed']
+interface Holder { role: string; id: number; tresor: boolean; title: string | null }
 
 /** Geschwister im Baum nach der Spalte ordnen; der Baum selbst bleibt. */
-const listCompare = (key: string | undefined, desc: boolean | undefined) => {
+const listCompare = (key: string | undefined, desc: boolean | undefined, holderText?: (e: Entry) => string) => {
   const cmp = (a: Entry, b: Entry): number => {
     switch (key) {
+      case 'holder': return holderText ? holderText(a).localeCompare(holderText(b)) : 0
       case 'match': return matchLabel(a.match).localeCompare(matchLabel(b.match)) || (a.matchText ?? '').localeCompare(b.matchText ?? '')
       case 'count': return a.count - b.count
       case 'lastUsed': return (a.lastUsed ?? '').localeCompare(b.lastUsed ?? '')
@@ -201,9 +221,16 @@ export function ListsView({ kind, entries, onChanged, onShow }: {
   const [picked, setPicked] = useState<Set<string>>(new Set())
   const act = useEntryActions(entries, onChanged)
   // Spalten wie im Explorer; Sortieren ordnet die Einträge jeder Ebene, der Baum bleibt
-  const grid = useGridColumns('dms-lists', LIST_COLS, LIST_DEFAULT, '', 'minmax(max-content, 1fr)')
+  const roles = kind === 'role'
+  const grid = useGridColumns(roles ? 'dms-roles' : 'dms-lists', roles ? ROLE_COLS : LIST_COLS, roles ? ROLE_DEFAULT : LIST_DEFAULT, '', 'minmax(max-content, 1fr)')
+  const [holders, setHolders] = useState<Map<string, Holder>>(new Map())
+  useEffect(() => {
+    if (!roles) return
+    api.get<Holder[]>('/api/dms/roles/holders').then(l => setHolders(new Map(l.map(h => [h.role, h])))).catch(fail)
+  }, [roles, entries]) // eslint-disable-line react-hooks/exhaustive-deps
+  const holderText = (e: Entry) => { const h = holders.get(e.id); return !h ? '' : h.title ?? t('Im Tresor') }
   // Als Baum (eingerückt); beim Filtern bleiben die übergeordneten Einträge der Treffer stehen
-  const all = ordered(entries, kind, listCompare(grid.sort?.key, grid.sort?.desc))
+  const all = ordered(entries, kind, listCompare(grid.sort?.key, grid.sort?.desc, holderText))
   const hits = new Set(all.filter(r => !filter || r.entry.name.toLowerCase().includes(filter.toLowerCase())).map(r => r.entry.id))
   const shown = new Set<string>()
   for (const id of hits) for (let e = entries.find(x => x.id === id); e && !shown.has(e.id); e = entries.find(x => x.id === e!.parent)) shown.add(e.id)
@@ -248,6 +275,8 @@ export function ListsView({ kind, entries, onChanged, onShow }: {
                     {hits.has(e.id) ? e.name : <span className={s.muted}>{e.name}</span>}
                   </span>)
                 case 'match': return <span key={k} className={s.cell}>{matchLabel(e.match)}{e.matchText ? <Text size={200} className={s.muted}> · {e.matchText}</Text> : null}</span>
+                case 'holder': { const h = holders.get(e.id); return <span key={k} className={s.cell}>{!h ? <span className={s.muted}>{t('Keinem Dokument zugeordnet')}</span>
+                  : <>{h.title ?? t('Im Tresor')}{h.tresor && h.title && <Text size={200} className={s.muted}> · {t('Tresor')}</Text>}</>}</span> }
                 case 'count': return <span key={k} className={s.cell}>{e.count}</span>
                 case 'lastUsed': return <span key={k} className={s.cell}>{e.lastUsed ? new Date(e.lastUsed).toLocaleDateString() : ''}</span>
                 default: return <span key={k} className={s.cell}>{e.parent ? entries.find(x => x.id === e.parent)?.name ?? '' : ''}</span>

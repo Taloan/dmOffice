@@ -180,6 +180,20 @@ public class ImportProfilesTests : IClassFixture<ChatFixture>
     }
 
     [Fact]
+    public async Task Ordner_aus_Bildangaben_nie_in_Systemordner()
+    {
+        var (space, _) = NewUser();
+        var db = space.Db;
+        // Kameramodell ergibt den Namen eines Systemordners
+        Put(db, "Upload/DSCF0050.JPG", Jpeg(model: DmOffice.Dav.FileStore.ReservedRoot));
+        var p = Add(db, x => { x.Target = ""; x.Folders = "{camera_model}"; });
+        Assert.Equal(0, await ImportProfiles.RunAsync(space, Config, p.Id, CancellationToken.None));
+        Assert.NotNull(FileStore.Get(db, "Upload/DSCF0050.JPG"));
+        Assert.Null(FileStore.Get(db, DmOffice.Dav.FileStore.ReservedRoot + "/DSCF0050.JPG"));
+        Assert.Contains("Systemordner", ImportProfiles.Of(db).Single(x => x.Id == p.Id).Error);
+    }
+
+    [Fact]
     public async Task Kopieren_laesst_die_Quelle_und_sortiert_nichts_doppelt_ein()
     {
         var (space, _) = NewUser();

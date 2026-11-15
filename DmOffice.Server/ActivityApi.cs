@@ -87,6 +87,7 @@ public static class ActivityApi
         }
         // Übertragung zwischen Ablage und externen Ordnern: nur, solange sie läuft oder ihr Ergebnis noch da ist
         if (Activity.Get(user, Activity.FilesTransfer) is { } transfer) items.Add(transfer);
+        if (Activity.Get(user, Activity.GallerySave) is { } saving) items.Add(saving);
         // Importprofile und Audiothek-Ordner: nur, wenn welche eingerichtet sind
         if (DmOffice.Gallery.ImportProfiles.Of(space.Db) is { Count: > 0 } profiles)
         {
@@ -120,7 +121,18 @@ public static class ActivityApi
                 dmsDetail.Length > 0 ? dmsDetail : null, null, lastRun, sourceError, 0));
         }
 
-        if (DmOffice.Pim.Subscriptions.All(space.Db).Count > 0) items.Add(Base(user, Activity.Subscriptions));
+        // Kalender-Abos: Stand aus den Abos selbst (zuletzt abgerufen, Fehler je Abo mit Namen) - auch ein Abruf beim Eintragen oder
+        // „Aktualisieren“ zählt, und ein gelöschtes oder repariertes Abo hinterlässt keinen alten Fehler
+        if (DmOffice.Pim.Subscriptions.All(space.Db) is { Count: > 0 } subs)
+        {
+            var running = Base(user, Activity.Subscriptions);
+            var names = DmOffice.Pim.PimStore.Collections(space.Db, DmOffice.Pim.PimStore.Calendar).ToDictionary(c => c.Id, c => c.Name);
+            var failed = subs.Where(x => !string.IsNullOrEmpty(x.LastError)).ToList();
+            var error = failed.Count == 0 ? null : string.Join(" · ", failed.Select(x => $"{(names.TryGetValue(x.Collection, out var n) ? n : "?")}: {x.LastError}"));
+            var last = subs.Select(x => x.LastFetch).Where(x => x != null).DefaultIfEmpty().Max();
+            items.Add(running.State == "running" ? running
+                : new Activity.Item(Activity.Subscriptions, error != null ? "error" : "idle", null, null, null, $"{subs.Count} Abos", null, last, error, running.Completed));
+        }
         if (DmOffice.Pim.Graph.All(space.Db).Count > 0) items.Add(Base(user, Activity.Graph));
 
         // Storage Extender und Core-Backup betreffen den ganzen Server: nur für die Verwaltung
@@ -139,13 +151,14 @@ public static class ActivityApi
                 var (done, total) = m.Restore is { Running: true, Missing: > 0 } back ? ((long?)(back.Restored + back.NotThere + back.Failed), (long?)back.Missing)
                     : fill != null ? ((long?)fill.Done, (long?)fill.Total)
                     : m.Running && r == null && m.Local > 0 ? ((long?)Math.Min(m.Mirrored, m.Local), (long?)m.Local) : (null, null);
-                items.Add(new Activity.Item(Activity.StorageSync, m.Running || r != null || fill != null ? "running" : m.LastError != null ? "error" : "idle",
-                    done, total, null, string.Join(" · ", new[] { c.S3Mirror ? null : "ausgeschaltet", detail }.Where(x => x != null)) is { Length: > 0 } d ? d : null, null, m.Running ? null : m.LastRun, m.LastError, 0));
+                // Ausgeschaltet: kein alter Fehler mehr (er stammt aus der Zeit davor)
+                items.Add(new Activity.Item(Activity.StorageSync, m.Running || r != null || fill != null ? "running" : c.S3Mirror && m.LastError != null ? "error" : "idle",
+                    done, total, null, string.Join(" · ", new[] { c.S3Mirror ? null : "ausgeschaltet", detail }.Where(x => x != null)) is { Length: > 0 } d ? d : null, null, m.Running ? null : m.LastRun, c.S3Mirror ? m.LastError : null, 0));
             }
             var b = backup.Status;
             if (c.S3Backup || b.Running || b.LastRun != null)
-                items.Add(new Activity.Item(Activity.CoreBackup, b.Running ? "running" : b.LastError != null ? "error" : "idle",
-                    null, null, null, b.Running ? "sichert" : c.S3Backup ? null : "ausgeschaltet", null, b.Running ? null : b.LastRun, b.LastError, 0));
+                items.Add(new Activity.Item(Activity.CoreBackup, b.Running ? "running" : c.S3Backup && b.LastError != null ? "error" : "idle",
+                    null, null, null, b.Running ? "sichert" : c.S3Backup ? null : "ausgeschaltet", null, b.Running ? null : b.LastRun, c.S3Backup ? b.LastError : null, 0));
             if (mountIndex != null && c.ExternalFolders.Any(x => x.Level != DmOffice.Storage.ExternalFolderDef.LevelNone))
             {
                 var check = mountIndex.Checking;
@@ -168,8 +181,9 @@ public static class ActivityApi
                         : f.Running ? (f.Uploaded > 0 ? $"{f.Uploaded:N0} übertragen" : "prüft, was fehlt")
                         : !BackupRules.FilesOn(c) ? "ausgeschaltet"
                         : f.LastRun != null ? $"{f.Count:N0} Inhalte am Ziel" + (f.Pending > 0 ? $", {f.Pending:N0} offen" : "") : null;
-                    items.Add(new Activity.Item(Activity.FilesBackup, running ? "running" : f.LastError != null ? "error" : "idle",
-                        fDone, fTotal, null, text, null, running ? null : f.LastRun, f.LastError, 0));
+                    var on = BackupRules.FilesOn(c);
+                    items.Add(new Activity.Item(Activity.FilesBackup, running ? "running" : on && f.LastError != null ? "error" : "idle",
+                        fDone, fTotal, null, text, null, running ? null : f.LastRun, on || running ? f.LastError : null, 0));
                 }
             }
         }

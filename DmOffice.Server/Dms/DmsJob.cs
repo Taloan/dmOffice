@@ -19,6 +19,11 @@ public sealed class DmsJob(Spaces spaces, ILogger<DmsJob> log) : BackgroundServi
     /// <summary>Eine Quelle jetzt prüfen.</summary>
     public static void Request(string userId, string sourceId) { Wanted[userId + "/" + sourceId] = true; Kick(); }
 
+    private static readonly ConcurrentDictionary<string, bool> Running = new();
+
+    /// <summary>Wird die Quelle gerade geprüft oder wartet sie darauf (für die Anzeige)?</summary>
+    public static bool Busy(string userId, string sourceId) => Wanted.ContainsKey(userId + "/" + sourceId) || Running.ContainsKey(userId + "/" + sourceId);
+
     /// <summary>Quellen in der eigenen Ablage: ohne Anstoß (der kommt vom <see cref="Dav.FolderWatch"/>) nur so selten nachsehen.</summary>
     public static readonly TimeSpan OwnFallback = TimeSpan.FromHours(1);
 
@@ -75,13 +80,18 @@ public sealed class DmsJob(Spaces spaces, ILogger<DmsJob> log) : BackgroundServi
             // Läuft gerade ein Stapel ein, kommt der Anstoß danach
             if (!wanted && (!due || Dav.FolderWatch.IsPending(Watch, space.User.Id, s.Id))) continue;
             // Eine Quelle hält die übrigen und die Warteschlange nie auf
+            var key = space.User.Id + "/" + s.Id;
+            Running[key] = true;
             try
             {
                 var (done, dup) = await DmsSources.RunAsync(space, host, s.Id, ct);
                 if (done + dup > 0) log.LogInformation("DMS-Quelle ({User}): {Count} übernommen, {Dup} schon vorhanden", space.User.Login, done, dup);
+                // Volle Portion: Es liegt vermutlich noch mehr da - gleich weiter, ohne erneuten Klick
+                if (done + dup >= DmsSources.MaxPerRun) Request(space.User.Id, s.Id);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch (Exception e) { log.LogWarning(e, "DMS-Quelle ({User})", space.User.Login); }
+            finally { Running.TryRemove(key, out _); }
         }
         // Mailordner als Quelle (nur mit Mail-Modul)
         if (DmsHost.Mail is { } mail && DmsMailSources.Of(db).Count > 0)

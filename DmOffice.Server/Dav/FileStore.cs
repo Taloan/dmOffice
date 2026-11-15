@@ -259,6 +259,10 @@ public static class FileStore
     public static FileEntry? ById(UserDb db, long fileId) =>
         db.Query($"SELECT {Columns} FROM files WHERE fileid=$f", Read, ("$f", fileId)).FirstOrDefault();
 
+    /// <summary>Dateien (keine Ordner), deren fileid die Unterabfrage liefert - etwa die einer Kategorie.</summary>
+    public static List<FileEntry> ByFileIds(UserDb db, string subquery, params (string, object?)[] args) =>
+        db.Query($"SELECT {Columns} FROM files WHERE is_dir=0 AND fileid IN ({subquery}) ORDER BY modified DESC", Read, args);
+
     public static List<FileEntry> Children(UserDb db, string path) =>
         db.Query($"SELECT {Columns} FROM files WHERE parent=$p ORDER BY is_dir DESC, path", Read, ("$p", path));
 
@@ -418,6 +422,8 @@ public static class FileStore
         (string Etag, bool Created) result;
         try
         {
+            // Virenprüfung (Verwaltung → Sicherheit): ein Fund bricht ab, der Blob wird unten gelöscht
+            VirusScan.CheckBlob(db, blob, path);
             result = Commit(db, path, blob.Id, blob.Size, Etag(blob.Sha256), Hex(blob.Sha256), mime, ifMatch, ifNoneMatch, mtime);
         }
         catch (Pim.PreconditionFailedException) when (keepBlobOnConflict) { throw; }
