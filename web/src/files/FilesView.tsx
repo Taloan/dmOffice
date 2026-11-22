@@ -1049,7 +1049,8 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
   const [stacksOpen, setStacksOpen] = useState<Set<string>>(new Set())
   const toggleStack = (lead: string) => setStacksOpen(o => { const n = new Set(o); if (n.has(lead)) n.delete(lead); else n.add(lead); return n })
   const items = useMemo(() => {
-    if (tlOn) return sortedItems
+    // Zeitleiste: aufgeklappte Stapel gehören dazu, sonst fehlen ihre weiteren Fotos in Auswahl, Details und Vorschau
+    if (tlOn) return openStacks(sortedItems, stacksOpen)
     const list = filterOn ? filterPhotos(sortedItems, metaOf, ruleCols, ruleSel) : sortedItems
     // Galerie: JPG + RAW als Stapel
     return photosView && (prefs.photoStack ?? true) ? openStacks(stackPhotos(list), stacksOpen) : list
@@ -1296,7 +1297,7 @@ export default function FilesView({ gallery = false }: { gallery?: boolean }) {
   }, [viewer?.index, viewer?.tl, viewer?.list.length]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!viewer?.tl) return
-    const list = tl.items.filter(x => !x.isDir && viewKind(x))
+    const list = openStacks(tl.items, stacksOpen).filter(x => !x.isDir && viewKind(x))
     if (list.length === viewer.list.length) return
     const n = list.findIndex(x => x.path === viewer.list[viewer.index]?.path)
     if (n >= 0) setViewer(v => v && { ...v, list, index: n })

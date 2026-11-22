@@ -9,7 +9,7 @@ import {
 } from '@fluentui/react-icons'
 import { useEffect, useRef, useState } from 'react'
 import { addrFull, api, fmtSize, MailItem, Message, q } from '../api'
-import { peek, remember } from './messageCache'
+import { clearAll, peek, remember } from './messageCache'
 import { useApp } from '../App'
 import { CategoryChips } from './Categories'
 import { AliasHint } from './CatchallFolders'
@@ -144,7 +144,7 @@ export function ReadingPane({ item, onLoaded, onReply, onForward, onAct, onRemov
 
   // Bilder dieses Absenders oder dieser Domain immer laden (Einstellungen -> Junk-E-Mail)
   const trust = async (entry: string) => {
-    try { await api.post('/api/settings/trusted-images', { entry }); setImages(true) } catch (e) { fail(e) }
+    try { await api.post('/api/settings/trusted-images', { entry }); clearAll(); setImages(true) } catch (e) { fail(e) }
   }
 
   if (!message) return <Spinner style={{ margin: 'auto' }} />
@@ -152,7 +152,8 @@ export function ReadingPane({ item, onLoaded, onReply, onForward, onAct, onRemov
   const darkStyle = dark && invert
     // invertiert, ohne eigenen Hintergrund: durch den durchsichtigen Rahmen scheint die Fläche der Oberfläche (mit ihrem Farbstich), kein neutrales Grau
     // (gleiches Farbschema wie die Oberfläche, sonst malt der Browser den Rahmen weiß; Links ohne eigene Farbe wie im hellen Schema)
-    ? 'html{color-scheme:dark;filter:invert(1) hue-rotate(180deg);background:transparent}body{background:transparent}:where(a){color:#0b5cad}img,video,[style*="background-image"]{filter:invert(1) hue-rotate(180deg)}'
+    // Nur am Bildschirm: gedruckt wird immer mit den Farben der Mail, unabhängig vom Design der Oberfläche
+    ? '@media screen{html{color-scheme:dark;filter:invert(1) hue-rotate(180deg);background:transparent}body{background:transparent}:where(a){color:#0b5cad}img,video,[style*="background-image"]{filter:invert(1) hue-rotate(180deg)}}'
     : ''
   const doc = `<!doctype html><html><head><meta charset="utf-8"><base target="_blank">
 <style>body{margin:0;font-family:'Segoe UI',Calibri,Arial,sans-serif;font-size:14px;line-height:1.45;color:#242424;background:#fff;word-wrap:break-word;overflow-wrap:anywhere}

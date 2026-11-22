@@ -11,7 +11,7 @@ namespace DmOffice.Storage;
 /// <summary>
 /// Ein Speicher über SFTP (SSH): NAS, Linux-Server, Storage Box. Adresse „sftp://server:port/ordner“, optional
 /// „?connections=4“; „sftp://server/~/ordner“ ist relativ zum Startordner des Kontos. Angemeldet wird mit Passwort oder
-/// SSH-Schlüssel (im Passwortfeld, PEM bzw. OpenSSH). Höchstens <see cref="Connections"/> Verbindungen gleichzeitig - viele
+/// SSH-Schlüssel (im Passwortfeld, PEM bzw. OpenSSH). Höchstens <see cref="Connections"/> Verbindungen gleichzeitig je Ziel - viele
 /// Anbieter begrenzen die Zahl je Konto. Der Schlüssel des Servers wird beim ersten Verbinden gemerkt
 /// (<see cref="KnownHosts"/>); meldet er später einen anderen, bricht der Treiber ab.
 /// </summary>
@@ -22,9 +22,7 @@ public sealed class SftpDriver : IStorageDriver
     private readonly string _host, _connectTo, _user, _root;
     private readonly int _port;
     private readonly AuthenticationMethod _auth;
-    private readonly SemaphoreSlim _slots;
-    private readonly Stack<SftpClient> _idle = new();
-    private readonly List<SftpClient> _all = new();
+    private readonly Target _target;
     private bool _disposed;
 
     /// <summary>Gleichzeitige Verbindungen dieses Ziels.</summary>
@@ -40,7 +38,6 @@ public sealed class SftpDriver : IStorageDriver
         if (string.IsNullOrWhiteSpace(user)) throw new ArgumentException("Für SFTP bitte einen Benutzernamen angeben.");
         _host = host; _port = port; _root = root; _user = user.Trim();
         Connections = connections;
-        _slots = new SemaphoreSlim(connections, connections);
         _auth = IsPrivateKey(secret)
             ? new PrivateKeyAuthenticationMethod(_user, new PrivateKeyFile(new MemoryStream(Encoding.UTF8.GetBytes(secret!.Trim() + "\n"))))
             : new PasswordAuthenticationMethod(_user, secret ?? "");
@@ -53,6 +50,7 @@ public sealed class SftpDriver : IStorageDriver
                 ?? throw new UnauthorizedAccessException("Diese Adresse liegt im Heimnetz oder ist nicht erlaubt.");
             _connectTo = ok.ToString();
         }
+        _target = Target.Of(_connectTo, _port, _user, secret, connections);
     }
 
     public static bool IsPrivateKey(string? secret) => secret != null && secret.TrimStart().StartsWith("-----BEGIN", StringComparison.Ordinal);
@@ -120,20 +118,76 @@ public sealed class SftpDriver : IStorageDriver
 
     // ---------------- Verbindungen ----------------
 
+    /// <summary>
+    /// Verbindungen eines Ziels (Server, Port, Konto), gemeinsam für alle Treiber dorthin: Galerie, Suche, Prüfung der Erreichbarkeit
+    /// und Dateibereich legen jeweils eigene Treiber an - die Grenze <see cref="Connections"/> gilt so für das Ziel, nicht je Treiber.
+    /// Ruhende Verbindungen schließen nach <see cref="IdleClose"/>. Scheitert das Verbinden, wartet das Ziel vor dem nächsten Versuch
+    /// (30 s, dann doppelt so lange, höchstens <see cref="MaxPause"/>) - Dauerversuche gegen einen hängenden oder sperrenden Server
+    /// (SFTPGo, fail2ban) verlängern dort sonst die Sperre.
+    /// </summary>
+    private sealed class Target
+    {
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Target> All = new();
+        public readonly SemaphoreSlim Slots;
+        public readonly Stack<(SftpClient Client, DateTime At)> Idle = new();
+        public DateTime PauseUntil;
+        public int Failures;
+        public string? LastError;
+
+        private Target(int connections) => Slots = new SemaphoreSlim(connections, connections);
+
+        public static Target Of(string host, int port, string user, string? secret, int connections)
+        {
+            var key = host.ToLowerInvariant() + "|" + port + "|" + user + "|" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(secret ?? "")))[..16];
+            return All.GetOrAdd(key, _ => new Target(connections));
+        }
+
+        /// <summary>Ruhende Verbindungen, die zu lange nicht gebraucht wurden, schließen (bei jedem Zugriff auf ein Ziel, für alle).</summary>
+        public static void CloseIdle()
+        {
+            var old = DateTime.UtcNow - IdleClose;
+            foreach (var t in All.Values)
+            {
+                List<SftpClient> gone = [];
+                lock (t.Idle)
+                {
+                    if (t.Idle.Count == 0 || t.Idle.All(i => i.At >= old)) continue;
+                    var keep = t.Idle.Where(i => i.At >= old).Reverse().ToList();
+                    gone.AddRange(t.Idle.Where(i => i.At < old).Select(i => i.Client));
+                    t.Idle.Clear();
+                    foreach (var k in keep) t.Idle.Push(k);
+                }
+                foreach (var c in gone) try { c.Dispose(); } catch (Exception) { }
+            }
+        }
+    }
+
+    internal static readonly TimeSpan IdleClose = TimeSpan.FromMinutes(1), FirstPause = TimeSpan.FromSeconds(30), MaxPause = TimeSpan.FromMinutes(10);
+
+    /// <summary>Wartezeit nach der n-ten gescheiterten Verbindung in Folge.</summary>
+    internal static TimeSpan PauseAfter(int failures) =>
+        TimeSpan.FromTicks(Math.Min(MaxPause.Ticks, FirstPause.Ticks << Math.Clamp(failures - 1, 0, 20)));
+
+    /// <summary>Nächsten Verbindungsversuch sofort erlauben (Prüfen auf Wunsch).</summary>
+    public void RetryNow() { lock (_target) _target.PauseUntil = DateTime.MinValue; }
+
     private async Task<SftpClient> Acquire(CancellationToken ct)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        await _slots.WaitAsync(ct);
+        Target.CloseIdle();
+        await _target.Slots.WaitAsync(ct);
         try
         {
-            lock (_idle)
-                while (_idle.Count > 0)
+            lock (_target.Idle)
+                while (_target.Idle.Count > 0)
                 {
-                    var c = _idle.Pop();
+                    var c = _target.Idle.Pop().Client;
                     if (c.IsConnected) return c;
-                    lock (_all) _all.Remove(c);
-                    c.Dispose();
+                    try { c.Dispose(); } catch (Exception) { }
                 }
+            lock (_target)
+                if (DateTime.UtcNow < _target.PauseUntil)
+                    throw new IOException($"{_target.LastError ?? "Verbinden: nicht erreichbar"} (nächster Versuch in {Math.Max(1, (int)(_target.PauseUntil - DateTime.UtcNow).TotalSeconds)} s)");
             var client = new SftpClient(new Renci.SshNet.ConnectionInfo(_connectTo, _port, _user, _auth) { Timeout = TimeSpan.FromSeconds(20) }) { OperationTimeout = TimeSpan.FromMinutes(5) };
             string? mismatch = null;
             client.HostKeyReceived += (_, e) =>
@@ -146,22 +200,28 @@ public sealed class SftpDriver : IStorageDriver
             catch (Exception e) when (e is not OperationCanceledException)
             {
                 client.Dispose();
-                if (mismatch != null) throw new UnauthorizedAccessException(mismatch);
-                // Antwortet dort etwas anderes als ein SSH-Server (etwa ein FTP-Server), das sagen statt „nicht erreichbar“
-                if (e is SshConnectionException or SshOperationTimeoutException && await OtherServer(_connectTo, _port, ct) is { } other) throw new IOException(other);
-                throw Translate(e, "Verbinden");
+                Exception error = mismatch != null ? new UnauthorizedAccessException(mismatch)
+                    // Antwortet dort etwas anderes als ein SSH-Server (etwa ein FTP-Server), das sagen statt „nicht erreichbar“
+                    : e is SshConnectionException or SshOperationTimeoutException && await OtherServer(_connectTo, _port, ct) is { } other ? new IOException(other)
+                    : Translate(e, "Verbinden");
+                lock (_target)
+                {
+                    _target.Failures++;
+                    _target.LastError = error.Message.TrimEnd('.', ' ');
+                    _target.PauseUntil = DateTime.UtcNow + PauseAfter(_target.Failures);
+                }
+                throw error;
             }
-            lock (_all) _all.Add(client);
+            lock (_target) { _target.Failures = 0; _target.PauseUntil = DateTime.MinValue; _target.LastError = null; }
             return client;
         }
-        catch { _slots.Release(); throw; }
+        catch { _target.Slots.Release(); throw; }
     }
 
     private void Release(SftpClient c)
     {
-        if (_disposed) { c.Dispose(); }
-        else lock (_idle) _idle.Push(c);
-        _slots.Release();
+        lock (_target.Idle) _target.Idle.Push((c, DateTime.UtcNow));
+        _target.Slots.Release();
     }
 
     private async Task<T> Use<T>(string what, Func<SftpClient, Task<T>> work, CancellationToken ct)
@@ -266,13 +326,23 @@ public sealed class SftpDriver : IStorageDriver
             // Erst unter vorläufigem Namen, dann umbenennen: Bricht die Übertragung ab, bleibt die alte Datei ganz
             var target = Full(rel);
             var temp = Full(StoragePath.Join(StoragePath.Parent(rel), ".dmtmp-" + Convert.ToHexString(RandomNumberGenerator.GetBytes(6)).ToLowerInvariant()));
-            await c.UploadFileAsync(data, temp, ct);
-            try { c.RenameFile(temp, target, true); }
-            catch (SshException)
+            try
             {
-                // Ohne posix-rename: Ziel erst löschen, dann umbenennen
-                try { await c.DeleteFileAsync(target, ct); } catch (SftpPathNotFoundException) { }
-                await c.RenameFileAsync(temp, target, ct);
+                await c.UploadFileAsync(data, temp, ct);
+                try { c.RenameFile(temp, target, true); }
+                catch (SshException)
+                {
+                    // Ohne posix-rename: Ziel erst löschen, dann umbenennen
+                    try { await c.DeleteFileAsync(target, ct); } catch (SftpPathNotFoundException) { }
+                    await c.RenameFileAsync(temp, target, ct);
+                }
+            }
+            catch
+            {
+                // Abbruch oder Fehler beim Hochladen oder Umbenennen: die Zwischendatei nicht liegen lassen (sonst bei jedem Versuch eine
+                // weitere, z. B. bei einem Importprofil im Intervall); das Aufräumen selbst darf den eigentlichen Fehler nicht verdecken
+                try { if (c.IsConnected) c.DeleteFile(temp); } catch { }
+                throw;
             }
             return true;
         }, ct);
@@ -331,11 +401,8 @@ public sealed class SftpDriver : IStorageDriver
     public Task SetModifiedAsync(string path, DateTime utc, CancellationToken ct) =>
         Use("Zeit setzen", c => { c.SetLastWriteTimeUtc(Full(path), DateTime.SpecifyKind(utc, DateTimeKind.Utc)); return Task.FromResult(true); }, ct);
 
-    public void Dispose()
-    {
-        _disposed = true;
-        lock (_all) { foreach (var c in _all) { try { c.Dispose(); } catch (Exception) { } } _all.Clear(); }
-    }
+    /// <summary>Die Verbindungen gehören dem Ziel (<see cref="Target"/>) und schließen dort nach <see cref="IdleClose"/>.</summary>
+    public void Dispose() => _disposed = true;
 
     /// <summary>Lesestrom, der beim Schließen die Verbindung zurückgibt.</summary>
     private sealed class Lease(Stream inner, Action done) : Stream

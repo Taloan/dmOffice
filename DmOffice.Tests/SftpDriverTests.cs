@@ -100,6 +100,10 @@ public class SftpDriverTests
             var t = new DateTime(2020, 5, 6, 7, 8, 9, DateTimeKind.Utc);
             await d.SetModifiedAsync(dir + "/a/b/x.txt", t, default);
             Assert.Equal(t, (await d.StatAsync(dir + "/a/b/x.txt", default))!.Modified);
+            // Umbenennen scheitert (am Ziel liegt ein Ordner mit Inhalt): Fehler, aber keine Zwischendatei .dmtmp-… bleibt liegen
+            await d.WriteAsync(dir + "/z/belegt/f.txt", new MemoryStream(Encoding.UTF8.GetBytes("x")), default);
+            await Assert.ThrowsAnyAsync<Exception>(() => d.WriteAsync(dir + "/z/belegt", new MemoryStream(Encoding.UTF8.GetBytes("neu")), default));
+            Assert.Equal(["belegt"], (await d.ListAsync(dir + "/z", default)).Select(e => e.Name));
             await d.MoveAsync(dir + "/a/b/x.txt", dir + "/c/y.txt", default);
             Assert.Null(await d.StatAsync(dir + "/a/b/x.txt", default));
             // Mehr gleichzeitige Zugriffe als Verbindungen: warten, nicht scheitern
@@ -136,5 +140,54 @@ public class SftpDriverTests
         });
         try { Assert.Contains("FTP-Server", await SftpDriver.OtherServer("127.0.0.1", port, default)); }
         finally { await serve; listener.Stop(); }
+    }
+
+    [Fact]
+    public void Pause_nach_Fehlversuchen_waechst_bis_zur_Grenze()
+    {
+        Assert.Equal(TimeSpan.FromSeconds(30), SftpDriver.PauseAfter(1));
+        Assert.Equal(TimeSpan.FromSeconds(60), SftpDriver.PauseAfter(2));
+        Assert.Equal(SftpDriver.MaxPause, SftpDriver.PauseAfter(8));
+        Assert.Equal(SftpDriver.MaxPause, SftpDriver.PauseAfter(500));
+    }
+
+    [Fact]
+    public async Task Gescheitertes_Ziel_wird_nicht_dauernd_angefragt()
+    {
+        // Server, der annimmt und gleich schließt: zählt, wie oft dmOffice anklopft
+        var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+        int accepted = 0;
+        using var stop = new CancellationTokenSource();
+        var serve = Task.Run(async () =>
+        {
+            try { while (true) { using var c = await listener.AcceptTcpClientAsync(stop.Token); Interlocked.Increment(ref accepted); } }
+            catch (OperationCanceledException) { }
+        });
+        try
+        {
+            var url = $"sftp://127.0.0.1:{port}/x";
+            using (var first = new SftpDriver(url, "u", "pw-" + Guid.NewGuid()))
+            {
+                await Assert.ThrowsAnyAsync<Exception>(() => first.ListAsync("", default));
+                var after = Volatile.Read(ref accepted);
+                Assert.True(after >= 1);
+                // Ein zweiter Treiber zum selben Ziel (andere Funktion) wartet die Pause ab, ohne den Server zu fragen
+                var secret = "pw-x";
+                using var a = new SftpDriver(url, "v", secret);
+                await Assert.ThrowsAnyAsync<Exception>(() => a.ListAsync("", default));
+                var afterA = Volatile.Read(ref accepted);
+                using var b = new SftpDriver(url, "v", secret);
+                var e = await Assert.ThrowsAsync<IOException>(() => b.ListAsync("", default));
+                Assert.Contains("nächster Versuch", e.Message);
+                Assert.Equal(afterA, Volatile.Read(ref accepted));
+                // Auf Wunsch sofort neu versuchen
+                b.RetryNow();
+                await Assert.ThrowsAnyAsync<Exception>(() => b.ListAsync("", default));
+                Assert.True(Volatile.Read(ref accepted) > afterA);
+            }
+        }
+        finally { stop.Cancel(); listener.Stop(); await serve; }
     }
 }

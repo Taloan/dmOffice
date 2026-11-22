@@ -250,6 +250,8 @@ public static class PlainBackup
             var path = item.Path;
             progress?.Invoke(new PlainProgress(now, done++, items.Count, bytes, item.Path));
             var attempt = 0;
+            // Ziel verliert die .part-Datei (pCloud: MOVE gleich nach dem PUT meldet 404) - dann ohne Umweg direkt schreiben
+            var direct = false;
         again:
             try
             {
@@ -302,11 +304,13 @@ public static class PlainBackup
                     await using (data)
                     {
                         size = data.CanSeek ? data.Length : item.Size;
-                        if (size < SmallFile)
+                        if (size < SmallFile || direct)
                         {
                             // Klein (etwa die vielen Dateien eines Cryptomator-Tresors): eine Anfrage, PUT ersetzt
                             if (keep) { if (await ToTrashAsync(db, d, path, now, ct)) trashed++; kept = at; }
                             await d.WriteAsync(path, data, ct);
+                            // Taucht die verlorene .part-Datei später doch noch auf, soll sie nicht liegen bleiben
+                            if (direct) try { await d.DeleteAsync(path + Part, ct); } catch (Exception e) when (e is IOException or HttpRequestException or KeyNotFoundException) { }
                         }
                         else
                         {
@@ -314,12 +318,11 @@ public static class PlainBackup
                             await d.WriteAsync(path + Part, data, ct);
                             if (keep) { if (await ToTrashAsync(db, d, path, now, ct)) trashed++; kept = at; }
                             else if (replace) await d.DeleteAsync(path, ct);
-                            try { await d.MoveAsync(path + Part, path, ct); }
-                            catch (IOException)
+                            if (!await PlacePartAsync(d, path, ct))
                             {
-                                // Lag doch schon etwas dort (von Hand angelegt): ersetzen
-                                await d.DeleteAsync(path, ct);
-                                await d.MoveAsync(path + Part, path, ct);
+                                // Die .part-Datei findet das Ziel auch nach Warten nicht: dieselbe Datei noch einmal, diesmal direkt
+                                direct = true;
+                                goto again;
                             }
                         }
                     }
@@ -382,9 +385,15 @@ public static class PlainBackup
             using var ms = new MemoryStream(new UTF8Encoding(true).GetBytes(text.Replace("\n", "\r\n")));
             await d.WriteAsync(readMeName + Part, ms, ct);
             await d.DeleteAsync(readMeName, ct);
-            await d.MoveAsync(readMeName + Part, readMeName, ct);
+            // Wie bei den Dateien: findet das Ziel (pCloud) die .part-Datei nicht, LIESMICH direkt schreiben
+            if (!await PlacePartAsync(d, readMeName, ct))
+            {
+                ms.Position = 0;
+                await d.WriteAsync(readMeName, ms, ct);
+                try { await d.DeleteAsync(readMeName + Part, ct); } catch (Exception e) when (e is IOException or HttpRequestException or KeyNotFoundException) { }
+            }
         }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException or HttpRequestException)
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or HttpRequestException or KeyNotFoundException)
         {
             failed++;
             firstError ??= readMeName + ": " + e.GetBaseException().Message;
@@ -432,6 +441,25 @@ public static class PlainBackup
     /// <summary>Alles im Ziel außer .trash (nur beim ersten Lauf an einem Ziel).</summary>
     /// <summary>Weitere Versuche je Datei bei abgebrochener Verbindung.</summary>
     private const int Retries = 2;
+
+    /// <summary>Die hochgeladene .part-Datei an ihren Platz. Manche Ziele (pCloud) zeigen eine eben geschriebene Datei erst
+    /// nach einem Moment - ein 404 beim Verschieben wird darum zweimal mit Pause wiederholt. false: die .part-Datei ist weg.</summary>
+    private static async Task<bool> PlacePartAsync(IStorageDriver d, string path, CancellationToken ct)
+    {
+        for (var i = 0; ; i++)
+        {
+            try { await d.MoveAsync(path + Part, path, ct); return true; }
+            catch (IOException)
+            {
+                // Lag doch schon etwas dort (von Hand angelegt): ersetzen
+                await d.DeleteAsync(path, ct);
+                await d.MoveAsync(path + Part, path, ct);
+                return true;
+            }
+            catch (KeyNotFoundException) when (i < 2) { await Task.Delay(TimeSpan.FromSeconds(3 << i), ct); }
+            catch (KeyNotFoundException) { return false; }
+        }
+    }
 
     /// <summary>Vorübergehend: Verbindung abgebrochen oder Zeitüberschreitung, Fehler des Ziels (5xx) - nicht abgelehnt oder fehlend.</summary>
     private static bool Transient(Exception e) => e switch

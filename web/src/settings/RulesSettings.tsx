@@ -1,6 +1,7 @@
 import {
   Button, Card, Checkbox, Dropdown, Field, Input, Option, Slider, Switch, Text, makeStyles, tokens, Badge, MessageBar, MessageBarBody,
 } from '@fluentui/react-components'
+import { clearAll } from '../mail/messageCache'
 import { Add20Regular, Delete20Regular, ArrowUp20Regular, ArrowDown20Regular, Dismiss16Regular, Add16Regular, Play16Regular } from '@fluentui/react-icons'
 import { useEffect, useRef, useState } from 'react'
 import { Account, api, ApiError, featureOn, Folder } from '../api'
@@ -363,10 +364,10 @@ function TrustedImages() {
   const load = () => api.get<string[]>('/api/settings/trusted-images').then(setList).catch(fail)
   useEffect(() => { load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
   const add = async (entry: string) => {
-    try { await api.post('/api/settings/trusted-images', { entry }); load(); return true } catch (e) { fail(e); return false }
+    try { await api.post('/api/settings/trusted-images', { entry }); clearAll(); load(); return true } catch (e) { fail(e); return false }
   }
   const remove = async (e: string) => {
-    try { await api.post('/api/settings/trusted-images/remove', { entry: e }); load() } catch (err) { fail(err) }
+    try { await api.post('/api/settings/trusted-images/remove', { entry: e }); clearAll(); load() } catch (err) { fail(err) }
   }
   return (
     <>

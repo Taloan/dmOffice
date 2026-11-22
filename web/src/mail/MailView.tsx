@@ -456,6 +456,8 @@ export default function MailView({ status }: { status: any }) {
   // ein setMessage(null) hier löschte sie wieder, und Antworten/Weiterleiten blieben gesperrt. „shown“ prüft ohnehin, ob sie passt.
   const folderOf = (acc: string, path: string) => folders[acc]?.find(f => f.path === path)
   const currentFolder = sel ? folderOf(sel.account, sel.folder) : undefined
+  // Entwurf nach dem Ordner der Mail selbst, nicht nach dem gewählten Ordner (Suche findet auch Mails anderer Ordner)
+  const isDraft = (i: MailItem) => folderOf(i.account, i.folder)?.special === 'drafts'
   // Suchordner ("sf:"), Kategorien ("cat:") und Alle Posteingaenge: Mails aus allen Konten
   const virtual = !!sel && (sel.folder.startsWith('sf:') || sel.folder.startsWith('cat:') || sel.folder === '__unified')
   const virtualName = useVirtualName(virtual ? sel!.folder : undefined)
@@ -777,7 +779,7 @@ export default function MailView({ status }: { status: any }) {
       else if (e.key === 'Insert') { e.preventDefault(); act(selectedItems.every(i => i.flagged) ? 'unflag' : 'flag') }
       else if (e.ctrlKey && e.key.toLowerCase() === 'a') { e.preventDefault(); setSelected(listRef.current.map(x => x.id)) }
       else if (e.key === 'Escape' && selected.length > 1) { e.preventDefault(); setSelected(selected.slice(-1)) }
-      else if (e.key === 'Enter' && selectedItems.length === 1 && currentFolder?.special !== 'drafts') { e.preventDefault(); openMailWindow(selectedItems[0]) }
+      else if (e.key === 'Enter' && selectedItems.length === 1 && !isDraft(selectedItems[0])) { e.preventDefault(); openMailWindow(selectedItems[0]) }
       else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault()
         const list = listRef.current
@@ -793,7 +795,7 @@ export default function MailView({ status }: { status: any }) {
   })
 
   // Entwurf oeffnen: im Editor statt im Lesebereich
-  const openDraft = currentFolder?.special === 'drafts'
+  const openDraft = !!current && isDraft(current)
 
   if (!accounts) return <Spinner style={{ margin: 'auto' }} />
   if (accounts.length === 0)
@@ -835,7 +837,7 @@ export default function MailView({ status }: { status: any }) {
     return (
       <MenuList>
         {many && <MenuItem disabled>{t('{n} Mails ausgewählt', { n: selectedItems.length })}</MenuItem>}
-        {!many && currentFolder?.special !== 'drafts' && <MenuItem icon={<Open20Regular />} onClick={() => { openMailWindow(item); close() }}>{t('In neuem Fenster öffnen')}</MenuItem>}
+        {!many && !isDraft(item) && <MenuItem icon={<Open20Regular />} onClick={() => { openMailWindow(item); close() }}>{t('In neuem Fenster öffnen')}</MenuItem>}
         {!many && <MenuDivider />}
         {!many && <MenuItem icon={<ArrowReply20Regular />} onClick={() => { replyTo(item, false); close() }}>{t('Antworten')}</MenuItem>}
         {!many && <MenuItem icon={<ArrowReplyAll20Regular />} onClick={() => { replyTo(item, true); close() }}>{t('Allen antworten')}</MenuItem>}
@@ -1265,7 +1267,7 @@ export default function MailView({ status }: { status: any }) {
               more={!query && items.length < total} onMore={() => setPage(p => p + 1)}
               snoozeOf={snoozeOf}
               expiryOf={i => expiryOf(expiries, i)}
-              onOpen={item => { if (currentFolder?.special !== 'drafts') openMailWindow(item) }}
+              onOpen={item => { if (!isDraft(item)) openMailWindow(item) }}
               empty={query ? 'search' : filter ? 'filter' : sel && folders[sel.account]?.find(f => f.path === sel.folder)?.special === 'inbox' ? 'inbox' : sel && !virtual && !sel.folder.startsWith('__') ? 'folder' : undefined}
               onToggleFlag={async i => {
                 // Sofort anzeigen, der Mailserver braucht manchmal Sekunden; bei Fehler zurueck auf den Stand des Servers

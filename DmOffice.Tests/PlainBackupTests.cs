@@ -412,6 +412,64 @@ public class PlainBackupTests
         s.Target = PlainBackup.External; s.Mount = "m1";
         Assert.False(PlainBackup.Ready(s));
     }
+
+    /// <summary>Ziel wie pCloud: nimmt die .part-Datei an, findet sie beim Umbenennen aber nicht (404).</summary>
+    private sealed class LosesPart(string root) : IStorageDriver
+    {
+        private readonly FolderDriver _d = new(root);
+        public int Moves;
+        public string? Name;
+        public Task<List<DriverEntry>> ListAsync(string path, CancellationToken ct) => _d.ListAsync(path, ct);
+        public Task<DriverEntry?> StatAsync(string path, CancellationToken ct) => _d.StatAsync(path, ct);
+        public Task<Stream> OpenReadAsync(string path, CancellationToken ct) => _d.OpenReadAsync(path, ct);
+        public Task<byte[]> ReadRangeAsync(string path, long offset, int count, CancellationToken ct) => _d.ReadRangeAsync(path, offset, count, ct);
+        public Task WriteAsync(string path, Stream data, CancellationToken ct) => _d.WriteAsync(path, data, ct);
+        public Task MkdirAsync(string path, CancellationToken ct) => _d.MkdirAsync(path, ct);
+        public Task DeleteAsync(string path, CancellationToken ct) => _d.DeleteAsync(path, ct);
+        public Task MoveAsync(string from, string to, CancellationToken ct)
+        {
+            if (!from.EndsWith((Name ?? "gross.jpg") + PlainBackup.Part)) return _d.MoveAsync(from, to, ct);
+            Moves++;
+            throw new KeyNotFoundException("Verschieben: nicht gefunden.");
+        }
+        public Task<DriverSpace?> SpaceAsync(CancellationToken ct) => _d.SpaceAsync(ct);
+        public void Dispose() => _d.Dispose();
+    }
+
+    [Fact]
+    public async Task Ziel_verliert_part_Datei_dann_wird_direkt_geschrieben()
+    {
+        using var c = new Ctx();
+        c.S.Areas = ["files"];
+        var big = new byte[PlainBackup.SmallFile + 1000];
+        new Random(1).NextBytes(big);
+        FileStore.EnsureDir(c.Db, "Bilder");
+        FileStore.Put(c.Db, "Bilder/gross.jpg", big, "image/jpeg");
+        var d = new LosesPart(c.Target);
+        var r = await PlainBackup.RunAsync(c.Db, c.S, d, PlainBackupAreas.Items(c.Space, c.S, null), c.Tmp, () => PlainBackupReadMe.Text(c.Space, c.S, c.Now), null, CancellationToken.None, () => c.Now);
+        Assert.Null(r.Error);
+        Assert.Equal(0, r.Failed);
+        Assert.Equal(3, d.Moves); // erster Versuch und zwei Wiederholungen mit Pause
+        var copy = Assert.Single(Directory.GetFiles(c.Target, "gross.jpg", SearchOption.AllDirectories));
+        Assert.Equal(big, System.IO.File.ReadAllBytes(copy));
+        Assert.Empty(Directory.GetFiles(c.Target, "*.part", SearchOption.AllDirectories));
+    }
+    [Fact]
+    public async Task Ziel_verliert_LIESMICH_part_dann_wird_direkt_geschrieben()
+    {
+        using var c = new Ctx();
+        c.S.Areas = ["files"];
+        FileStore.EnsureDir(c.Db, "Bilder");
+        FileStore.Put(c.Db, "Bilder/klein.txt", "x"u8.ToArray(), "text/plain");
+        var d = new LosesPart(c.Target) { Name = PlainBackup.ReadMe };
+        var r = await PlainBackup.RunAsync(c.Db, c.S, d, PlainBackupAreas.Items(c.Space, c.S, null), c.Tmp, () => PlainBackupReadMe.Text(c.Space, c.S, c.Now), null, CancellationToken.None, () => c.Now);
+        Assert.Null(r.Error);
+        Assert.Equal(0, r.Failed);
+        Assert.True(r.Files > 0);
+        Assert.Equal(3, d.Moves);
+        Assert.True(System.IO.File.Exists(Path.Combine(c.Target, PlainBackup.ReadMe)));
+        Assert.Empty(Directory.GetFiles(c.Target, "*.part", SearchOption.AllDirectories));
+    }
 }
 
 /// <summary>Datensicherung gegen einen echten WebDAV-Server (dmOffice selbst): .part, Umbenennen, .trash über MOVE.</summary>

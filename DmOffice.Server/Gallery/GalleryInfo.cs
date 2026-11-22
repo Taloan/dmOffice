@@ -38,6 +38,20 @@ public static class GalleryInfo
         var items = body.Items.Distinct().ToList();
         var db = space.Db;
 
+        // Formate, in die dmOffice nicht schreibt (PNG, GIF, HEIC …): Markierung, Sterne, Farbe, Titel und Tags nur in dmOffice merken,
+        // wie ohne „Angaben in die Fotos schreiben“ - statt mit einem Fehler abzubrechen. Nur der Ort braucht die Datei.
+        var noFile = items.Where(id => id[(id.LastIndexOf('/') + 1)..] is var n && !PhotoMeta.CanWrite(n)
+            && DmOffice.Dav.Thumbs.KindOf(n, null) is DmOffice.Dav.Thumbs.Kind.Image or DmOffice.Dav.Thumbs.Kind.Video).ToList();
+        if (noFile.Count > 0)
+        {
+            var dbOnly = fields with { Lat = null, Lon = null };
+            if (dbOnly.HasXmpOnly) foreach (var id in noFile) PhotoMarks.Set(db, id, dbOnly, null);
+            if (fields.HasGps)
+                foreach (var id in noFile) failed.Add(new Failure(id, id[(id.LastIndexOf('/') + 1)..], "In dieses Dateiformat schreibt dmOffice keinen Ort (nur JPEG und RAW)."));
+            items = items.Except(noFile).ToList();
+            if (items.Count == 0) return failed;
+        }
+
         // Markierung (P/X/U) nur in dmOffice - wie Lightroom Classic, das sie nur im Katalog führt, nicht in Datei oder XMP
         if (fields.Pick != null)
             foreach (var id in items) PhotoMarks.Set(db, id, new PhotoMeta.Fields(Pick: fields.Pick), null);

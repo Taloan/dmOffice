@@ -991,7 +991,11 @@ public static class GalleryFolders
             r => (Size: r.GetInt64(0), Modified: r.GetInt64(1), Thumb: r.IsDBNull(2) ? null : (byte[])r.GetValue(2)), ("$s", src.Id), ("$p", path)).FirstOrDefault();
         var stamp = GalleryProxies.Stamp(row.Size, row.Modified);
         if (size <= Thumbs.Small)
-            return row.Thumb is { Length: > 0 } own ? own : SharedOf(config, src) is { } m ? Shared!.Thumb(m, path, stamp) : null;
+        {
+            var small = row.Thumb is { Length: > 0 } own ? own : SharedOf(config, src) is { } m ? Shared!.Thumb(m, path, stamp) : null;
+            if (small != null || original || row.Size == 0 || row.Size > MaxImageBytes || KindOf(path) != "image") return small;
+            return await HealSmallAsync(space, config, src, path, stamp, ct);
+        }
         if (KindOf(path) != "image") return null;
         var scope = ProxyScope(space, config, src);
         if (Proxies?.Get(scope.A, scope.B, path, stamp) is { } proxy) return proxy;
@@ -1000,6 +1004,37 @@ public static class GalleryFolders
         var old = space.Db.Query("SELECT big FROM gallery_ext WHERE source = $s AND path = $p", r => r.IsDBNull(0) ? null : (byte[])r.GetValue(0), ("$s", src.Id), ("$p", path)).FirstOrDefault();
         if (old != null) return old;
         return await MakeProxyAsync(space, config, src, path, stamp, ct);
+    }
+
+    /// <summary>Fehlgeschlagene Nachbesserungen je Foto und Stand: nicht bei jedem Scrollen erneut das Original lesen.</summary>
+    private static readonly ConcurrentDictionary<string, DateTime> HealFailed = new();
+
+    /// <summary>
+    /// Kleines Vorschaubild fehlt, obwohl das Foto als gelesen gilt (beim Einlesen war die Datei unvollständig oder nicht lesbar -
+    /// danach wurde es nie wieder versucht): aus der großen Vorschau machen, sonst aus dem Original, und im Index ablegen.
+    /// </summary>
+    private static async Task<byte[]?> HealSmallAsync(UserSpace space, ServerConfig config, GallerySource src, string path, long stamp, CancellationToken ct)
+    {
+        var key = src.Id + "|" + path + "|" + stamp;
+        if (HealFailed.TryGetValue(key, out var failed) && DateTime.UtcNow - failed < TimeSpan.FromHours(1)) return null;
+        byte[]? small = null;
+        try
+        {
+            var scope = ProxyScope(space, config, src);
+            var big = Proxies?.Get(scope.A, scope.B, path, stamp)
+                ?? (scope.A == GalleryProxies.SharedScope ? Proxies?.Get(space.User.Id, src.Id, path, stamp) : null)
+                ?? space.Db.Query("SELECT big FROM gallery_ext WHERE source = $s AND path = $p", r => r.IsDBNull(0) ? null : (byte[])r.GetValue(0), ("$s", src.Id), ("$p", path)).FirstOrDefault()
+                ?? await MakeProxyAsync(space, config, src, path, stamp, ct);
+            if (big != null) small = Thumbs.FromBytes(big, Thumbs.Small);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or KeyNotFoundException or HttpRequestException or InvalidOperationException) { }
+        if (small == null) { HealFailed[key] = DateTime.UtcNow; return null; }
+        HealFailed.TryRemove(key, out _);
+        var stored = small;
+        if (SharedOf(config, src) is { } m) { Shared!.SetThumb(m, path, stamp, small); stored = InShared; }
+        space.Db.Exec("UPDATE gallery_ext SET thumb = $t WHERE source = $s AND path = $p", ("$t", stored), ("$s", src.Id), ("$p", path));
+        return small;
     }
 
     /// <summary>
@@ -1438,9 +1473,11 @@ public sealed class GalleryScanJob(Spaces spaces, ServerConfig config, ILogger<G
                 // Externer Ordner nicht (mehr) eingebunden oder nicht sichtbar: nichts einlesen (wie die Audiothek)
                 if (!visible.Contains(src.Mount)) continue;
                 var wanted = Wanted.ContainsKey(key);
-                // Überwachen aus: nur auf Knopfdruck (oder beim ersten Mal) - auch kein Nachholen von Bildangaben und kein
-                // Neueinlesen nach einem Update, sonst wird ein abgeschalteter Speicher (etwa ein ausgeschaltetes NAS) weiter angefragt
-                if (!src.Watch && !wanted && src.LastScan != null) continue;
+                // Überwachen aus: nur auf Knopfdruck (oder beim ersten Mal) - auch kein Neueinlesen nach einem Update, sonst wird ein
+                // abgeschalteter Speicher (etwa ein ausgeschaltetes NAS) weiter angefragt. Nach dem Einlesen aber einmal zu Ende lesen
+                // (Draining: Bildangaben und Vorschaubilder aller aufgelisteten Dateien) - früher blieb es nach der ersten Etappe stehen,
+                // und die Fotos standen bis zum nächsten Knopfdruck unter ihrem Dateidatum in der Zeitleiste
+                if (!src.Watch && !wanted && !src.Draining && src.LastScan != null) continue;
                 // Gerade nicht erreichbar: später, ohne Fehler (wie die Audiothek)
                 if (!wanted && !await ExternalFolders.ReachableAsync(space, config, src.Mount)) continue;
                 var due = upgraded || wanted || src.LastScan == null || (src.Watch && DateTime.UtcNow - src.LastScan > GalleryFolders.WatchEvery);

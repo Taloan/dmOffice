@@ -290,7 +290,7 @@ export const Compose = forwardRef<ComposeHandle, {
     if (!to.length && !cc.length && !bcc.length) { notify(t('Kein Empfänger'), undefined, 'warning'); return }
     if (!subject.trim() && !await askConfirm('', t('Ohne Betreff senden?'))) return
     const text = editor.current?.text() ?? ''
-    if (/anhang|angehängt|anbei|attach|enclosed/i.test(text.split(/Von:|From:/)[0]) && files.length + fwd.length === 0
+    if (/anhang|angehängt|anbei|attach|enclosed/i.test(text.split(/Von:|From:/)[0]) && files.length + fwd.length + stored.length === 0 && !(asAttachment && init.forwardUid)
         && !await askConfirm('', t('Im Text ist von einem Anhang die Rede, es ist aber keiner dabei. Trotzdem senden?'))) return
     sending.current = true
     setBusy(true)
