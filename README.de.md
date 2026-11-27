@@ -4,15 +4,15 @@
 
 **Webseite: [dmoffice.de](https://dmoffice.de)** (deutsch) – Funktionen, Anleitungen und Neuigkeiten · **Quellcode und Fehlermeldungen:** hier auf GitHub
 
-> ## 🎉 Neu in 2.0
-> - **Chat** mit Unterhaltungen, Gruppen, Sprachnachrichten und Push – dazu **Pukki**, der Assistent: Termine, Aufgaben, Einkaufsliste, Essensplan, Erinnerungen und Timer aus freien Sätzen
-> - **Galerie:** Zeitleiste, Filter, RAW, Serverordner, Karte, Alben und Links, Sterne und Farben, **Foto-Bearbeitung**
-> - **Audiothek:** eigene Musikordner mit Covern, Suche und Playlists
-> - **Tresor:** ein eigens verschlüsselter Bereich je Person (eigenes Passwort oder Passkey) für Dateien und Notizen
-> - **DMS**, Startseite **Übersicht**, **externe Ordner**, **Core-Backup** nach S3/WebDAV, **Datenexport**, besserer **Spamfilter**, **Microsoft-Konten**
+> ## 🎉 Neu in 2.2
+> - **E-Mail:** Konversationsansicht, **Antwort mit KI**, ähnliche E-Mails, Tracker-Schutz, Junk-Sperre, Textbausteine, Signaturen je Absenderadresse, Catch-all-Domains
+> - **Dateien:** **zwei Fenster**, Ordner-Reiter, Adresszeile, Ansicht je Ordner, Funktionstasten; Server-Mounts per SFTP, OneDrive und pCloud
+> - **Galerie:** **Fotoexport**, **Objektivkorrektur**, Mosaikansicht, Schnellsammlung, Ordner neu zuordnen
+> - Neue Bereiche: **Tagebuch**, **Notfallzugang** und **GateKeeper** (Werbe- und Tracker-Filter für Handy-Apps)
+> - Erinnerungen im Kalender, eigene Felder im DMS, Versionen von Notizen, Zeitpläne für Backups, Dunkelmodus mit Akzent Limette
 > - Sicherheitsaudit durchgeführt
 >
-> **Erst den Server aktualisieren, dann die App.** [Release-Notes](https://github.com/Taloan/dmOffice/releases/tag/v2.0.0) · [Android-App herunterladen](https://github.com/Taloan/dmOffice/releases/latest/download/dmOffice.apk)
+> **Erst den Server aktualisieren, dann die App.** Neue Installationen brauchen `DMOFFICE_MASTER_KEY`. [Release-Notes](https://github.com/Taloan/dmOffice/releases/tag/v2.2.0) · [Android-App herunterladen](https://github.com/Taloan/dmOffice/releases/latest/download/dmOffice.apk)
 
 Ein selbst gehostetes Büro im Browser: E-Mail, Kalender, Kontakte, Aufgaben, Notizen und Dateien – mit einem eigenen Server dazu. Alles läuft in einem Container, mit einer verschlüsselten Datenbank je Benutzer.
 

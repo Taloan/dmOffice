@@ -4,15 +4,15 @@
 
 **Website: [dmoffice.de](https://dmoffice.de)** (in German) – features, guides and news · **Source code and issues:** here on GitHub
 
-> ## 🎉 New in 2.0
-> - **Chat** with conversations, groups, voice messages and push – and **Pukki**, the assistant: events, tasks, shopping list, meal plan, reminders and timers from plain sentences
-> - **Gallery:** timeline, filters, RAW, server folders, map, albums and share links, ratings and colour labels, **photo editing**
-> - **Music:** your own music folders with covers, search and playlists
-> - **Vault:** a separately encrypted area per person (own password or passkey) for files and notes
-> - **Documents (DMS)**, **Overview** start page, **external folders**, **core backup** to S3/WebDAV, **data export**, smarter **spam filter**, **Microsoft accounts**
+> ## 🎉 New in 2.2
+> - **Mail:** conversation view, **reply with AI**, similar emails, tracker protection, junk lock, text snippets, signatures per sender address, catch-all domains
+> - **Files:** **two panes**, folder tabs, address bar, view per folder, function keys; server mounts via SFTP, OneDrive and pCloud
+> - **Gallery:** **photo export**, **lens correction**, mosaic view, quick collection, relink folder
+> - New areas: **Journal**, **Emergency access** and **GateKeeper** (ad and tracker filter for phone apps)
+> - Calendar reminders, custom fields in the DMS, note versions, schedules for backups, dark mode with lime accent
 > - Security audit performed
 >
-> **Update the server first, then the app.** [Release notes](https://github.com/Taloan/dmOffice/releases/tag/v2.0.0) · [Download the Android app](https://github.com/Taloan/dmOffice/releases/latest/download/dmOffice.apk)
+> **Update the server first, then the app.** New installations need `DMOFFICE_MASTER_KEY`. [Release notes](https://github.com/Taloan/dmOffice/releases/tag/v2.2.0) · [Download the Android app](https://github.com/Taloan/dmOffice/releases/latest/download/dmOffice.apk)
 
 A self-hosted office suite in the browser: mail, calendar, contacts, tasks, notes and files – plus a server of its own. Everything lives in one container, with one encrypted database per user.
 
