@@ -1,15 +1,24 @@
 import { Button, Field, Input, MessageBar, MessageBarBody, Switch, Text, tokens } from '@fluentui/react-components'
+import { PlugConnected20Regular } from '@fluentui/react-icons' // [feature:adminclean]
+import { RibbonActions, RibbonButton } from '../shell/Ribbon' // [feature:adminclean]
+import { useAdminPart } from './AdminPage' // [feature:adminclean]
 import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { useApp } from '../App'
 import { locale, t } from '../i18n'
 import { AdminHeading } from './AdminHeading'
+import { useAdminSave } from './draft' // [feature:savemode]
+import { askConfirm } from '../shell/context' // [feature:savemode]
 
 interface State { clamAv: boolean; host: string; port: number; maxMb: number; required: boolean; findings: { at: string; user: string; where: string; virus: string }[] }
 interface TestResult { ok: boolean; version?: string; eicar?: string; error?: string }
 
 /**
- * Virenprüfung mit ClamAV (clamd über TCP): Dateien beim Speichern (Web, WebDAV, App, Chat, Office), Bilder und Anhänge
+ // [feature:journal]
+ * Virenprüfung mit ClamAV (clamd über TCP): Dateien beim Speichern (Web, WebDAV, App, Chat, Tagebuch, Office), Bilder und Anhänge
+ // [feature:journal:else]
+ // * Virenprüfung mit ClamAV (clamd über TCP): Dateien beim Speichern (Web, WebDAV, App, Chat, Office), Bilder und Anhänge
+ // [/feature:journal]
  * von Notizen, neue Mails mit Anhang. Aus, bis der Admin sie einschaltet; der Scanner läuft als eigener Container.
  */
 export function VirusAdmin() {
@@ -18,7 +27,27 @@ export function VirusAdmin() {
   const [draft, setDraft] = useState<State | null>(null)
   const [test, setTest] = useState<TestResult | null>(null)
   const [testing, setTesting] = useState(false)
+  // [feature:adminclean]
+  const tabbed = useAdminPart().part != null
+  // [feature:adminclean:else]
+  // const tabbed = false
+  // [/feature:adminclean]
   useEffect(() => { api.get<State>('/api/admin/virus').then(r => { setSt(r); setDraft(r) }).catch(fail) }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  // [feature:savemode]
+  // Kennung savemode: Speichern im Menüband; Abschalten der Prüfung oder der Pflicht fragt vorher nach
+  const drafting = useAdminSave({
+    dirty: !!st && !!draft && JSON.stringify({ ...draft, findings: [] }) !== JSON.stringify({ ...st, findings: [] }),
+    save: async () => {
+      if (!st || !draft) return true
+      if (st.clamAv && !draft.clamAv && !(await askConfirm(t('Virenprüfung ausschalten?'), t('Hochgeladene Dateien und neue Mails mit Anhang werden danach nicht mehr auf Viren geprüft.'), t('Ausschalten')))) return false
+      if (draft.clamAv && st.required && !draft.required && !(await askConfirm(t('Auch ohne Scanner annehmen?'), t('Ist der Scanner nicht erreichbar, speichert dmOffice Dateien danach ungeprüft.'), t('Speichern')))) return false
+      try { const r = await api.put<State>('/api/admin/virus', draft); setSt(r); setDraft(r); notify(t('Gespeichert')); return true } catch (e) { fail(e); return false }
+    },
+    discard: () => setDraft(st),
+  })
+  // [feature:savemode:else]
+  // const drafting = false
+  // [/feature:savemode]
   if (!st || !draft) return null
   const set = (p: Partial<State>) => setDraft(d => d && { ...d, ...p })
   const changed = JSON.stringify({ ...draft, findings: [] }) !== JSON.stringify({ ...st, findings: [] })
@@ -31,9 +60,13 @@ export function VirusAdmin() {
   }
   const muted = { color: tokens.colorNeutralForeground3 }
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 680 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: tabbed ? undefined : 680 }}>
       <AdminHeading first>{t('Virenprüfung')}</AdminHeading>
-      <Text>{t('dmOffice prüft Hochgeladenes (Dateien, Chat, Notizen) und neue Mails mit Anhang mit ClamAV. Funde werden nicht gespeichert; bei Mails sperrt dmOffice die Anhänge und zeigt einen Warnhinweis.')}</Text>
+      {/* [feature:journal] */}
+      <Text>{t('dmOffice prüft Hochgeladenes (Dateien, Chat, Tagebuch, Notizen) und neue Mails mit Anhang mit ClamAV. Funde werden nicht gespeichert; bei Mails sperrt dmOffice die Anhänge und zeigt einen Warnhinweis.')}</Text>
+      {/* [feature:journal:else] */}
+      {/* <Text>{t('dmOffice prüft Hochgeladenes (Dateien, Chat, Notizen) und neue Mails mit Anhang mit ClamAV. Funde werden nicht gespeichert; bei Mails sperrt dmOffice die Anhänge und zeigt einen Warnhinweis.')}</Text> */}
+      {/* [/feature:journal] */}
       <Text size={200} style={muted}>{t('ClamAV läuft als eigener Container (Image clamav/clamav, Port 3310). Dateien über der Grenze werden nicht geprüft.')}</Text>
       <Switch checked={draft.clamAv} label={t('Virenprüfung einschalten')} onChange={(_, d) => set({ clamAv: d.checked })} />
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -43,10 +76,15 @@ export function VirusAdmin() {
       </div>
       <Switch checked={draft.required} label={t('Ohne erreichbaren Scanner nichts annehmen')} onChange={(_, d) => set({ required: d.checked })} />
       <Text size={200} style={muted}>{t('Ist die Einstellung deaktiviert und der Scanner nicht erreichbar, speichert dmOffice die Datei trotzdem und vermerkt das im Protokoll.')}</Text>
-      <div style={{ display: 'flex', gap: 8 }}>
-        <Button appearance="primary" disabled={!changed} onClick={save}>{t('Speichern')}</Button>
+      {/* [feature:adminclean] */}
+      {tabbed && <RibbonActions>
+        <RibbonButton icon={<PlugConnected20Regular />} disabled={testing || !draft.host.trim()} label={testing ? t('Prüft …') : t('Verbindung testen')} onClick={runTest} />
+      </RibbonActions>}
+      {/* [/feature:adminclean] */}
+      {!tabbed && <div style={{ display: 'flex', gap: 8 }}>
+        {!drafting && <Button appearance="primary" disabled={!changed} onClick={save}>{t('Speichern')}</Button>}
         <Button disabled={testing || !draft.host.trim()} onClick={runTest}>{testing ? t('Prüft …') : t('Verbindung testen')}</Button>
-      </div>
+      </div>}
       {test && <MessageBar intent={test.ok ? 'success' : 'error'}><MessageBarBody>
         {test.ok ? t('Scanner erreichbar ({version}); die EICAR-Testdatei wurde erkannt ({name}).', { version: test.version ?? '', name: test.eicar ?? '' }) : test.error}
       </MessageBarBody></MessageBar>}

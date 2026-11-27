@@ -33,6 +33,8 @@ public static class Subscriptions
     private const string Key = "pim.subscriptions";
     private const string Unreachable = "Kalender nicht erreichbar.";
     private const long MaxBytes = 20 * 1024 * 1024;
+    /// <summary>Höchstdauer eines Abrufs (Verbinden bis zum letzten Byte).</summary>
+    internal static TimeSpan FetchLimit = TimeSpan.FromSeconds(60);
 
     private static readonly HttpClient Http = new(new SocketsHttpHandler
     {
@@ -93,6 +95,12 @@ public static class Subscriptions
     {
         var db = space.Db;
         var coll = PimStore.Find(db, sub.Collection) ?? throw new KeyNotFoundException("Kalender gibt es nicht mehr.");
+        // Zeitlimit für den ganzen Abruf samt Lesen: HttpClient.Timeout endet mit den Kopfzeilen, eine Quelle, die danach
+        // tröpfelt, hielte sonst die Abos aller Benutzer auf
+        using var limit = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        limit.CancelAfter(FetchLimit);
+        var outer = ct;
+        ct = limit.Token;
         try
         {
             using var req = new HttpRequestMessage(HttpMethod.Get, Normalize(sub.Url));
@@ -144,11 +152,11 @@ public static class Subscriptions
             Update(db, coll.Id, s => { s.LastFetch = DateTime.UtcNow; s.LastError = null; s.ETag = etag; });
             return count;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        catch (Exception ex) when (ex is not OperationCanceledException || !outer.IsCancellationRequested)
         {
             // Keine Einzelheiten zur Verbindung (Statuscode, Zeitüberschreitung, Socket) - sie verraten, welche Adressen und Ports antworten
             var msg = ex is NotAllowedException || ex.InnerException is NotAllowedException ? "Diese Adresse ist nicht erlaubt."
-                : ex is HttpRequestException or TaskCanceledException or IOException || ex.InnerException is SocketException ? Unreachable : ex.Message;
+                : ex is HttpRequestException or OperationCanceledException or IOException || ex.InnerException is SocketException ? Unreachable : ex.Message;
             Update(db, coll.Id, s => { s.LastFetch = DateTime.UtcNow; s.LastError = msg; });
             throw new InvalidOperationException(msg, ex);
         }
@@ -167,7 +175,7 @@ public sealed class SubscriptionSync : BackgroundService
         await Task.Delay(TimeSpan.FromSeconds(20), stop);
         while (!stop.IsCancellationRequested)
         {
-            foreach (var space in _spaces.All())
+            foreach (var space in _spaces.Working())
             {
                 List<Subscription> subs;
                 try { subs = Subscriptions.All(space.Db); } catch { continue; }

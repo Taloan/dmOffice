@@ -85,7 +85,7 @@ public static class Push
 
         private async Task Round(CancellationToken ct)
         {
-            foreach (var space in spaces.All())
+            foreach (var space in spaces.Working())
             {
                 var tokens = Tokens(space.Db);
                 if (tokens.Count == 0) continue;

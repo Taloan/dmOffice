@@ -2,7 +2,7 @@
 Deutsch · [English](externe-ordner.md)
 
 Externe Ordner zeigen Dateien, die **außerhalb** der eigenen Ablage von dmOffice liegen: einen Ordner auf dem Server
-(eingebundene Freigabe oder USB-Platte) oder einen eigenen WebDAV-Speicher eines Benutzers (Nextcloud, Storage Box, NAS).
+(eingebundene Freigabe oder USB-Speicher) oder einen eigenen WebDAV-Speicher eines Benutzers (Nextcloud, Storage Box, NAS).
 dmOffice liest und schreibt dort direkt; nichts wird in die eigene Ablage kopiert, nichts verschlüsselt.
 
 ## Ordner auf dem Server (Administrator)
@@ -16,7 +16,7 @@ dmOffice liest und schreibt dort direkt; nichts wird in die eigene Ablage kopier
    - **Sichtbar für:** – alle Benutzer oder ausgewählte.
    - **In dmOffice erscheinen:** – alles (auch später hinzukommende Ordner) oder nur ausgewählte Ordner der obersten Ebene.
 3. **Speichern.** dmOffice prüft den Pfad: Er muss existieren und vollständig sein. Das Datenverzeichnis, alles
-   darin oder darüber, die oberste Ebene einer Platte und der Ordner des Storage Extenders lassen sich nicht freigeben.
+   darin oder darüber, die oberste Ebene eines Speichers und der Ordner des Storage Extenders lassen sich nicht freigeben.
 
 ### Suche in Server-Mounts
 
@@ -53,7 +53,7 @@ WebDAV-Ordner wählt man, welche Ordner in dmOffice erscheinen, oder entfernt ih
   der Dateiablage (Details/Kacheln mit Vorschaubildern, Sortierung).
 - **Galerie-Ordner** können externe Ordner als Quelle nutzen. Bei Serverordnern werden Bildangaben und Vorschauen einmal für
   alle Benutzer zwischengespeichert (verschlüsselt), bei eigenen WebDAV-Ordnern je Benutzer.
-- **Einstellungen → Dateien → Externe Ordner** zeigt den freien Platz je Ordner (Platte des Serverordners, WebDAV-Kontingent,
+- **Einstellungen → Dateien → Externe Ordner** zeigt den freien Platz je Ordner (Speicher des Serverordners, WebDAV-Kontingent,
   sofern der Server es meldet).
 
 ## Grenzen

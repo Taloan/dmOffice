@@ -1,6 +1,7 @@
 import { Button, Menu, MenuItemRadio, MenuList, MenuPopover, MenuTrigger, Tooltip, makeStyles, mergeClasses, tokens } from '@fluentui/react-components'
 import { ChevronLeft20Regular, ChevronRight20Regular, ChevronUp16Regular, Eye20Regular, Navigation20Regular, Pin16Regular, SlideText20Regular } from '@fluentui/react-icons'
-import { forwardRef, useCallback, useEffect, useRef, useState } from 'react'
+import { createContext, forwardRef, useCallback, useContext, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { t } from '../i18n'
 import { usePrefs } from '../prefs'
 import { useIsMobile } from './mobile'
@@ -20,7 +21,8 @@ const useStyles = makeStyles({
   },
   button: {
     display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-start', gap: '3px',
-    minWidth: '56px', maxWidth: '112px', height: '70px', padding: '6px 6px 4px', flexShrink: 0,
+    // Höhe bleibt 70 px: Rahmen 2 + Abstand 5/3 + Symbol 24 + Lücke 3 + zwei Zeilen Text 32 - sonst kürzt der Browser schon die erste Zeile („Angaben…“)
+    minWidth: '56px', maxWidth: '112px', height: '70px', padding: '5px 6px 3px', flexShrink: 0,
   },
   // Nur Symbole: kleiner, quadratisch; nur Text: eine Zeile
   iconsOnly: { minWidth: '40px', maxWidth: '40px', height: '40px', padding: '8px', justifyContent: 'center' },
@@ -28,8 +30,11 @@ const useStyles = makeStyles({
   icon: { fontSize: '24px', height: '24px', display: 'inline-flex', alignItems: 'center', '& svg': { width: '24px', height: '24px' } },
   label: {
     fontSize: '12px', lineHeight: '16px', fontWeight: 400, textAlign: 'center', whiteSpace: 'normal', overflowWrap: 'anywhere', hyphens: 'auto',
-    display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+    // Bis zwei Zeilen mit Wortumbruch, erst danach gekürzt (voller Text im title); nicht schrumpfen lassen
+    display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', flexShrink: 0, maxHeight: '32px',
   },
+  oneLine: { WebkitLineClamp: 1, maxHeight: '16px' },
+  sub: { fontSize: '11px', lineHeight: '14px', color: tokens.colorBrandForeground1, whiteSpace: 'nowrap', flexShrink: 0 },
   divider: { width: '1px', margin: '8px 6px', backgroundColor: tokens.colorNeutralStroke2, flexShrink: 0 },
   tabs: { display: 'flex', gap: '2px', padding: '4px 10px 0', flexShrink: 0 },
   tab: {
@@ -244,10 +249,12 @@ type Props = Omit<React.ComponentProps<typeof Button>, 'icon' | 'children'> & {
   primary?: boolean
   /** Umschalter, der gerade an ist */
   pressed?: boolean
+  /** Kleine zweite Zeile unter der Beschriftung (etwa ein Datum); die Beschriftung bleibt dann einzeilig */
+  sub?: string
 }
 
 /** Ein Knopf im Menueband. Mit forwardRef, damit er als Ausloeser eines Menues dienen kann. */
-export const RibbonButton = forwardRef<HTMLButtonElement, Props>(function RibbonButton({ icon, label, primary, pressed, className, ...rest }, ref) {
+export const RibbonButton = forwardRef<HTMLButtonElement, Props>(function RibbonButton({ icon, label, primary, pressed, sub, className, ...rest }, ref) {
   const s = useStyles()
   // Auf dem Handy immer nur Symbole - die Beschriftung steht im Tooltip/title
   const mobile = useIsMobile()
@@ -256,7 +263,26 @@ export const RibbonButton = forwardRef<HTMLButtonElement, Props>(function Ribbon
   return (
     <Button ref={ref} appearance={primary ? 'primary' : 'subtle'} className={mergeClasses(s.button, mode === 'icons' && s.iconsOnly, mode === 'text' && s.textOnly, pressed && s.pressed, className)} title={label} aria-pressed={pressed} {...(rest as any)}>
       {mode !== 'text' && <span className={s.icon} style={!primary && !rest.disabled && tintOf(icon) ? { color: tintOf(icon) } : undefined}>{icon}</span>}
-      {mode !== 'icons' && <span className={s.label}>{label}</span>}
+      {mode === 'both' && sub ? <><span className={mergeClasses(s.label, s.oneLine)}>{label}</span><span className={s.sub}>{sub}</span></>
+        : mode !== 'icons' && <span className={s.label}>{sub ? `${label} · ${sub}` : label}</span>}
     </Button>
   )
 })
+
+/**
+ * Knöpfe eines Abschnitts im Menüband (Reiter „Start“): Der Bereich legt `<div ref={setSlot} style={{ display: 'contents' }} />`
+ * ins Band und stellt das Element über RibbonSlot bereit; die Seite des Abschnitts zeigt ihre Aktionen mit <RibbonActions>.
+ * Aktionen gehören immer ins Menüband, nie als Knopfleiste in den Inhalt.
+ */
+export const RibbonSlot = createContext<HTMLElement | null>(null)
+export function RibbonActions({ children }: { children: React.ReactNode }) {
+  const el = useContext(RibbonSlot)
+  return el ? createPortal(<>{children}<RibbonDivider /></>, el) : null
+}
+
+/** Wie RibbonSlot/RibbonActions, aber für den Reiter „Ansicht“ (Anzeige-Schalter eines Abschnitts). */
+export const RibbonViewSlot = createContext<HTMLElement | null>(null)
+export function RibbonViewActions({ children }: { children: React.ReactNode }) {
+  const el = useContext(RibbonViewSlot)
+  return el ? createPortal(<>{children}<RibbonDivider /></>, el) : null
+}

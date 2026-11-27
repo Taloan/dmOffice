@@ -28,6 +28,8 @@ def read(name):
 
 
 def clean(md):
+    # HTML-Kommentare weg: Schalter-Markierungen [feature:x] und ihre auskommentierten else-Teile (release-strip.mjs)
+    md = re.sub(r"<!--.*?-->[ \t]*\n?", "", md, flags=re.S)
     # Bilder zuerst (sonst bliebe aus ![Kalender](bild.png) ein „!Kalender“), dann Fett und Links auch über Zeilenumbrüche hinweg
     md = re.sub(r'!\[[^\]]*\]\([^)]*\)', '', md, flags=re.S)
     md = re.sub(r'\*\*(.+?)\*\*', r'\1', md, flags=re.S)
@@ -37,6 +39,8 @@ def clean(md):
         s = line.rstrip()
         # Hinweise für Entwickler und Sprachumschalter weglassen
         if re.match(r'^\s*(Code|Tests?|Siehe Code|See code)\s*:', s) or re.search(r'\.(cs|kt|tsx?)\b`?', s) and '`' in s and len(s) < 200 and ('Code' in s or 'Test' in s):
+            continue
+        if s.strip() in ('Deutsch', 'English'):   # Sprachumschalter als eigene Zeile
             continue
         if re.match(r'^\s*\*?\[?(Deutsch|English|Deutsche Fassung|English version)\]?', s) and ('·' in s or 'version' in s.lower() or 'Fassung' in s):
             continue
@@ -110,6 +114,8 @@ def main():
             en.append(dict(topic(other, 'en'), id='thema-' + f.replace('.de.md', '')))
     out = []
     for a in de + en:
+        if re.match(r'(Diese Seite ist umgezogen|This page has moved)', a['body']):   # Weiterleitungsseiten
+            continue
         if len(a['body']) < 40:
             continue
         a['keys'] = keys(a['title'])

@@ -332,14 +332,25 @@ public class FilesApiTests : IClassFixture<FilesServerFixture>
     public async Task Link_auf_die_Wurzel_zeigt_keine_Systemordner()
     {
         var c = _fx.Client();
-        // Reservierter Systemordner: in der Ablage unsichtbar, also auch nicht über einen Link auf „Dateien“
-        DmOffice.Dav.FileStore.EnsureDir(_fx.Db, DmOffice.Dav.FileStore.ReservedRoot);
-        DmOffice.Dav.FileStore.Put(_fx.Db, DmOffice.Dav.FileStore.ReservedRoot + "/geheim.jpg", Encoding.UTF8.GetBytes("x"), "image/jpeg");
+        // [feature:journal]
+        // Medien des Tagebuchs: in der Ablage unsichtbar, also auch nicht über einen Link auf „Dateien“
+        DmOffice.Dav.FileStore.EnsureDir(_fx.Db, DmOffice.Journal.JournalMediaStore.Root);
+        DmOffice.Dav.FileStore.Put(_fx.Db, DmOffice.Journal.JournalMediaStore.Root + "/geheim.jpg", Encoding.UTF8.GetBytes("x"), "image/jpeg");
+        // [feature:journal:else]
+        // // Reservierter Systemordner: in der Ablage unsichtbar, also auch nicht über einen Link auf „Dateien“
+        // DmOffice.Dav.FileStore.EnsureDir(_fx.Db, DmOffice.Dav.FileStore.ReservedRoot);
+        // DmOffice.Dav.FileStore.Put(_fx.Db, DmOffice.Dav.FileStore.ReservedRoot + "/geheim.jpg", Encoding.UTF8.GetBytes("x"), "image/jpeg");
+        // [/feature:journal]
         var token = await Share(c, "", "read");
         var anon = _fx.Client(signedIn: false);
         var info = await Json(await anon.GetAsync($"/api/public/{token}"));
-        Assert.DoesNotContain(info.GetProperty("items").EnumerateArray(), i => i.GetProperty("name").GetString() == DmOffice.Dav.FileStore.ReservedRoot);
-        Assert.Equal(HttpStatusCode.NotFound, (await anon.GetAsync($"/api/public/{token}/download?path={DmOffice.Dav.FileStore.ReservedRoot}/geheim.jpg")).StatusCode);
+        // [feature:journal]
+        Assert.DoesNotContain(info.GetProperty("items").EnumerateArray(), i => i.GetProperty("name").GetString() == DmOffice.Journal.JournalMediaStore.Root);
+        Assert.Equal(HttpStatusCode.NotFound, (await anon.GetAsync($"/api/public/{token}/download?path={DmOffice.Journal.JournalMediaStore.Root}/geheim.jpg")).StatusCode);
+        // [feature:journal:else]
+        // Assert.DoesNotContain(info.GetProperty("items").EnumerateArray(), i => i.GetProperty("name").GetString() == DmOffice.Dav.FileStore.ReservedRoot);
+        // Assert.Equal(HttpStatusCode.NotFound, (await anon.GetAsync($"/api/public/{token}/download?path={DmOffice.Dav.FileStore.ReservedRoot}/geheim.jpg")).StatusCode);
+        // [/feature:journal]
     }
 
     [Fact]
@@ -395,6 +406,30 @@ public class FilesApiTests : IClassFixture<FilesServerFixture>
         Assert.Equal(HttpStatusCode.NotFound, (await anon.PostAsync($"/api/public/{up}/upload", form)).StatusCode);
         using var zip = new ZipArchive(await (await anon.GetAsync($"/api/public/{token}/zip")).Content.ReadAsStreamAsync());
         Assert.DoesNotContain(zip.Entries, e => e.FullName.Contains("notizisync"));
+    }
+
+    [Fact]
+    public async Task Link_mit_Passwort_zeigt_Name_und_Inhalt_erst_nach_dem_Passwort()
+    {
+        var c = _fx.Client();
+        await c.PostAsJsonAsync("/api/files/mkdir", new { path = "Steuer-Unterlagen-2026" });
+        await Upload(c, "Steuer-Unterlagen-2026", "Gehaltsabrechnung.pdf", Encoding.UTF8.GetBytes("%PDF-1.4"));
+        var folder = await Share(c, "Steuer-Unterlagen-2026", "read", password: "sesam-öffne");
+        var file = await Share(c, "Steuer-Unterlagen-2026/Gehaltsabrechnung.pdf", "read", password: "sesam-öffne");
+        var anon = _fx.Client(signedIn: false, cookies: true);
+        foreach (var url in new[] { $"/api/public/{folder}", $"/api/public/{file}", $"/api/public/{file}/thumb", $"/api/public/{folder}/download?path=Gehaltsabrechnung.pdf" })
+        {
+            var r = await anon.GetAsync(url);
+            Assert.Equal(HttpStatusCode.Unauthorized, r.StatusCode);
+            var body = await r.Content.ReadAsStringAsync();
+            Assert.Contains("needsPassword", body);
+            Assert.DoesNotContain("Steuer", body);
+            Assert.DoesNotContain("Gehalt", body);
+            Assert.DoesNotContain("\"name\"", body);
+        }
+        // Nach dem Passwort wie gewohnt mit Name
+        Assert.True((await anon.PostAsJsonAsync($"/api/public/{file}/auth", new { password = "sesam-öffne" })).IsSuccessStatusCode);
+        Assert.Equal("Gehaltsabrechnung.pdf", (await Json(await anon.GetAsync($"/api/public/{file}"))).GetProperty("name").GetString());
     }
 
     [Fact]

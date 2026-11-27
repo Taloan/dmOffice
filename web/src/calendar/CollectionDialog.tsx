@@ -1,9 +1,10 @@
 import {
   Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Field, Input, Switch, makeStyles,
-  Radio, RadioGroup,
+  Radio, RadioGroup, Tab, TabList,
 } from '@fluentui/react-components'
 import { useState } from 'react'
-import { api, Collection } from '../api'
+import { api, CalendarRemindDefault, Collection, featureOn } from '../api'
+import { RemindDefaultEditor } from './ReminderEditor'
 import { useApp } from '../App'
 import { t } from '../i18n'
 import { CALENDAR_KINDS } from './kinds'
@@ -21,7 +22,19 @@ const useStyles = makeStyles({
 export async function importInto(id: number, file: File) {
   const f = new FormData()
   f.append('file', file, file.name)
-  return api.form<{ added: number; failed: number }>(`/api/pim/import/${id}`, f)
+  return api.form<ImportResult>(`/api/pim/import/${id}`, f)
+}
+
+export interface ImportResult { added: number; updated?: number; existing?: number; failed: number }
+
+/** Zweite Zeile der Meldung nach einem Import: aktualisiert, schon vorhanden, nicht lesbar. */
+export function importDetail(r: ImportResult) {
+  const parts = [
+    r.updated ? t('{n} aktualisiert', { n: r.updated }) : '',
+    r.existing ? t('{n} schon vorhanden', { n: r.existing }) : '',
+    r.failed ? (r.failed === 1 ? t('1 Eintrag ließ sich nicht lesen') : t('{n} ließen sich nicht lesen', { n: r.failed })) : '',
+  ].filter(Boolean)
+  return parts.length ? parts.join(' · ') : undefined
 }
 
 /**
@@ -59,8 +72,10 @@ export async function removeCollection(collection: Collection, kind: 'calendars'
 }
 
 /** Kalender, Aufgabenliste oder Adressbuch anlegen, umbenennen, einfaerben, loeschen. */
-export function CollectionDialog({ kind, collection, onClose, tasks, defaultKind }: {
+export function CollectionDialog({ kind, collection, onClose, tasks, defaultKind, taskLists = [] }: {
   kind: 'calendars' | 'addressbooks'; collection: Collection | null; onClose: (changed: boolean) => void; tasks?: boolean
+  /** Aufgabenlisten für „Aufgabe anlegen“ im Kalender-Standard (calremtask) */
+  taskLists?: Collection[]
   /** Art eines neuen Kalenders (Vorgabe: normal) */
   defaultKind?: string
 }) {
@@ -78,6 +93,12 @@ export function CollectionDialog({ kind, collection, onClose, tasks, defaultKind
 
   const components = [withEvents && 'VEVENT', withTasks && 'VTODO'].filter(Boolean).join(',')
 
+  // Kalender-Standard (calremdefault) im eigenen Reiter, nur für eigene Kalender mit Terminen
+  const remindOn = featureOn('calremdefault') && kind === 'calendars' && withEvents && !tasks && (!collection || (collection.id > 0 && collection.canWrite !== false))
+  const [tab, setTab] = useState<'cal' | 'remind'>('cal')
+  const startRemind = JSON.stringify(collection?.remind ?? { reminders: [], rules: [] })
+  const [remind, setRemind] = useState<CalendarRemindDefault>(() => JSON.parse(startRemind))
+
   const save = async () => {
     try {
       let id = collection?.id
@@ -86,6 +107,7 @@ export function CollectionDialog({ kind, collection, onClose, tasks, defaultKind
       else id = (await api.post<{ id: number }>(`/api/pim/collections/${kind}`, { name, color, components: kind === 'calendars' ? components : undefined, calendarKind })).id
       if (id && withTasks && kind === 'calendars' && listType !== (collection?.listType ?? 'tasks'))
         await api.put(`/api/pim/lists/${id}`, { type: listType })
+      if (id && remindOn && JSON.stringify(remind) !== startRemind) await api.put(`/api/pim/collections/${id}/remind`, remind)
       onClose(true)
     } catch (e) { fail(e) }
   }
@@ -101,11 +123,16 @@ export function CollectionDialog({ kind, collection, onClose, tasks, defaultKind
   const newTitle = { Adressbuch: t('Neues Adressbuch'), Aufgabenliste: t('Neue Aufgabenliste'), Kalender: t('Neuer Kalender') }[noun]
   return (
     <Dialog open onOpenChange={(_, d) => !d.open && onClose(false)}>
-      <DialogSurface style={{ maxWidth: 420 }}>
+      <DialogSurface style={{ maxWidth: remindOn ? 560 : 420 }}>
         <DialogBody>
           <DialogTitle>{collection ? (withEvents && withTasks && kind === 'calendars' ? t('Kalender und Aufgabenliste') : t(noun)) : newTitle}</DialogTitle>
           <DialogContent>
-            <form className={s.form} onSubmit={e => { e.preventDefault(); save() }}>
+            {remindOn && <TabList selectedValue={tab} onTabSelect={(_, d) => setTab(d.value as 'cal' | 'remind')} style={{ marginBottom: 8 }}>
+              <Tab value="cal">{t('Kalender')}</Tab>
+              <Tab value="remind">{t('Erinnerung')}</Tab>
+            </TabList>}
+            {remindOn && tab === 'remind' && <RemindDefaultEditor value={remind} onChange={setRemind} taskLists={taskLists} />}
+            <form className={s.form} style={remindOn && tab === 'remind' ? { display: 'none' } : undefined} onSubmit={e => { e.preventDefault(); save() }}>
               <Field label={t('Name')}><Input value={name} onChange={(_, d) => setName(d.value)} autoFocus /></Field>
               {kind === 'calendars' && (
                 <>

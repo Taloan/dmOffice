@@ -16,17 +16,30 @@ public static partial class FilesApi
     public record DavHiddenBody(string Path, bool Hidden);
     public record SaveBody(string Path, string Text, string? Etag, bool Create);
     /// <summary>Foto drehen (0/90/180/270) und zuschneiden; Overwrite: ersetzen (in der Ablage bleibt die vorige Fassung als Version), sonst Kopie „…_bearbeitet.jpg“.</summary>
-    public record PhotoEditBody(string Path, int Rotate, PhotoEdit.Crop? Crop, bool Overwrite, PhotoAdjust.Values? Adjust = null);
-    public record PhotoAdjustBody(string Path, PhotoAdjust.Values? Adjust);
+    // [feature:lenscorr]
+    public record PhotoEditBody(string Path, int Rotate, PhotoEdit.Crop? Crop, bool Overwrite, PhotoAdjust.Values? Adjust = null, DmOffice.Gallery.LensSettings? Lens = null);
+    public record PhotoAdjustBody(string Path, PhotoAdjust.Values? Adjust, DmOffice.Gallery.LensSettings? Lens = null);
+    // [feature:lenscorr:else]
+    // public record PhotoEditBody(string Path, int Rotate, PhotoEdit.Crop? Crop, bool Overwrite, PhotoAdjust.Values? Adjust = null);
+    // public record PhotoAdjustBody(string Path, PhotoAdjust.Values? Adjust);
+    // [/feature:lenscorr]
 
     /// <summary>Inhalt eines Fotos: eigene Ablage oder Galerie-Ordner („ext:…“).</summary>
-    private static async Task<byte[]> PhotoBytesAsync(HttpContext http, ServerConfig config, string path, CancellationToken ct)
+    internal static async Task<byte[]> PhotoBytesAsync(HttpContext http, ServerConfig config, string path, CancellationToken ct)
     {
         // Galerie-Ordner: über die Arbeitskopie (vorab geholt, sobald der Editor aufgeht)
         if (path.StartsWith("ext:", StringComparison.Ordinal)) return await PhotoWork.GetAsync(http.Space(), config, path, ct);
         // Tresor (nur mit offenem Tresor auf diesem Gerät)
-        if (TresorPaths.IdOfAny(http, path) is { } tresorId) return Tresor.Db(http).Files.ReadAll(tresorId);
+        // Größer als für Fotos vorgesehen: gar nicht erst in den Speicher laden
+        if (TresorPaths.IdOfAny(http, path) is { } tresorId)
+        {
+            var files = Tresor.Db(http).Files;
+            var entry = files.Find(tresorId) ?? throw new KeyNotFoundException("Datei nicht gefunden.");
+            if (entry.Size > MaxPhoto(entry.Name)) throw new ArgumentException("Das Foto ist zu groß.");
+            return files.ReadAll(tresorId);
+        }
         var loc = Loc(http, path);
+        if (FileStore.Get(loc.Db, loc.Path) is { IsDir: false } f && f.Size > MaxPhoto(f.Name)) throw new ArgumentException("Das Foto ist zu groß.");
         return FileStore.Data(loc.Db, loc.Path) ?? throw new KeyNotFoundException("Datei nicht gefunden.");
     }
 
@@ -52,13 +65,23 @@ public static partial class FilesApi
     /// Drehen, Zuschnitt und Regler anwenden: mit Photo-Engine rechnet sie die Regler (darauf sind ihre Werte abgestimmt, Metadaten
     /// bleiben), Drehen und Zuschnitt danach hier; ohne Engine (oder wenn sie nicht antwortet) alles hier.
     /// </summary>
-    private static async Task<byte[]> EditAsync(byte[] data, PhotoEditBody body, ILogger log, CancellationToken ct, bool raw = false)
+    /// <param name="lensUser">Person, deren eigene Objektivprofile gelten (Besitzerin des Fotos)</param>
+    private static async Task<byte[]> EditAsync(byte[] data, PhotoEditBody body, ILogger log, CancellationToken ct, bool raw = false, string? lensUser = null)
     {
-        // RAW entwickelt nur die Engine (auch ohne Regler) - ein JPG in voller Größe, aufrecht, mit den Aufnahmedaten
+        // [feature:lenscorr]
+        // Objektivkorrektur rechnet die Engine (Brennweite und Blende aus dem Original)
+        var lens = body.Lens is { Off: false } ? DmOffice.Gallery.LensProfiles.Block(body.Lens, DmOffice.Gallery.LensProfiles.MetaOf(data), lensUser) : null;
         if (raw)
-            return PhotoEdit.Apply(await PhotoEngine.DevelopAsync(data, (body.Adjust ?? Neutral).Clamped(), null, PhotoEdit.Quality, log, ct)
+            return PhotoEdit.Apply(await PhotoEngine.DevelopAsync(data, (body.Adjust ?? Neutral).Clamped(), null, PhotoEdit.Quality, log, ct, lens)
                 ?? throw new InvalidOperationException(RawNeedsEngine), body.Rotate, body.Crop);
-        if (body.Adjust is { IsNeutral: false } a && await PhotoEngine.DevelopAsync(data, a.Clamped(), null, PhotoEdit.Quality, log, ct) is { } developed)
+        if ((body.Adjust is { IsNeutral: false } || lens != null) && await PhotoEngine.DevelopAsync(data, (body.Adjust ?? Neutral).Clamped(), null, PhotoEdit.Quality, log, ct, lens) is { } developed)
+        // [feature:lenscorr:else]
+        // // RAW entwickelt nur die Engine (auch ohne Regler) - ein JPG in voller Größe, aufrecht, mit den Aufnahmedaten
+        // if (raw)
+        //     return PhotoEdit.Apply(await PhotoEngine.DevelopAsync(data, (body.Adjust ?? Neutral).Clamped(), null, PhotoEdit.Quality, log, ct)
+        //         ?? throw new InvalidOperationException(RawNeedsEngine), body.Rotate, body.Crop);
+        // if (body.Adjust is { IsNeutral: false } a && await PhotoEngine.DevelopAsync(data, a.Clamped(), null, PhotoEdit.Quality, log, ct) is { } developed)
+        // [/feature:lenscorr]
             // Die Engine liefert das Bild ohne Metadaten - Aufnahmezeit, Kamera, Ort usw. aus dem Original übernehmen
             return PhotoEdit.Apply(developed, body.Rotate, body.Crop, meta: data);
         return PhotoEdit.Apply(data, body.Rotate, body.Crop, body.Adjust);
@@ -68,7 +91,7 @@ public static partial class FilesApi
     private const string RawNeedsEngine = "RAW-Dateien lassen sich nur mit der Photo-Engine bearbeiten - sie antwortet gerade nicht.";
     /// <summary>RAW (.raf, .arw …): entwickelt die Engine; gespeichert wird immer als neues JPG daneben.</summary>
     private static bool IsRaw(string path) => Thumbs.IsRaw(path);
-    private static long MaxPhoto(string path) => (IsRaw(path) ? 200L : 80L) * 1024 * 1024;
+    private static long MaxPhoto(string path) => PhotoWork.MaxPhotoBytes(path);
 
     /// <summary>Vorschlag der Photo-Engine: RAW ganz (sie liest die Aufnahmedaten selbst), sonst verkleinert mit den Aufnahmedaten.</summary>
     private static async Task<(PhotoAdjust.Values Values, string? Analysis)?> EngineValuesAsync(byte[] bytes, string path, TimeZoneInfo zone, ILogger log, CancellationToken ct)
@@ -109,7 +132,11 @@ public static partial class FilesApi
     }
 
     public record PhotoAutoBody(List<string> Paths, string Source);
-    public record PhotoEditsBody(string Path, int Rotate, PhotoEdit.Crop? Crop, PhotoAdjust.Values? Adjust, string? Origin);
+    // [feature:lenscorr]
+    public record PhotoEditsBody(string Path, int Rotate, PhotoEdit.Crop? Crop, PhotoAdjust.Values? Adjust, string? Origin, DmOffice.Gallery.LensSettings? Lens = null);
+    // [feature:lenscorr:else]
+    // public record PhotoEditsBody(string Path, int Rotate, PhotoEdit.Crop? Crop, PhotoAdjust.Values? Adjust, string? Origin);
+    // [/feature:lenscorr]
 
     /// <summary>
     /// Wo die Einstellungen eines Fotos liegen: eigene Ablage (auch geteilte Ordner) in der Datenbank des Besitzers an der Datei-Kennung,
@@ -128,6 +155,16 @@ public static partial class FilesApi
         var f = FileStore.Get(loc.Db, loc.Path) ?? throw new KeyNotFoundException("Datei nicht gefunden.");
         return (loc.Db, PhotoEdits.KeyOf(f));
     }
+
+    // [feature:lenslib]
+    /// <summary>Wem ein Foto gehört (geteilte Ordner: Besitzerin), sonst die angemeldete Person - deren eigene Objektivprofile gelten.</summary>
+    internal static string EditOwner(HttpContext http, ServerConfig config, string path)
+    {
+        if (TresorPaths.Is(path) || path.StartsWith("ext:", StringComparison.Ordinal)) return http.Space().User.Id;
+        try { return Loc(http, path).Db.UserId; }
+        catch (Exception e) when (e is KeyNotFoundException or ArgumentException or UnauthorizedAccessException) { return http.Space().User.Id; }
+    }
+    // [/feature:lenslib]
 
     /// <summary>
     /// Der Auftrag zu „automatisch verbessern“: je Foto Vorschlag holen und als Entwicklungseinstellungen merken (PhotoEdits) - das Original
@@ -152,7 +189,11 @@ public static partial class FilesApi
                     : (loc.Db, PhotoEdits.KeyOf(FileStore.Get(loc.Db, loc.Path) ?? throw new KeyNotFoundException("Datei nicht gefunden.")));
                 var before = PhotoEdits.Get(db, key);
                 if (values.IsNeutral && before == null) { job.Progress(++done, jobs.Count); continue; }
-                PhotoEdits.Set(db, key, new PhotoEdits.Edit(before?.Rotate ?? 0, before?.Crop, values, source, 0));
+                // [feature:lenscorr]
+                PhotoEdits.Set(db, key, new PhotoEdits.Edit(before?.Rotate ?? 0, before?.Crop, values, source, 0) { Lens = before?.Lens });
+                // [feature:lenscorr:else]
+                // PhotoEdits.Set(db, key, new PhotoEdits.Edit(before?.Rotate ?? 0, before?.Crop, values, source, 0));
+                // [/feature:lenscorr]
                 changed++;
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException or KeyNotFoundException or ArgumentException or InvalidOperationException
@@ -327,9 +368,13 @@ public static partial class FilesApi
         return loc.Shared || loc.Virtual ? throw new UnauthorizedAccessException("Teilen kann nur der Besitzer.") : loc;
     }
 
-    /// <summary>In der eigenen Ablage unsichtbar: der notizi-Ordner, der reservierte Systemordner und ein eigener Eintrag, den „Mit mir geteilt“ verdeckt.</summary>
+    // [feature:journal]
+    /// <summary>In der eigenen Ablage unsichtbar: der notizi-Ordner, der Systemordner des Tagebuchs und ein eigener Eintrag, den „Mit mir geteilt“ verdeckt.</summary>
+    // [feature:journal:else]
+    // /// <summary>In der eigenen Ablage unsichtbar: der notizi-Ordner, der reservierte Systemordner und ein eigener Eintrag, den „Mit mir geteilt“ verdeckt.</summary>
+    // [/feature:journal]
     private static bool Protected(HttpContext http, string path) =>
-        FileStore.InRoot(path, http.Space().Settings.Notizi.Root) || FileStore.InRoot(path, DmOffice.Dav.FileStore.ReservedRoot) || FileStore.InRoot(path, FileStore.SystemVault) || SharedFiles.Under(http, path);
+        FileStore.InRoot(path, http.Space().Settings.Notizi.Root) || FileStore.InRoot(path, FileStore.ReservedRoot) || FileStore.InRoot(path, FileStore.SystemVault) || SharedFiles.Under(http, path);
 
     /// <summary>Mit wem ein eigener Ordner geteilt ist.</summary>
     private static IEnumerable<object> People(HttpContext http, long folder) =>
@@ -366,7 +411,20 @@ public static partial class FilesApi
         var show = inline && (Inline(m) || m.StartsWith("text/plain", StringComparison.OrdinalIgnoreCase));
         http.Response.Headers["X-Content-Type-Options"] = "nosniff";
         if (show && MimeKey(m) != "application/pdf") http.Response.Headers["Content-Security-Policy"] = SandboxCsp;
+        if (show) InlineName(http, name);
         return show ? (m, null) : ("application/octet-stream", name);
+    }
+
+    /// <summary>
+    /// Im Browser angezeigt, aber mit Dateinamen (inline; filename*=…): Öffnet die Person die Adresse in einem neuen Tab oder
+    /// speichert sie von dort, heißt die Datei wie im Original - ohne Namen nimmt der Browser das Ende der Adresse.
+    /// </summary>
+    public static void InlineName(HttpContext http, string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return;
+        var cd = new Microsoft.Net.Http.Headers.ContentDispositionHeaderValue("inline");
+        cd.SetHttpFileName(Path.GetFileName(name));
+        http.Response.Headers.ContentDisposition = cd.ToString();
     }
 
     public static string MimeOf(FileEntry f) => f.Mime is { Length: > 0 } m && m != "application/octet-stream" ? m : DavServer.Mime(f.Path);
@@ -385,6 +443,7 @@ public static partial class FilesApi
         http.Response.Headers["X-Content-Type-Options"] = "nosniff";
         // Bild, Ton, Video direkt geoeffnet: als Dokument ohne Skripte und ohne Zugriff auf die Seite
         if (show && MimeKey(mime) != "application/pdf") http.Response.Headers["Content-Security-Policy"] = SandboxCsp;
+        if (show) InlineName(http, f.Name);
         http.Response.Headers.CacheControl = "private, no-cache";
         return Results.Stream(FileStore.OpenRead(db, f.Path), show ? mime : "application/octet-stream", show ? null : f.Name,
             new DateTimeOffset(DateTime.SpecifyKind(f.Modified, DateTimeKind.Utc)), new Microsoft.Net.Http.Headers.EntityTagHeaderValue(f.Etag.StartsWith('"') ? f.Etag : $"\"{f.Etag}\""),
@@ -395,13 +454,16 @@ public static partial class FilesApi
     public static async Task<IResult> SendThumb(HttpContext http, UserDb db, FileEntry f, int? size, string? v, bool original = false)
     {
         var data = await Thumbs.Get(db, f, size ?? Thumbs.Small, http.RequestAborted, original);
-        if (data == null) return Results.NotFound();
+        // quiet=1 (Kacheln der Oberfläche): ohne Vorschaubild (kaputtes, leeres oder getarntes Bild) 204 statt 404 - die Kachel
+        // zeigt das Symbol, die Browser-Konsole bleibt ohne Fehlermeldung je Kachel
+        if (data == null) return http.Request.Query.ContainsKey("quiet") ? Results.NoContent() : Results.NotFound();
         // Lange gültig nur, wenn der Etag (samt Fingerabdruck der Bearbeitung) zum Stand passt
         var edit = original ? null : PhotoEdits.Get(db, PhotoEdits.KeyOf(f));
         var tag = PhotoEdits.Tag(f.Etag, edit == null ? null : PhotoEdits.Fingerprint(edit));
         http.Response.Headers.CacheControl = v == tag || original && v == f.Etag ? "private, max-age=31536000, immutable" : "private, no-cache";
         http.Response.Headers["X-Content-Type-Options"] = "nosniff";
-        return Results.Bytes(data, "image/webp");
+        // Bearbeitet in voller Auflösung: JPEG, sonst WebP
+        return Results.Bytes(data, PhotoEdit.IsJpeg(data) ? "image/jpeg" : "image/webp");
     }
 
     /// <summary>
@@ -431,27 +493,6 @@ public static partial class FilesApi
             _ = Task.Run(async () => { try { await Thumbs.Get(db, added, Thumbs.Small, CancellationToken.None); } catch (Exception) { /* beim Ansehen erneut */ } });
         // Pruefsumme des Geschriebenen: die App vergleicht sie mit ihrer eigenen, bevor sie die Datei als gesichert zaehlt
         return (new { path = loc.Show(full), skipped = false, sha256 = FileHashes.Of(db, full) }, null);
-    }
-
-    /// <summary>
-    /// Kopie am zweiten Ort und naechtliche Sicherung fuer die Speicherplatz-Seite der Benutzer - ohne Adressen, Zugaenge
-    /// und Fehlertexte (die stehen nur in der Verwaltung).
-    /// </summary>
-    private static object? CopyInfo(ServerConfig config, S3Mirror mirror, S3Backup backup)
-    {
-        var s = config.Current;
-        if (!s.S3Mirror) return null;
-        var m = mirror.Status;
-        var b = backup.Status;
-        var cache = S3Mirror.CacheMode(s) ? m.Cache : null;
-        return new
-        {
-            target = s.StorageTarget,
-            lastRun = m.LastRun,
-            ok = m.LastError == null,
-            cache = cache == null ? null : new { local = cache.Bytes, target = cache.Limit, max = cache.Max },
-            backup = s.S3Backup ? new { lastRun = b.LastRun, ok = b.LastError == null, keepCount = BackupRules.KeepCount(s) } : null,
-        };
     }
 
     public static void Map(WebApplication app)
@@ -682,7 +723,7 @@ public static partial class FilesApi
                 var tdb = Tresor.Db(http);
                 var entry = tdb.Files.Find(tresorId) ?? throw new KeyNotFoundException("Diese Datei gibt es im Tresor nicht.");
                 if (entry.Size > MaxPhoto(entry.Name)) throw new ArgumentException("Das Foto ist zu groß.");
-                var result = await EditAsync(tdb.Files.ReadAll(tresorId), body, log, ct, IsRaw(entry.Name));
+                var result = await EditAsync(tdb.Files.ReadAll(tresorId), body, log, ct, IsRaw(entry.Name), http.Space().User.Id);
                 return Results.Ok(new { path = TresorFiles.PathPrefix + await TresorFiles.SaveEditedAsync(tdb.Files, tresorId, result, body.Overwrite, ct) });
             }
             if (body.Path.StartsWith("ext:", StringComparison.Ordinal))
@@ -696,7 +737,7 @@ public static partial class FilesApi
                     // Original aus der Arbeitskopie (meist schon da, seit der Editor aufging)
                     var data = await PhotoWork.GetAsync(space, config, body.Path, ct);
                     if (data.Length > max) throw new ArgumentException("Das Foto ist zu groß.");
-                    var result = await EditAsync(data, body, log, ct, raw);
+                    var result = await EditAsync(data, body, log, ct, raw, space.User.Id);
                     // RAW: immer als neues JPG daneben („DSCF1513_bearbeitet.jpg“)
                     var target = body.Overwrite && !raw ? rel : await FreeNameAsync(raw ? Path.ChangeExtension(rel, ".jpg") : rel, async p => await driver.StatAsync(p, ct) != null);
                     // Sofort in der Galerie, auf den Speicher im Hintergrund - das Warten auf den Tunnel entfällt
@@ -720,7 +761,7 @@ public static partial class FilesApi
             var original = FileStore.Get(db, loc.Path) ?? throw new KeyNotFoundException("Datei nicht gefunden.");
             if (original.Size > max) throw new ArgumentException("Das Foto ist zu groß.");
             var bytes = FileStore.Data(db, loc.Path) ?? throw new KeyNotFoundException("Datei nicht gefunden.");
-            var edited = await EditAsync(bytes, body, log, ct, raw);
+            var edited = await EditAsync(bytes, body, log, ct, raw, db.UserId);
             var to = body.Overwrite && !raw ? loc.Path : await FreeNameAsync(raw ? Path.ChangeExtension(loc.Path, ".jpg") : loc.Path, p => Task.FromResult(FileStore.Get(db, p) != null));
             try { FileStore.Put(db, to, edited, "image/jpeg"); }
             catch (QuotaExceededException ex) { return Results.Json(new { error = ex.Message }, statusCode: 507); }
@@ -738,7 +779,11 @@ public static partial class FilesApi
         api.MapPut("/photo-edits", (PhotoEditsBody body, HttpContext http, ServerConfig config) =>
         {
             var (db, key) = EditKey(http, config, body.Path, write: true);
-            PhotoEdits.Set(db, key, new PhotoEdits.Edit(body.Rotate, body.Crop, body.Adjust, body.Origin is "engine" or "ai" ? body.Origin : "hand", 0));
+            // [feature:lenscorr]
+            PhotoEdits.Set(db, key, new PhotoEdits.Edit(body.Rotate, body.Crop, body.Adjust, body.Origin is "engine" or "ai" ? body.Origin : "hand", 0) { Lens = body.Lens?.Clamped() });
+            // [feature:lenscorr:else]
+            // PhotoEdits.Set(db, key, new PhotoEdits.Edit(body.Rotate, body.Crop, body.Adjust, body.Origin is "engine" or "ai" ? body.Origin : "hand", 0));
+            // [/feature:lenscorr]
             var edit = PhotoEdits.Get(db, key);
             return Results.Ok(new { edit, fingerprint = edit == null ? null : PhotoEdits.Fingerprint(edit) });
         });
@@ -758,15 +803,31 @@ public static partial class FilesApi
 
         api.MapPost("/photo-adjust/preview", async (PhotoAdjustBody body, HttpContext http, ServerConfig config, ILogger<PhotoAdjustBody> log, CancellationToken ct) =>
         {
-            // RAW: die Engine entwickelt (auch ohne Regler - sonst sähe man nur das eingebettete Kamera-JPG)
+            // [feature:lenscorr]
+            // Objektivkorrektur: Brennweite und Blende aus dem Original (gemerkt, nicht bei jedem Schieben gelesen)
+            var lensUser = http.Space().User.Id;
+            lensUser = EditOwner(http, config, body.Path); // [feature:lenslib]
+            var lens = body.Lens is { Off: false } && PhotoEngine.Configured
+                ? DmOffice.Gallery.LensProfiles.Block(body.Lens, await DmOffice.Gallery.LensProfiles.MetaAsync(http.Space().User.Id + "|" + body.Path, () => PhotoBytesAsync(http, config, body.Path, ct)), lensUser)
+                : null;
             if (IsRaw(body.Path))
-                return await PhotoEngine.DevelopAsync(await PhotoBytesAsync(http, config, body.Path, ct), (body.Adjust ?? Neutral).Clamped(), 1400, 85, log, ct) is { } rawDev
+                return await PhotoEngine.DevelopAsync(await PhotoBytesAsync(http, config, body.Path, ct), (body.Adjust ?? Neutral).Clamped(), 1400, 85, log, ct, lens) is { } rawDev
                     ? Results.File(rawDev, "image/jpeg") : Results.Json(new { error = RawNeedsEngine }, statusCode: 503);
             using var src = await PreviewSourceAsync(http, config, body.Path, ct);
-            // Mit Photo-Engine: ihre Umsetzung (die verkleinerte Fassung ist schon aufrecht, ohne EXIF)
-            if (body.Adjust is { IsNeutral: false } ea && PhotoEngine.Configured
-                && await PhotoEngine.DevelopAsync(PhotoAdjust.Jpeg(src, 95), ea.Clamped(), 1400, 85, log, ct) is { } dev)
+            if ((body.Adjust is { IsNeutral: false } || lens != null) && PhotoEngine.Configured
+                && await PhotoEngine.DevelopAsync(PhotoAdjust.Jpeg(src, 95), (body.Adjust ?? Neutral).Clamped(), 1400, 85, log, ct, lens) is { } dev)
                 return Results.File(dev, "image/jpeg");
+            // [feature:lenscorr:else]
+            // // RAW: die Engine entwickelt (auch ohne Regler - sonst sähe man nur das eingebettete Kamera-JPG)
+            // if (IsRaw(body.Path))
+            //     return await PhotoEngine.DevelopAsync(await PhotoBytesAsync(http, config, body.Path, ct), (body.Adjust ?? Neutral).Clamped(), 1400, 85, log, ct) is { } rawDev
+            //         ? Results.File(rawDev, "image/jpeg") : Results.Json(new { error = RawNeedsEngine }, statusCode: 503);
+            // using var src = await PreviewSourceAsync(http, config, body.Path, ct);
+            // // Mit Photo-Engine: ihre Umsetzung (die verkleinerte Fassung ist schon aufrecht, ohne EXIF)
+            // if (body.Adjust is { IsNeutral: false } ea && PhotoEngine.Configured
+            //     && await PhotoEngine.DevelopAsync(PhotoAdjust.Jpeg(src, 95), ea.Clamped(), 1400, 85, log, ct) is { } dev)
+            //     return Results.File(dev, "image/jpeg");
+            // [/feature:lenscorr]
             using var done = body.Adjust is { IsNeutral: false } a ? PhotoAdjust.Apply(src, a.Clamped()) : null;
             return Results.File(PhotoAdjust.Jpeg(done ?? src, 85), "image/jpeg");
         });
@@ -1026,7 +1087,32 @@ public static partial class FilesApi
         {
             var db = http.Space().Db;
             var marks = MarksOf(http, new FileLoc(http.Space(), "", null));
-            return new { items = FileStore.Recent(db).Where(x => !Protected(http, x.File.Path)).Select(x => new { item = Item(x.File, marks), used = x.Used }) };
+            var since = Features.On(Features.RecentClear) ? http.Space().Settings.RecentClearedAt : null;
+            return new { items = FileStore.Recent(db, since: since).Where(x => !Protected(http, x.File.Path)).Select(x => new { item = Item(x.File, marks), used = x.Used }) };
+        });
+        // „Zuletzt verwendet“ leeren (Rechtsklick auf den Eintrag)
+        api.MapDelete("/recent", (HttpContext http) =>
+        {
+            if (!Features.On(Features.RecentClear)) return Results.NotFound();
+            var space = http.Space();
+            FileStore.ClearRecent(space.Db);
+            space.UpdateSettings(s => s.RecentClearedAt = DateTime.UtcNow);
+            return Results.Ok();
+        });
+
+        // Eigenschaften eines Ordners (Rechtsklick → Eigenschaften, Kennung folderprops): Anzahl, Größe, letzte Änderung darin
+        api.MapGet("/props", (string? path, HttpContext http) =>
+        {
+            if (!Features.On(Features.FolderProps)) return Results.NotFound();
+            var loc = Loc(http, path);
+            if (loc.Virtual) return Results.BadRequest(new { error = "Für diesen Ordner gibt es keine Eigenschaften." });
+            var p = FileStore.Normalize(loc.Path);
+            var like = (p.Length == 0 ? "" : p.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_") + "/") + "%";
+            var r = loc.Db.Query("SELECT COUNT(CASE WHEN is_dir = 0 THEN 1 END), COUNT(CASE WHEN is_dir = 1 THEN 1 END), COALESCE(SUM(CASE WHEN is_dir = 0 THEN size END), 0), MAX(modified) " +
+                "FROM files WHERE path <> '' AND path LIKE $l ESCAPE '\\'",
+                x => new { files = x.GetInt64(0), folders = x.GetInt64(1), bytes = x.GetInt64(2), modified = x.IsDBNull(3) ? null : x.GetString(3) }, ("$l", like)).Single();
+            var self = p.Length == 0 ? null : FileStore.Get(loc.Db, p);
+            return Results.Ok(new { path = p, r.files, r.folders, r.bytes, r.modified, created = self?.Created, changed = self?.Modified });
         });
 
         api.MapGet("/favorites", (HttpContext http) =>
@@ -1105,6 +1191,8 @@ public static partial class FilesApi
                 try { restored.Add(FileStore.Restore(db, id)); }
                 catch (QuotaExceededException ex) { return Results.Json(new { error = ex.Message, restored }, statusCode: 507); }
             }
+            // „Rückgängig“ nach dem Löschen in der Galerie: das Foto gleich wieder zeigen, nicht erst nach der Wartezeit der Zeitleiste
+            if (restored.Count > 0) DmOffice.Gallery.GalleryTimeline.Forget(http.Space().User.Id);
             return Results.Ok(new { restored });
         });
 
@@ -1120,10 +1208,10 @@ public static partial class FilesApi
         });
 
         // ---------------- Aufbewahrung (Einstellungen -> Dateien) ----------------
-        api.MapGet("/settings", (HttpContext http, ServerConfig config, S3Mirror mirror, S3Backup backup) =>
+        api.MapGet("/settings", (HttpContext http) =>
         {
             var db = http.Space().Db;
-            return new { settings = FileRetention.Load(db), limits = FileRetention.LimitsOf(), usage = FileStore.Usage(db), trash = FileStore.TrashUsage(db), versions = FileStore.VersionUsage(db), quota = FileStore.Quota(db), used = UserStorage.Used(db), copy = CopyInfo(config, mirror, backup) };
+            return new { settings = FileRetention.Load(db), limits = FileRetention.LimitsOf(), usage = FileStore.Usage(db), trash = FileStore.TrashUsage(db), versions = FileStore.VersionUsage(db), quota = FileStore.Quota(db), used = UserStorage.Used(db) };
         });
         api.MapPut("/settings", (FileRetention.Settings body, HttpContext http) =>
         {
@@ -1213,6 +1301,7 @@ public static partial class FilesApi
             var space = http.Space();
             if (!Links.Delete(space.Db, id)) throw new KeyNotFoundException("Link nicht gefunden.");
             http.RequestServices.GetRequiredService<LinkIndex>().Remove(space.User.Id, id);
+            LinkUploadLimit.Forget(space.Db, id); // [feature:uploadlimit]
             return Results.Ok();
         });
 

@@ -14,13 +14,21 @@ public class SubscriptionIntervalTests
     public void Abstand_aus_der_Eingabe(int? input, int expected) => Assert.Equal(expected, Subscriptions.IntervalOf(input));
 
     [Fact]
-    public void Terminkalender_entsteht_auch_wenn_zuerst_eine_andere_Sammlung_angelegt_wurde()
+    // [feature:journal]
+    public void Terminkalender_entsteht_auch_wenn_zuerst_ein_Tagebuch_angelegt_wurde()
+    // [feature:journal:else]
+    // public void Terminkalender_entsteht_auch_wenn_zuerst_eine_andere_Sammlung_angelegt_wurde()
+    // [/feature:journal]
     {
         var dir = Directory.CreateTempSubdirectory("dmpimdef");
         try
         {
             var db = new DmOffice.Core.UserDb(Path.Combine(dir.FullName, "u.db"), new byte[32], "t", Path.Combine(dir.FullName, "blobs"));
-            PimStore.CreateCollection(db, PimStore.Calendar, "notizen", "Notizen", "#7B1DD3", "VJOURNAL");
+            // [feature:journal]
+            PimStore.CreateCollection(db, PimStore.Calendar, "tagebuch", "Mein Tagebuch", "#7B1DD3", "VJOURNAL");
+            // [feature:journal:else]
+            // PimStore.CreateCollection(db, PimStore.Calendar, "notizen", "Notizen", "#7B1DD3", "VJOURNAL");
+            // [/feature:journal]
             PimStore.EnsureDefaults(db);
             Assert.Contains(PimStore.Collections(db, PimStore.Calendar), c => c.Components.Contains("VEVENT"));
             // Wer ihn später löscht, bekommt ihn nicht wieder

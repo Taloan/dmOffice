@@ -1,8 +1,12 @@
 import { Button, Field, Input, MessageBar, MessageBarBody, Radio, RadioGroup, Select, Switch, Text, tokens } from '@fluentui/react-components'
+import { useAdminPart } from './AdminPage' // [feature:adminclean]
+import { Delete20Regular, PlayCircle20Regular } from '@fluentui/react-icons' // [feature:adminclean]
+import { RibbonActions, RibbonButton } from '../shell/Ribbon' // [feature:adminclean]
 import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { useApp } from '../App'
 import { t } from '../i18n'
+import { useAdminSave } from './draft' // [feature:savemode]
 
 interface AiState { provider: 'anthropic' | 'openai'; endpoint: string | null; model: string | null; webSearch: boolean; location: string | null; hasKey: boolean; configured: boolean; claudeModels: string[] }
 
@@ -22,26 +26,47 @@ export function AiAdmin() {
   const [busy, setBusy] = useState(false)
   const take = (s: AiState) => { setSt(s); setProvider(s.provider); setEndpoint(s.endpoint ?? ''); setModel(s.model ?? ''); setWebSearch(s.webSearch); setLocation(s.location ?? ''); setKey('') }
   useEffect(() => { api.get<AiState>('/api/admin/ai').then(take).catch(fail) }, []) // eslint-disable-line react-hooks/exhaustive-deps
-  if (!st) return null
   const save = async (apiKey?: string | null) => {
+    if (!st) return false // [feature:savemode]
     try {
-      take(await api.put<AiState>('/api/admin/ai', { provider, endpoint, model: provider === 'anthropic' ? model || st.claudeModels[0] : model, apiKey: apiKey ?? (key ? key : null), webSearch: provider === 'anthropic' && webSearch, location }))
+      take(await api.put<AiState>('/api/admin/ai', { provider, endpoint, model: provider === 'anthropic' ? model || st!.claudeModels[0] : model, apiKey: apiKey ?? (key ? key : null), webSearch: provider === 'anthropic' && webSearch, location }))
       notify(t('Gespeichert'))
+      return true // [feature:savemode]
     } catch (e) { fail(e) }
+    return false // [feature:savemode]
   }
+  // [feature:savemode]
+  // Kennung savemode: Formular gilt mit „Speichern“ im Menüband
+  const drafting = useAdminSave({
+    dirty: !!st && (provider !== st.provider || endpoint !== (st.endpoint ?? '') || model !== (st.model ?? '') || !!key || webSearch !== st.webSearch || location !== (st.location ?? '')),
+    save: () => save(),
+    discard: () => { if (st) take(st) },
+  })
+  // [feature:savemode:else]
+  // const drafting = false
+  // [/feature:savemode]
+  if (!st) return null
+  // [feature:adminclean]
+  const tabbed = useAdminPart().part != null
+  // [feature:adminclean:else]
+  // const tabbed = false
+  // [/feature:adminclean]
   const test = async () => {
     setBusy(true)
     try { const r = await api.post<{ answer: string }>('/api/admin/ai/test'); notify(t('Die KI antwortet'), r.answer) } catch (e) { fail(e) } finally { setBusy(false) }
   }
   const muted = { color: tokens.colorNeutralForeground3 }
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 640 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: tabbed ? undefined : 640 }}>
       <Text>{t('Die KI steht nur Benutzern zur Verfügung, die im Reiter „Benutzer“ in der Spalte „KI“ freigeschaltet sind.')}</Text>
       <MessageBar intent="warning" layout="multiline">
         <MessageBarBody>
           <div>{t('An die KI gehen:')}</div>
           <ul style={{ margin: '4px 0', paddingLeft: 18 }}>
             <li>{t('Pukki: die Frage, die letzten Nachrichten der Unterhaltung, Datum und Uhrzeit.')}</li>
+            {/* [feature:journal] */}
+            <li>{t('Tagebuch: Datum, Stimmung, Titel und der bisherige Text, dazu nur, was der Benutzer ankreuzt (Bewegung, Termine des Tages, Ort, Wetter, Schlagzeilen).')}</li>
+            {/* [/feature:journal] */}
             <li>{t('Rezeptsuche: nur der Suchbegriff.')}</li>
           </ul>
         </MessageBarBody>
@@ -77,11 +102,17 @@ export function AiAdmin() {
           )}
         </>
       )}
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        <Button appearance="primary" onClick={() => save()}>{t('Speichern')}</Button>
+      {/* [feature:adminclean] */}
+      {tabbed && <RibbonActions>
+        <RibbonButton icon={<PlayCircle20Regular />} disabled={!st.configured || busy} label={busy ? t('Frage …') : t('Testen')} onClick={test} />
+        {st.hasKey && <RibbonButton icon={<Delete20Regular />} label={t('Schlüssel löschen')} onClick={() => save('')} />}
+      </RibbonActions>}
+      {/* [/feature:adminclean] */}
+      {!tabbed && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {!drafting && <Button appearance="primary" onClick={() => save()}>{t('Speichern')}</Button>}
         <Button disabled={!st.configured || busy} onClick={test}>{busy ? t('Frage …') : t('Testen')}</Button>
         {st.hasKey && <Button appearance="subtle" onClick={() => save('')}>{t('Schlüssel löschen')}</Button>}
-      </div>
+      </div>}
       <Text size={200} style={muted}>{st.configured ? t('Eingerichtet.') : t('Noch nicht eingerichtet – Pukki antwortet wie bisher ohne KI.')}</Text>
     </div>
   )

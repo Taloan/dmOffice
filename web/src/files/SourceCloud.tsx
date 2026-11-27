@@ -13,7 +13,7 @@ export function SourceCloud({ path, style, saving, onSave }: { path: string; sty
   const ext = isExternalPhoto(path)
   // Leere Wolke anklicken: in die Ablage sichern (mit allen markierten, wenn das Foto dazugehört)
   const click = ext && !saving && onSave ? onSave : undefined
-  const title = saving ? t('Wird in die Ablage gesichert') : ext ? (click ? t('In einem Galerie-Ordner gespeichert. Klicken: In Ablage sichern') : t('In einem Galerie-Ordner gespeichert')) : t('In dmOffice gespeichert')
+  const title = saving ? t('Wird in die Ablage gesichert') : ext ? (click ? t('In einem externen Galerie-Ordner gespeichert. Klicken: In Ablage sichern') : t('In einem externen Galerie-Ordner gespeichert')) : t('In dmOffice gespeichert')
   // Immer oben rechts (unten liegen je nach Kachelgröße die Bildinfos); Größe nach der Kachel: 12 % ihrer Breite, 11 bis 18 Pixel
   return <svg viewBox="0 0 26 20" role="img" aria-label={title} style={{ position: 'absolute', right: 4, top: 5, width: 'clamp(11px, 12%, 18px)', height: 'auto', zIndex: 2, pointerEvents: 'auto', cursor: click ? 'pointer' : undefined, ...style }}
     onClick={click && (e => { e.stopPropagation(); click() })} onDoubleClick={click && (e => e.stopPropagation())}

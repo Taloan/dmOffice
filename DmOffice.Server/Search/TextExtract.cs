@@ -186,8 +186,14 @@ public static class TextExtract
             {
                 ct.ThrowIfCancellationRequested();
                 var page = doc.GetPage(i);
+                // Zeilen behalten: springt die Grundlinie, beginnt eine neue Zeile - sonst stuende die ganze Seite in einer
+                // Zeile und zeilenweise Auswertungen (Betrag neben „Gesamt“, nicht neben „MwSt“) saehen nur noch eine
+                double? lastBottom = null;
                 foreach (var word in page.GetWords())
                 {
+                    var box = word.BoundingBox;
+                    if (lastBottom is double b && Math.Abs(box.Bottom - b) > Math.Max(2, box.Height / 2)) sb.Append('\n');
+                    lastBottom = box.Bottom;
                     sb.Append(word.Text).Append(' ');
                     if (sb.Length >= limits.MaxChars) break;
                 }

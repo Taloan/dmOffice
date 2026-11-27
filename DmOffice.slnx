@@ -2,6 +2,8 @@
   <Folder Name="/vendor/">
     <Project Path="vendor/Notizi.Core/Notizi.Core.csproj" />
   </Folder>
+  <Project Path="DmOffice.Sdk/DmOffice.Sdk.csproj" />
   <Project Path="DmOffice.Server/DmOffice.Server.csproj" />
+  <Project Path="DmOffice.Tests.Plugin/DmOffice.Tests.Plugin.csproj" />
   <Project Path="DmOffice.Tests/DmOffice.Tests.csproj" />
 </Solution>

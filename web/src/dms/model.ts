@@ -6,6 +6,19 @@ import { t } from '../i18n'
 export const importedText = (n: number, dup: number) => [n === 1 ? t('1 Dokument übernommen') : t('{n} Dokumente übernommen', { n }),
   dup ? t('{d} schon vorhanden', { d: dup }) : ''].filter(Boolean).join(', ')
 
+/** Dateiarten, die das DMS aufnimmt (wie DmsImport.IsDocument auf dem Server). */
+const DOC_EXT = new Set(['pdf', 'docx', 'docm', 'xlsx', 'xlsm', 'pptx', 'pptm', 'eml', 'doc', 'xls', 'ppt', 'odt', 'ods', 'odp', 'rtf',
+  'txt', 'csv', 'tsv', 'md', 'markdown', 'log', 'json', 'xml', 'ini', 'yaml', 'yml', 'vcf', 'ics', 'html', 'htm', 'xhtml',
+  'jpg', 'jpeg', 'png', 'tif', 'tiff', 'bmp', 'gif', 'webp', 'heic', 'heif'])
+export const isDmsDocument = (f: { name: string; type?: string }) => {
+  const dot = f.name.lastIndexOf('.')
+  if (dot > 0 && dot < f.name.length - 1) return DOC_EXT.has(f.name.slice(dot + 1).toLowerCase())
+  return !!f.type && /^(application\/pdf|image\/|text\/)/.test(f.type)
+}
+/** Hinweis zu Dateien, die das DMS nicht aufnimmt (Titel, Text mit den Namen). */
+export const rejectedText = (names: string[]): [string, string] =>
+  [t('Das DMS nimmt PDF, Office-Dateien, Texte, Mails und Bilder auf.'), t('Übersprungen: {names}', { names: names.join(', ') })]
+
 /** Herkunft eines Dokuments in Worten (Spalte „Quelle“). */
 export const sourceLabel = (source: string) => source === 'upload' ? t('Hochgeladen') : source === 'folder' ? t('Überwachter Ordner')
   : source === 'files' ? t('Aus Dateien') : source === 'mail' ? t('Aus Mail') : source
@@ -50,6 +63,8 @@ export interface Doc {
   amount?: number | null
   /** Fixiert: nicht änderbar und nicht löschbar, bis die Fixierung aufgehoben wird */
   fixed?: boolean
+  /** Werte eigener Felder (dmsfields): Kennung des Felds → Wert */
+  fields?: Record<string, string> | null
 }
 
 export interface Profile {
@@ -126,6 +141,8 @@ export interface Filter {
   /** Rolle: das geltende Dokument und die früheren Versionen */
   role?: string; noRole?: boolean
   fixed?: boolean
+  /** Kennungen von Einträgen, bei denen nur eigene Dokumente zählen (nicht die der Unterbegriffe) */
+  exact?: string[]
   /** Ablage passt nicht zur Vorgabe (dmsplace) */
   misplaced?: boolean
   /** Warteschlange: noch nicht verarbeitet */
@@ -140,13 +157,16 @@ export const loadDocs = (f: Filter, offset = 0, limit = 200) =>
   api.get<{ items: Doc[]; total: number }>('/api/dms/docs?' + q({
     q: f.q || undefined, correspondent: f.correspondent, doctype: f.doctype, tags: f.tags?.length ? f.tags.join(',') : undefined,
     docFrom: f.docFrom, docTo: f.docTo, importedFrom: f.importedFrom, importedTo: f.importedTo, inbox: f.inbox, profile: f.profile,
-    noCorrespondent: f.noCorrespondent, noDoctype: f.noDoctype, noTags: f.noTags, paperlessDiffers: f.paperlessDiffers, queued: f.queued, area: f.area, role: f.role, noRole: f.noRole, fixed: f.fixed, sort: f.sort, desc: f.sort ? f.desc : undefined, offset, limit,
+    noCorrespondent: f.noCorrespondent, noDoctype: f.noDoctype, noTags: f.noTags, paperlessDiffers: f.paperlessDiffers, queued: f.queued, area: f.area, role: f.role, noRole: f.noRole, fixed: f.fixed, exact: f.exact?.length ? f.exact.join(',') : undefined, sort: f.sort, desc: f.sort ? f.desc : undefined, offset, limit,
   }))
 
 /** Filter für einen Ordner eines virtuellen Baums (samt der Ordner darüber). */
 export function filterOf(path: { level: string; key: string | null }[]): Filter {
   const f: Filter = {}
-  for (const { level, key } of path) {
+  path.forEach(({ level, key }, i) => {
+    // Folgt eine andere Ebene (etwa Jahr), zählt der Baum dort nur Dokumente dieses Eintrags selbst, nicht die seiner Unterbegriffe.
+    // Ein Unterbegriff derselben Ebene folgt dagegen verschachtelt; dann bleibt der Oberbegriff wie bisher.
+    if (key && i < path.length - 1 && path[i + 1].level !== level && (level === 'correspondent' || level === 'doctype' || level === 'tag')) f.exact = [...(f.exact ?? []), key]
     if (level === 'correspondent') { if (key) f.correspondent = key; else f.noCorrespondent = true }
     else if (level === 'doctype') { if (key) f.doctype = key; else f.noDoctype = true }
     else if (level === 'tag') { if (key) f.tags = [...(f.tags ?? []), key]; else f.noTags = true }
@@ -159,7 +179,7 @@ export function filterOf(path: { level: string; key: string | null }[]): Filter 
       const [from, to] = range(key)
       f.importedFrom = from; f.importedTo = to
     }
-  }
+  })
   return f
 }
 

@@ -65,14 +65,16 @@ public static class Totp
         return null;
     }
 
+    /// <summary>Wiederherstellungscodes: 15 Zeichen aus 31 (rund 74 Bit), in Dreiergruppen zu fünf. Gespeichert wird nur
+    /// der SHA-256-Wert (<see cref="Passwords.TokenHash"/>) - bei dieser Länge lässt er sich nicht durchprobieren. Frühere
+    /// Codes (10 Zeichen) gelten weiter, bis sie benutzt oder neu erzeugt werden.</summary>
     public static List<string> NewRecoveryCodes(int count = 10)
     {
         const string alphabet = "abcdefghjkmnpqrstuvwxyz23456789";
         return Enumerable.Range(0, count).Select(_ =>
         {
-            var b = RandomNumberGenerator.GetBytes(10);
-            var s = new string(b.Select(x => alphabet[x % alphabet.Length]).ToArray());
-            return s[..5] + "-" + s[5..];
+            var s = new string(Enumerable.Range(0, 15).Select(_ => alphabet[RandomNumberGenerator.GetInt32(alphabet.Length)]).ToArray());
+            return s[..5] + "-" + s[5..10] + "-" + s[10..];
         }).ToList();
     }
 }

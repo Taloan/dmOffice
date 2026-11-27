@@ -10,8 +10,28 @@ public sealed class ExternalFolderDef
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N")[..12];
     public string Name { get; set; } = "";
-    /// <summary>Voller Pfad im Container (eingebundene Freigabe, USB-Platte).</summary>
+    /// <summary>Art (<see cref="ServerMounts"/>): null oder „folder“ = Pfad im Container (so gespeichert, bevor es andere Arten gab),
+    /// „webdav“ (mit sftp://-Adresse: SFTP), „onedrive“, „pcloud“.</summary>
+    public string? Kind { get; set; }
+    /// <summary>Voller Pfad im Container (eingebundene Freigabe, USB-Platte); bei anderen Arten leer.</summary>
     public string Path { get; set; } = "";
+    /// <summary>WebDAV und SFTP: Adresse und Benutzer; Passwort oder privater Schlüssel mit dem Hauptschlüssel eingepackt (Vault).</summary>
+    public string? Url { get; set; }
+    public string? User { get; set; }
+    public string? Password { get; set; }
+    /// <summary>OneDrive: Refresh-Token (eingepackt), Laufwerk und Ordner darin.</summary>
+    public string? RefreshToken { get; set; }
+    public string? Drive { get; set; }
+    public string? Item { get; set; }
+    /// <summary>pCloud: Token (eingepackt), Server der Region, Ordner im Konto. OneDrive: angezeigter Ordner beim Speichern.</summary>
+    public string? Token { get; set; }
+    public string? Host { get; set; }
+    public string? Folder { get; set; }
+    /// <summary>OneDrive und pCloud: Konto und Ort zum Anzeigen.</summary>
+    public string? Account { get; set; }
+    /// <summary>Nur beim Speichern aus der Verwaltung: Kennung der Anmeldung bei Microsoft oder pCloud, nie gespeichert.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? Flow { get; set; }
     /// <summary>Wer ihn sieht (Benutzer-Kennungen); leer: alle.</summary>
     public List<string> Users { get; set; } = new();
     public bool ReadOnly { get; set; }
@@ -100,8 +120,19 @@ public static class ExternalFolders
     // kurzer Frist und gemerkt für ReachFresh - eine hängende Netzfreigabe blockiert so weder die Seite noch mehrere Threads
     // (läuft eine Prüfung noch, gilt das letzte Ergebnis bzw. „nicht erreichbar“).
 
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTime At, bool Ok)> Reach = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTime At, bool Ok, string? Why)> Reach = new();
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Task<bool>> Checking = new();
+    // [feature:sftptrust]
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> KeyWait = new();
+    /// <summary>Ordner, deren letzte Prüfung am unbestätigten Fingerabdruck des SFTP-Servers scheiterte (Liste der Kennungen).</summary>
+    public static List<string> KeyWaiting(UserSpace space) =>
+        KeyWait.Where(x => x.Value && x.Key.StartsWith(space.User.Id + "|")).Select(x => x.Key[(space.User.Id.Length + 1)..]).ToList();
+    /// <summary>Nach dem Bestätigen eines Fingerabdrucks: gemerkte Ergebnisse dieser Ordner verwerfen, die nächste Liste prüft neu.</summary>
+    public static void ForgetKeyWait()
+    {
+        foreach (var k in KeyWait.Keys) { KeyWait.TryRemove(k, out _); Reach.TryRemove(k, out _); }
+    }
+    // [/feature:sftptrust]
     private static readonly TimeSpan ReachFresh = TimeSpan.FromSeconds(30), ReachWait = TimeSpan.FromSeconds(3);
 
     /// <summary>
@@ -109,21 +140,56 @@ public static class ExternalFolders
     /// einen Tunnel, gerade neu eingebunden), gilt das letzte bekannte Ergebnis, ohne eines „erreichbar“ - „nicht erreichbar“ nur, wenn
     /// eine Prüfung tatsächlich fehlschlug. Sonst standen nach jedem Ablauf von ReachFresh für einige Sekunden überall Stoppschilder.
     /// </summary>
-    public static async Task<bool> ReachableAsync(UserSpace space, ServerConfig config, string id)
+    /// <param name="fresh">Nicht das gemerkte Ergebnis nehmen, sondern jetzt prüfen (nach einem Fehler: wirklich weg oder etwas anderes?)</param>
+    public static async Task<bool> ReachableAsync(UserSpace space, ServerConfig config, string id, bool fresh = false)
     {
         var key = space.User.Id + "|" + id;
         var known = Reach.TryGetValue(key, out var r);
-        if (known && DateTime.UtcNow - r.At < ReachFresh) return r.Ok;
+        if (!fresh && known && DateTime.UtcNow - r.At < ReachFresh) return r.Ok;
         var check = Checking.GetOrAdd(key, k => Task.Run(async () =>
         {
             bool ok;
-            try { var (d, _) = Open(space, config, id); using (d) await d.ListAsync("", CancellationToken.None); ok = true; }
-            catch (Exception) { ok = false; }
-            Reach[key] = (DateTime.UtcNow, ok);
+            string? why = null;
+            KeyWait.TryRemove(key, out _); // [feature:sftptrust]
+            try
+            {
+                var (d, _) = Open(space, config, id);
+                using (d)
+                {
+                    // Auf Wunsch geprüft: nicht die Pause nach gescheiterten Versuchen abwarten (SftpDriver)
+                    if (fresh && d is SftpDriver sftp) sftp.RetryNow();
+                    await d.ListAsync("", CancellationToken.None);
+                }
+                ok = true;
+            }
+            // [feature:sftptrust]
+            // Fingerabdruck wartet auf Bestätigung: nicht erreichbar, aber der Ordner lässt sich öffnen und zeigt dort, was zu bestätigen ist
+            catch (SftpHostKeyException e) { ok = false; why = Reason(e); KeyWait[key] = true; }
+            // [/feature:sftptrust]
+            catch (Exception e) { ok = false; why = Reason(e); }
+            Reach[key] = (DateTime.UtcNow, ok, why);
             Checking.TryRemove(key, out _);
             return ok;
         }));
         return await Task.WhenAny(check, Task.Delay(ReachWait)) == check ? check.Result : !known || r.Ok;
+    }
+
+    /// <summary>Warum die letzte Prüfung von <see cref="ReachableAsync"/> fehlschlug (kurz, ohne Zugangsdaten); null, wenn sie gelang oder keine lief.</summary>
+    public static string? ReachError(UserSpace space, string id) =>
+        Reach.TryGetValue(space.User.Id + "|" + id, out var r) && !r.Ok ? r.Why : null;
+
+    /// <summary>
+    /// Fehler eines Treibers kurz für die Oberfläche: nur die erste Zeile der Meldung, Zugangsdaten in Adressen
+    /// („https://name:passwort@…“) entfernt, höchstens 200 Zeichen, ohne Punkt am Ende - der ganze Fehler gehört ins Protokoll.
+    /// </summary>
+    public static string Reason(Exception e)
+    {
+        if (e is AggregateException { InnerException: { } inner }) e = inner;
+        var text = (e.Message ?? "").Split('\n', 2)[0].Trim();
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"(?i)\b([a-z][a-z0-9+.-]*://)[^/@\s]+@", "$1");
+        if (text.Length > 200) text = text[..200].TrimEnd() + "…";
+        text = text.TrimEnd('.', ' ');
+        return text.Length > 0 ? text : e.GetType().Name;
     }
 
     /// <summary>Die Liste mit gesetztem <see cref="Mount.Available"/> (alle gleichzeitig geprüft).</summary>
@@ -161,7 +227,7 @@ public static class ExternalFolders
     }
     private const string SplitKey = "files.external.split";
 
-    private static bool SameHost(string a, string b) =>
+    internal static bool SameHost(string a, string b) =>
         Uri.TryCreate(a, UriKind.Absolute, out var x) && Uri.TryCreate(b, UriKind.Absolute, out var y)
         && string.Equals(x.Host, y.Host, StringComparison.OrdinalIgnoreCase) && x.Port == y.Port && x.Scheme == y.Scheme;
 
@@ -237,8 +303,10 @@ public static class ExternalFolders
     {
         var s = config.Current;
         var list = new List<Mount>();
-        foreach (var f in s.ExternalFolders)
-            if (f.Users.Count == 0 || f.Users.Contains(space.User.Id)) list.Add(new Mount(f.Id, f.Name, "folder", f.ReadOnly, f.Level != ExternalFolderDef.LevelNone));
+        // Server-Mounts heißen hier „folder“, gleich welcher Art (Pfad im Container, WebDAV, SFTP, OneDrive, pCloud)
+        foreach (var f in ServerMounts.Active(s))
+            if (f.Users.Count == 0 || f.Users.Contains(space.User.Id))
+                list.Add(new Mount(f.Id, f.Name, "folder", f.ReadOnly, f.Level != ExternalFolderDef.LevelNone, Sftp: ServerMounts.KindOf(f) == UserMount.WebDav && RemoteDrivers.IsSftp(f.Url)));
         // Einbindungen in Dateien (die externen Ziele selbst stehen in TargetsOf)
         var own = Own(space);
         foreach (var m in own.Where(x => x.Access != null))
@@ -258,8 +326,8 @@ public static class ExternalFolders
     private static (IStorageDriver Driver, bool ReadOnly, List<string> Include) OpenAll(UserSpace space, ServerConfig config, string id)
     {
         var s = config.Current;
-        if (s.ExternalFolders.FirstOrDefault(f => f.Id == id && (f.Users.Count == 0 || f.Users.Contains(space.User.Id))) is { } f)
-            return (new FolderDriver(f.Path), f.ReadOnly, f.Include);
+        if (ServerMounts.Active(s).FirstOrDefault(f => f.Id == id && (f.Users.Count == 0 || f.Users.Contains(space.User.Id))) is { } f)
+            return (ServerMounts.Open(config, f), f.ReadOnly, f.Include);
         var own = Own(space);
         if (own.FirstOrDefault(m => m.Id == id) is { } m)
         {
@@ -279,6 +347,22 @@ public static class ExternalFolders
         }
         throw new KeyNotFoundException("Externer Ordner nicht gefunden.");
     }
+
+    // [feature:sftptrust]
+    /// <summary>SFTP-Adresse eines externen Ordners des Benutzers (Server-Mount, eigenes Ziel oder Einbindung darin) und ob es ein
+    /// Server-Mount ist; null: kein SFTP-Ordner, den er sehen darf.</summary>
+    public static (string Url, bool Server)? SftpUrlOf(UserSpace space, ServerConfig config, string id)
+    {
+        var s = config.Current;
+        if (ServerMounts.Active(s).FirstOrDefault(f => f.Id == id && (f.Users.Count == 0 || f.Users.Contains(space.User.Id))) is { } f)
+            return ServerMounts.KindOf(f) == UserMount.WebDav && RemoteDrivers.IsSftp(f.Url) ? (f.Url!, true) : null;
+        var own = Own(space);
+        if (own.FirstOrDefault(m => m.Id == id) is { } m && (m.Access == null ? m : own.FirstOrDefault(a => a.Id == m.Access)) is { } acc
+            && Allowed(s, acc) && RemoteDrivers.IsSftp(acc.Url))
+            return (acc.Url, false);
+        return null;
+    }
+    // [/feature:sftptrust]
 
     /// <summary>Eigene Ordner nur, solange der Admin die Art erlaubt - sonst gesperrt (nicht sichtbar, nicht zu öffnen).</summary>
     private static bool Allowed(ServerSettings s, UserMount m) =>
@@ -303,7 +387,7 @@ public static class ExternalFolders
     public static DmOffice.Mail.MicrosoftOAuth? OAuth { get; set; }
     /// <summary>Access-Token zu einem Refresh-Token - in Tests ersetzbar. Vorgabe: <see cref="OAuth"/>.</summary>
     public static Func<string, string?, Action<string, string, string>?, CancellationToken, Task<string>>? FilesToken { get; set; }
-    private static Task<string> TokenAsync(string key, string? refresh, Action<string, string, string>? rotated, CancellationToken ct) =>
+    internal static Task<string> TokenAsync(string key, string? refresh, Action<string, string, string>? rotated, CancellationToken ct) =>
         FilesToken?.Invoke(key, refresh, rotated, ct)
         ?? (OAuth ?? throw new InvalidOperationException("Microsoft-Anmeldung ist nicht eingerichtet (DMOFFICE_MS_CLIENT_ID).")).FilesTokenAsync(key, refresh, rotated, ct);
 
@@ -324,11 +408,13 @@ public static class ExternalFolders
     }
 
     /// <summary>Treiber für die Ordnerauswahl vor dem Einbinden (Laufwerk und Ordner frei).</summary>
-    private static OneDriveDriver Browse(string refresh, string? drive = null, string item = "root") => drive == null
+    internal static OneDriveDriver Browse(string refresh, string? drive = null, string item = "root") => drive == null
         ? new(ct => TokenAsync("browse", refresh, null, ct), GraphHttp)
         : new(ct => TokenAsync("browse", refresh, null, ct), GraphHttp, drive, item);
 
     private static readonly SemaphoreSlim ThumbGate = new(2);
+    /// <summary>Vorschaubild: größere Dateien werden nicht gelesen.</summary>
+    private const long MaxThumbSource = 150L * 1024 * 1024;
 
     /// <summary>Erlaubte Adressen für SFTP-Ziele der Benutzer - dieselbe Regel wie bei WebDAV (Heimnetz nur, wenn der Admin es erlaubt).</summary>
     public static Func<IPAddress, bool> AllowFor(ServerSettings s) => s.ExternalWebDavPrivate ? a => !NeverAllowed(a) : a => !Private(a);
@@ -489,6 +575,26 @@ public static class ExternalFolders
             if (keys.Any(p => k.StartsWith(p + "|"))) Lists.TryRemove(k, out _);
     }
 
+    /// <summary>Bei Microsoft anmelden und einen OneDrive-Ordner wählen - für eigene Ziele der Benutzer und für Server-Mounts
+    /// der Verwaltung (<see cref="ServerMounts"/>); refused sagt, ob es dort gerade erlaubt ist.</summary>
+    public static void MapOneDriveSignIn(RouteGroupBuilder api, Func<UserSpace, ServerConfig, IResult?> refused)
+    {
+        api.MapPost("/onedrive/start", async (HttpContext http, ServerConfig config, DmOffice.Mail.MicrosoftOAuth oauth, CancellationToken ct) =>
+        {
+            if (refused(http.Space(), config) is { } no) return no;
+            return Results.Ok(await oauth.StartAsync(http.Space().User.Id, ct, DmOffice.Mail.MicrosoftOAuth.FilesScopes));
+        });
+        api.MapGet("/onedrive/folders", async (string flow, string? item, HttpContext http, ServerConfig config, DmOffice.Mail.MicrosoftOAuth oauth, CancellationToken ct) =>
+        {
+            var space = http.Space();
+            if (refused(space, config) is { } no) return no;
+            if (oauth.FilesGrant(space.User.Id, flow) is not { } refresh) return Results.BadRequest(new { error = "Erst bei Microsoft anmelden." });
+            var drive = await Browse(refresh).MyDriveAsync(ct);
+            var folders = await Browse(refresh, drive.Id, string.IsNullOrEmpty(item) ? "root" : item).FoldersAsync(ct);
+            return Results.Ok(new { drive = new { id = drive.Id, type = drive.Type, owner = drive.Owner }, folders = folders.Select(f => new { id = f.Id, name = f.Name }) });
+        });
+    }
+
     public static void Map(WebApplication app)
     {
         var api = app.MapGroup("/api/files/external").RequireAuthorization();
@@ -502,6 +608,7 @@ public static class ExternalFolders
             canAdd = (config.Current.ExternalWebDavForUsers || SftpOffered(config) || OneDriveOffered(config) || PCloudFolders.Offered(config)),
             webDav = config.Current.ExternalWebDavForUsers,
             sftp = SftpOffered(config),
+            keyWait = KeyWaiting(http.Space()), // [feature:sftptrust]
             oneDrive = OneDriveOffered(config),
             pCloud = PCloudFolders.Offered(config),
         });
@@ -611,20 +718,7 @@ public static class ExternalFolders
         });
         // Eigener OneDrive-Ordner: bei Microsoft anmelden (Gerätecode, abgefragt über /api/settings/accounts/microsoft/poll),
         // dann einen Ordner wählen und einbinden. Bis dahin bleibt das Token in der Anmeldung auf dem Server.
-        api.MapPost("/onedrive/start", async (HttpContext http, ServerConfig config, DmOffice.Mail.MicrosoftOAuth oauth, CancellationToken ct) =>
-        {
-            if (OneDriveRefused(http.Space(), config) is { } refused) return refused;
-            return Results.Ok(await oauth.StartAsync(http.Space().User.Id, ct, DmOffice.Mail.MicrosoftOAuth.FilesScopes));
-        });
-        api.MapGet("/onedrive/folders", async (string flow, string? item, HttpContext http, ServerConfig config, DmOffice.Mail.MicrosoftOAuth oauth, CancellationToken ct) =>
-        {
-            var space = http.Space();
-            if (OneDriveRefused(space, config) is { } refused) return refused;
-            if (oauth.FilesGrant(space.User.Id, flow) is not { } refresh) return Results.BadRequest(new { error = "Erst bei Microsoft anmelden." });
-            var drive = await Browse(refresh).MyDriveAsync(ct);
-            var folders = await Browse(refresh, drive.Id, string.IsNullOrEmpty(item) ? "root" : item).FoldersAsync(ct);
-            return Results.Ok(new { drive = new { id = drive.Id, type = drive.Type, owner = drive.Owner }, folders = folders.Select(f => new { id = f.Id, name = f.Name }) });
-        });
+        MapOneDriveSignIn(api, OneDriveRefused);
         api.MapPost("/onedrive", async (OneDriveBody body, HttpContext http, ServerConfig config, DmOffice.Mail.MicrosoftOAuth oauth, CancellationToken ct) =>
         {
             var space = http.Space();
@@ -738,7 +832,7 @@ public static class ExternalFolders
             using (d)
             {
                 var stat = await d.StatAsync(rel, ct);
-                if (stat == null || stat.IsDir || stat.Size > 150L * 1024 * 1024) return Results.NotFound();
+                if (stat == null || stat.IsDir || stat.Size > MaxThumbSource) return Results.NotFound();
                 var kind = DmOffice.Gallery.GalleryFolders.KindOf(stat.Name);
                 if (kind != "image") return Results.NotFound();
                 var stamp = DmOffice.Gallery.GalleryProxies.Stamp(stat.Size, new DateTimeOffset(DateTime.SpecifyKind(stat.Modified, DateTimeKind.Utc)).ToUnixTimeMilliseconds());
@@ -752,9 +846,10 @@ public static class ExternalFolders
                     try
                     {
                         await using var s = await d.OpenReadAsync(rel, ct);
-                        var m = new MemoryStream((int)Math.Min(stat.Size, int.MaxValue));
-                        await s.CopyToAsync(m, ct);
-                        var bytes = m.ToArray();
+                        // Die Größe nennt der fremde Server - gelesen wird trotzdem höchstens die Grenze
+                        byte[] bytes;
+                        try { bytes = await DmOffice.Core.ReadLimit.ReadAllAsync(s, MaxThumbSource, ct, stat.Size); }
+                        catch (DmOffice.Core.ReadLimit.TooLargeException) { return Results.NotFound(); }
                         data = Dav.Thumbs.IsRaw(rel) ? Dav.Thumbs.FromRaw(bytes, Dav.Thumbs.Small) : Dav.Thumbs.FromBytes(bytes, Dav.Thumbs.Small);
                     }
                     finally { ThumbGate.Release(); }
@@ -791,7 +886,7 @@ public static class ExternalFolders
                 if (ro) return Results.Json(new { error = "Dieser Ordner ist nur zum Lesen." }, statusCode: 403);
                 var dir = StoragePath.Clean(path);
                 var names = new List<string>();
-                await foreach (var file in MultipartUpload.Files(request, ct))
+                await foreach (var file in MultipartUpload.Files(request, ct, http.Space().Db))
                 {
                     var name = System.IO.Path.GetFileName(file.FileName.Replace('\\', '/'));
                     await d.WriteAsync(StoragePath.Join(dir, StoragePath.Clean(name)), file.Body, ct);

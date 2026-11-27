@@ -12,7 +12,7 @@ namespace DmOffice.Storage;
 /// <summary>
 /// Was die Datensicherung je Bereich ins Ziel legt (docs/datensicherung-konzept.md, „Bereiche und Formate“): Dateien als
 /// Originale, Kalender und Aufgaben als .ics je Sammlung, Kontakte als .vcf je Adressbuch, Notizen als .md mit Anhängen, DMS
-/// als Liste (CSV, JSON) plus getrennt gehaltene Originale, Alben als JSON.
+/// als Liste (CSV, JSON) plus getrennt gehaltene Originale, Tagebuch als .md je Eintrag, Alben als JSON.
 /// Nur Pfade, Stempel und wie der Inhalt entsteht - gelesen wird erst beim Übertragen, eins nach dem anderen.
 /// </summary>
 public static class PlainBackupAreas
@@ -38,11 +38,35 @@ public static class PlainBackupAreas
                 PlainBackup.Tasks => Features.On(Features.Tasks),
                 PlainBackup.Notes => Features.On(Features.Notes),
                 PlainBackup.Dms => filesOn && Features.On(Features.Dms),
+                // [feature:journal]
+                PlainBackup.Journal => Features.On(Features.Journal),
+                // [/feature:journal]
                 _ => true,
             };
             if (on) list.Add(a);
         }
+        list.AddRange(PluginAreaKeys());
         return list;
+    }
+
+    /// <summary>S8: Bereiche der eingeschalteten Plugins, Kennung mit „p:“ davor.</summary>
+    public static List<(string Key, DmOffice.Sdk.LocalText Label, DmOffice.Sdk.IExportArea Area)> PluginAreas() =>
+        DmOffice.Plugins.PluginHost.ExportAreas().Select(x => (PlainBackup.PluginPrefix + x.Area.Key, x.Area.Label, x.Area)).ToList();
+
+    public static List<string> PluginAreaKeys() => PluginAreas().Select(a => a.Key).ToList();
+
+    /// <summary>Dateien der gewählten Plugin-Bereiche, im Ordner mit dem Namen des Bereichs. Ein Fehler im Plugin bricht nur seinen Bereich ab.</summary>
+    private static IEnumerable<PlainItem> PluginItems(UserSpace space, HashSet<string> on, PlainBackup.Names names, string lang)
+    {
+        var user = new DmOffice.Plugins.UserDataAdapter(space);
+        foreach (var (key, label, area) in PluginAreas().Where(a => on.Contains(a.Key)))
+        {
+            List<DmOffice.Sdk.ExportItem> items;
+            try { items = area.Items(user).ToList(); }
+            catch (Exception) { continue; }
+            foreach (var i in items)
+                yield return new PlainItem(names.Take(PlainBackup.Join(label.In(lang), i.Path)), null, 0, null, i.Write, Collection: i.Collection);
+        }
     }
 
     /// <summary>Alle Einträge für das Ziel, in fester Reihenfolge (damit gleiche Namen bei jedem Lauf gleich aufgelöst werden).</summary>
@@ -53,7 +77,11 @@ public static class PlainBackupAreas
         var skip = s.Skip.ToHashSet(StringComparer.Ordinal);
         var names = new PlainBackup.Names(PlainLang.For(s.Lang));
         var items = new List<PlainItem>();
-        // Pfade der Dateien im Ziel - auch für Verweise aus DMS und Alben, wenn „Dateien“ selbst abgewählt ist
+        // [feature:journal]
+        // Pfade der Dateien im Ziel - auch für Verweise aus Tagebuch, DMS und Alben, wenn „Dateien“ selbst abgewählt ist
+        // [feature:journal:else]
+        // // Pfade der Dateien im Ziel - auch für Verweise aus DMS und Alben, wenn „Dateien“ selbst abgewählt ist
+        // [/feature:journal]
         var fileMap = new Dictionary<string, string>(StringComparer.Ordinal);
         // Nicht unter „Dateien“: der Abgleichordner von notizi (dieselben Notizen stehen als .md unter „Notizen“) und die Kopien
         // von Mail-Anhängen zum Ansehen im Office-Editor (nach drei Tagen wieder weg). Der Tresor (dmVAULT) geht unverändert mit.
@@ -61,7 +89,7 @@ public static class PlainBackupAreas
         if (!FileStore.FilesOff(db))
             foreach (var f in FileStore.Descendants(db, ""))
             {
-                // Der reservierte Systemordner bleibt außen vor
+                // Medien des Tagebuchs kommen mit dem Tagebuch in dessen Ordner, nicht unter „Dateien“
                 if (f.IsDir || FileStore.InRoot(f.Path, FileStore.ReservedRoot)) continue;
                 if (FileStore.InRoot(f.Path, DmOffice.Mail.MailAttachmentCopy.Root) || FileStore.InRoot(f.Path, notiziRoot)) continue;
                 var target = names.Take(PlainBackup.Join(names.L.Files, f.Path));
@@ -96,6 +124,10 @@ public static class PlainBackupAreas
             }
         if (on.Contains(PlainBackup.Notes)) items.AddRange(NoteItems(space, skip, names));
         if (on.Contains(PlainBackup.Dms)) items.AddRange(DmsItems(space, names, fileMap));
+        // [feature:journal]
+        if (on.Contains(PlainBackup.Journal)) items.AddRange(JournalItems(space, skip, names));
+        // [/feature:journal]
+        items.AddRange(PluginItems(space, on, names, s.Lang == "en" ? "en" : "de"));
         return items;
     }
 
@@ -378,6 +410,56 @@ public static class PlainBackupAreas
         return v.IndexOfAny([';', '"', '\n', '\r']) >= 0 ? "\"" + v.Replace("\"", "\"\"") + "\"" : v;
     }
 
+    // [feature:journal]
+    // ---------------- Tagebuch ----------------
+
+    /// <summary>
+    /// Je Tagebuch ein Ordner, darin je Jahr die Einträge als .md und die Fotos, Videos und Sprachaufnahmen unter „Media“.
+    /// Die Einträge verweisen mit relativen Pfaden darauf („Media/Name.jpg“).
+    /// </summary>
+    private static IEnumerable<PlainItem> JournalItems(UserSpace space, HashSet<string> skip, PlainBackup.Names names)
+    {
+        var db = space.Db;
+        foreach (var j in DmOffice.Journal.JournalStore.Journals(db))
+        {
+            // Je Jahresordner: Ablagepfad des Mediums → Pfad im Ziel (dasselbe Bild an zwei Einträgen nur einmal)
+            var placed = new Dictionary<(string Dir, string Path), string?>();
+            if (skip.Contains(PlainBackup.Journal + ":" + j.Uri)) continue;
+            var entries = DmOffice.Journal.JournalStore.Entries(db, j).ToList();
+            var local = entries.ToDictionary(e => e.Id, e => TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(e.Date, DateTimeKind.Utc), space.Zone));
+            var perDay = entries.GroupBy(e => local[e.Id].Date).ToDictionary(g => g.Key, g => g.Count());
+            foreach (var e in entries.OrderBy(e => e.Date).ThenBy(e => e.Uri, StringComparer.Ordinal))
+            {
+                var at = local[e.Id];
+                var stem = at.ToString(perDay[at.Date] > 1 ? "yyyy-MM-dd HHmm" : "yyyy-MM-dd", CultureInfo.InvariantCulture);
+                var dir = PlainBackup.Join(names.L.Journal, Name(j.Name, j.Uri), at.ToString("yyyy", CultureInfo.InvariantCulture));
+                var path = names.Take(PlainBackup.Join(dir, stem + ".md"));
+                var media = new List<DmOffice.Journal.JournalExport.MediaOut>();
+                foreach (var m in e.Media)
+                {
+                    if (!placed.TryGetValue((dir, m.Path), out var target))
+                    {
+                        target = null;
+                        if (FileStore.Get(db, m.Path) is { IsDir: false } f)
+                        {
+                            target = names.Take(PlainBackup.Join(dir, "Media", Path.GetFileName(m.Path)));
+                            var from = f.Path;
+                            yield return new PlainItem(target, "f:" + f.Etag.Trim('"'), f.Size, () => FileStore.OpenRead(db, from), null, Modified: f.Modified);
+                        }
+                        placed[(dir, m.Path)] = target;
+                    }
+                    // Relativ zum Jahresordner, in dem auch die .md liegt
+                    media.Add(new DmOffice.Journal.JournalExport.MediaOut(target == null ? null : "x/" + target[(dir.Length + 1)..],
+                        Path.GetFileName(m.Path), m.Mime, m.Size, m.Width, m.Height, m.Taken));
+                }
+                var entry = e;
+                yield return new PlainItem(path, "j:" + e.Etag + ":" + stem, 0, null,
+                    o => o.WriteAsync(Utf8.GetBytes(DmOffice.Journal.JournalExport.Markdown(entry, at, media, "x"))).AsTask());
+            }
+        }
+    }
+
+    // [/feature:journal]
     // ---------------- Galerie ----------------
 
     private static Task Albums(Stream o, UserSpace space, DmOffice.Gallery.AlbumStore store, Dictionary<string, string> fileMap)
@@ -386,7 +468,7 @@ public static class PlainBackupAreas
         var list = store.ForUser(me).OrderBy(a => a.Id).Select(a => new
         {
             a.Name,
-            Kind = a.Kind == DmOffice.Gallery.Album.Smart ? "smart" : "fest",
+            Kind = a.Kind == DmOffice.Gallery.Album.Smart ? "smart" : a.Kind == DmOffice.Gallery.Album.Quick ? "schnellsammlung" : "fest",
             Rule = a.Kind == DmOffice.Gallery.Album.Smart ? a.Rule : null,
             Own = a.Owner == me,
             Photos = a.Kind == DmOffice.Gallery.Album.Smart ? null : store.Items(a.Id).Where(i => i.Owner == me).Select(i =>

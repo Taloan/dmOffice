@@ -16,3 +16,8 @@ data/
 # Android-App fuer das Image (vom Build-Ablauf)
 app-apk/*.apk
 app-apk/app.json
+__pycache__/
+*.pyc
+
+# Gebaute Web-Teile der Plugins (web/build-plugins.mjs)
+plugins/*/web/entry.js

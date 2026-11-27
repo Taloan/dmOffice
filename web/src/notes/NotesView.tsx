@@ -1,3 +1,5 @@
+import { sendFiles } from '../files/chunked'
+import { useUploadTask } from '../files/UploadBar'
 import {
   Button, Input, Menu, MenuItem, MenuList, MenuPopover, MenuTrigger, SearchBox, Spinner, Text, Toolbar, Tooltip,
   makeStyles, mergeClasses, tokens, MessageBar, MessageBarBody, MessageBarActions,
@@ -8,12 +10,13 @@ import {
   TextBold20Regular, TextItalic20Regular, TextUnderline20Regular, TextStrikethrough20Regular, TextBulletListLtr20Regular,
   TextNumberListLtr20Regular, TextColor20Regular, Highlight20Regular, LockClosed16Regular, CheckmarkCircle16Regular, Circle16Filled,
   TextAlignLeft20Regular, TextAlignCenter20Regular, TextAlignRight20Regular, TextIndentIncreaseLtr20Regular, TextIndentDecreaseLtr20Regular,
-  CheckboxChecked20Regular, Code20Regular, CalendarAdd20Regular,
+  CheckboxChecked20Regular, Code20Regular, CalendarAdd20Regular, History20Regular,
 } from '@fluentui/react-icons'
+import { NoteVersionsDialog } from './NoteVersions'
 import { sendToChat } from '../chat/SendToChat'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { e2eFetch } from '../e2e'
-import { api, Collection, demoMode, featureOn, fmtSize, q } from '../api'
+import { afterLogin, api, Collection, demoMode, featureOn, fmtSize, q } from '../api'
 import { OPEN_COLOR, requestTresorOpen, useTresor } from '../tresor/tresor'
 import { LockClosed20Regular, LockOpen20Regular, LockOpen16Regular } from '@fluentui/react-icons'
 import { EventDialog, EventDraft, guessStart } from '../calendar/EventDialog'
@@ -27,8 +30,9 @@ import { fixContrast } from './contrast'
 import { t, tError } from '../i18n'
 import { Snippet } from '../shell/Snippet'
 import { MenuItemRadio, MenuDivider } from '@fluentui/react-components'
+import { Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle } from '@fluentui/react-components' // [feature:noteimg]
 import { NoteAdd20Regular, Database20Regular, PanelLeft20Regular, TextDescription20Regular, Settings20Regular, ArrowLeft20Regular,
-  Open20Regular, Rename20Regular, MoreHorizontal16Regular, ArrowSort20Regular, StarOff20Regular, ChevronDown16Regular, ChevronRight16Regular, People20Regular, People16Regular, Chat20Regular, PersonDelete20Regular } from '@fluentui/react-icons'
+  Open20Regular, Rename20Regular, MoreHorizontal16Regular, ArrowSort20Regular, StarOff20Regular, ChevronDown16Regular, ChevronRight16Regular, People20Regular, People16Regular, Chat20Regular, PersonDelete20Regular, SelectAllOff20Regular } from '@fluentui/react-icons'
 import { ColorMenu, ContextMenu, TargetMenu, askConfirm, askText, isTyping, useContextMenu, useMultiSelect } from '../shell/context'
 import { pressable, useNavStyles } from '../shell/nav'
 import { NoteTags, tagLabel } from './NoteTags'
@@ -36,8 +40,10 @@ import { Camera20Regular, Cloud20Regular, Desktop20Regular, ImageMultiple20Regul
 import { Item, Source, ownSource } from '../files/common'
 import { gallerySource } from '../files/GalleryFolders'
 import { PickPhotoDialog } from '../files/PickPhotoDialog'
+import { ImageSize, ImageSizeSelect, useImageSize } from '../files/PickPhotoDialog' // [feature:noteimg]
 import { StoredFilesDialog } from '../mail/StoredFilesDialog'
-import { RibbonButton, RibbonDivider, RibbonHeader, useSidePane } from '../shell/Ribbon'
+import { RibbonActions, RibbonButton, RibbonDivider, RibbonHeader, RibbonSlot, useSidePane } from '../shell/Ribbon'
+import { undoAllOn } from '../shell/undo'
 import { SidePane, useBackClose, useIsMobile } from '../shell/mobile'
 import { usePrefs } from '../prefs'
 import { ShareDialog } from '../calendar/ShareDialog'
@@ -93,8 +99,39 @@ const noteColors = ['#FFF9A8', '#D9F2C4', '#FFD9E8', '#E6D9FF', '#CFE8FF', '#FFE
 const textColors = ['#000000', '#C00000', '#E8590C', '#2E7D32', '#0F6CBD', '#7B1FA2']
 const marks = ['#FFF176', '#A5D6A7', '#90CAF9', '#F48FB1', 'transparent']
 
+/** Dokument ohne Fenster zum Umschreiben von Inhalten: Bilder darin werden nicht geladen. */
+let inert: Document | null = null
+const inertDoc = () => inert ??= document.implementation.createHTMLDocument('')
+
+// [feature:noteimg]
+/** Bild auf höchstens edge px Kantenlänge verkleinern (JPEG); kleiner bleibt es, wie es ist. null: nicht lesbar (z. B. HEIC). */
+async function shrinkImage(blob: Blob, edge: number): Promise<Blob | null> {
+  // Animationen und Vektorbilder bleiben, wie sie sind
+  if (blob.type === 'image/gif' || blob.type === 'image/svg+xml') return blob
+  try {
+    const bmp = await createImageBitmap(blob)
+    const f = Math.min(1, edge / Math.max(bmp.width, bmp.height))
+    // Schon klein genug: unverändert (PNG behält Transparenz)
+    if (f === 1) { bmp.close(); return blob }
+    const c = document.createElement('canvas')
+    c.width = Math.round(bmp.width * f); c.height = Math.round(bmp.height * f)
+    c.getContext('2d')!.drawImage(bmp, 0, 0, c.width, c.height)
+    bmp.close()
+    return await new Promise(res => c.toBlob(b => res(b), 'image/jpeg', 0.85))
+  } catch { return null }
+}
+/** Datei in 1280 px (empfohlen) oder im Original; nicht lesbare Bilder bleiben im Original. */
+async function sizedFile(blob: Blob, name: string, size: ImageSize): Promise<File> {
+  const shrunk = size === 1280 ? await shrinkImage(blob, 1280) : null
+  if (shrunk && shrunk !== blob) return new File([shrunk], name.replace(/\.[^.]+$/, '') + '.jpg', { type: 'image/jpeg' })
+  return blob instanceof File && blob.name === name ? blob : new File([blob], name, { type: blob.type })
+}
+// [/feature:noteimg]
+
 /** Grundpfad der Notizen: offener Bereich oder eine notizi-Datenbank im Tresor (/api/notes/vault/<Ordner>). Gilt für die ganze Ansicht samt Editor. */
 let NB = '/api/notes'
+/** Wie der Server (NotesApi.MaxNoteFile): größere Dateien gehören in die Dateiablage. */
+const MAX_NOTE_FILE = 50 * 1024 * 1024
 
 
 interface NoteListItem { created?: string; image?: string | null; id: number; syncId: string; folder: string | null; title: string; snippet: string; color: string; modified: string; important: boolean; attachments: number; archived: string | null; deleted: string | null
@@ -157,7 +194,7 @@ interface SingleShared { id: number; share: number; title: string; snippet: stri
 export default function NotesView() {
   const s = useStyles()
   const listW = usePaneWidth('notes.list', 300, 220, 720)
-  const { fail, notify } = useApp()
+  const { fail, notify, undoable } = useApp()
   const [status, setStatus] = useState<any>(null)
   const [config, setConfig] = useState<any>(null)
   const [folders, setFolders] = useState<NoteFolder[]>([])
@@ -168,6 +205,8 @@ export default function NotesView() {
   const [shareDialog, setShareDialog] = useState<NoteFolder | null>(null)
   const [singles, setSingles] = useState<SingleShared[]>([])
   const [shareNote, setShareNote] = useState<{ id: number; title: string } | null>(null)
+  // Platz im Menüband für die Befehle der geöffneten Notiz (Anhängen)
+  const [edSlot, setEdSlot] = useState<HTMLElement | null>(null)
   const [view, setView] = useState<View>({ kind: 'all' })
   const [notes, setNotes] = useState<{ items: NoteListItem[]; archived: number; trashed: number } | null>(null)
   const [search, setSearch] = useState('')
@@ -375,6 +414,8 @@ export default function NotesView() {
   const [renameId, setRenameId] = useState<number | null>(null)
   // Neue Notiz, Enter auf einer Karte: gleich in den Text
   const [typeInId, setTypeInId] = useState<number | null>(null)
+  // „Frühere Versionen …“ aus Kontextmenü oder Menüband (notesversions): der Editor öffnet den Dialog
+  const [versionsId, setVersionsId] = useState<number | null>(null)
   const mobile = useIsMobile()
   mobileRef.current = mobile
   const [closed, setClosed] = useState<string[]>([])
@@ -408,8 +449,20 @@ export default function NotesView() {
       })
     } catch (e) { fail(e) }
   }
+  // Einheitliches Rückgängig (Kennung undoall): in den Papierkorb gelegte Notizen zurückholen - nur eigene (Wiederherstellen darf nur der Besitzer)
+  const loadNotesRef = useRef(loadNotes)
+  loadNotesRef.current = loadNotes
+  const offerTrashUndo = (ids: number[]) => {
+    const own = ids.filter(id => id > 0), base = NB
+    if (!undoAllOn() || !own.length) return
+    undoable(own.length === 1 ? t('Notiz in den Papierkorb gelegt') : t('{n} Notizen in den Papierkorb gelegt', { n: own.length }), async () => {
+      try { for (const id of own) await api.post(`${base}/${id}/restore`) } finally { loadNotesRef.current() }
+    })
+  }
   const actionMany = async (ids: number[], a: 'archive' | 'restore' | 'trash') => {
-    try { for (const id of ids) await api.post(`${NB}/${id}/${a}`) } catch (e) { fail(e) }
+    const done: number[] = []
+    try { for (const id of ids) { await api.post(`${NB}/${id}/${a}`); done.push(id) } } catch (e) { fail(e) }
+    if (a === 'trash') offerTrashUndo(done)
     afterChange(ids, true)
   }
   const destroyMany = async (ids: number[]) => {
@@ -581,6 +634,7 @@ export default function NotesView() {
           <MenuDivider />
           <MenuItem icon={allImp ? <StarOff20Regular /> : <Star20Regular />} onClick={() => metaMany(ids, { important: !allImp })}>{allImp ? t('Nicht mehr wichtig') : t('Als wichtig markieren')}</MenuItem>
           <ColorMenu colors={noteColors} square current={one?.color} label={t('Farbe der Notiz')} onPick={c => { cm.close(); if (c) metaMany(ids, { color: c }) }} />
+          {one && featureOn('notesversions') && !sh?.showOnly && <MenuItem icon={<History20Regular />} onClick={() => showVersions(one.id)}>{t('Frühere Versionen …')}</MenuItem>}
           <MenuDivider />
           <TargetMenu kind="move" targets={folderTargets([], sh!.folders)} onPick={id => metaMany(ids, { folder: String(id) })} />
           <MenuDivider />
@@ -599,6 +653,7 @@ export default function NotesView() {
         {one && !vault && <MenuItem icon={<CalendarAdd20Regular />} onClick={() => eventFrom(one.id)}>{t('Termin erstellen')}</MenuItem>}
         {ids.every(id => id > 0) && !vault && <MenuItem icon={<Chat20Regular />} onClick={() => sendToChat(ids.map(id => ({ type: 'note', noteId: id })))}>{t('Im Chat …')}</MenuItem>}
         {one && one.id > 0 && !vault && <MenuItem icon={<People20Regular />} onClick={() => setShareNote({ id: one.id, title: one.title })}>{t('Teilen …')}</MenuItem>}
+        {one && featureOn('notesversions') && <MenuItem icon={<History20Regular />} onClick={() => showVersions(one.id)}>{t('Frühere Versionen …')}</MenuItem>}
         <MenuDivider />
         <TargetMenu kind="move" targets={[{ id: '', label: t('Ohne Ordner') }, ...folderTargets(), ...sharedTargets()]} onPick={id => metaMany(ids, { folder: String(id) })} />
       </>}
@@ -645,6 +700,13 @@ export default function NotesView() {
 
   /** Einzeln mit mir geteilte Notiz zu einer Kennung (Version 2) */
   const singleOf = (id: number) => singles.find(x => x.id === id)
+  /** Frühere Versionen (notesversions): eigene Notizen und mit mir geteilte mit Schreibrecht (nicht „nur gezeigt“) */
+  const versionsAllowed = (n: { id: number; folder: string | null }) => {
+    if (n.id >= 0) return true
+    const r = singleOf(n.id) ?? shareOf(n.folder)
+    return !!r?.canWrite && !r.showOnly
+  }
+  const showVersions = (id: number) => { setSelected(id); setVersionsId(id) }
   const leaveSingle = async (x: SingleShared) => {
     try {
       await api.post(`/api/notes/single-shared/${x.share}/leave`)
@@ -697,10 +759,23 @@ export default function NotesView() {
               </MenuList>
             </MenuPopover>
           </Menu>
+          {featureOn('notesversions') && <RibbonButton icon={<History20Regular />} label={t('Versionen')} title={t('Frühere Versionen …')}
+            disabled={target.length !== 1 || inTrash || !versionsAllowed(target[0])} onClick={() => showVersions(target[0].id)} />}
           {inTrash || inArchive
             ? <RibbonButton icon={<ArrowUndo20Regular />} label={t('Wiederherstellen')} disabled={!target.length || targetTheirs} onClick={() => actionMany(targetIds, 'restore')} />
             : <RibbonButton icon={<Archive20Regular />} label={t('Archivieren')} disabled={!target.length || targetTheirs} onClick={() => actionMany(targetIds, 'archive')} />}
           <RibbonButton icon={<Delete20Regular />} label={inTrash ? t('Endgültig löschen') : t('Löschen')} disabled={!target.length} onClick={() => removeMany(targetIds)} />
+          {picked.length > 1 && <RibbonButton icon={<SelectAllOff20Regular />} label={t('Auswahl aufheben')} onClick={() => mx.clear()} />}
+          {!vault && <>
+            <RibbonDivider />
+            <RibbonButton icon={<People20Regular />} label={t('Teilen')} title={t('Teilen …')} disabled={target.length !== 1 || target[0].id <= 0 || inTrash}
+              onClick={() => setShareNote({ id: target[0].id, title: target[0].title })} />
+            <RibbonButton icon={<Chat20Regular />} label={t('Im Chat')} title={t('Im Chat …')} disabled={!target.length || targetTheirs || inTrash}
+              onClick={() => sendToChat(targetIds.map(id => ({ type: 'note', noteId: id })))} />
+            <RibbonButton icon={<CalendarAdd20Regular />} label={t('Termin erstellen')} disabled={target.length !== 1 || targetTheirs || inTrash} onClick={() => eventFrom(target[0].id)} />
+          </>}
+          {/* Die geöffnete Notiz: Anhängen (RibbonActions im Editor) */}
+          <div ref={setEdSlot} style={{ display: 'contents' }} />
           <RibbonDivider />
           {dbs?.list && (
             <Menu>
@@ -773,7 +848,7 @@ export default function NotesView() {
           <RibbonButton icon={<Settings20Regular />} label={t('Notiz­einstellungen')} onClick={() => { location.hash = '#/settings/notes' }} />
         </>} />
       <div className={s.root}>
-      <SidePane as="aside" className={mergeClasses(s.side, nv.pane)} open={sidePane} onClose={closeSide} width={{ key: 'notes.side', def: 220 }}>
+      <SidePane as="aside" className={mergeClasses(s.side, nv.pane)} open={sidePane} onClose={closeSide} width={{ key: 'notes.side', def: 240 }}>
         <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }} onContextMenu={e => cm.open(e, { kind: 'side' })}>
         {vault && (
           <div className={nv.section} style={{ gap: 4 }}>
@@ -789,7 +864,6 @@ export default function NotesView() {
         {nav({ kind: 'important' }, <Star20Regular />, t('Wichtig'))}
         <div className={nv.section}>
           <span style={{ flex: 1 }}>{t('Ordner')}</span>
-          <Tooltip content={t('Neuer Ordner')} relationship="label"><Button appearance="subtle" size="small" icon={<FolderAdd20Regular />} onClick={() => newFolder()} /></Tooltip>
         </div>
         {tree(null, 0)}
         {allTags.length > 0 && <>
@@ -861,25 +935,17 @@ export default function NotesView() {
         )}
       </div>
       {picked.length > 1 ? (
-        // Mehrere markiert: Aktionen fuer alle statt des Editors einer einzelnen Notiz (wie in Outlook)
+        // Mehrere markiert: die Befehle im Menüband wirken auf alle markierten (wie in Outlook)
         <div className={mergeClasses(s.empty, s.emptyPane)} style={{ flexDirection: 'column', gap: 12 }}>
           <Text size={500} weight="semibold">{t('{n} Notizen ausgewählt', { n: picked.length })}</Text>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
-            {view.kind === 'archive' || view.kind === 'trash'
-              ? <Button icon={<ArrowUndo20Regular />} onClick={() => actionMany(picked.map(n => n.id), 'restore')}>{t('Wiederherstellen')}</Button>
-              : picked.every(n => n.id >= 0) && <Button icon={<Archive20Regular />} onClick={() => actionMany(picked.map(n => n.id), 'archive')}>{t('Archivieren')}</Button>}
-            <Button icon={<Delete20Regular />} onClick={() => removeMany(picked.map(n => n.id))}>{view.kind === 'trash' ? t('Endgültig löschen') : t('Löschen')}</Button>
-            <Menu>
-              <MenuTrigger disableButtonEnhancement><Button icon={<MoreHorizontal16Regular />}>{t('Weitere Aktionen')}</Button></MenuTrigger>
-              <MenuPopover><MenuList>{noteMenuItems(picked.map(n => n.id))}</MenuList></MenuPopover>
-            </Menu>
-          </div>
-          <Button appearance="subtle" onClick={() => mx.clear()}>{t('Auswahl aufheben')}</Button>
+          <Text size={200}>{t('Die Befehle im Menüband wirken auf alle markierten Notizen.')}</Text>
         </div>
       ) : selected ? (
-        <div className={s.editorWrap}>
+        <div className={s.editorWrap}><RibbonSlot.Provider value={edSlot}>
           <NoteEditor key={`${selected}-${editorRev}`} id={selected} folders={folders} shared={shared} sharedTargets={sharedTargets} focusTitle={renameId === selected} onTitleFocused={() => setRenameId(null)} focusText={typeInId === selected} onTextFocused={() => setTypeInId(null)}
+            showVersions={versionsId === selected} onVersionsShown={() => setVersionsId(null)}
             onChanged={onChanged} onGone={onGone} onOpen={onOpen} notify={notify} fail={fail} onBack={() => setSelected(null)} knownTags={allTags.map(x => x.tag)} />
+        </RibbonSlot.Provider>
         </div>
       ) : (
         <div className={mergeClasses(s.empty, s.emptyPane)}><Text>{t('Wähle eine Notiz aus oder lege eine neue an.')}</Text></div>
@@ -906,10 +972,11 @@ export default function NotesView() {
   )
 }
 
-function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onOpen, notify, fail, onBack, focusTitle, onTitleFocused, focusText, onTextFocused, knownTags }: {
-  knownTags: string[]; focusText?: boolean; onTextFocused?: () => void
+function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onOpen, notify, fail, onBack, focusTitle, onTitleFocused, focusText, onTextFocused, knownTags, showVersions, onVersionsShown }: {
+  knownTags: string[]; focusText?: boolean; onTextFocused?: () => void; showVersions?: boolean; onVersionsShown?: () => void
   id: number; folders: NoteFolder[]; shared: SharedRoot[]; sharedTargets: () => { id: string; label: string; depth: number }[]; onChanged: () => void; onGone: () => void; onOpen: (id: number) => void; onBack: () => void; focusTitle?: boolean; onTitleFocused?: () => void
   notify: (t: string, b?: string, i?: any) => void; fail: (e: unknown) => void
+  /** In den Papierkorb gelegt (für „Rückgängig“, Kennung undoall) */
 }) {
   const s = useStyles()
   const mobile = useIsMobile()
@@ -987,6 +1054,14 @@ function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onO
     }, sharedNote ? 5000 : 30000)
     return () => clearInterval(iv)
   }, [sharedNote, id, load])
+  // Frühere Versionen (notesversions): vorher Getipptes speichern, damit es als Version erhalten bleibt
+  const [versionsOpen, setVersionsOpen] = useState(false)
+  const openVersions = async () => { await flush(); setVersionsOpen(true) }
+  useEffect(() => {
+    if (!showVersions || !note) return
+    onVersionsShown?.()
+    openVersions()
+  }, [showVersions, note?.id]) // eslint-disable-line react-hooks/exhaustive-deps
   // F2 / "Umbenennen": in den Titel
   useEffect(() => {
     if (!focusTitle || !note) return
@@ -1047,10 +1122,12 @@ function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onO
   useEffect(() => { if (root.current) fixContrast(root.current) }, [isDark])
 
   const ser = (node: HTMLElement): string => {
-    const clone = node.cloneNode(true) as HTMLElement
+    // Klon in einem Dokument ohne Fenster: src="blob:<Name>" lädt dort nichts (im echten Dokument meldet der Browser sonst einen Ladefehler)
+    const clone = inertDoc().importNode(node, true) as HTMLElement
     clone.removeAttribute('data-i')
     clone.removeAttribute('contenteditable')
     clone.removeAttribute('data-dm-contrast')
+    clone.querySelectorAll('[data-dm-sel]').forEach(e => e.removeAttribute('data-dm-sel'))
     clone.querySelectorAll('[data-dm-contrast]').forEach(e => e.removeAttribute('data-dm-contrast'))
     clone.querySelectorAll('img[data-blob]').forEach(img => {
       img.setAttribute('src', 'blob:' + img.getAttribute('data-blob'))
@@ -1061,9 +1138,48 @@ function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onO
 
   const textBlock = (txt: string) => `<p>${txt.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</p>`
 
+  /**
+   * Einfache <div> der obersten Ebene (Enter hinter losem Text, eingefügtes HTML in so eine Zeile) zu Absätzen machen:
+   * Der Server führt <div> als gesperrten Block, eine geänderte oder neue Zeile darin würde abgelehnt.
+   * Gesperrte Blöcke (Bildhülle, nicht bearbeitbar, Bild/Tabelle/Code darin) bleiben, wie sie sind. Die Schreibmarke bleibt stehen.
+   */
+  const flattenDivs = (el: HTMLElement) => {
+    const plain = (n: Element): n is HTMLElement => n.tagName === 'DIV' && !n.hasAttribute('data-block') && n.getAttribute('contenteditable') !== 'false'
+      && !(n.hasAttribute('data-i') && prot.current[Number(n.getAttribute('data-i'))]) && !n.querySelector('img,table,pre,[contenteditable="false"]')
+    const sel = window.getSelection()
+    const mark = sel && sel.rangeCount && el.contains(sel.anchorNode) ? { a: sel.anchorNode!, ao: sel.anchorOffset, f: sel.focusNode!, fo: sel.focusOffset } : null
+    const moved = new Map<Node, Node>()
+    for (let round = 0; round < 5; round++) {
+      const divs = Array.from(el.children).filter(plain)
+      if (!divs.length) break
+      for (const div of divs) {
+        const out: HTMLElement[] = []
+        let p: HTMLElement | null = null
+        for (const c of Array.from(div.childNodes)) {
+          if (c.nodeType === 1 && /^(P|DIV|H[1-6]|UL|OL|BLOCKQUOTE|PRE|TABLE|HR)$/.test((c as HTMLElement).tagName)) { p = null; out.push(c as HTMLElement) }
+          else { if (!p) { p = document.createElement('p'); out.push(p) } p.appendChild(c) }
+        }
+        if (!out.length) out.push(document.createElement('p'))
+        // Eine Zeile bleibt ein Block: Nummer und Ausrichtung mitnehmen
+        if (out.length === 1 && out[0] === p) {
+          for (const a of ['data-i', 'style', 'dir']) { const v = div.getAttribute(a); if (v !== null) p.setAttribute(a, v) }
+        }
+        moved.set(div, out[0])
+        div.replaceWith(...out)
+      }
+    }
+    if (!mark || !moved.size) return
+    const at = (n: Node, o: number): [Node, number] => n.isConnected ? [n, o] : moved.has(n) ? [moved.get(n)!, moved.get(n)!.childNodes.length >= o ? o : 0] : [el, 0]
+    try {
+      const [a, ao] = at(mark.a, mark.ao), [f, fo] = at(mark.f, mark.fo)
+      sel!.setBaseAndExtent(a, ao, f, fo)
+    } catch { /* Schreibmarke nicht wiederherstellbar - Inhalt ist trotzdem richtig */ }
+  }
+
   const doSave = async (plain?: string, leaving = false) => {
     const el = root.current ?? lastEl.current
     if (!el || !note || note.readOnly) return
+    flattenDivs(el)
     const used = new Set<number>()
     const blocks: ({ i: number } | { html: string })[] = []
     // Je Block der Knoten und sein Stand beim Absenden - danach die Nummern nachfuehren
@@ -1089,11 +1205,13 @@ function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onO
     let stale = false
     try {
       const body = JSON.stringify({ blocks, plain: text, version: version.current })
-      const r = await e2eFetch(`${NB}/${id}/content`, {
+      const put = () => e2eFetch(`${NB}/${id}/content`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body,
         // Beim Verlassen der Seite soll die Anfrage das Schließen überstehen; der Browser erlaubt das nur für kleine Anfragen
         keepalive: leaving && body.length < 40000,
       })
+      // Sitzung abgelaufen: nach der Anmeldung im Dialog noch einmal
+      const r = await afterLogin(`${NB}/${id}/content`, await put(), put)
       const data = await r.json().catch(() => null)
       stale = r.status === 409
       if (!r.ok) throw new Error(data?.error || r.statusText)
@@ -1231,9 +1349,6 @@ function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onO
       await load(); onChanged()
     } catch (e) { fail(e) }
   }
-  const action = async (a: 'archive' | 'restore' | 'trash') => {
-    try { await flush(); await api.post(`${NB}/${id}/${a}`); a === 'restore' ? (await load(), onChanged()) : onGone() } catch (e) { fail(e) }
-  }
   /** Aenderungen verwerfen und den Stand vom Server laden. */
   const discard = () => {
     clearTimeout(timer.current); timer.current = undefined
@@ -1276,10 +1391,6 @@ function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onO
       notify(t('Als Kopie gespeichert'))
       onOpen(copy)
     } catch (e) { fail(e) }
-  }
-  const destroy = async () => {
-    if (!await askConfirm('', t('Endgültig löschen? Auch auf allen anderen Geräten.'), t('Endgültig löschen'))) return
-    try { await api.del(`${NB}/${id}`); onGone() } catch (e) { fail(e) }
   }
   const exec = (cmd: string, value?: string) => { document.execCommand('styleWithCSS', false, 'true'); document.execCommand(cmd, false, value); changed() }
 
@@ -1346,28 +1457,54 @@ function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onO
     }
   }
 
-  // Aus der Galerie oder den Dateien von dmOffice: im Browser holen, dann wie vom Gerät (Bilder an die Schreibmarke, sonst Anhang)
+  // Aus der Galerie oder den Dateien von dmOffice: im Browser holen, dann wie vom Gerät (Bilder an die Schreibmarke, sonst Anhang).
+  // Galerie mit Größenwahl (Kennung noteimg): 1280 px aus der Vorschau statt des ganzen Originals
   const [pickFrom, setPickFrom] = useState<'gallery' | 'files' | null>(null)
-  const fromServer = async (items: Item[], source: Source) => {
+  const fromServer = async (items: Item[], source: Source, size: ImageSize = 'orig') => {
+    const range = keepCaret()
     try {
+      if (featureOn('noteimg')) setInserting(true)
       const files = await Promise.all(items.filter(i => !i.isDir).map(async i => {
-        const r = await fetch(source.download(i), { credentials: 'same-origin' })
+        const small = size === 1280 && (i.mime ?? '').startsWith('image/') && featureOn('noteimg')
+        // 1280 px aus der großen Vorschau (2048 px) statt des ganzen Originals; ohne Vorschau aus dem Original
+        let r = await fetch(small ? source.thumb(i, 2048) : source.download(i), { credentials: 'same-origin' })
+        if (small && !r.ok) r = await fetch(source.download(i), { credentials: 'same-origin' })
         if (!r.ok) throw new Error(i.name)
         const blob = await r.blob()
+        if (small) return sizedFile(blob, i.name, 1280)
         return new File([blob], i.name, { type: i.mime || blob.type || 'application/octet-stream' })
       }))
-      await addFiles(files)
-    } catch (e) { fail(e) }
+      await addFiles(files, range)
+    } catch (e) { fail(e) } finally { if (alive.current) setInserting(false) }
   }
 
+  // Letzte Schreibmarke im Text - ein Dialog (Galerie, Dateien) nimmt sie weg (Kennung noteimg)
+  const lastRange = useRef<Range | null>(null)
+  useEffect(() => {
+    if (!featureOn('noteimg')) return
+    const onSel = () => {
+      const sel = window.getSelection()
+      if (sel?.rangeCount && root.current?.contains(sel.anchorNode)) lastRange.current = sel.getRangeAt(0).cloneRange()
+    }
+    document.addEventListener('selectionchange', onSel)
+    return () => document.removeEventListener('selectionchange', onSel)
+  }, [])
+  /** Die Schreibmarke jetzt: im Text, sonst die zuletzt im Text gesetzte. */
+  const keepCaret = () => {
+    const sel = window.getSelection()
+    if (sel?.rangeCount && root.current?.contains(sel.anchorNode)) return sel.getRangeAt(0).cloneRange()
+    return featureOn('noteimg') && lastRange.current && root.current?.contains(lastRange.current.startContainer) ? lastRange.current.cloneRange() : null
+  }
+  const [inserting, setInserting] = useState(false)
+
   /** Bilder kommen an die Schreibmarke (wie in notizi), alles andere wird Anhang. */
-  const addFiles = async (files: File[]) => {
+  const addFiles = async (files: File[], at?: Range | null) => {
     const images = files.filter(f => f.type.startsWith('image/'))
     const others = files.filter(f => !f.type.startsWith('image/'))
+    if (files.some(f => f.size > MAX_NOTE_FILE)) { fail(new Error(t('Zu groß für eine Notiz (höchstens 50 MB je Datei). Größere Dateien gehören in die Dateiablage.'))); return }
     if (images.length && !note?.readOnly) {
       // Schreibmarke merken - das Hochladen dauert
-      const sel = window.getSelection()
-      const range = sel && sel.rangeCount && root.current?.contains(sel.anchorNode) ? sel.getRangeAt(0).cloneRange() : null
+      const range = at !== undefined ? at : keepCaret()
       try {
         let html = ''
         for (const f of images) {
@@ -1376,9 +1513,29 @@ function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onO
           const { name } = await api.form<{ name: string }>(`${NB}/images?note=${id}`, form)
           html += `<p><img src="${NB}/blob/${name}" data-blob="${name}" style="max-width:100%" /></p>`
         }
+        // [feature:noteimg]
+        // Inzwischen eine andere Notiz offen: nicht dort einfügen, sondern unten an diese Notiz anhängen
+        if (featureOn('noteimg') && !alive.current) {
+          await appendElsewhere(html)
+          return
+        }
+        // [/feature:noteimg]
         root.current?.focus()
         if (range) { const s2 = window.getSelection(); s2?.removeAllRanges(); s2?.addRange(range) }
         document.execCommand('insertHTML', false, html)
+        // [feature:noteimg]
+        // Schreibmarke in einer Zeile <div> (Enter in einer neuen Notiz): Der Browser legt den Bildabsatz hinein.
+        // Wieder auf die oberste Ebene holen - als <div> gilt er sonst als gesperrter Block und die Notiz lässt sich nicht speichern.
+        if (featureOn('noteimg') && root.current) for (const d of Array.from(root.current.children)) {
+          if (d.tagName !== 'DIV' || d.attributes.length > (d.hasAttribute('data-i') ? 1 : 0) || !d.querySelector(':scope > p > img')) continue
+          if (!Array.from(d.children).every(c => c.tagName === 'P' || c.tagName === 'BR')) continue
+          d.querySelectorAll(':scope > br').forEach(b => b.remove())
+          const last = d.lastChild
+          d.replaceWith(...Array.from(d.childNodes))
+          // Schreibmarke hinter das Bild, wie ohne Umweg
+          if (last) { const r = document.createRange(); r.setStartAfter(last); r.collapse(true); const s2 = window.getSelection(); s2?.removeAllRanges(); s2?.addRange(r) }
+        }
+        // [/feature:noteimg]
         changed()
       } catch (e) { fail(e) }
     }
@@ -1389,11 +1546,84 @@ function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onO
     }
   }
 
+  // [feature:noteimg]
+  /** Bild in diese Notiz, obwohl sie nicht mehr offen ist: neuer Block am Ende, die übrigen unverändert. */
+  const appendElsewhere = async (html: string) => {
+    const n = await api.get<NoteDetail>(`${NB}/${id}`)
+    const blocks = [...n.blocks.map((_, i) => ({ i })), { html: html.replace(/<img src="[^"]*" data-blob="([^"]+)"/g, '<img src="blob:$1"') }]
+    const div = document.createElement('div')
+    div.innerHTML = n.blocks.join('')
+    const plain = Array.from(div.children).map(c => c.textContent ?? '').join('\r\n')
+    await api.put(`${NB}/${id}/content`, { blocks, plain, version: n.version })
+    notify(t('Das Bild steht jetzt am Ende der Notiz „{title}“.', { title: n.title }))
+  }
+
+  // Bild im Text angeklickt: Leiste mit Größe und Löschen; verschieben per Ziehen
+  const [imgSel, setImgSel] = useState<{ img: HTMLImageElement; x: number; y: number } | null>(null)
+  const selectImage = (img: HTMLImageElement | null) => {
+    root.current?.querySelectorAll('img[data-dm-sel]').forEach(e => e.removeAttribute('data-dm-sel'))
+    if (!img) { setImgSel(null); return }
+    img.setAttribute('data-dm-sel', '')
+    const r = img.getBoundingClientRect()
+    setImgSel({ img, x: r.left, y: Math.max(r.top, 60) })
+  }
+  useEffect(() => {
+    if (!imgSel) return
+    const off = () => selectImage(null)
+    const paper = root.current?.parentElement
+    paper?.addEventListener('scroll', off)
+    window.addEventListener('resize', off)
+    return () => { paper?.removeEventListener('scroll', off); window.removeEventListener('resize', off) }
+  }, [imgSel]) // eslint-disable-line react-hooks/exhaustive-deps
+  const sizeImage = (pct: number) => {
+    if (!imgSel) return
+    imgSel.img.style.width = pct === 100 ? '' : `${pct}%`
+    imgSel.img.style.maxWidth = '100%'
+    selectImage(imgSel.img)
+    changed()
+  }
+  const deleteImage = () => {
+    if (!imgSel) return
+    const block = imgSel.img.closest('.dm-editor > *') as HTMLElement | null
+    imgSel.img.remove()
+    if (block && !block.textContent?.trim() && !block.querySelector('img')) block.replaceWith(Object.assign(document.createElement('p'), { innerHTML: '<br>' }))
+    selectImage(null)
+    changed()
+  }
+  // [/feature:noteimg]
+
+  // [feature:noteimg]
+  // Vom Gerät: Bilder an die Schreibmarke, mit derselben Größenwahl wie aus Galerie und Dateien; alles andere wird Anhang
+  const [fromDevice, setFromDevice] = useState<{ images: File[]; range: Range | null } | null>(null)
+  const [deviceSize, pickDeviceSize] = useImageSize()
+  const pickedOnDevice = (list: FileList | null) => {
+    const files = Array.from(list ?? [])
+    const images = files.filter(f => f.type.startsWith('image/'))
+    if (!featureOn('noteimg') || !images.length || note?.readOnly) { upload(list); return }
+    const others = files.filter(f => !f.type.startsWith('image/'))
+    if (others.length) { const dt = new DataTransfer(); others.forEach(f => dt.items.add(f)); upload(dt.files) }
+    setFromDevice({ images, range: keepCaret() })
+  }
+  const insertFromDevice = async () => {
+    if (!fromDevice) return
+    const { images, range } = fromDevice
+    setFromDevice(null)
+    setInserting(true)
+    try { await addFiles(await Promise.all(images.map(f => sizedFile(f, f.name, deviceSize))), range) }
+    catch (e) { fail(e) } finally { if (alive.current) setInserting(false) }
+  }
+  // [/feature:noteimg]
+
+  // Kleine gesammelt, große in Teilen (sendFiles); über 50 MB nimmt der Server nicht - gleich sagen statt erst hochzuladen
+  const up = useUploadTask()
   const upload = async (files: FileList | null) => {
     if (!files?.length) return
-    const f = new FormData()
-    Array.from(files).forEach(x => f.append('files', x, x.name))
-    try { await flush(); await api.form(`${NB}/${id}/attachments`, f); await load(); notify(t('Angehängt')) } catch (e) { fail(e) }
+    if (Array.from(files).some(x => x.size > MAX_NOTE_FILE)) { fail(new Error(t('Zu groß für eine Notiz (höchstens 50 MB je Datei). Größere Dateien gehören in die Dateiablage.'))); return }
+    try {
+      await flush()
+      if (await up.run((onProgress, signal) => sendFiles(`${NB}/${id}/attachments`, Array.from(files).map(file => ({ file })), onProgress, signal)) === undefined) return
+      await load(); notify(t('Angehängt'))
+    } catch (e) { fail(e) }
   }
 
   if (!note) return <Spinner style={{ margin: 'auto' }} />
@@ -1401,7 +1631,6 @@ function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onO
   const inTrash = !!note.deleted
   // Mit mir geteilt: Besitzer, und ob ich nur lesen darf
   const locked = note.canWrite === false
-  const moveFolders = note.owner ? (shared.find(x => x.folders.some(f => f.syncId === note.folder))?.folders ?? []) : folders
 
   const tb = (label: string, icon: JSX.Element, cmd: string, value?: string) => (
     <Tooltip content={label} relationship="label">
@@ -1421,6 +1650,12 @@ function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onO
     </Menu>
   )
 
+  const attachItems = <>
+    <MenuItem icon={<Desktop20Regular />} onClick={() => fileInput.current?.click()}>{t('Vom Computer')}</MenuItem>
+    <MenuItem icon={<ImageMultiple20Regular />} onClick={() => setPickFrom('gallery')}>{t('Aus der dmOffice-Galerie')}</MenuItem>
+    <MenuItem icon={<Cloud20Regular />} onClick={() => setPickFrom('files')}>{t('Aus den dmOffice-Dateien')}</MenuItem>
+  </>
+
   return (
     <div className={s.editor}>
       <div className={s.head}>
@@ -1437,46 +1672,32 @@ function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onO
         {!mobile && saving !== 'idle' && <Text size={200} role="status" style={{ color: tokens.colorNeutralForeground3, whiteSpace: 'nowrap' }}>
           {saving === 'saving' ? t('Speichert …') : saving === 'dirty' ? t('Ungespeichert') : t('Gespeichert')}
         </Text>}
-        {mobile && <><Tooltip content={t('Wichtig')} relationship="label">
-          <Button appearance="subtle" disabled={locked} icon={note.important ? <Star20Filled color={tokens.colorPaletteYellowForeground1} /> : <Star20Regular />} onClick={() => meta({ important: !note.important })} />
-        </Tooltip>
-        <Menu>
-          <MenuTrigger disableButtonEnhancement><Tooltip content={t('Farbe der Notiz')} relationship="label"><Button appearance="subtle" disabled={locked} icon={<Color20Regular />} /></Tooltip></MenuTrigger>
-          <MenuPopover>
-            <div className={s.swatches}>{noteColors.map(c => <button key={c} className={s.swatch} style={{ background: c }} onClick={() => meta({ color: c })} />)}</div>
-          </MenuPopover>
-        </Menu>
-        <Menu>
-          <MenuTrigger disableButtonEnhancement><Tooltip content={t('In Ordner verschieben')} relationship="label"><Button appearance="subtle" disabled={locked || note.single} icon={<FolderArrowRight20Regular />} /></Tooltip></MenuTrigger>
-          <MenuPopover>
-            <MenuList>
-              {!note.owner && <MenuItem onClick={() => meta({ folder: '' })}>{t('Ohne Ordner')}</MenuItem>}
-              {moveFolders.map(f => <MenuItem key={f.syncId} onClick={() => meta({ folder: f.syncId })}>{f.name}</MenuItem>)}
-              {!note.owner && sharedTargets().map(x => <MenuItem key={x.id} onClick={() => meta({ folder: x.id })}>{x.label}</MenuItem>)}
-            </MenuList>
-          </MenuPopover>
-        </Menu></>}
         {/* Anhängen: vom Gerät, aus der Galerie oder aus den Dateien von dmOffice (die werden geholt und wie vom Gerät eingefügt).
             Nicht in der Demo: ein gemeinsames Konto, keine Dateien */}
-        {!demoMode.on && <Menu>
-          <MenuTrigger disableButtonEnhancement>
-            <Tooltip content={t('Datei anhängen')} relationship="label"><Button appearance="subtle" disabled={locked} icon={<Attach20Regular />} /></Tooltip>
-          </MenuTrigger>
-          <MenuPopover><MenuList>
-            <MenuItem icon={<Desktop20Regular />} onClick={() => fileInput.current?.click()}>{t('Vom Computer')}</MenuItem>
-            <MenuItem icon={<ImageMultiple20Regular />} onClick={() => setPickFrom('gallery')}>{t('Aus der dmOffice-Galerie')}</MenuItem>
-            <MenuItem icon={<Cloud20Regular />} onClick={() => setPickFrom('files')}>{t('Aus den dmOffice-Dateien')}</MenuItem>
-          </MenuList></MenuPopover>
-        </Menu>}
-        {pickFrom === 'gallery' && <PickPhotoDialog title={t('Aus der dmOffice-Galerie')} onClose={() => setPickFrom(null)} onPickMany={items => { setPickFrom(null); fromServer(items, gallerySource) }} />}
-        {pickFrom === 'files' && <StoredFilesDialog onClose={() => setPickFrom(null)} onPick={items => { setPickFrom(null); fromServer(items, ownSource) }} />}
-        {!mobile ? null : note.owner ? null : inTrash || note.archived
-          ? <Tooltip content={t('Wiederherstellen')} relationship="label"><Button appearance="subtle" icon={<ArrowUndo20Regular />} onClick={() => action('restore')} /></Tooltip>
-          : <Tooltip content={t('Archivieren')} relationship="label"><Button appearance="subtle" icon={<Archive20Regular />} onClick={() => action('archive')} /></Tooltip>}
-        {!mobile ? null : inTrash
-          ? <Button appearance="subtle" icon={<Delete20Regular />} onClick={destroy}>{t('Endgültig löschen')}</Button>
-          : <Tooltip content={t('In den Papierkorb')} relationship="label"><Button appearance="subtle" disabled={locked || note.single} icon={<Delete20Regular />} onClick={() => action('trash')} /></Tooltip>}
-        <input ref={fileInput} type="file" multiple hidden onChange={e => { upload(e.target.files); e.target.value = '' }} />
+        {!demoMode.on && <RibbonActions>
+          <Menu>
+            <MenuTrigger disableButtonEnhancement><RibbonButton icon={<Attach20Regular />} label={t('Anhängen')} title={t('Datei anhängen')} disabled={locked} /></MenuTrigger>
+            <MenuPopover><MenuList>{attachItems}</MenuList></MenuPopover>
+          </Menu>
+        </RibbonActions>}
+        {/* Frühere Versionen: am Computer im Menüband („Versionen“) */}
+        {versionsOpen && <NoteVersionsDialog base={NB} id={id} onClose={() => setVersionsOpen(false)} onRestored={() => { load(true); onChanged() }} />}
+        {pickFrom === 'gallery' && <PickPhotoDialog title={t('Aus der dmOffice-Galerie')} onClose={() => setPickFrom(null)} sizeChoice={featureOn('noteimg')} onPickMany={(items, size) => { setPickFrom(null); fromServer(items, gallerySource, size) }} />}
+        {pickFrom === 'files' && <StoredFilesDialog onClose={() => setPickFrom(null)} sizeChoice={featureOn('noteimg')} onPick={(items, size) => { setPickFrom(null); fromServer(items, ownSource, size) }} />}
+        {/* [feature:noteimg] */}
+        {fromDevice && <Dialog open onOpenChange={(_, d) => { if (!d.open) setFromDevice(null) }}>
+          <DialogSurface style={{ maxWidth: 440 }}><DialogBody>
+            <DialogTitle>{fromDevice.images.length === 1 ? t('Bild einfügen') : t('{n} Bilder einfügen', { n: fromDevice.images.length })}</DialogTitle>
+            <DialogContent>{fromDevice.images.length === 1 ? t('Das Bild kommt an die Schreibmarke.') : t('Die Bilder kommen an die Schreibmarke.')}</DialogContent>
+            <DialogActions>
+              <ImageSizeSelect value={deviceSize} onChange={pickDeviceSize} />
+              <Button onClick={() => setFromDevice(null)}>{t('Abbrechen')}</Button>
+              <Button appearance="primary" onClick={insertFromDevice}>{t('Übernehmen ({n})', { n: fromDevice.images.length })}</Button>
+            </DialogActions>
+          </DialogBody></DialogSurface>
+        </Dialog>}
+        {/* [/feature:noteimg] */}
+        <input ref={fileInput} type="file" multiple hidden onChange={e => { pickedOnDevice(e.target.files); e.target.value = '' }} />
       </div>
       <NoteTags tags={note.tags ?? []} known={knownTags} readOnly={locked || inTrash} onChange={tags => meta({ tags })} />
       <Toolbar size="small" className={s.bar}>
@@ -1500,8 +1721,9 @@ function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onO
           <Button appearance="subtle" size="small" icon={<Code20Regular />} onMouseDown={e => e.preventDefault()} onClick={toggleCode} disabled={note.readOnly || inTrash} />
         </Tooltip>
         <span style={{ flex: 1 }} />
+        {inserting && <Text size={200} style={{ color: tokens.colorNeutralForeground3, display: 'inline-flex', gap: 6, alignItems: 'center', marginRight: 8 }}><Spinner size="extra-tiny" /> {t('Bild wird eingefügt …')}</Text>}
         {note.protected.some(Boolean) && (
-          <Tooltip content={t('Tabellen und Bilder bearbeitet notizi am PC – hier bleiben sie unverändert.')} relationship="description">
+          <Tooltip content={featureOn('noteimg') ? t('Tabellen und andere Blöcke aus notizi bearbeitest du in notizi am PC – hier bleiben sie unverändert.') : t('Tabellen und Bilder bearbeitet notizi am PC – hier bleiben sie unverändert.')} relationship="description">
             <Text size={200} style={{ color: tokens.colorNeutralForeground3, display: 'inline-flex', gap: 4, alignItems: 'center' }}><LockClosed16Regular /> {t('gesperrte Blöcke')}</Text>
           </Tooltip>
         )}
@@ -1525,21 +1747,46 @@ function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onO
       )}
       {note.readOnly && !locked && <MessageBar intent="warning"><MessageBarBody>{t('Diese Notiz lässt sich hier nur lesen.')}</MessageBarBody></MessageBar>}
       {inTrash && (
-        <MessageBar intent="info"><MessageBarBody>{t('Im Papierkorb.')}</MessageBarBody><MessageBarActions><Button size="small" onClick={() => action('restore')}>{t('Wiederherstellen')}</Button></MessageBarActions></MessageBar>
+        <MessageBar intent="info"><MessageBarBody>{t('Im Papierkorb.')}</MessageBarBody></MessageBar>
       )}
       <div className={s.stripe} style={{ backgroundColor: bg }} />
+      {/* [feature:noteimg] */}
+      {imgSel && (
+        <div role="toolbar" aria-label={t('Bild')} style={{ position: 'fixed', left: imgSel.x, top: Math.max(imgSel.y - 40, 4), zIndex: 20, display: 'flex', gap: 2, padding: 2,
+          background: tokens.colorNeutralBackground1, border: `1px solid ${tokens.colorNeutralStroke1}`, borderRadius: tokens.borderRadiusMedium, boxShadow: tokens.shadow8 }}>
+          {([[25, t('Klein')], [50, t('Mittel')], [75, t('Groß')], [100, t('Volle Breite')]] as const).map(([pct, label]) => (
+            <Button key={pct} size="small" appearance={(imgSel.img.style.width || '100%') === `${pct}%` ? 'primary' : 'subtle'} onMouseDown={e => e.preventDefault()} onClick={() => sizeImage(pct)}>{label}</Button>
+          ))}
+          <Tooltip content={t('Löschen')} relationship="label"><Button size="small" appearance="subtle" icon={<Delete20Regular />} onMouseDown={e => e.preventDefault()} onClick={deleteImage} /></Tooltip>
+        </div>
+      )}
+      {/* [/feature:noteimg] */}
       <div className={`${s.paper} ${isDark ? 'dm-paper-dark' : 'dm-paper-light'}`}>
-        <div ref={setRoot} className="dm-editor" contentEditable={!note.readOnly && !inTrash} suppressContentEditableWarning onInput={changed} spellCheck
+        <div ref={setRoot} className="dm-editor" contentEditable={!note.readOnly && !inTrash} suppressContentEditableWarning onInput={() => { if (imgSel) selectImage(null); changed() }} spellCheck
+          // Enter legt Absätze an, keine <div> (die gelten auf dem Server als gesperrter Block)
+          onFocus={() => document.execCommand('defaultParagraphSeparator', false, 'p')}
+          onBlur={() => document.execCommand('defaultParagraphSeparator', false, 'div')}
           onClick={e => {
             // Links: der Ruecklink zur Mail mit einfachem Klick, andere mit Strg+Klick (wie in Word)
             const link = (e.target as HTMLElement).closest('a')
-            if (link && (e.ctrlKey || e.metaKey || link.href.includes('#/mail/open/'))) {
+            // Adresse zerlegt vergleichen: "https://server.evil/#/mail/open/" oder "https://server.evil" mit
+            // gleichem Anfang ist kein eigener Ruecklink
+            let url: URL | null = null
+            try { url = link ? new URL(link.href) : null } catch { url = null }
+            const own = !!url && url.origin === location.origin
+            if (link && (e.ctrlKey || e.metaKey || (own && url!.hash.startsWith('#/mail/open/')))) {
               e.preventDefault()
-              if (link.href.startsWith(location.origin)) location.href = link.href
+              if (own && url!.pathname === location.pathname) location.href = url!.href
               // nur sichere Schemata oeffnen - nie javascript:/data: aus einem Notiz-Link
-              else if (/^(https?|mailto):/i.test(link.href)) window.open(link.href, '_blank', 'noopener,noreferrer')
+              else if (url && /^(https?|mailto):$/i.test(url.protocol)) window.open(url.href, '_blank', 'noopener,noreferrer')
               return
             }
+            // [feature:noteimg]
+            if (featureOn('noteimg')) {
+              const img = (e.target as HTMLElement).closest('img')
+              selectImage(img && !img.closest('[contenteditable="false"]') && !note.readOnly && !inTrash ? img as HTMLImageElement : null)
+            }
+            // [/feature:noteimg]
             onEditorClick()
           }}
           onPaste={e => {
@@ -1586,6 +1833,7 @@ function NoteEditor({ id, folders, shared, sharedTargets, onChanged, onGone, onO
           ))}
         </div>
       )}
+      {up.bar}
     </div>
   )
 }

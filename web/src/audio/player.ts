@@ -69,7 +69,17 @@ function el(): HTMLAudioElement {
   a.addEventListener('ended', () => ended())
   a.addEventListener('error', () => {
     if (!a.src) return
+    const src = a.src
+    const decode = a.error?.code === MediaError.MEDIA_ERR_DECODE
     set({ playing: false, error: t('Dieser Titel lässt sich gerade nicht abspielen.') })
+    // Grund nachfragen: Datei ohne Ton oder nicht mehr da ist dauerhaft, nur ein nicht erreichbarer Ordner ist „gerade“
+    void fetch(src, { headers: { Range: 'bytes=0-0' }, credentials: 'same-origin' }).then(r => {
+      r.body?.cancel().catch(() => {})
+      if (a.src !== src || !state.error) return
+      const msg = r.status === 415 || r.ok || decode ? t('Diese Datei enthält keinen abspielbaren Ton.')
+        : r.status === 404 ? t('Diese Datei gibt es nicht mehr.') : null
+      if (msg) set({ error: msg })
+    }).catch(() => {})
     // Nächsten versuchen (etwa externer Ordner nicht erreichbar), aber nicht endlos
     if (state.index < state.queue.length - 1) window.setTimeout(() => { if (state.error) go(state.index + 1, true) }, 1500)
   })

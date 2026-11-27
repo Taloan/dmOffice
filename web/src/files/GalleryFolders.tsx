@@ -1,15 +1,16 @@
 import {
   Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Dropdown, InfoLabel, Option, Spinner, Switch, Text, Tooltip, makeStyles, tokens,
 } from '@fluentui/react-components'
-import { ArrowClockwise20Regular, ArrowUp20Regular, Delete20Regular, Folder20Filled, ImageOff20Regular, Share20Regular } from '@fluentui/react-icons'
+import { ArrowClockwise20Regular, ArrowUp20Regular, Delete20Regular, Folder20Filled, FolderSwap20Regular, ImageOff20Regular, Share20Regular } from '@fluentui/react-icons'
 import { useEffect, useState } from 'react'
-import { api, fmtSize, q } from '../api'
+import { api, featureOn, fmtSize, q } from '../api'
 import { useApp } from '../App'
 import { t } from '../i18n'
 import { askConfirm } from '../shell/context'
 import { Item, Source, ownSource } from './common'
 import { albumFile, albumThumb, isAlb } from './Albums'
 import { setSourceNames } from './PhotoFilter'
+import { RelinkDialog, RelinkInfo, relinkLine } from './FolderRelink'
 
 /** Fotos und Videos aus Galerie-Ordnern (externe Ordner): Pfad „ext:&lt;Quelle&gt;/&lt;Pfad&gt;“ - nur ansehen und herunterladen. */
 export const EXT = 'ext:'
@@ -45,7 +46,13 @@ export const extOffline = (i: { path: string }) => i.path.startsWith(EXT) && off
 
 /** Foto aus einem anderen Bereich (z. B. der Übersicht) im Betrachter öffnen; Schließen führt dorthin zurück. */
 let photoFromElsewhere = false
-export const openPhotoFromElsewhere = (path: string) => { photoFromElsewhere = true; location.hash = '#/gallery/photo/' + encodeURIComponent(path) }
+export const openPhotoFromElsewhere = (path: string) => {
+  photoFromElsewhere = true
+  const h = '#/gallery/photo/' + encodeURIComponent(path)
+  // Steht die Adresse schon so da (Rest eines früheren Öffnens), käme kein hashchange - dann nachhelfen, sonst „passiert nichts“
+  if (location.hash === h) window.dispatchEvent(new HashChangeEvent('hashchange'))
+  else location.hash = h
+}
 /** Für den Betrachter: kam das Foto aus einem anderen Bereich? Gilt nur einmal. */
 export const takePhotoFromElsewhere = () => { const r = photoFromElsewhere; photoFromElsewhere = false; return r }
 
@@ -67,7 +74,7 @@ export const galleryTileSource: Source = {
 }
 
 interface Mount { id: string; name: string; kind: 'folder' | 'webdav' | 'onedrive' | 'pcloud'; readOnly: boolean }
-interface GallerySource { id: string; mount: string; mountName: string | null; path: string; available?: boolean; watch: boolean; draining?: boolean; sidecars: boolean; proxies?: boolean; proxyCount?: number; proxyBytes?: number; pending?: number; lastScan: string | null; error: string | null; count: number; scanning: boolean }
+interface GallerySource { id: string; mount: string; mountName: string | null; path: string; available?: boolean; watch: boolean; draining?: boolean; sidecars: boolean; proxies?: boolean; proxyCount?: number; proxyBytes?: number; pending?: number; lastScan: string | null; error: string | null; count: number; scanning: boolean; relink?: RelinkInfo | null }
 
 const useStyles = makeStyles({
   // Zwei Zeilen: oben Ordner, Stand und Knöpfe, darunter die Schalter (brechen um, statt den Namen zusammenzudrücken)
@@ -109,11 +116,12 @@ export function GalleryFoldersDialog({ onClose, onShare }: { onClose: (changed: 
   const [mount, setMount] = useState<string>('')
   const [path, setPath] = useState('')
   const [dirs, setDirs] = useState<string[] | null>(null)
+  const [relink, setRelink] = useState<GallerySource | null>(null)
   const load = () => api.get<{ sources: GallerySource[]; mounts: Mount[] }>('/api/gallery/sources').then(setData).catch(fail)
   useEffect(() => { load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
   // Während eingelesen wird, den Stand nachladen
   useEffect(() => {
-    if (!data?.sources.some(x => x.scanning)) return
+    if (!data?.sources.some(x => x.scanning || x.relink?.pending)) return
     const h = setTimeout(() => { load(); setChanged(true) }, 3000)
     return () => clearTimeout(h)
   }, [data]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -132,10 +140,10 @@ export function GalleryFoldersDialog({ onClose, onShare }: { onClose: (changed: 
     <Dialog open onOpenChange={(_, d) => { if (!d.open) onClose(changed) }}>
       <DialogSurface style={{ maxWidth: 620 }}>
         <DialogBody>
-          <DialogTitle>{t('Galerie-Ordner')}</DialogTitle>
+          <DialogTitle>{t('Externe Galerie-Ordner')}</DialogTitle>
           <DialogContent style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             <Text>{t('Die Galerie zeigt die Fotos und Videos deiner Ablage. Hier nimmst du zusätzlich Ordner aus externen Speichern auf – die Dateien bleiben, wo sie sind.')}</Text>
-            {data.sources.length === 0 && <Text className={s.muted}>{t('Noch keine Galerie-Ordner.')}</Text>}
+            {data.sources.length === 0 && <Text className={s.muted}>{t('Noch keine externen Galerie-Ordner.')}</Text>}
             {data.sources.map(x => (
               <div key={x.id} className={s.row}>
                 <div className={s.head}>
@@ -151,6 +159,7 @@ export function GalleryFoldersDialog({ onClose, onShare }: { onClose: (changed: 
                       + (!x.watch && !x.draining && !x.scanning ? ' – ' + t('ruht, mit „Jetzt neu einlesen“ abarbeiten') : '') : ''}
                     {x.proxyCount ? ' · ' + t('{n} große Vorschauen gespeichert ({size})', { n: x.proxyCount.toLocaleString(), size: fmtSize(x.proxyBytes ?? 0) }) : ''}
                   </Text>
+                  {relinkLine(x.relink) && <Text size={200} className={s.muted}>{relinkLine(x.relink)}</Text>}
                 </div>
                 {x.scanning && <Spinner size="tiny" />}
                 {onShare && <Tooltip content={t('Als Album teilen oder zeigen: andere sehen die Fotos dieses Ordners als Album, nur ansehen')} relationship="label">
@@ -164,6 +173,9 @@ export function GalleryFoldersDialog({ onClose, onShare }: { onClose: (changed: 
                     if (!await askConfirm(t('Große Vorschauen löschen?'), t('{n} große Vorschauen ({size}) dieses Ordners werden gelöscht. „Große Vorschau vorab“ wird dabei deaktiviert; beim Öffnen eines Fotos entsteht seine Vorschau neu.', { n: x.proxyCount!.toLocaleString(), size: fmtSize(x.proxyBytes ?? 0) }), t('Löschen'))) return
                     act(() => api.del(`/api/gallery/sources/${x.id}/proxies`))
                   }} />
+                </Tooltip>}
+                {featureOn('relink') && <Tooltip content={t('Ordner neu zuordnen …')} relationship="label">
+                  <Button appearance="subtle" icon={<FolderSwap20Regular />} disabled={x.scanning} onClick={() => setRelink(x)} />
                 </Tooltip>}
                 <Tooltip content={t('Aus der Galerie nehmen (die Dateien bleiben)')} relationship="label">
                   <Button appearance="subtle" icon={<Delete20Regular />} onClick={() => act(() => api.del(`/api/gallery/sources/${x.id}`))} />
@@ -200,6 +212,9 @@ export function GalleryFoldersDialog({ onClose, onShare }: { onClose: (changed: 
             <Button onClick={() => onClose(changed)}>{t('Schließen')}</Button>
           </DialogActions>
         </DialogBody>
+        {relink && <RelinkDialog kind="gallery" source={relink} mounts={data.mounts}
+          name={(relink.mountName ?? mountName(relink.mount)) + (relink.path ? ' › ' + relink.path.split('/').join(' › ') : '')}
+          onClose={done => { setRelink(null); if (done) { setChanged(true); load() } }} />}
       </DialogSurface>
     </Dialog>
   )

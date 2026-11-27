@@ -76,6 +76,10 @@ for its duration (minutes for several GB).
    ending in `-wal` and `-shm` in the target folder.
 3. Restore settings and keys: copy `users.json`, `server.json` and `shares.json` and, if present, `master.key` and the `keys/` folder
    from the backup back to `<data>`.
+<!-- [feature:cfgseal] -->
+   Copy `config.seal` along with them. If the backup has none, delete `config.seal` in `<data>`: dmOffice then seals the files as they
+   are and warns in the log. Otherwise run `reseal-config` (see the [manual](manual.md)).
+<!-- [/feature:cfgseal] -->
 4. Start dmOffice again. The server is now at the state of the backup.
 
 Important: all changes since the backup are lost. The blob files do not need to be copied back. dmOffice removes files no longer

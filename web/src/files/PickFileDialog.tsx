@@ -14,7 +14,7 @@ const useStyles = makeStyles({
     ':hover': { backgroundColor: tokens.colorNeutralBackground1Hover },
   },
   // Fotos und Videos mit kleinem Vorschaubild, damit man sieht, was man wählt
-  thumb: { width: '44px', height: '44px', borderRadius: tokens.borderRadiusMedium, overflow: 'hidden', flexShrink: 0, backgroundColor: tokens.colorNeutralBackground3 },
+  thumb: { position: 'relative', width: '44px', height: '44px', borderRadius: tokens.borderRadiusMedium, overflow: 'hidden', flexShrink: 0, backgroundColor: tokens.colorNeutralBackground3 },
   thumbImg: { width: '100%', height: '100%', display: 'block' },
   name: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   sub: { color: tokens.colorNeutralForeground3, fontSize: tokens.fontSizeBase200, whiteSpace: 'nowrap' },

@@ -67,6 +67,8 @@ public static class Auth
         }, scheme));
 
     public const string StampClaim = "dm:stamp";
+    /// <summary>Antwort, wenn sich ein gesperrtes Konto anmelden will.</summary>
+    public const string LockedError = "Dieses Konto ist gesperrt. Bitte an die Verwaltung wenden.";
     /// <summary>Bereich eines App-Passworts (AppPasswords.ScopeNotizi), fehlt bei vollem Zugang.</summary>
     public const string ScopeClaim = "dm:scope";
 
@@ -77,6 +79,12 @@ public static class Auth
         var u = users.ById(id)!;
         CookieSessions.EndAll(http.RequestServices, id, sid, u.Stamp);
         var principal = WithSession(Principal(u, CookieAuthenticationDefaults.AuthenticationScheme), sid);
+        // Notfallsitzung bleibt Notfallsitzung (Kennung, Sperren, 12 Stunden) - nie eine volle Sitzung daraus
+        if (http.User.FindFirstValue(DmOffice.Emergency.EmergencyApi.SessionClaim) is { } emergency)
+        {
+            DmOffice.Emergency.EmergencyApi.AsEmergency(principal, emergency);
+            return http.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, principal, new AuthenticationProperties { IsPersistent = false, ExpiresUtc = DateTimeOffset.UtcNow.AddHours(12) });
+        }
         return http.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, principal,
             new AuthenticationProperties { IsPersistent = true, ExpiresUtc = DateTimeOffset.UtcNow.AddDays(30) });
     }
@@ -103,19 +111,23 @@ public static class Auth
         var users = ctx.HttpContext.RequestServices.GetRequiredService<UserStore>();
         var p = ctx.Principal;
         var u = users.ById(p?.FindFirstValue(ClaimTypes.NameIdentifier) ?? "");
+        // Notfallsitzung (Version 2): gilt nur, solange der Notfallzugang gewaehrt ist - Zuruecknehmen wirft sie sofort hinaus
+        var emergency = p?.FindFirstValue(DmOffice.Emergency.EmergencyApi.SessionClaim);
         var sid = p == null ? null : CookieSessions.Of(p);
-        if (u == null || (p!.FindFirstValue(StampClaim) ?? "") != u.Stamp
+        // Gesperrtes Konto (Verwaltung): keine Sitzung mehr; der gewährte Notfallzugang bleibt (eine andere Person, vom Besitzer bestimmt)
+        if (u == null || (u.LockedOut && emergency == null) || (p!.FindFirstValue(StampClaim) ?? "") != u.Stamp
             || (sid != null && !CookieSessions.Valid(ctx.HttpContext, u.Id, sid))
-            // Sitzung im Konto eines anderen (Claim „dm:emergency“ eines späteren Stands): gilt hier nie
-            || p.HasClaim(c => c.Type == "dm:emergency"))
+            || (emergency != null && !ctx.HttpContext.RequestServices.GetRequiredService<DmOffice.Emergency.EmergencyStore>().MayEnter(emergency, u.Id)))
         {
             ctx.RejectPrincipal();
             await ctx.HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
             return;
         }
-        if (p!.IsInRole("admin") != u.IsAdmin || p.FindFirstValue(ClaimTypes.Name) != u.Login)
+        // Notfallsitzung: nie Admin, auch wenn der Besitzer es ist
+        if (p!.IsInRole("admin") != (u.IsAdmin && emergency == null) || p.FindFirstValue(ClaimTypes.Name) != u.Login)
         {
             var fresh = WithSession(Principal(u, CookieAuthenticationDefaults.AuthenticationScheme), sid);
+            if (emergency != null) DmOffice.Emergency.EmergencyApi.AsEmergency(fresh, emergency);
             ctx.ReplacePrincipal(fresh);
             ctx.ShouldRenew = true;
         }
@@ -189,9 +201,13 @@ public static class Auth
         if (p.Equals("/api/tickets", StringComparison.OrdinalIgnoreCase)) return true;
         // Eigenes Konto löschen auch aus der App; verlangt zusätzlich das Passwort des Kontos
         if (p.Equals("/api/auth/delete-account", StringComparison.OrdinalIgnoreCase) || p.Equals("/api/auth/delete-account/impact", StringComparison.OrdinalIgnoreCase)) return true;
-        foreach (var prefix in new[] { "/api/mail", "/api/pim", "/api/notes", "/api/files", "/api/office", "/api/chat", "/api/gallery", "/api/audio", "/api/dashboard", "/api/tresor", "/api/dms" })
+        foreach (var prefix in new[] { "/api/mail", "/api/pim", "/api/notes", "/api/files", "/api/office", "/api/chat", "/api/journal", "/api/emergency", "/api/gallery", "/api/audio", "/api/dashboard", "/api/coach", "/api/tresor", "/api/dms" })
             if (p.Equals(prefix, StringComparison.OrdinalIgnoreCase) || p.StartsWith(prefix + "/", StringComparison.OrdinalIgnoreCase)) return true;
-        foreach (var exact in new[] { "/api/activity", "/api/settings/dav", "/api/settings/ui", "/api/settings/categories", "/api/settings/search-folders", "/api/settings/security-log" })
+        // [feature:gatekeeper]
+        // GateKeeper: Zähler für die App und der Tunnel (WebSocket mit Ticket)
+        if (p.Equals("/api/gatekeeper", StringComparison.OrdinalIgnoreCase) || p.StartsWith("/api/gatekeeper/", StringComparison.OrdinalIgnoreCase)) return true;
+        // [/feature:gatekeeper]
+        foreach (var exact in new[] { "/api/activity", "/api/activity/control", "/api/settings/dav", "/api/settings/ui", "/api/settings/categories", "/api/settings/search-folders", "/api/settings/security-log" })
             if (p.Equals(exact, StringComparison.OrdinalIgnoreCase)) return true;
         return false;
     }
@@ -235,6 +251,11 @@ public static class Auth
     {
         if (HttpMethods.IsGet(http.Request.Method) || HttpMethods.IsHead(http.Request.Method) || HttpMethods.IsOptions(http.Request.Method)) return false;
         if (http.User.Identity is not { IsAuthenticated: true, AuthenticationType: CookieAuthenticationDefaults.AuthenticationScheme }) return false;
+        // Die Oberfläche ruft die Schnittstelle per fetch auf; ein abgeschicktes Formular (Seitenwechsel) ändert dort
+        // nichts - auch nicht von der eigenen Seite aus. Ausnahme: die beiden Downloads, die bewusst so laufen.
+        if (http.Request.Headers["Sec-Fetch-Mode"].ToString() == "navigate" && http.Request.Path.StartsWithSegments("/api")
+            && !http.Request.Path.StartsWithSegments("/api/files/zip") && !http.Request.Path.StartsWithSegments("/api/dms/docs/download"))
+            return true;
         var site = http.Request.Headers["Sec-Fetch-Site"].ToString();
         if (site.Length > 0) return site is "cross-site" or "same-site";
         var origin = http.Request.Headers.Origin.ToString();
@@ -267,6 +288,28 @@ public static class Auth
         }, scheme));
 
     public static void Succeeded(string ip) => Failures.TryRemove(ip, out _);
+
+    /// <summary>
+    /// Passwort eines öffentlichen Links: gesperrt wird je Adresse (nach fünf Fehlern) - der Link für alle erst nach
+    /// <see cref="LinkFailuresAll"/> Fehlern innerhalb einer Stunde. Sonst sperrte ein Fremder mit fünf Versuchen den Empfänger aus.
+    /// </summary>
+    public const int LinkFailuresAll = 50;
+
+    public static bool LinkBlocked(string linkKey, string ipKey) =>
+        Blocked(linkKey + "|" + ipKey) || Blocked(ipKey) || Recent(linkKey) >= LinkFailuresAll;
+
+    public static void LinkFailed(string linkKey, string ipKey)
+    {
+        Failed(linkKey + "|" + ipKey, "Passwort eines Links");
+        Failed(ipKey, "Passwort eines Links");
+        // Zählt nur mit (gesperrt wird über LinkBlocked)
+        var now = DateTime.UtcNow;
+        Failures.AddOrUpdate(linkKey, _ => (1, DateTime.MinValue, now), (_, f) => (now - f.Last <= FailuresForget ? f.Count + 1 : 1, DateTime.MinValue, now));
+    }
+
+    public static void LinkSucceeded(string linkKey, string ipKey) => Succeeded(linkKey + "|" + ipKey);
+
+    private static int Recent(string key) => Failures.TryGetValue(key, out var f) && DateTime.UtcNow - f.Last <= FailuresForget ? f.Count : 0;
 
     /// <summary>
     /// Anmeldung gelungen: der Name ist frei, die Adresse bekommt nur einen Versuch gutgeschrieben - sonst setzte jemand mit
@@ -412,16 +455,25 @@ public static class Auth
     public record RestoreBody(string? Code, string? Endpoint, string? Region, string? Bucket, string? Prefix, string? AccessKey, string? SecretKey, string? Name = null,
         string? Target = null, string? WebDavUrl = null, string? WebDavUser = null, string? WebDavPassword = null, string? Folder = null);
     public record ProfileBody(string? Code, string? Text);
+    public record RestoreKeyBody(string? Code, string? Url, string? Fingerprint = null); // [feature:sftptrust]
     public record ChangeBody(string? Old, string New, string? Code = null);
 
     public static void Map(WebApplication app)
     {
         var api = app.MapGroup("/api/auth");
 
-        api.MapGet("/state", (HttpContext http, UserStore users, ServerConfig config) =>
+        api.MapGet("/state", async (HttpContext http, UserStore users, ServerConfig config) =>
         {
-            var loggedIn = http.User.Identity?.IsAuthenticated == true;
-            UserRecord? me = loggedIn ? users.ById(http.User.FindFirstValue(ClaimTypes.NameIdentifier) ?? "") : null;
+            // Ohne Anmeldepflicht prüft ASP.NET nur das Cookie (Standardschema). Die App meldet sich mit App-Passwort bzw. im
+            // Umschlag an - ohne diese Prüfung sah sie hier „nicht angemeldet“ und übernahm die Release-Liste nicht.
+            var principal = http.User;
+            if (principal.Identity?.IsAuthenticated != true)
+            {
+                var r = await http.AuthenticateAsync(AppPasswordScheme);
+                if (r.Succeeded) principal = r.Principal!;
+            }
+            var loggedIn = principal.Identity?.IsAuthenticated == true;
+            UserRecord? me = loggedIn ? users.ById(principal.FindFirstValue(ClaimTypes.NameIdentifier) ?? "") : null;
             return new
             {
                 setupNeeded = users.Empty,
@@ -434,6 +486,10 @@ public static class Auth
                 oidcOnly = Oidc.OnlyOidc(config),
                 // Release-Liste: in dieser Version nicht freigeschaltete Funktionen - Web und App blenden sie aus
                 featuresOff = Features.Off,
+                // Öffentliche Adresse für Links, die andere öffnen (Freigabelinks); null: die Adresse im Browser
+                publicUrl = me != null ? PublicAddress.Configured(config) : null, // [feature:publicurl]
+                // Plugins mit Version, api-Stufe und an/aus (positive Liste); fehlt bei ausgeschalteter Kennung plugins
+                plugins = me != null && Features.On(Features.Plugins) ? DmOffice.Plugins.PluginApi.List() : null,
                 loggedIn = me != null,
                 user = me == null ? null : new { me.Id, me.Login, me.DisplayName, me.IsAdmin, me.TwoFactor, files = !me.FilesOff, oidcLinked = me.OidcSubject != null,
                     // Audiothek: Modul eingeschaltet und nicht ohne Dateiablage
@@ -492,6 +548,25 @@ public static class Auth
                 return Results.BadRequest(new { error = "Die Zugangsdaten passen nicht zum Hauptschlüssel dieses Servers. In der Container-Vorlage muss derselbe DMOFFICE_MASTER_KEY stehen wie beim alten Server." });
             }
         });
+        // [feature:sftptrust]
+        // SFTP-Ziel beim Wiederherstellen: Fingerabdruck zeigen und bestätigen (noch ohne Konto, daher mit dem Einrichtungscode)
+        api.MapPost("/restore/host-key", async (RestoreKeyBody body, HttpContext http, UserStore users, CancellationToken ct) =>
+        {
+            if (await CodeGate(body.Code, http, users) is { } stop) return stop;
+            if (!DmOffice.Storage.SftpDriver.TryParse(body.Url, out var host, out var port, out _, out _)) return Results.BadRequest(new { error = "Die Adresse muss die Form sftp://server:port/ordner haben." });
+            return Results.Ok(await DmOffice.Storage.SftpDriver.ProbeHostAsync(host, port, null, ct));
+        });
+        api.MapPost("/restore/trust-host", async (RestoreKeyBody body, HttpContext http, UserStore users, CancellationToken ct) =>
+        {
+            if (await CodeGate(body.Code, http, users) is { } stop) return stop;
+            if (!DmOffice.Storage.SftpDriver.TryParse(body.Url, out var host, out var port, out _, out _)) return Results.BadRequest(new { error = "Die Adresse muss die Form sftp://server:port/ordner haben." });
+            var info = await DmOffice.Storage.SftpDriver.ProbeHostAsync(host, port, null, ct);
+            if (info.Fingerprint != body.Fingerprint?.Trim())
+                return Results.Json(new { error = "Der Server meldet inzwischen einen anderen Fingerabdruck. Bitte noch einmal prüfen." }, statusCode: 409);
+            if (info.State != "trusted") DmOffice.Storage.SftpDriver.ConfirmHost(info.Host, info.Port, info.Fingerprint);
+            return Results.Ok(info with { Known = info.Fingerprint, State = "trusted" });
+        });
+        // [/feature:sftptrust]
         api.MapPost("/restore/list", async (RestoreBody body, HttpContext http, UserStore users, CancellationToken ct) =>
         {
             if (await RestoreGate(body, http, users) is { } stop) return stop;
@@ -591,6 +666,8 @@ public static class Auth
             }
             // Anmeldung nur über den Anbieter: erst nach geprüftem Passwort sagen, sonst verriete die Antwort, welche Konten es gibt
             if (Oidc.PasswordBlocked(config, u)) return Results.Json(new { error = Oidc.OnlyOidcError }, statusCode: 403);
+            // Gesperrt: erst nach geprüftem Passwort sagen (sonst verriete die Antwort, welche Konten es gibt)
+            if (u.LockedOut) return Results.Json(new { error = LockedError, locked = true }, statusCode: 403);
             if (u.TwoFactor)
             {
                 // Passwort stimmt - ohne Code nur die Frage danach, keine Anmeldung
@@ -605,6 +682,7 @@ public static class Auth
             }
             // Aus einem bekannten Browser bleibt der Zähler des Namens stehen
             SucceededLogin(ip, device ?? nameKey);
+            users.UpgradeHash(u, body.Password ?? "");
             await SignInNew(http, u, new AuthenticationProperties { IsPersistent = true, ExpiresUtc = DateTimeOffset.UtcNow.AddDays(30) });
             KnownBrowser(http, u);
             return Results.Ok(new { twoFactor = false });
@@ -707,6 +785,7 @@ public static class Auth
             // ohne eigenes Passwort bestätigen sie mit Code bzw. beim Anbieter
             if (Confirm(users, u, body.Old, body.Code, needCode: false, http) is { } refused) return refused;
             if (body.New.Length < 8) return Results.BadRequest(new { error = "Mindestens 8 Zeichen." });
+            if (UserStore.PasswordProblem(body.New) is { } weak) return Results.BadRequest(new { error = weak });
             // Neuer Stempel: alle anderen Sitzungen sind abgemeldet, diese bekommt ein neues Cookie
             users.Update(id, x => { x.PasswordHash = Passwords.Hash(body.New); x.NoOwnPassword = false; x.NewStamp(); });
             CryptomatorPaths.LockAll(id);
@@ -732,6 +811,8 @@ public static class Auth
         {
             var id = http.User.FindFirstValue(ClaimTypes.NameIdentifier)!;
             var u = users.ById(id)!;
+            if (http.User.FindFirstValue(DmOffice.Emergency.EmergencyApi.SessionClaim) != null)
+                return Results.Json(new { error = "Im Notfallzugang lässt sich das Konto nicht löschen." }, statusCode: 403);
             if (LastAdmin(users, u)) return Results.BadRequest(new { error = "Du bist der einzige Admin. Lege zuerst einen weiteren Admin an." });
             if (Confirm(users, u, body.Password, body.Code, needCode: true, http) is { } refused) return refused;
             AdminApi.DeleteUser(http.RequestServices, id);
@@ -740,7 +821,7 @@ public static class Auth
             return Results.Ok();
         }).RequireAuthorization();
 
-        // Überall abmelden: neuer Stempel - alle Sitzungen (Browser) sind abgemeldet, diese bekommt ein neues Cookie.
+        // Überall abmelden: neuer Stempel - alle Sitzungen (Browser, Notfallsitzungen) sind abgemeldet, diese bekommt ein neues Cookie.
         // App-Passwörter bleiben (eigene Liste unter Geräte & Sync), offene Cryptomator-Tresore werden gesperrt.
         api.MapPost("/logout-all", async (HttpContext http, UserStore users) =>
         {
@@ -777,6 +858,7 @@ public sealed class AppPasswordHandler : AuthenticationHandler<AuthenticationSch
             var s = E2e.TakeSession(session, Context.Connection.RemoteIpAddress);
             var su = s == null ? null : _users.ById(s.Value.UserId);
             if (su == null) return Task.FromResult(AuthenticateResult.Fail("session"));
+            if (su.LockedOut) return Task.FromResult(AuthenticateResult.Fail("locked"));
             // Browser-Geraet: wie das Cookie, mit Admin-Rolle; App-Geraet: eingeschraenkt. Leere App-Passwort-Id
             // kennzeichnet "aus dem Umschlag heraus" - so darf sich kein zweites Geraet registrieren.
             var principal = s!.Value.AppPasswordId == null ? Auth.Principal(su, Scheme.Name) : Auth.DevicePrincipal(su, Scheme.Name, s.Value.AppPasswordId);
@@ -815,6 +897,8 @@ public sealed class AppPasswordHandler : AuthenticationHandler<AuthenticationSch
             catch (UpdatePendingException) { return Task.FromResult(AuthenticateResult.Fail("update pending")); }
             if (AppPasswords.Check(space.Db, decoded[(colon + 1)..]) is { } appPasswordId)
             {
+                // Gesperrtes Konto: gültiges App-Passwort, aber kein Zugang (kein Fehlversuch)
+                if (user.LockedOut) return Task.FromResult(AuthenticateResult.Fail("locked"));
                 var scope = AppPasswords.ScopeOf(space.Db, appPasswordId);
                 // notizi-Zugang: nur WebDAV (dort weiter eingegrenzt auf den Abgleichordner), keine Web-API
                 if (scope != null && !dav) return Task.FromResult(AuthenticateResult.Fail("scope"));
@@ -854,7 +938,7 @@ public sealed class AppPasswordHandler : AuthenticationHandler<AuthenticationSch
         var t = Tickets.Read(Context.RequestServices, token, out var expires);
         if (t == null || !Tickets.Matches(t, Request)) return AuthenticateResult.Fail("ticket");
         var user = _users.ById(t.U);
-        if (user == null || user.Stamp != t.S) return AuthenticateResult.Fail("ticket");
+        if (user == null || user.Stamp != t.S || user.LockedOut) return AuthenticateResult.Fail("ticket");
         if (t.A != null)
         {
             UserSpace space;

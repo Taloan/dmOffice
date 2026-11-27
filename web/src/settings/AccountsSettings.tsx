@@ -1,15 +1,17 @@
 import {
   Button, Card, CardHeader, Dropdown, Field, Input, Option, SpinButton, Switch, Text, makeStyles, tokens, Spinner, MessageBar, MessageBarBody,
-  Avatar, Table, TableBody, TableCell, TableHeader, TableHeaderCell, TableRow
+  Avatar, Table, TableBody, TableCell, TableHeader, TableHeaderCell, TableRow, MenuItem, MenuDivider
 } from '@fluentui/react-components'
 import { Add20Regular, Copy20Regular, Delete20Regular, Edit20Regular, PlugConnected20Regular, Star20Filled, Star20Regular } from '@fluentui/react-icons'
 import { useEffect, useRef, useState } from 'react'
 import { api, defaultAccount, featureOn, type Folder } from '../api'
 import { useApp } from '../App'
-import { askConfirm } from '../shell/context'
+import { ContextMenu, askConfirm, useContextMenu } from '../shell/context'
 import { locale, t, tError } from '../i18n'
 import { RichEditor, RichEditorHandle } from '../shell/RichEditor'
 import { copyText } from '../shell/browser'
+import { MailAccountActive, MailAccountActiveHint, type OffNote } from './MailAccountActive' // [feature:mailaccountoff]
+import { RibbonActions, RibbonButton } from '../shell/Ribbon'
 
 const useStyles = makeStyles({
   grid: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '12px 16px', '@media (max-width: 767px)': { gridTemplateColumns: 'minmax(0, 1fr)' } },
@@ -30,6 +32,7 @@ interface AccountForm {
   storage: 'full' | 'slim'; slimDays: number; slimMb: number
   /** Selbst festgelegte Sonderordner: Art → Ordnerpfad, '' = keiner; fehlt eine Art, erkennt dmOffice den Ordner selbst */
   folderMap?: Record<string, string> | null
+  disabled?: boolean; offNotes?: OffNote[] | null // [feature:mailaccountoff]
 }
 
 /** Welcher Ordner beim Anbieter Gesendet, Entwürfe, Junk, Papierkorb und Archiv ist - erkannt oder selbst festgelegt. */
@@ -161,15 +164,24 @@ export function AccountsSettings() {
     try { await api.put(`/api/settings/accounts/${a.id}/default`, {}); changed() } catch (e) { fail(e) }
   }
 
+  // Rechtsklick auf ein Konto (Kennung ctxall): dieselben Aktionen wie die Knöpfe
+  const menu = useContextMenu<AccountForm>()
+  const ctxall = featureOn('ctxall')
+  const offOn = featureOn('mailaccountoff') // [feature:mailaccountoff]
+
   if (edit) return <AccountEditor initial={edit} microsoft={!!msDomains} onDone={() => { setEdit(null); changed() }} />
   if (wizard) return <AccountWizard onManual={f => { setWizard(false); setEdit(f) }} onDone={() => { setWizard(false); changed() }} />
   return (
     <>
-      <Text size={600} weight="semibold">{t('E-Mail-Konten')}</Text>
       <div className={s.cards}>
         {accounts?.map(a => (
-          <Card key={a.id} size="small">
-            <CardHeader image={<Avatar name={a.name} color="colorful" />} header={<Text weight="semibold">{a.name}</Text>}
+          <Card key={a.id} size="small" onContextMenu={ctxall ? e => menu.open(e, a) : undefined}>
+            <CardHeader image={<Avatar name={a.name} color="colorful" />}
+              // [feature:mailaccountoff]
+              header={<Text weight="semibold" style={a.disabled ? { color: tokens.colorNeutralForeground3 } : undefined}>{a.name}{a.disabled ? ' · ' + t('deaktiviert') : ''}</Text>}
+              // [feature:mailaccountoff:else]
+              // header={<Text weight="semibold">{a.name}</Text>}
+              // [/feature:mailaccountoff]
               description={`${a.email} · ${a.syncMonths ? t('{period} synchronisiert', { period: period(a.syncMonths) }) : t('alles synchronisiert')}${a.storage === 'slim' ? ' · ' + t('Slim Mode') : ''}${choose && a === standard ? ' · ' + t('Standard-Postfach') : ''}`}
               action={<div>
                 {choose && (a === standard
@@ -178,11 +190,21 @@ export function AccountsSettings() {
                 <Button appearance="subtle" icon={<Edit20Regular />} onClick={() => setEdit(a)} aria-label={t('Konto bearbeiten')} title={t('Konto bearbeiten')} />
                 <Button appearance="subtle" icon={<Delete20Regular />} onClick={() => remove(a)} aria-label={t('Konto entfernen')} title={t('Konto entfernen')} />
               </div>} />
+            {/* [feature:mailaccountoff] */}
+            {offOn && a.id && <MailAccountActive id={a.id} disabled={!!a.disabled} notes={a.offNotes} onChanged={changed} />}
+            {/* [/feature:mailaccountoff] */}
           </Card>
         ))}
       </div>
+      {menu.ctx && <ContextMenu at={menu.ctx.at} onClose={menu.close}>
+        <MenuItem icon={<Edit20Regular />} onClick={() => setEdit(menu.ctx!.data)}>{t('Konto bearbeiten')}</MenuItem>
+        {choose && <MenuItem icon={<Star20Regular />} disabled={menu.ctx.data === standard} onClick={() => makeDefault(menu.ctx!.data)}>{t('Als Standard-Postfach festlegen')}</MenuItem>}
+        <MenuDivider />
+        <MenuItem icon={<Delete20Regular />} onClick={() => remove(menu.ctx!.data)}>{t('Konto entfernen')}</MenuItem>
+      </ContextMenu>}
+      {offOn && (accounts?.length ?? 0) > 0 && <MailAccountActiveHint />} {/* [feature:mailaccountoff] */}
       {choose && <Text size={200}>{t('Das Standard-Postfach öffnet sich beim Start des Mailbereichs. Neue E-Mails ohne gewählten Ordner verschickt dmOffice über dieses Konto.')}</Text>}
-      <div><Button appearance="primary" icon={<Add20Regular />} onClick={() => setWizard(true)}>{t('Konto hinzufügen')}</Button></div>
+      <RibbonActions><RibbonButton primary icon={<Add20Regular />} label={t('Konto hinzufügen')} onClick={() => setWizard(true)} /></RibbonActions>
     </>
   )
 }
@@ -334,7 +356,7 @@ function GraphConnect({ accountId }: { accountId: string }) {
           <Switch label={t('Aufgaben')} checked={state.tasks} onChange={(_, d) => toggle('tasks', d.checked)} />
         </div>
         {/* Stand als Tabelle: je Sammlung eine Zeile, Fehler rot, Konflikte darunter */}
-        <Table size="small" style={{ maxWidth: 720 }}>
+        <Table size="small">
           <TableHeader><TableRow>
             <TableHeaderCell style={{ width: 120 }}>{t('Bereich')}</TableHeaderCell>
             <TableHeaderCell>{t('Name')}</TableHeaderCell>
@@ -451,7 +473,7 @@ function AccountWizard({ onManual, onDone }: { onManual: (f: AccountForm) => voi
 
   if (!found) return (
     <>
-      <Text size={600} weight="semibold">{t('Konto hinzufügen')}</Text>
+      <Text size={400} weight="semibold">{t('Konto hinzufügen')}</Text>
       <Text>{t('Server, Ports und die Art der Anmeldung ermittelt dmOffice anhand der E-Mail-Adresse.')}</Text>
       <form className={s.grid} onSubmit={e => { e.preventDefault(); if (validEmail && !busy) next() }}>
         <Field label={t('E-Mail-Adresse')} className={s.full}>
@@ -470,7 +492,7 @@ function AccountWizard({ onManual, onDone }: { onManual: (f: AccountForm) => voi
   const d = found.settings
   return (
     <>
-      <Text size={600} weight="semibold">{t('Konto hinzufügen')}</Text>
+      <Text size={400} weight="semibold">{t('Konto hinzufügen')}</Text>
       <Text weight="semibold">{email.trim()}</Text>
       <MessageBar intent="info">
         <MessageBarBody>
@@ -526,6 +548,7 @@ function AccountEditor({ initial, microsoft, onDone }: { initial: AccountForm; m
   const [signIn, setSignIn] = useState(false)
   const sig = useRef<RichEditorHandle>(null)
   const isMs = a.auth === 'Microsoft'
+  const managed = false
   const set =(p: Partial<AccountForm>) => setA(x => ({ ...x, ...p }))
 
   const onEmail = (email: string) => {
@@ -555,27 +578,27 @@ function AccountEditor({ initial, microsoft, onDone }: { initial: AccountForm; m
   }
 
   const secDrop = (value: string, onChange: (v: string) => void) => (
-    <Dropdown value={security.find(x => x[0] === value)?.[1]} selectedOptions={[value]} onOptionSelect={(_, d) => onChange(d.optionValue!)}>
+    <Dropdown disabled={managed} value={security.find(x => x[0] === value)?.[1]} selectedOptions={[value]} onOptionSelect={(_, d) => onChange(d.optionValue!)}>
       {security.map(([k, l]) => <Option key={k} value={k}>{l}</Option>)}
     </Dropdown>
   )
 
   return (
     <>
-      <Text size={600} weight="semibold">{a.id ? t('Konto bearbeiten') : t('Konto hinzufügen')}</Text>
+      <Text size={400} weight="semibold">{a.id ? t('Konto bearbeiten') : t('Konto hinzufügen')}</Text>
       <form className={s.grid} onSubmit={e => { e.preventDefault(); save() }}>
-        <Field label={t('E-Mail-Adresse')}><Input type="email" value={a.email} onChange={(_, d) => onEmail(d.value)} autoFocus /></Field>
+        <Field label={t('E-Mail-Adresse')}><Input type="email" disabled={managed} value={a.email} onChange={(_, d) => onEmail(d.value)} autoFocus /></Field>
         <Field label={t('Absendername')}><Input value={a.displayName} onChange={(_, d) => set({ displayName: d.value })} /></Field>
         <Field label={t('Kontoname (in der Ordnerliste)')} className={s.full}><Input value={a.name} placeholder={a.email} onChange={(_, d) => set({ name: d.value })} /></Field>
 
         <Text className={s.section}>{t('Posteingang (IMAP)')}</Text>
-        <Field label={t('Server')}><Input value={a.imapHost} onChange={(_, d) => set({ imapHost: d.value })} /></Field>
+        <Field label={t('Server')}><Input disabled={managed} value={a.imapHost} onChange={(_, d) => set({ imapHost: d.value })} /></Field>
         <div style={{ display: 'flex', gap: 8 }}>
-          <Field label={t('Port')} style={{ width: 100 }}><Input type="number" value={String(a.imapPort)} onChange={(_, d) => set({ imapPort: Number(d.value) })} /></Field>
+          <Field label={t('Port')} style={{ width: 100 }}><Input type="number" disabled={managed} value={String(a.imapPort)} onChange={(_, d) => set({ imapPort: Number(d.value) })} /></Field>
           <Field label={t('Verschlüsselung')} style={{ flex: 1 }}>{secDrop(a.imapSecurity, v => set({ imapSecurity: v, imapPort: v === 'Ssl' ? 993 : 143 }))}</Field>
         </div>
-        <Field label={t('Benutzer')}><Input value={a.imapUser} onChange={(_, d) => set({ imapUser: d.value })} /></Field>
-        {(microsoft || isMs) && (
+        <Field label={t('Benutzer')}><Input disabled={managed} value={a.imapUser} onChange={(_, d) => set({ imapUser: d.value })} /></Field>
+        {(microsoft || isMs) && !managed && (
           <Field label={t('Anmeldung')}>
             <Dropdown value={isMs ? t('Microsoft-Konto (OAuth2)') : t('Passwort')} selectedOptions={[a.auth ?? 'Password']}
               onOptionSelect={(_, d) => { set({ auth: d.optionValue as AccountForm['auth'] }); setSignIn(false); setTest(null) }}>
@@ -590,6 +613,8 @@ function AccountEditor({ initial, microsoft, onDone }: { initial: AccountForm; m
             {microsoft && !signIn && <Button size="small" onClick={() => setSignIn(true)}>{a.hasOAuth || a.oauthFlow ? t('Neu anmelden') : t('Mit Microsoft anmelden')}</Button>}
             {signIn && <MicrosoftSignIn onDone={flow => { set({ oauthFlow: flow }); setSignIn(false); setTest(null) }} onCancel={() => setSignIn(false)} />}
           </div>
+        ) : managed ? (
+          <Text size={200} style={{ color: tokens.colorNeutralForeground3, alignSelf: 'end' }}>{t('Dieses Postfach verwaltet der Admin: Adresse, Server und Zugang ändern sich nur über die Verwaltung.')}</Text>
         ) : (
           <Field label={t('Passwort')} hint={a.hasImapPassword ? t('leer lassen: bleibt') : undefined}>
             <Input type="password" value={a.imapPassword} onChange={(_, d) => set({ imapPassword: d.value })} autoComplete="new-password" />
@@ -598,13 +623,13 @@ function AccountEditor({ initial, microsoft, onDone }: { initial: AccountForm; m
         {isMs && microsoft && a.id && initial.hasOAuth && <GraphConnect accountId={a.id} />}
 
         <Text className={s.section}>{t('Postausgang (SMTP)')}</Text>
-        <Field label={t('Server')}><Input value={a.smtpHost} onChange={(_, d) => set({ smtpHost: d.value })} /></Field>
+        <Field label={t('Server')}><Input disabled={managed} value={a.smtpHost} onChange={(_, d) => set({ smtpHost: d.value })} /></Field>
         <div style={{ display: 'flex', gap: 8 }}>
-          <Field label={t('Port')} style={{ width: 100 }}><Input type="number" value={String(a.smtpPort)} onChange={(_, d) => set({ smtpPort: Number(d.value) })} /></Field>
+          <Field label={t('Port')} style={{ width: 100 }}><Input type="number" disabled={managed} value={String(a.smtpPort)} onChange={(_, d) => set({ smtpPort: Number(d.value) })} /></Field>
           <Field label={t('Verschlüsselung')} style={{ flex: 1 }}>{secDrop(a.smtpSecurity, v => set({ smtpSecurity: v, smtpPort: v === 'Ssl' ? 465 : 587 }))}</Field>
         </div>
-        <Field label={t('Benutzer')} hint={t('leer: wie IMAP')}><Input value={a.smtpUser} onChange={(_, d) => set({ smtpUser: d.value })} /></Field>
-        {!isMs && <Field label={t('Passwort')} hint={t('leer: wie IMAP')}><Input type="password" value={a.smtpPassword} onChange={(_, d) => set({ smtpPassword: d.value })} autoComplete="new-password" /></Field>}
+        <Field label={t('Benutzer')} hint={t('leer: wie IMAP')}><Input disabled={managed} value={a.smtpUser} onChange={(_, d) => set({ smtpUser: d.value })} /></Field>
+        {!isMs && !managed && <Field label={t('Passwort')} hint={t('leer: wie IMAP')}><Input type="password" value={a.smtpPassword} onChange={(_, d) => set({ smtpPassword: d.value })} autoComplete="new-password" /></Field>}
 
         <Text className={s.section}>{t('Synchronisieren')}</Text>
         {/* Feste Zeilen: was je nach Speichermodus erscheint, hat eine eigene Zelle - so rutscht nichts nach */}
@@ -666,6 +691,7 @@ function AccountEditor({ initial, microsoft, onDone }: { initial: AccountForm; m
             {t('Welcher Ordner beim Anbieter wofür verwendet wird, wenn die automatische Zuordnung nicht passt oder ein Ordner fehlt.')}</Text>
           <FolderMapEditor account={initial.id} map={a.folderMap ?? {}} onChange={m => set({ folderMap: m })} />
         </>}
+
 
         <Text className={s.section}>{t('Signatur')}</Text>
         <div className={`${s.full} ${s.sig}`}><RichEditor ref={sig} initial={a.signature} minimal /></div>

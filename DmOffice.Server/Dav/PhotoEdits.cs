@@ -17,8 +17,16 @@ public static class PhotoEdits
 {
     public sealed record Edit(int Rotate, PhotoEdit.Crop? Crop, PhotoAdjust.Values? Adjust, string Origin, long Modified)
     {
+        // [feature:lenscorr]
+        /// <summary>Objektivkorrektur (null: nie eingestellt - dann gilt sie nicht, auch wenn eine Regel passt).</summary>
+        public DmOffice.Gallery.LensSettings? Lens { get; init; }
         /// <summary>Ändert nichts (dann gibt es keinen Datensatz).</summary>
-        public bool IsEmpty => Rotate % 360 == 0 && (Crop == null || Crop.X <= 0.0001 && Crop.Y <= 0.0001 && Crop.W >= 0.9999 && Crop.H >= 0.9999) && (Adjust == null || Adjust.IsNeutral);
+        public bool IsEmpty => Rotate % 360 == 0 && (Crop == null || Crop.X <= 0.0001 && Crop.Y <= 0.0001 && Crop.W >= 0.9999 && Crop.H >= 0.9999) && (Adjust == null || Adjust.IsNeutral)
+            && Lens == null;   // ausgeschaltet zählt: sonst schaltete eine passende Regel sie beim nächsten Öffnen wieder ein
+        // [feature:lenscorr:else]
+        // /// <summary>Ändert nichts (dann gibt es keinen Datensatz).</summary>
+        // public bool IsEmpty => Rotate % 360 == 0 && (Crop == null || Crop.X <= 0.0001 && Crop.Y <= 0.0001 && Crop.W >= 0.9999 && Crop.H >= 0.9999) && (Adjust == null || Adjust.IsNeutral);
+        // [/feature:lenscorr]
     }
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
@@ -59,6 +67,16 @@ public static class PhotoEdits
         if (db.Exec("DELETE FROM photo_edits WHERE key = $k", ("$k", key)) > 0) Changed(db);
     }
 
+    // [feature:lenscorr]
+    /// <summary>Alle Bearbeitungen einer Datenbank (Schlüssel → Einstellungen).</summary>
+    public static Dictionary<string, Edit> All(UserDb db)
+    {
+        Ensure(db);
+        return db.Query("SELECT key, edit FROM photo_edits", r => (r.GetString(0), JsonSerializer.Deserialize<Edit>(r.GetString(1), Json)))
+            .Where(x => x.Item2 != null).ToDictionary(x => x.Item1, x => x.Item2!);
+    }
+
+    // [/feature:lenscorr]
     /// <summary>Alle bearbeiteten Fotos einer Datenbank: Schlüssel → Fingerabdruck (für die Etags der Listen).</summary>
     public static Dictionary<string, string> Fingerprints(UserDb db)
     {
@@ -66,13 +84,23 @@ public static class PhotoEdits
         return db.Query("SELECT key, edit FROM photo_edits", r => (r.GetString(0), Fingerprint(r.GetString(1)))).ToDictionary(x => x.Item1, x => x.Item2);
     }
 
+    private const string Render = "r2|";
+
     public static string Fingerprint(Edit e) => Fingerprint(JsonSerializer.Serialize(e with { Modified = 0, Origin = "" }, Json));
     private static string Fingerprint(string json)
     {
         // Herkunft und Zeit ändern das Bild nicht
         var e = JsonSerializer.Deserialize<Edit>(json, Json)!;
-        var core = JsonSerializer.Serialize(new { e.Rotate, e.Crop, e.Adjust }, Json);
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(core)))[..10].ToLowerInvariant();
+        // [feature:lenscorr]
+        // Mit Objektivkorrektur zählt auch der Stand der Profile und Regeln; ohne bleibt der Inhalt wie bisher
+        var core = e.Lens == null ? JsonSerializer.Serialize(new { e.Rotate, e.Crop, e.Adjust }, Json)
+            : JsonSerializer.Serialize(new { e.Rotate, e.Crop, e.Adjust, e.Lens, epoch = DmOffice.Gallery.LensProfiles.Epoch }, Json);
+        // [feature:lenscorr:else]
+        // var core = JsonSerializer.Serialize(new { e.Rotate, e.Crop, e.Adjust }, Json);
+        // [/feature:lenscorr]
+        // Mit Render vorn: Stand der Vorschau-Berechnung - ändert sie sich (seit 24.11.: aus dem Original, hohe Qualität), holen Browser
+        // und App die Vorschaubilder neu, statt die gemerkten (unveränderlich zwischengespeichert) weiter zu zeigen
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Render + core)))[..10].ToLowerInvariant();
     }
 
     /// <summary>Etag mit Fingerabdruck der Einstellungen (ohne Bearbeitung unverändert).</summary>
@@ -88,17 +116,29 @@ public static class PhotoEdits
     // ---------------- Vorschaubilder ----------------
 
     private static readonly SemaphoreSlim Gate = new(2, 2);
+    // [feature:editfull]
+    /// <summary>Größe „volle Auflösung“ (Zoom im Betrachter auf 100 %).</summary>
+    public const int Full = 0;
+    /// <summary>Volle Auflösung braucht Speicher und Zeit: eine nach der anderen, die Vorschauen (Gate) warten nicht darauf.</summary>
+    private static readonly SemaphoreSlim FullGate = new(1, 1);
+    // [/feature:editfull]
 
     /// <summary>
-    /// Bearbeitetes Vorschaubild (WebP). Groß zuerst (2048 px, gemerkt), kleinere daraus. Grundlage: die große Vorschau des Originals
-    /// (schon aufrecht); RAW mit eingerichteter Engine aus dem RAW selbst entwickelt (sonst sähe man nur das eingebettete Kamera-JPG).
+    /// Bearbeitetes Vorschaubild (WebP). Groß zuerst (2048 px, hohe Qualität, gemerkt), kleinere daraus. Grundlage ist das Original:
+    /// RAW und JPG mit Reglern oder Objektivkorrektur entwickelt die Engine aus dem Original selbst, sonst wird das Original hochwertig
+    /// verkleinert; nur wenn es sich nicht lesen lässt, die große Vorschau des Originals.
     /// </summary>
     /// <param name="scope">Erste Ebene im Zwischenspeicher (Benutzer bzw. Datenbank)</param>
     /// <param name="stamp">Stand des Originals (Etag) - ändert es sich, gilt das Vorschaubild nicht mehr</param>
     public static async Task<byte[]?> ThumbAsync(string scope, string key, Edit edit, string stamp, int size, bool raw,
         Func<Task<byte[]?>> large, Func<Task<byte[]>> original, ILogger? log, CancellationToken ct)
     {
+        // [feature:editfull]
+        // Volle Auflösung (JPEG); geht das nicht (etwa ohne Engine), die große Fassung
+        if (size == Full && Features.On(Features.EditFull) && await FullAsync(scope, key, edit, stamp, raw, large, original, log, ct) is { } full) return full;
+        // [/feature:editfull]
         var big = Thumbs.Large;
+        size = size <= 0 ? big : Thumbs.Snap(size);
         var st = StampOf(stamp, edit);
         if (Cache?.Get(scope, "edit", key + "|" + size, st) is { } hit) return hit;
         byte[]? largeEdited = Cache?.Get(scope, "edit", key + "|" + big, st);
@@ -111,9 +151,10 @@ public static class PhotoEdits
                 largeEdited = Cache?.Get(scope, "edit", key + "|" + big, st);
                 if (largeEdited == null)
                 {
-                    using var bmp = await DevelopAsync(edit, raw, large, original, log, ct);
+                    using var bmp = await DevelopAsync(edit, raw, large, original, log, ct, big, scope);
                     if (bmp == null) return null;
-                    largeEdited = Encode(bmp, big);
+                    // Die große Fassung ist die Grundlage aller kleineren und die Ansicht im Betrachter: hohe Qualität
+                    largeEdited = Thumbs.Webp(bmp, big, 90);
                     if (largeEdited == null) return null;
                     Put(scope, key + "|" + big, st, largeEdited);
                 }
@@ -126,6 +167,42 @@ public static class PhotoEdits
         return small;
     }
 
+    // [feature:editfull]
+    /// <summary>
+    /// Bearbeitete Fassung in voller Auflösung (JPEG 90), aus dem Original gerechnet und gemerkt. Null, wenn das nicht geht (Regler
+    /// oder RAW ohne Engine, Engine scheitert, Zeitgrenze) - dann zeigt der Betrachter die große Fassung.
+    /// </summary>
+    private static async Task<byte[]?> FullAsync(string scope, string key, Edit edit, string stamp, bool raw,
+        Func<Task<byte[]?>> large, Func<Task<byte[]>> original, ILogger? log, CancellationToken ct)
+    {
+        var st = StampOf(stamp, edit);
+        if (Cache?.Get(scope, "edit", key + "|full", st) is { } hit) return hit;
+        if (raw && !PhotoEngine.Configured) return null;
+        // Großzügiger als die 30 s der Vorschau: ein ganzes Foto durch die Engine dauert, dazu wartet es auf andere
+        using var limit = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        limit.CancelAfter(TimeSpan.FromSeconds(120));
+        try
+        {
+            await FullGate.WaitAsync(limit.Token);
+            try
+            {
+                if (Cache?.Get(scope, "edit", key + "|full", st) is { } again) return again;
+                using var bmp = await DevelopAsync(edit, raw, large, original, log, limit.Token, null, scope);
+                if (bmp == null) return null;
+                var jpg = PhotoAdjust.Jpeg(bmp, 90);
+                Put(scope, key + "|full", st, jpg);
+                return jpg;
+            }
+            finally { FullGate.Release(); }
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            log?.LogWarning("Bearbeitetes Foto in voller Auflösung: Zeitgrenze erreicht");
+            return null;
+        }
+    }
+
+    // [/feature:editfull]
     /// <summary>Merken; scheitert das (Windows: Datei gerade von einer anderen Anfrage gelesen), kommt das Bild trotzdem.</summary>
     private static void Put(string scope, string path, long stamp, byte[] data)
     {
@@ -136,27 +213,68 @@ public static class PhotoEdits
     private static long StampOf(string stamp, Edit edit) =>
         BitConverter.ToInt64(SHA256.HashData(Encoding.UTF8.GetBytes(stamp + "|" + Fingerprint(edit))), 0);
 
-    /// <summary>Aufrechtes Bild mit Reglern, gedreht und zugeschnitten.</summary>
-    private static async Task<SKBitmap?> DevelopAsync(Edit edit, bool raw, Func<Task<byte[]?>> large, Func<Task<byte[]>> original, ILogger? log, CancellationToken ct)
+    /// <summary>
+    /// Aufrechtes Bild mit Reglern, gedreht und zugeschnitten, höchstens maxEdge Kante. maxEdge null: volle Auflösung, nur aus dem
+    /// Original und nur so, wie es auch beim Speichern entstünde (Regler und Objektivkorrektur von der Engine) - sonst null.
+    /// </summary>
+    private static async Task<SKBitmap?> DevelopAsync(Edit edit, bool raw, Func<Task<byte[]?>> large, Func<Task<byte[]>> original, ILogger? log,
+        CancellationToken ct, int? maxEdge, string? lensUser = null)
     {
         var values = edit.Adjust ?? new PhotoAdjust.Values(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        var fit = maxEdge ?? int.MaxValue;
+        // Das Original nur einmal laden (Objektivangaben und Bild)
+        byte[]? loaded = null;
+        async Task<byte[]> Original() => loaded ??= await original();
         byte[]? jpeg = null;
-        // RAW: die Engine entwickelt mit den Reglern (wie beim Speichern); ohne Engine das eingebettete Bild, Regler hier
-        if (raw && PhotoEngine.Configured) jpeg = await PhotoEngine.DevelopAsync(await original(), values.Clamped(), Thumbs.Large, 90, log, ct);
-        var tuned = jpeg != null;
-        SKBitmap? bmp;
-        if (jpeg != null) bmp = SKBitmap.Decode(jpeg);
-        else
+        // [feature:lenscorr]
+        // Objektivkorrektur: Brennweite und Blende aus dem Original, rechnen kann nur die Engine
+        System.Text.Json.Nodes.JsonObject? lens = null;
+        if (edit.Lens is { Off: false } && PhotoEngine.Configured) lens = DmOffice.Gallery.LensProfiles.Block(edit.Lens, DmOffice.Gallery.LensProfiles.MetaOf(await Original()), lensUser);
+        if (raw && PhotoEngine.Configured) jpeg = await PhotoEngine.DevelopAsync(await Original(), values.Clamped(), maxEdge, 90, log, ct, lens);
+        var develop = !values.IsNeutral || lens != null;
+        // [feature:lenscorr:else]
+        // // RAW: die Engine entwickelt mit den Reglern (wie beim Speichern); ohne Engine das eingebettete Bild, Regler hier
+        // if (raw && PhotoEngine.Configured) jpeg = await PhotoEngine.DevelopAsync(await Original(), values.Clamped(), maxEdge, 90, log, ct);
+        // var develop = !values.IsNeutral;
+        // [/feature:lenscorr]
+        // Volle Auflösung mit Reglern gibt es nur von der Engine
+        if (maxEdge == null && develop && !PhotoEngine.Configured) return null;
+        var tuned = false;
+        SKBitmap? bmp = null;
+        if (jpeg != null) { bmp = Thumbs.DecodeUpright(jpeg, fit); tuned = bmp != null; }
+        else if (!raw && await OriginalOrNull(Original) is { } src)
         {
-            if (await large() is not { } webp) return null;
-            bmp = SKBitmap.Decode(webp);
+            // JPG: die Engine aus dem Original selbst (wie bei RAW) - nicht aus der schon verkleinerten, verlustbehafteten Vorschau
+            byte[]? dev = null;
+            if (develop && PhotoEngine.Configured && PhotoEdit.IsJpeg(src))
+            {
+                // [feature:lenscorr]
+                dev = await PhotoEngine.DevelopAsync(src, values.Clamped(), maxEdge, 92, log, ct, lens);
+                // [feature:lenscorr:else]
+                // dev = await PhotoEngine.DevelopAsync(src, values.Clamped(), maxEdge, 92, log, ct);
+                // [/feature:lenscorr]
+            }
+            if (dev != null && Thumbs.DecodeUpright(dev, fit) is { } d) { bmp = d; tuned = true; }
+            // Sonst das Original selbst, hochwertig verkleinert
+            bmp ??= Thumbs.DecodeUpright(src, fit);
         }
-        if (bmp == null) return null;
-        if (!tuned && !values.IsNeutral)
+        if (bmp == null)
         {
+            // Letzter Ausweg: die große Vorschau des Originals (RAW ohne Engine: das eingebettete Kamerabild)
+            if (maxEdge == null || await large() is not { } webp) return null;
+            bmp = SKBitmap.Decode(webp);
+            if (bmp == null) return null;
+        }
+        if (!tuned && develop)
+        {
+            if (maxEdge == null) { bmp.Dispose(); return null; }
             // Mit Engine: ihre Umsetzung (wie beim Speichern); sonst die eigene
             SKBitmap? adjusted = null;
-            if (PhotoEngine.Configured && await PhotoEngine.DevelopAsync(PhotoAdjust.Jpeg(bmp, 92), values.Clamped(), null, 90, log, ct) is { } dev) adjusted = SKBitmap.Decode(dev);
+            // [feature:lenscorr]
+            if (PhotoEngine.Configured && await PhotoEngine.DevelopAsync(PhotoAdjust.Jpeg(bmp, 92), values.Clamped(), null, 90, log, ct, lens) is { } again) adjusted = SKBitmap.Decode(again);
+            // [feature:lenscorr:else]
+            // if (PhotoEngine.Configured && await PhotoEngine.DevelopAsync(PhotoAdjust.Jpeg(bmp, 92), values.Clamped(), null, 90, log, ct) is { } again) adjusted = SKBitmap.Decode(again);
+            // [/feature:lenscorr]
             adjusted ??= PhotoAdjust.Apply(bmp, values.Clamped());
             bmp.Dispose();
             bmp = adjusted;
@@ -166,10 +284,10 @@ public static class PhotoEdits
         return done;
     }
 
-    private static byte[]? Encode(SKBitmap bmp, int size)
+    /// <summary>Original oder null, wenn es sich gerade nicht lesen lässt (dann die große Vorschau).</summary>
+    private static async Task<byte[]?> OriginalOrNull(Func<Task<byte[]>> original)
     {
-        using var img = SKImage.FromBitmap(bmp);
-        using var data = img.Encode(SKEncodedImageFormat.Jpeg, 92);
-        return data == null ? null : Thumbs.FromBytes(data.ToArray(), size);
+        try { return await original(); }
+        catch (Exception e) when (e is not OperationCanceledException) { return null; }
     }
 }

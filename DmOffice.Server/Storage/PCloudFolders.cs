@@ -124,16 +124,18 @@ public static class PCloudFolders
     /// <summary>Client-ID und Secret der eigenen pCloud-App: leer = die gespeicherten nehmen.</summary>
     public record StartBody(string? ClientId, string? ClientSecret);
 
-    public static void Map(WebApplication app)
+    /// <summary>
+    /// Anmelden und Ordner wählen: eigene App, Start, Stand, Ordner. Für eigene Ziele der Benutzer und für Server-Mounts der
+    /// Verwaltung (<see cref="ServerMounts"/>) - refused sagt, ob es dort gerade erlaubt ist.
+    /// </summary>
+    public static void MapSignIn(RouteGroupBuilder api, Func<UserSpace, ServerConfig, IResult?> refused)
     {
-        var api = app.MapGroup("/api/files/external/pcloud").RequireAuthorization();
-
         // Die eigene pCloud-App: Client-ID und ob ein Secret gespeichert ist (das Secret selbst geht nicht zurück),
         // dazu die Rücksprungadresse, die in der App bei pCloud stehen muss
         api.MapGet("/app", (HttpContext http, ServerConfig config) =>
         {
             var space = http.Space();
-            if (Refused(space, config) is { } refused) return refused;
+            if (refused(space, config) is { } no) return no;
             var app = space.Db.GetJson<PCloudApp?>(AppKey);
             return Results.Ok(new { clientId = app?.ClientId ?? "", secretSet = app?.Secret is { Length: > 0 }, redirect = RedirectFor(http.Request) });
         });
@@ -141,7 +143,7 @@ public static class PCloudFolders
         api.MapPost("/start", (StartBody? body, HttpContext http, ServerConfig config) =>
         {
             var space = http.Space();
-            if (Refused(space, config) is { } refused) return refused;
+            if (refused(space, config) is { } no) return no;
             // Neu eingetragene Werte gleich speichern; ein leeres Secret behält das gespeicherte
             var id = body?.ClientId?.Trim();
             var secret = body?.ClientSecret?.Trim();
@@ -169,11 +171,24 @@ public static class PCloudFolders
         api.MapGet("/folders", async (string flow, string? path, HttpContext http, ServerConfig config, CancellationToken ct) =>
         {
             var space = http.Space();
-            if (Refused(space, config) is { } refused) return refused;
+            if (refused(space, config) is { } no) return no;
             if (Mine(flow, space.User.Id) is not { Token: { } token, Host: { } host }) return Results.BadRequest(new { error = "Erst bei pCloud anmelden." });
             var folders = await new PCloudDriver(Http, token, host, "") { Wait = Wait }.FoldersAsync(StoragePath.Clean(path), ct);
             return Results.Ok(new { folders });
         });
+    }
+
+    /// <summary>Server-Mount speichern: Token, Server und Konto einer abgeschlossenen Anmeldung dieses Benutzers.</summary>
+    public static (string Token, string Host, string? Account)? Peek(string? flow, string userId) =>
+        Mine(flow, userId) is { Token: { } token, Host: { } host } f ? (token, host, f.Account) : null;
+
+    /// <summary>Nach dem Speichern: die Anmeldung wird nicht mehr gebraucht.</summary>
+    public static void Forget(string flow) => Flows.TryRemove(flow, out _);
+
+    public static void Map(WebApplication app)
+    {
+        var api = app.MapGroup("/api/files/external/pcloud").RequireAuthorization();
+        MapSignIn(api, Refused);
 
         api.MapPost("", async (AddBody body, HttpContext http, ServerConfig config, CancellationToken ct) =>
         {

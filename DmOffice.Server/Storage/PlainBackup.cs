@@ -26,12 +26,25 @@ public sealed class PlainBackupSettings
     public string? Confirmed { get; set; }
     /// <summary>Uhrzeit des täglichen Laufs (HH:mm, Zeitzone der Person).</summary>
     public string Time { get; set; } = "03:00";
+    /// <summary>Zeitplan (Kennung exportcron): null = täglich um <see cref="Time"/>, sonst „every“ (alle N Stunden/Tage/Wochen ab
+    /// <see cref="Time"/>) oder „cron“ (<see cref="Cron"/>) - dieselbe Rechnung wie beim Core-Backup, in der Zeitzone der Person.</summary>
+    public string? ScheduleKind { get; set; }
+    public int EveryCount { get; set; } = 1;
+    public string EveryUnit { get; set; } = "d";
+    public int Weekday { get; set; } = 1;
+    public string? Cron { get; set; }
     /// <summary>Tage, die Gelöschtes und ältere Versionen in .trash bleiben; 0 = nie entfernen.</summary>
     public int TrashDays { get; set; } = 30;
     /// <summary>Ältere Versionen geänderter Dateien nach .trash statt überschreiben.</summary>
     public bool Versions { get; set; } = true;
     public List<string> Areas { get; set; } = [.. PlainBackup.AllAreas];
-    /// <summary>Abgewählte Ordner: „files:&lt;Pfad&gt;“, „calendar:&lt;Kennung&gt;“, „contacts:…“, „notes:…“.</summary>
+    /// <summary>Bereiche von Plugins (p:&lt;Kennung&gt;), die schon einmal angeboten und dabei vorgewählt wurden.</summary>
+    public List<string> PluginOffered { get; set; } = [];
+    // [feature:journal]
+    /// <summary>Abgewählte Ordner: „files:&lt;Pfad&gt;“, „calendar:&lt;Kennung&gt;“, „contacts:…“, „notes:…“, „journal:…“.</summary>
+    // [feature:journal:else]
+    // /// <summary>Abgewählte Ordner: „files:&lt;Pfad&gt;“, „calendar:&lt;Kennung&gt;“, „contacts:…“, „notes:…“.</summary>
+    // [/feature:journal]
     public List<string> Skip { get; set; } = new();
     /// <summary>
     /// Sprache der Ordner- und Dateinamen im Ziel („de“, „en“): beim ersten Lauf aus der Oberflächensprache festgelegt und danach behalten -
@@ -41,16 +54,66 @@ public sealed class PlainBackupSettings
 }
 
 /// <summary>Ordner- und Dateinamen im Ziel je Sprache.</summary>
-public sealed record PlainLang(string Files, string Gallery, string Calendar, string Tasks, string Contacts, string Notes, string Dms,
-    string Albums, string Archive, string Attachments, string Image, string Note, string Originals, string DmsList,
-    string ReadMe)
+public sealed record PlainLang
 {
-    public static readonly PlainLang De = new("Dateien", "Galerie", "Kalender", "Aufgaben", "Kontakte", "Notizen", "DMS",
-        "Alben.json", "Archiv", " – Anhänge", "Bild", "Notiz", "Originale", "Dokumente",
-        "LIESMICH.txt");
-    public static readonly PlainLang En = new("Files", "Gallery", "Calendar", "Tasks", "Contacts", "Notes", "DMS",
-        "Albums.json", "Archive", " – Attachments", "Image", "Note", "Originals", "Documents",
-        "README.txt");
+    public string Files { get; init; } = "";
+    public string Gallery { get; init; } = "";
+    public string Calendar { get; init; } = "";
+    public string Tasks { get; init; } = "";
+    public string Contacts { get; init; } = "";
+    public string Notes { get; init; } = "";
+    public string Dms { get; init; } = "";
+    public string Journal { get; init; } = ""; // [feature:journal]
+    public string Albums { get; init; } = "";
+    public string Archive { get; init; } = "";
+    public string Attachments { get; init; } = "";
+    public string Image { get; init; } = "";
+    public string Note { get; init; } = "";
+    public string Originals { get; init; } = "";
+    public string DmsList { get; init; } = "";
+    public string Profile { get; init; } = "";
+    public string ReadMe { get; init; } = "";
+
+    public static readonly PlainLang De = new()
+    {
+        Files = "Dateien",
+        Gallery = "Galerie",
+        Calendar = "Kalender",
+        Tasks = "Aufgaben",
+        Contacts = "Kontakte",
+        Notes = "Notizen",
+        Dms = "DMS",
+        Journal = "Tagebuch", // [feature:journal]
+        Albums = "Alben.json",
+        Archive = "Archiv",
+        Attachments = " – Anhänge",
+        Image = "Bild",
+        Note = "Notiz",
+        Originals = "Originale",
+        DmsList = "Dokumente",
+        Profile = "Profil.json",
+        ReadMe = "LIESMICH.txt",
+    };
+    public static readonly PlainLang En = new()
+    {
+        Files = "Files",
+        Gallery = "Gallery",
+        Calendar = "Calendar",
+        Tasks = "Tasks",
+        Contacts = "Contacts",
+        Notes = "Notes",
+        Dms = "DMS",
+        Journal = "Journal", // [feature:journal]
+        Albums = "Albums.json",
+        Archive = "Archive",
+        Attachments = " – Attachments",
+        Image = "Image",
+        Note = "Note",
+        Originals = "Originals",
+        DmsList = "Documents",
+        Profile = "Profile.json",
+        ReadMe = "README.txt",
+    };
     public static PlainLang For(string? lang) => lang == "en" ? En : De;
 }
 
@@ -98,17 +161,33 @@ public static class PlainBackup
     public const string WebDav = "webdav", External = "external", OneDrive = "onedrive";
     /// <summary>Vorgabe für den Ordner in OneDrive.</summary>
     public const string OneDriveFolder = "Datensicherung";
-    public const string Files = "files", Gallery = "gallery", Calendar = "calendar", Tasks = "tasks", Contacts = "contacts", Notes = "notes",
-        Dms = "dms";
+    public const string Files = "files", Gallery = "gallery", Calendar = "calendar", Tasks = "tasks", Contacts = "contacts", Notes = "notes", Dms = "dms";
+    public const string Journal = "journal"; // [feature:journal]
     /// <summary>Bereiche in der Reihenfolge der Oberfläche. Der Tresor braucht keinen eigenen: als Cryptomator-Ordner in der Dateiablage
     /// (docs/tresor-cryptomator-konzept.md) kommt er mit „Dateien“ so ins Ziel, wie er ist.</summary>
-    public static readonly string[] AllAreas = [Files, Gallery, Calendar, Tasks, Contacts, Notes, Dms];
+    public static readonly string[] AllAreas = [Files, Gallery, Calendar, Tasks, Contacts, Notes, Dms,
+        Journal, // [feature:journal]
+    ];
+    /// <summary>Kennung eines Bereichs aus einem Plugin: „p:“ und die Kennung des Bereichs.</summary>
+    public const string PluginPrefix = "p:";
+    /// <summary>Gültige Bereichskennung: fester Bereich oder Bereich eines geladenen Plugins.</summary>
+    public static bool IsArea(string a) => AllAreas.Contains(a) || PlainBackupAreas.PluginAreaKeys().Contains(a);
     public static readonly int[] TrashChoices = [7, 30, 90, 0];
     private const int MaxFailsInRow = 5;
     /// <summary>Bis zu dieser Größe direkt an den Platz schreiben (eine Anfrage), darüber über .part und Umbenennen.</summary>
     public const long SmallFile = 4 * 1024 * 1024;
 
-    public static PlainBackupSettings Settings(UserDb db) => db.GetJson<PlainBackupSettings>(Key);
+    public static PlainBackupSettings Settings(UserDb db)
+    {
+        var s = db.GetJson<PlainBackupSettings>(Key);
+        // Bereiche neuer Plugins einmal vorwählen (Datenexport bleibt offen für alles); abwählen bleibt abgewählt
+        foreach (var area in PlainBackupAreas.PluginAreaKeys().Where(a => !s.PluginOffered.Contains(a)))
+        {
+            s.PluginOffered.Add(area);
+            if (!s.Areas.Contains(area)) s.Areas.Add(area);
+        }
+        return s;
+    }
     public static void Save(UserDb db, PlainBackupSettings s) => db.SetJson(Key, s);
     public static PlainBackupState State(UserDb db) => db.GetJson<PlainBackupState>(StateKey);
     public static void Save(UserDb db, PlainBackupState s) => db.SetJson(StateKey, s);

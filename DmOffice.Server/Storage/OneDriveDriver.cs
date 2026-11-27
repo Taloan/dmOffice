@@ -154,16 +154,18 @@ public sealed class OneDriveDriver : IStorageDriver
 
     public async Task<byte[]> ReadRangeAsync(string path, long offset, int count, CancellationToken ct)
     {
+        if (count <= 0) return [];
         using var res = await SendAsync(() =>
         {
             var r = new HttpRequestMessage(HttpMethod.Get, Item(path, "/content"));
             r.Headers.Range = new RangeHeaderValue(offset, offset + count - 1);
             return r;
-        }, ct);
+        }, ct, read: HttpCompletionOption.ResponseHeadersRead);
         await CheckAsync(res, "Lesen");
-        var all = await res.Content.ReadAsByteArrayAsync(ct);
-        // Kann der Server keine Ausschnitte (200 statt 206), selbst schneiden
-        return res.StatusCode == HttpStatusCode.PartialContent ? all : all.AsSpan((int)Math.Min(offset, all.Length), (int)Math.Min(count, Math.Max(0, all.Length - offset))).ToArray();
+        await using var s = await res.Content.ReadAsStreamAsync(ct);
+        // Gelesen wird höchstens der verlangte Ausschnitt, auch wenn die Antwort mehr enthält. Ohne Ausschnitt (200 statt 206):
+        // den Anfang überspringen
+        return await RangeRead.TakeAsync(s, res.StatusCode == HttpStatusCode.PartialContent ? 0 : offset, count, ct);
     }
 
     public async Task WriteAsync(string path, Stream data, CancellationToken ct)

@@ -30,6 +30,7 @@ public static class Demo
         @"settings/accounts.*",
         @"mail/accounts.*", @"mail/[^/]+/send", @"mail/[^/]+/invite",
         @"files/links.*", @"files/shares", @"gallery/albums/\d+/links.*",
+        @"emergency(/.*)?",
         @"files/external(/.*)?", @"plainbackup(/.*)?", @"pim/subscriptions(/.*)?", @"notes/recipes/(import|scan/ai)",
         @"dms/(mail-sources|paperless)(/.*)?", @"gallery/imports(/.*)?", @"gallery/settings", @"chat/rooms/\d+/(upload|stage)", @"chat/uploads/.*", @"notes/(.*/)?attachments(/.*)?", @"tresor(/.*)?",
         @"(pim|notes|lists|tasks|calendar)/.*shares.*") + ")$", RegexOptions.IgnoreCase | RegexOptions.Compiled);

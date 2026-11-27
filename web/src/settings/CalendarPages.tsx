@@ -2,21 +2,20 @@ import { Checkbox, Dropdown, Field, Input, Option, Switch } from '@fluentui/reac
 import { useEffect, useState } from 'react'
 import { api, Collection } from '../api'
 import { useApp } from '../App'
-import { usePrefs } from '../prefs'
+import { defaultReminderOf, usePrefs } from '../prefs'
 import { t } from '../i18n'
-import { Hint, PageTitle, Section } from './parts'
+import { Hint, Section } from './parts'
 import { RecentAddresses } from './RecentAddresses'
 
 const days = [t('Sonntag'), t('Montag'), t('Dienstag'), t('Mittwoch'), t('Donnerstag'), t('Freitag'), t('Samstag')]
-const reminders: [string, string][] = [['', t('Keine')], ['0', t('Zum Beginn')], ['5', t('{n} Minuten vorher', { n: 5 })], ['15', t('{n} Minuten vorher', { n: 15 })],
-  ['30', t('{n} Minuten vorher', { n: 30 })], ['60', t('1 Stunde vorher')], ['1440', t('1 Tag vorher')]]
+const reminders: [string, string][] = [['', t('Keine')], ['0', t('Zum Beginn')], ['5', t('{n} Minuten vorher', { n: 5 })], ['10', t('{n} Minuten vorher', { n: 10 })],
+  ['15', t('{n} Minuten vorher', { n: 15 })], ['30', t('{n} Minuten vorher', { n: 30 })], ['60', t('1 Stunde vorher')], ['120', t('{n} Stunden vorher', { n: 2 })], ['1440', t('1 Tag vorher')]]
 
 export function CalendarViewSettings() {
   const { prefs, update } = usePrefs()
   const work = prefs.workDays ?? [1, 2, 3, 4, 5]
   return (
     <>
-      <PageTitle>{t('Ansicht')}</PageTitle>
       <Section title={t('Kalenderdarstellung')}>
         <Field label={t('Erster Wochentag')} style={{ maxWidth: 260 }}>
           <Dropdown value={days[prefs.firstDay ?? 1]} selectedOptions={[String(prefs.firstDay ?? 1)]} onOptionSelect={(_, d) => update({ firstDay: Number(d.optionValue) })}>
@@ -48,14 +47,13 @@ export function CalendarViewSettings() {
 
 export function EventSettings() {
   const { prefs, update } = usePrefs()
-  const value = prefs.defaultReminder === undefined ? '15' : prefs.defaultReminder === null ? '' : String(prefs.defaultReminder)
+  const value = String(defaultReminderOf(prefs) ?? '')
   return (
     <>
-      <PageTitle>{t('Ereignisse')}</PageTitle>
       <Section title={t('Standarderinnerung')} hint={t('Für neue Termine. Die Erinnerung wird im Termin gespeichert.')}>
         <Field style={{ maxWidth: 260 }}>
           <Dropdown value={reminders.find(r => r[0] === value)?.[1] ?? value} selectedOptions={[value]}
-            onOptionSelect={(_, d) => update({ defaultReminder: d.optionValue ? Number(d.optionValue) : null })}>
+            onOptionSelect={(_, d) => update({ defaultReminder: d.optionValue ? Number(d.optionValue) : -1 })}>
             {reminders.map(([k, l]) => <Option key={k} value={k}>{l}</Option>)}
           </Dropdown>
         </Field>
@@ -103,7 +101,6 @@ function InviteCalendarSetting() {
 export function PeopleSettings() {
   return (
     <>
-      <PageTitle>{t('Kontakte')}</PageTitle>
       <Section title={t('Importieren und exportieren')}>
         <Hint>
           {t('In Kontakte links beim Adressbuch auf ⋮ → „Importieren (.vcf)“ oder „Exportieren (.vcf)“.')}

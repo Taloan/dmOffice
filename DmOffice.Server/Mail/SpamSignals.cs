@@ -117,7 +117,8 @@ public static partial class SpamSignals
 
     /// <summary>Endgültige Einstufung einer Mail eines Kontos: Wert des lernenden Filters (null: noch zu wenig gelernt - dann
     /// zählen nur die festen Regeln) mit Signalen, sicheren und eigenen Absendern.</summary>
-    public static (double? Score, string? Rule, Result Signals) Judge(UserSpace space, MailAccount account, MimeMessage m, double? learned)
+    /// <param name="verifiedOnly">Adressbuch und Gesendet nur mit bestätigter Absenderdomain als sicher werten (<see cref="Trusted"/>)</param>
+    public static (double? Score, string? Rule, Result Signals) Judge(UserSpace space, MailAccount account, MimeMessage m, double? learned, bool verifiedOnly = false)
     {
         var spam = space.Settings.Spam;
         var r = Of(m, [account.ImapHost, PhishCheck.DomainOf(account.Email)]);
@@ -127,7 +128,7 @@ public static partial class SpamSignals
         var own = from.Length > 0 && space.Settings.MailAccounts.Any(a => a.Email.Equals(from, StringComparison.OrdinalIgnoreCase));
         // Gesperrter Catchall-Alias (CatchallAliases): Junk, gleich wer schreibt
         if (CatchallAliases.Judge(space.Db, account, m) is { } alias) return (Math.Max(0.99, spam.SpamCutoff), alias.Rule, r);
-        var (trusted, trustRule) = Trusted(space, m, r);
+        var (trusted, trustRule) = Trusted(space, m, r, verifiedOnly);
         if (learned is double s)
         {
             var (score, rule) = Adjust(s, r, trusted, own, spam, trustRule);
@@ -151,10 +152,14 @@ public static partial class SpamSignals
     /// ist (DMARC gescheitert, typisch beim Chef-Betrug mit der Adresse eines Kontakts); dazu die selbst eingetragenen sicheren Absender,
     /// die nur mit bestätigter Absenderdomain gelten (SafeList).
     /// </summary>
-    public static (bool Trusted, string Rule) Trusted(UserSpace space, MimeMessage m, Result r)
+    /// <param name="verifiedOnly">Adressbuch und Gesendet nur, wenn der eigene Mailserver die Absenderdomain bestätigt hat (DMARC
+    /// oder passende DKIM-Signatur) - für Entscheidungen, die eine Mail aus Junk zurückholen: Ohne DMARC der Domain kann jeder
+    /// die Adresse eines Kontakts als Absender eintragen.</param>
+    public static (bool Trusted, string Rule) Trusted(UserSpace space, MimeMessage m, Result r, bool verifiedOnly = false)
     {
         if (SafeList.Trusts(space.Db, m, r)) return (true, "safe-list");
-        if (space.Settings.Spam.TrustKnown && !r.DmarcFailed && SafeSenders.IsKnown(space, m)) return (true, "trusted");
+        if (space.Settings.Spam.TrustKnown && !r.DmarcFailed && (!verifiedOnly || r.VerifiedDomain != null) && SafeSenders.IsKnown(space, m))
+            return (true, "trusted");
         return (false, "trusted");
     }
 
@@ -254,7 +259,7 @@ public sealed class SpamMaintenance(Spaces spaces, ILogger<SpamMaintenance> log)
         try { await Task.Delay(TimeSpan.FromMinutes(2), stop); } catch (OperationCanceledException) { return; }
         while (!stop.IsCancellationRequested)
         {
-            foreach (var space in spaces.All())
+            foreach (var space in spaces.Working())
             {
                 if (stop.IsCancellationRequested) return;
                 try

@@ -49,14 +49,21 @@ public static class DashboardStore
     public const string Key = "dashboard", ImageKey = "dashboard.bg";
     public static readonly string[] Types =
     [
-        "today", "events", "meals", "tasks", "shopping", "mail", "chat", "pukki", "weather", "news", "photos", "notes", "files",
+        // [feature:journal]
+        "today", "events", "meals", "tasks", "shopping", "mail", "chat", "pukki", "weather", "news", "journal", "photos", "notes", "files",
+        // [feature:journal:else]
+        // "today", "events", "meals", "tasks", "shopping", "mail", "chat", "pukki", "weather", "news", "photos", "notes", "files",
+        // [/feature:journal]
         "birthdays", "countdown", "bookmarks", "storage", "system",
     ];
 
-    /// <summary>Widget-Art bekannt und ihr Modul eingeschaltet (Verwaltung): Aufgaben und Einkaufsliste,
+    /// <summary>Widget-Art bekannt und ihr Modul eingeschaltet (Verwaltung): Tagebuch-Rückblick, Aufgaben und Einkaufsliste,
     /// Notizen, Fotos nur mit ihrem Bereich. Gespeicherte Widgets einer Art, die diese Version nicht kennt, bleiben unsichtbar.</summary>
     public static bool Available(string type) => type switch
     {
+        // [feature:journal]
+        "journal" => Features.On(Features.Journal),
+        // [/feature:journal]
         "tasks" or "shopping" => Features.On(Features.Tasks),
         "notes" => Features.On(Features.Notes),
         "photos" => Features.On(Features.Gallery),
@@ -98,7 +105,11 @@ public static class DashboardStore
     /// <summary>Zurück auf die Vorgabe (Handy: wieder die Desktop-Fassung).</summary>
     public static void Reset(UserDb db, string device = "desktop") => db.Set(KeyOf(device), null);
 
-    /// <summary>Vorgabe für den Anfang: Heute, Kalender groß, Aufgaben groß, E-Mail, Chat, Fotos, Notizen.</summary>
+    // [feature:journal]
+    /// <summary>Vorgabe für den Anfang: Heute, Kalender groß, Aufgaben groß, E-Mail, Chat, Tagebuch-Rückblick, Fotos, Notizen.</summary>
+    // [feature:journal:else]
+    // /// <summary>Vorgabe für den Anfang: Heute, Kalender groß, Aufgaben groß, E-Mail, Chat, Fotos, Notizen.</summary>
+    // [/feature:journal]
     public static Layout Default() => new()
     {
         Widgets =
@@ -108,6 +119,9 @@ public static class DashboardStore
             new() { Id = "w-tasks", Type = "tasks", Size = 3 },
             new() { Id = "w-mail", Type = "mail", Size = 1 },
             new() { Id = "w-chat", Type = "chat", Size = 1 },
+            // [feature:journal]
+            new() { Id = "w-journal", Type = "journal", Size = 2 },
+            // [/feature:journal]
             new() { Id = "w-photos", Type = "photos", Size = 2 },
             new() { Id = "w-notes", Type = "notes", Size = 2 },
             new() { Id = "w-files", Type = "files", Size = 2 },

@@ -1,17 +1,18 @@
-import { Button, Text, tokens } from '@fluentui/react-components'
-import { Location20Regular } from '@fluentui/react-icons'
+import { Text, tokens } from '@fluentui/react-components'
+import { Dismiss20Regular, Location20Regular } from '@fluentui/react-icons'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import { useEffect, useRef, useState } from 'react'
 import { t } from '../i18n'
 import { Item, Source } from './common'
 import { Meta } from './PhotoFilter'
+import { RibbonActions, RibbonButton } from '../shell/Ribbon'
 
 /**
  * Atlas der Galerie: die gezeigten Fotos mit Aufnahmeort auf einer Karte (Leaflet, Kartenbilder von OpenStreetMap). Nahe beieinander
  * liegende fasst er zu einem Kreis mit Anzahl zusammen (je Zoomstufe neu); antippen zoomt hinein, bei wenigen zeigt er Vorschauen,
- * ein Foto antippen öffnet es. Filter und Album gelten wie in der Kachelansicht. Mit place (markierte Fotos): „Ort setzen“ und
- * auf die Karte tippen setzt ihn für alle markierten.
+ * ein Foto antippen öffnet es. Filter und Album gelten wie in der Kachelansicht. Mit place (markierte Fotos): „Ort setzen“ im Menüband
+ * und auf die Karte tippen setzt ihn für alle markierten.
  */
 export default function GalleryAtlas({ items, metaOf, source, onOpen, place }: {
   items: Item[]; metaOf: (i: Item) => Meta | undefined; source: Source; onOpen: (i: Item, list: Item[]) => void
@@ -92,12 +93,12 @@ export default function GalleryAtlas({ items, metaOf, source, onOpen, place }: {
   if (!placed.length && !place) return <Text block style={{ margin: '48px auto', textAlign: 'center', color: tokens.colorNeutralForeground3 }}>{t('Keine Fotos mit Aufnahmeort.')}</Text>
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 320, gap: 4 }}>
-      {place && <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        <Button icon={<Location20Regular />} appearance={placing ? 'primary' : 'secondary'} onClick={() => setPlacing(p => !p)}>
-          {placing ? t('Auf die Karte tippen …') : t('Ort für {n} markierte Fotos setzen', { n: place.count })}
-        </Button>
-        {placing && <Button appearance="subtle" onClick={() => setPlacing(false)}>{t('Abbrechen')}</Button>}
-      </div>}
+      <RibbonActions>
+        <RibbonButton icon={<Location20Regular />} label={t('Ort setzen')} pressed={placing} disabled={!place}
+          title={place ? t('Ort für {n} markierte Fotos setzen', { n: place.count }) : t('Erst Fotos markieren')} onClick={() => setPlacing(p => !p)} />
+        {placing && <RibbonButton icon={<Dismiss20Regular />} label={t('Abbrechen')} onClick={() => setPlacing(false)} />}
+      </RibbonActions>
+      {placing && <Text size={200} weight="semibold">{t('Auf die Karte tippen …')}</Text>}
       <div ref={box} className={placing ? 'atlas-placing' : undefined} style={{ flex: 1, minHeight: 320, borderRadius: 8, overflow: 'hidden' }} />
       <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>
         {t('{n} von {total} Fotos mit Aufnahmeort. Die Kartenbilder kommen von OpenStreetMap.', { n: placed.length, total: items.length })}

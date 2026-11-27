@@ -7,6 +7,7 @@ import { api } from '../api'
 import { useApp } from '../App'
 import { t } from '../i18n'
 import { EntrySelect } from './EntrySelect'
+import { RibbonActions, RibbonButton } from '../shell/Ribbon'
 import { fullName, kindLabel, type Doc, type Entry, type Kind } from './model'
 
 /** Lauf der KI-Prüfung (Server: DmsAiCheck.Run) */
@@ -75,6 +76,8 @@ export function AiSuggestions({ entries, onOpenDoc, onChanged }: { entries: Entr
   const [picked, setPicked] = useState<Set<number>>(new Set())
   const [filter, setFilter] = useState<'' | 'wrong' | 'doubt' | 'new' | 'assign'>('')
   const [busy, setBusy] = useState(false)
+  // Übernehmen läuft in Paketen, damit Fortschritt sichtbar ist (je Dokument lernt und legt der Server neu ab - das dauert)
+  const [progress, setProgress] = useState<{ what: 'apply' | 'refile'; done: number; total: number } | null>(null)
   const load = () => {
     api.get<Run[]>('/api/dms/ai/runs').then(setRuns).catch(() => {})
     api.get<{ suggestion: Suggestion; doc: Doc }[]>('/api/dms/ai/suggestions').then(setList).catch(fail)
@@ -96,9 +99,21 @@ export function AiSuggestions({ entries, onOpenDoc, onChanged }: { entries: Entr
     setBusy(true)
     try {
       if (what === 'drop') { const r = await api.post<{ dropped: number }>('/api/dms/ai/suggestions/drop', { ids }); notify(t('{n} Vorschläge verworfen', { n: r.dropped })) }
-      else { const r = await api.post<{ changed: number }>('/api/dms/ai/suggestions/apply', { ids, refile: what === 'refile' }); notify(t('{n} Dokumente geändert', { n: r.changed })); onChanged() }
+      else {
+        let changed = 0
+        setProgress({ what, done: 0, total: ids.length })
+        for (let i = 0; i < ids.length; i += 10) {
+          const part = ids.slice(i, i + 10)
+          const r = await api.post<{ changed: number }>('/api/dms/ai/suggestions/apply', { ids: part, refile: what === 'refile' })
+          changed += r.changed
+          setProgress({ what, done: Math.min(i + part.length, ids.length), total: ids.length })
+          setPicked(p => { const n = new Set(p); part.forEach(x => n.delete(x)); return n })
+          load()
+        }
+        notify(t('Fertig: {n} Dokumente geändert', { n: changed })); onChanged()
+      }
       setPicked(new Set()); load()
-    } catch (e) { fail(e) } finally { setBusy(false) }
+    } catch (e) { fail(e); load() } finally { setBusy(false); setProgress(null) }
   }
   const edit = async (x: Suggestion, entry: string) => {
     try { await api.put(`/api/dms/ai/suggestions/${x.id}`, { entry: entry || null, newName: null, parent: null }); load() } catch (e) { fail(e) }
@@ -106,6 +121,7 @@ export function AiSuggestions({ entries, onOpenDoc, onChanged }: { entries: Entr
   const proposal = (x: Suggestion) => x.proposalNew
     ? <span className={s.newVal} title={t('Wird beim Übernehmen angelegt')}>{t('Neu: {name}', { name: (x.proposalParent ? fullName(entries, x.proposalParent) + ' › ' : '') + x.proposalNew })}</span>
     : x.proposalEntry ? fullName(entries, x.proposalEntry) : x.verdict ? <span className={s.muted}>{t('entfernen')}</span> : ''
+  const noProposal = (x: Suggestion) => !x.verdict && !x.proposalEntry && !x.proposalNew
 
   return <div className={s.page}>
     {runs.filter(r => r.state === 'running' || r.state === 'failed').slice(0, 3).map(r => <div key={r.id} className={s.run}>
@@ -115,16 +131,20 @@ export function AiSuggestions({ entries, onOpenDoc, onChanged }: { entries: Entr
         <Button size="small" appearance="subtle" icon={<Dismiss20Regular />} onClick={() => api.post(`/api/dms/ai/runs/${r.id}/cancel`).then(load).catch(fail)}>{t('Abbrechen')}</Button></>
         : <span className={s.wrong}>{t('Fehlgeschlagen: {error}', { error: r.error ?? '' })}</span>}
     </div>)}
+    <RibbonActions>
+      <RibbonButton primary icon={<Checkmark20Regular />} label={t('Übernehmen')} disabled={busy || !ids.length} onClick={() => act('apply')} />
+      <RibbonButton icon={<FolderArrowRight20Regular />} label={t('Übernehmen und nach Vorgabe ablegen')} disabled={busy || !ids.length} onClick={() => act('refile')} />
+      <RibbonButton icon={<Delete20Regular />} label={t('Verwerfen')} disabled={busy || !ids.length} onClick={() => act('drop')} />
+    </RibbonActions>
     <div className={s.bar}>
-      <Button appearance="primary" icon={<Checkmark20Regular />} disabled={busy || !ids.length} onClick={() => act('apply')}>{t('Übernehmen')}</Button>
-      <Button icon={<FolderArrowRight20Regular />} disabled={busy || !ids.length} onClick={() => act('refile')}>{t('Übernehmen und nach Vorgabe ablegen')}</Button>
-      <Button icon={<Delete20Regular />} disabled={busy || !ids.length} onClick={() => act('drop')}>{t('Verwerfen')}</Button>
-      <div style={{ flex: 1 }} />
       <Dropdown aria-label={t('Filter')} style={{ minWidth: 200 }} selectedOptions={[filter]} onOptionSelect={(_, d) => { setFilter((d.optionValue ?? '') as typeof filter); setPicked(new Set()) }}
         value={filter === 'wrong' ? t('Nur „passt nicht“') : filter === 'doubt' ? t('Nur „zweifelhaft“') : filter === 'new' ? t('Nur neue Einträge') : filter === 'assign' ? t('Nur Einordnen') : t('Alle Vorschläge')}>
         <Option value="">{t('Alle Vorschläge')}</Option><Option value="wrong">{t('Nur „passt nicht“')}</Option><Option value="doubt">{t('Nur „zweifelhaft“')}</Option>
         <Option value="assign">{t('Nur Einordnen')}</Option><Option value="new">{t('Nur neue Einträge')}</Option>
       </Dropdown>
+      {progress && <span className={s.run}><Spinner size="tiny" />
+        <span>{progress.what === 'refile' ? t('Übernehme und lege ab …') : t('Übernehme …')}</span>
+        <ProgressBar value={progress.total ? progress.done / progress.total : 0} style={{ width: 160 }} /><span>{progress.done} / {progress.total}</span></span>}
     </div>
     {list === null ? <Spinner /> : rows.length === 0
       ? <Text className={s.muted}>{running ? t('Die KI arbeitet - Vorschläge erscheinen hier nach und nach.') : t('Keine offenen Vorschläge. Starten lässt sich eine Prüfung im Baum per Rechtsklick auf einen Eintrag oder eine Liste.')}</Text>
@@ -139,7 +159,7 @@ export function AiSuggestions({ entries, onOpenDoc, onChanged }: { entries: Entr
             <td><Button appearance="transparent" size="small" icon={<Open20Regular />} iconPosition="after" onClick={() => onOpenDoc(d)} style={{ padding: 0, minWidth: 0, justifyContent: 'flex-start', textAlign: 'left' }}>{d.title || d.originalName}</Button></td>
             <td>{kindLabel(x.field)}</td>
             <td>{x.current ? fullName(entries, x.current) : <span className={s.muted}>{t('(keiner)')}</span>}</td>
-            <td>{x.verdict ? <span className={x.verdict === 'wrong' ? s.wrong : s.doubt}>{verdictLabel(x.verdict)}</span> : t('einordnen')}</td>
+            <td>{x.verdict ? <span className={x.verdict === 'wrong' ? s.wrong : s.doubt}>{verdictLabel(x.verdict)}</span> : noProposal(x) ? <span className={s.muted}>{t('kein Vorschlag')}</span> : t('einordnen')}</td>
             <td style={{ minWidth: 200 }}>{x.proposalNew ? proposal(x)
               : <EntrySelect entries={entries} kind={x.field} value={x.proposalEntry} none={x.verdict ? t('(entfernen)') : t('(keiner)')} size="small" onPick={id => edit(x, id)} />}</td>
             <td>{x.confidence} %</td>

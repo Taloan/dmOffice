@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using DmOffice.Core;
+using DmOffice.Notes;
 
 namespace DmOffice.Dms;
 
@@ -47,7 +48,7 @@ public sealed class DmsJob(Spaces spaces, ILogger<DmsJob> log) : BackgroundServi
                 if (Features.On(Features.Dms) && DmsHost.Current is { } host)
                 {
                     var clean = DateTime.UtcNow - cleaned > TimeSpan.FromHours(1);
-                    foreach (var space in spaces.All())
+                    foreach (var space in spaces.Working())
                     {
                         ct.ThrowIfCancellationRequested();
                         if (Dav.FileStore.FilesOff(space.Db)) continue;

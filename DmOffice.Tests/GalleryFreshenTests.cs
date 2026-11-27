@@ -58,6 +58,52 @@ public class GalleryFreshenTests : IClassFixture<ChatFixture>
     }
 
     [Fact]
+    public async Task Standbild_eines_Videos_ersetzt_das_gemeinsame_nicht()
+    {
+        var mount = "still" + Guid.NewGuid().ToString("N")[..6];
+        var (config, cleo, src, root, before) = await FolderAsync("cleo", mount, r => File.WriteAllBytes(Path.Combine(r, "film.mp4"), new byte[2048]));
+        try
+        {
+            Assert.NotNull(GalleryFolders.Shared);
+            var ben = _fx.Space("ben");
+            var bc = _fx.As("ben");
+            Assert.Equal(HttpStatusCode.OK, (await bc.PostAsJsonAsync("/api/gallery/sources", new { mount, path = "" })).StatusCode);
+            var benSrc = GalleryFolders.Of(ben.Db).Single(x => x.Mount == mount);
+            await GalleryFolders.ScanAsync(ben, config, benSrc, CancellationToken.None);
+            byte[] Png(SKColor color)
+            {
+                using var bmp = new SKBitmap(64, 36);
+                bmp.Erase(color);
+                return bmp.Encode(SKEncodedImageFormat.Png, 90).ToArray();
+            }
+            SKColor Center(byte[] webp) { using var b = SKBitmap.Decode(webp); return b.GetPixel(b.Width / 2, b.Height / 2); }
+            byte[]? Own(UserSpace sp, GallerySource sr) => sp.Db.Query("SELECT thumb FROM gallery_ext WHERE source = $s AND path = 'film.mp4'",
+                r => r.IsDBNull(0) ? null : (byte[])r.GetValue(0), ("$s", sr.Id)).FirstOrDefault();
+
+            // Das erste Standbild gilt für alle
+            GalleryFolders.StoreThumb(cleo.Space, config, src.Id + "/film.mp4", Png(SKColors.Green));
+            var stamp = cleo.Space.Db.Query("SELECT size, modified FROM gallery_ext WHERE source = $s AND path = 'film.mp4'",
+                r => GalleryProxies.Stamp(r.GetInt64(0), r.GetInt64(1)), ("$s", src.Id)).First();
+            var sharedThumb = GalleryFolders.Shared!.Thumb(mount, "film.mp4", stamp)!;
+            Assert.True(Center(sharedThumb).Green > 100);
+            Assert.Empty(Own(cleo.Space, src)!);
+
+            // Ein zweites ersetzt es nicht für alle - Ben behält seines für sich
+            GalleryFolders.StoreThumb(ben, config, benSrc.Id + "/film.mp4", Png(SKColors.Red));
+            var after = GalleryFolders.Shared!.Thumb(mount, "film.mp4", stamp)!;
+            Assert.True(Center(after).Green > 100 && Center(after).Red < 100);
+            Assert.True(Center(Own(ben, benSrc)!).Red > 100);
+            await bc.DeleteAsync("/api/gallery/sources/" + benSrc.Id);
+            await cleo.Client.DeleteAsync("/api/gallery/sources/" + src.Id);
+        }
+        finally
+        {
+            config.Update(s => s.ExternalFolders = before);
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Gezeigtes_Foto_geaenderte_Markierung_bei_gleicher_Groesse_und_Zeit()
     {
         var stamp = new DateTime(2026, 3, 1, 12, 0, 0, DateTimeKind.Utc);

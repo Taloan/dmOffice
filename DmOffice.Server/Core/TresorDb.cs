@@ -41,8 +41,13 @@ public sealed class TresorDb : ISqlStore, IDisposable
         DmOffice.Notes.TresorNotizi.Schema,
         // 5: DMS - Dokumente, Text und Gelerntes der Dokumente im Tresor (die Listen liegen in der Benutzerdatenbank)
         DmOffice.Dms.Dms.Schema,
-        // 6: Platzhalter (Schema einer späteren Version - die Nummer bleibt belegt, bestehende Tresore haben den Schritt schon)
-        "SELECT 1",
+        // [feature:journal]
+        // 6: Tagebücher im Tresor - Einträge und Medien
+        DmOffice.Journal.TresorJournals.Schema,
+        // [feature:journal:else]
+        // // 6: Platzhalter (Schema einer späteren Version - die Nummer bleibt belegt, bestehende Tresore haben den Schritt schon)
+        // "SELECT 1",
+        // [/feature:journal]
     ];
 
     public static int Version => Steps.Length;
@@ -58,7 +63,21 @@ public sealed class TresorDb : ISqlStore, IDisposable
             UserDb.Exec(conn, $"PRAGMA user_version = {i + 1}");
             tx.Commit();
         }
+        // Nachhol-Schritte (docs/plugins-konzept.md 7.7): Ein Release ohne eine Funktion ersetzt ihren Schritt durch einen
+        // Platzhalter. Ein Tresor, der darunter angelegt oder aktualisiert wurde, steht danach schon auf der Nummer, und der echte
+        // Schritt läuft später nicht mehr - darum die Tabellen solcher Funktionen hier bei jedem Öffnen mit IF NOT EXISTS anlegen.
+        // [feature:journal]
+        UserDb.Exec(conn, IfMissing(DmOffice.Journal.TresorJournals.Schema));
+        // [/feature:journal]
+        PluginSteps?.Invoke(conn);
     }
+
+    /// <summary>Schema so umschreiben, dass es auf einer Datenbank mit (Teilen) davon nichts ändert.</summary>
+    internal static string IfMissing(string sql) => sql.Replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ")
+        .Replace("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS ").Replace("INSERT INTO ", "INSERT OR IGNORE INTO ");
+
+    /// <summary>Nach den Kern-Schritten: Schemaschritte der Plugins in der Tresor-Datenbank (Plugins/PluginSchemas). Null: keine.</summary>
+    public static Action<SqliteConnection>? PluginSteps { get; set; }
 
     public SqliteConnection Open()
     {

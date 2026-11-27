@@ -1,13 +1,14 @@
 import {
   Button, Checkbox, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Dropdown, Field, Input, Option, Radio, RadioGroup,
-  Spinner, SpinButton, Switch, Text, Textarea, Tooltip, makeStyles, tokens,
+  Spinner, SpinButton, Switch, Text, Textarea, Tooltip, makeStyles, tokens, MenuItem, MenuDivider,
 } from '@fluentui/react-components'
-import { Add20Regular, ArrowSync20Regular, ArrowUp20Regular, Delete20Regular, Dismiss16Regular, Edit20Regular, Folder20Filled, FolderAdd20Regular, FolderOpen20Regular } from '@fluentui/react-icons'
+import { Add20Regular, ArrowSync20Regular, ArrowUp20Regular, Checkmark20Regular, Delete20Regular, Dismiss16Regular, Edit20Regular, Folder20Filled, FolderAdd20Regular, FolderOpen20Regular } from '@fluentui/react-icons'
 import { useEffect, useRef, useState } from 'react'
-import { api, q } from '../api'
+import { api, featureOn, q } from '../api'
 import { useApp } from '../App'
 import { lang, t } from '../i18n'
-import { askConfirm } from '../shell/context'
+import { ContextMenu, askConfirm, useContextMenu } from '../shell/context'
+import { dblOpen } from '../shell/rowOpen' // [feature:rowdblopen]
 
 interface Mount { id: string; name: string; readOnly?: boolean; available?: boolean }
 /** Quellordner: in der eigenen Ablage (mount leer) oder in einem externen Ordner. */
@@ -16,6 +17,10 @@ interface Profile {
   id: string; name: string; sources: Src[]; mount: string; mountName?: string | null; target: string; folders: string; names: string; title: string; description: string
   copy: boolean; every: number; since: string | null; active: boolean; lastRun: string | null; error: string | null; lastCount: number; total: number
   pending: number; running: boolean
+  // [feature:importsub]
+  /** Unterordner der Quellordner mit einsortieren (fehlt: ja). */
+  subfolders?: boolean
+  // [/feature:importsub]
 }
 interface Data { profiles: Profile[]; mounts: Mount[]; folderTokens: string[]; nameTokens: string[]; textTokens: string[] }
 interface Preview { sample: string | null; folder: string; name: string; title: string; description: string }
@@ -32,6 +37,7 @@ const useStyles = makeStyles({
   chip: { fontFamily: tokens.fontFamilyMonospace, fontSize: tokens.fontSizeBase200, minWidth: 0, padding: '2px 8px' },
   mono: { fontFamily: tokens.fontFamilyMonospace },
   preview: { fontStyle: 'italic', color: tokens.colorNeutralForeground3, fontSize: tokens.fontSizeBase200, wordBreak: 'break-all' },
+  unknown: { color: tokens.colorPaletteRedForeground1, fontSize: tokens.fontSizeBase200 },
   source: { display: 'flex', alignItems: 'center', gap: '6px' },
   browse: { border: `1px solid ${tokens.colorNeutralStroke2}`, borderRadius: tokens.borderRadiusMedium, height: '260px', overflowY: 'auto', padding: '4px' },
   dir: { display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 6px', borderRadius: tokens.borderRadiusMedium, cursor: 'pointer', ':hover': { backgroundColor: tokens.colorNeutralBackground1Hover },
@@ -52,6 +58,9 @@ export function ImportProfilesDialog({ onClose }: { onClose: (changed: boolean) 
   const [data, setData] = useState<Data | null>(null)
   const [edit, setEdit] = useState<Profile | 'new' | null>(null)
   const [changed, setChanged] = useState(false)
+  // Rechtsklick auf ein Importprofil (Kennung ctxall): dieselben Aktionen wie die Knöpfe
+  const menu = useContextMenu<Profile>()
+  const ctxall = featureOn('ctxall')
   const load = () => api.get<Data>('/api/gallery/imports').then(setData).catch(fail)
   useEffect(() => { load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
   // Während ein Profil läuft, den Stand nachladen
@@ -80,7 +89,9 @@ export function ImportProfilesDialog({ onClose }: { onClose: (changed: boolean) 
               <Text>{t('Ein Importprofil sortiert neue Fotos aus Ordnern der eigenen Ablage oder aus externen Ordnern in einen Zielordner ein. Ordnerstruktur und Dateinamen folgen den Mustern des Profils. RAW, JPG und XMP-Datei eines Fotos bleiben zusammen.')}</Text>
               {data.profiles.length === 0 && <Text className={s.muted}>{t('Noch keine Importprofile.')}</Text>}
               {data.profiles.map(p => (
-                <div key={p.id} className={s.row}>
+                <div key={p.id} className={s.row} onContextMenu={ctxall ? e => menu.open(e, p) : undefined}
+                  {...dblOpen(() => setEdit(p))} // [feature:rowdblopen]
+                >
                   <div className={s.name}>
                     <Text weight="semibold">{p.name}</Text>
                     <Text size={200} className={s.muted}>{p.sources.map(x => srcName(x, data.mounts)).join(', ')} → {where(p, data.mounts)}</Text>
@@ -103,6 +114,18 @@ export function ImportProfilesDialog({ onClose }: { onClose: (changed: boolean) 
                   </Tooltip>
                 </div>
               ))}
+              {menu.ctx && (() => {
+                const p = menu.ctx.data
+                return (
+                  <ContextMenu at={menu.ctx.at} onClose={menu.close}>
+                    <MenuItem icon={<Edit20Regular />} onClick={() => setEdit(p)}>{t('Bearbeiten')}</MenuItem>
+                    <MenuItem icon={<ArrowSync20Regular />} disabled={p.running} onClick={() => act(() => api.post(`/api/gallery/imports/${p.id}/run`))}>{t('Jetzt einsortieren')}</MenuItem>
+                    <MenuItem icon={p.active ? <Checkmark20Regular /> : <span style={{ width: 20 }} />} onClick={() => act(() => api.put(`/api/gallery/imports/${p.id}`, { ...p, active: !p.active, language: lang }))}>{t('Im Hintergrund regelmäßig prüfen und einsortieren')}</MenuItem>
+                    <MenuDivider />
+                    <MenuItem icon={<Delete20Regular />} onClick={() => remove(p)}>{t('Löschen')}</MenuItem>
+                  </ContextMenu>
+                )
+              })()}
             </DialogContent>
             <DialogActions>
               <Button icon={<Add20Regular />} onClick={() => setEdit('new')}>{t('Neues Importprofil')}</Button>
@@ -117,11 +140,15 @@ export function ImportProfilesDialog({ onClose }: { onClose: (changed: boolean) 
 }
 
 /** Eingabefeld für ein Muster mit Platzhaltern zum Anklicken (an der Schreibmarke eingefügt) und Vorschau darunter. */
-export function PatternField({ label, value, onChange, tokens: list, preview, multiline }: {
+export function PatternField({ label, value, onChange, tokens: list, preview, multiline, known }: {
   label: string; value: string; onChange: (v: string) => void; tokens: string[]; preview: string | undefined; multiline?: boolean
+  /** Alle Platzhalter, die der Server kennt: andere werden als unbekannt gemeldet (ohne Angabe keine Prüfung). */
+  known?: string[]
 }) {
   const s = useStyles()
   const ref = useRef<HTMLInputElement & HTMLTextAreaElement>(null)
+  // Wie beim Foto-Export: Platzhalter, die es hier nicht gibt, fielen sonst still weg
+  const unknown = !known ? [] : [...new Set([...value.matchAll(/\{([a-z_]+)\}/g)].map(m => m[1]).filter(x => !known.includes(x)))]
   const insert = (token: string) => {
     const el = ref.current
     const text = `{${token}}`
@@ -136,6 +163,7 @@ export function PatternField({ label, value, onChange, tokens: list, preview, mu
         ? <Textarea ref={ref} className={s.mono} value={value} onChange={(_, d) => onChange(d.value)} resize="vertical" />
         : <Input ref={ref} className={s.mono} value={value} onChange={(_, d) => onChange(d.value)} />}
       <Text className={s.preview}>→ {preview ?? ''}</Text>
+      {unknown.length > 0 && <Text className={s.unknown}>{t('Unbekannter Platzhalter: {list}', { list: unknown.map(x => `{${x}}`).join(', ') })}</Text>}
       <div className={s.chips}>
         {list.map(x => <Button key={x} size="small" className={s.chip} onClick={() => insert(x)}>{`{${x}}`}</Button>)}
       </div>
@@ -148,8 +176,12 @@ function EditProfile({ data, profile, onClose }: { data: Data; profile: Profile 
   const { fail } = useApp()
   const [f, setF] = useState(() => profile ? { ...profile } : {
     name: '', sources: [] as Src[], mount: '', target: '', folders: '{exif_year}/{exif_month}/{exif_day}', names: '{exif_datetime}_{original_name}_{camera_make}_{camera_model}',
-    title: '', description: '', copy: false, every: 10, since: null as string | null, active: true,
+    title: '', description: '', copy: false, every: 10, since: null as string | null, active: true, subfolders: true,
   })
+  // [feature:importsub]
+  const sub = featureOn('importsub')
+  const deep = !sub || f.subfolders !== false
+  // [/feature:importsub]
   const set = (patch: Partial<typeof f>) => setF(x => ({ ...x, ...patch }))
   const [pick, setPick] = useState<'source' | 'target' | null>(null)
   // Ort des nächsten Quellordners: eigene Ablage oder ein externer Ordner
@@ -190,7 +222,12 @@ function EditProfile({ data, profile, onClose }: { data: Data; profile: Profile 
 
             <div className={s.section}>
               <Text className={s.head}>{t('Quelle')}</Text>
-              <Text size={200} className={s.muted}>{t('Ordner der eigenen Ablage oder externe Ordner, jeweils mit allen Unterordnern.')}</Text>
+              {/* [feature:importsub] */}
+              <Text size={200} className={s.muted}>{deep ? t('Ordner der eigenen Ablage oder externe Ordner, jeweils mit allen Unterordnern.')
+                : t('Ordner der eigenen Ablage oder externe Ordner, nur die Dateien direkt darin.')}</Text>
+              {/* [feature:importsub:else] */}
+              {/* <Text size={200} className={s.muted}>{t('Ordner der eigenen Ablage oder externe Ordner, jeweils mit allen Unterordnern.')}</Text> */}
+              {/* [/feature:importsub] */}
               {f.sources.map(x => (
                 <div key={x.mount + ':' + x.path} className={s.source}>
                   <Folder20Filled color="#E8A33D" /><Text className={s.grow}>{srcName(x, data.mounts)}</Text>
@@ -207,6 +244,9 @@ function EditProfile({ data, profile, onClose }: { data: Data; profile: Profile 
                 </Dropdown>}
                 <Button icon={<FolderOpen20Regular />} onClick={() => setPick('source')}>{t('Quellordner hinzufügen')}</Button>
               </div>
+              {/* [feature:importsub] */}
+              {sub && <Checkbox checked={deep} label={t('Unterordner einbeziehen')} onChange={(_, d) => set({ subfolders: !!d.checked })} />}
+              {/* [/feature:importsub] */}
               {/* Abstand nur für externe Ordner - Ordner der eigenen Ablage meldet der Server sofort (FolderWatch) */}
               {extSources.length > 0 && <div className={s.line}>
                 <Text>{t('Externe Ordner: alle')}</Text>
@@ -225,7 +265,7 @@ function EditProfile({ data, profile, onClose }: { data: Data; profile: Profile 
               </RadioGroup>
               {mustCopy && <Text size={200} className={s.muted}>{t('Ein Quellordner ist nur zum Lesen eingebunden. Daraus lässt sich nur kopieren.')}</Text>}
               {!f.copy && !mustCopy && extSources.length > 0 && <Text size={200} className={s.muted}>
-                {t('Beim Verschieben aus einem externen Ordner wird die Quelle erst gelöscht, wenn die Datei am Ziel geprüft ist. Einen Papierkorb gibt es dort nicht.')}
+                {t('Beim Verschieben aus einem externen Ordner wird die Quelle erst gelöscht, wenn die Datei am Ziel geprüft ist.')}
               </Text>}
             </div>
 
@@ -240,19 +280,19 @@ function EditProfile({ data, profile, onClose }: { data: Data; profile: Profile 
                 <Button icon={<Folder20Filled color="#E8A33D" />} onClick={() => setPick('target')}>{t('Durchsuchen')}</Button>
               </div>
               <Text>{targetFull}</Text>
-              <PatternField label={t('Ordnerstruktur-Muster')} value={f.folders} onChange={v => set({ folders: v })} tokens={data.folderTokens} preview={preview?.folder} />
+              <PatternField label={t('Ordnerstruktur-Muster')} value={f.folders} onChange={v => set({ folders: v })} tokens={data.folderTokens} preview={preview?.folder} known={data.textTokens} />
             </div>
 
             <div className={s.section}>
               <Text className={s.head}>{t('Dateiname')}</Text>
-              <PatternField label={t('Dateinamen-Muster (ohne Dateiendung)')} value={f.names} onChange={v => set({ names: v })} tokens={data.nameTokens} preview={preview?.name} />
+              <PatternField label={t('Dateinamen-Muster (ohne Dateiendung)')} value={f.names} onChange={v => set({ names: v })} tokens={data.nameTokens} preview={preview?.name} known={data.textTokens} />
               <Text size={200} className={s.muted}>{t('Liegt am Ziel schon eine Datei mit diesem Namen und gleichem Inhalt, gilt das Foto als einsortiert. Bei anderem Inhalt wird „_2“, „_3“ … angehängt.')}</Text>
             </div>
 
             <div className={s.section}>
               <Text className={s.head}>{t('Metadaten')}</Text>
-              <PatternField label={t('Titel (Platzhalter wie beim Dateinamen)')} value={f.title} onChange={v => set({ title: v })} tokens={data.textTokens} preview={preview?.title} />
-              <PatternField label={t('Beschreibung (Platzhalter wie beim Dateinamen)')} value={f.description} onChange={v => set({ description: v })} tokens={data.textTokens} preview={preview?.description} multiline />
+              <PatternField label={t('Titel (Platzhalter wie beim Dateinamen)')} value={f.title} onChange={v => set({ title: v })} tokens={data.textTokens} preview={preview?.title} known={data.textTokens} />
+              <PatternField label={t('Beschreibung (Platzhalter wie beim Dateinamen)')} value={f.description} onChange={v => set({ description: v })} tokens={data.textTokens} preview={preview?.description} known={data.textTokens} multiline />
               <Text size={200} className={s.muted}>{t('Titel und Beschreibung stehen beim JPG in der Datei, beim RAW in der XMP-Datei daneben. Leer: es wird nichts geschrieben.')}</Text>
             </div>
             <Text size={200} className={s.muted}>

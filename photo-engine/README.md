@@ -64,6 +64,10 @@ JSON `{"image": "<base64 der bearbeiteten Vorschau>", "previous": <JSON aus /ana
 Liefert wieder **absolute** Werte (bezogen auf das Original); nur Tonwerte, WB und Motiv werden
 in halben Schritten nachgeregelt.
 
+### `POST /preview` → JPG für Formate, die dmOffice selbst nicht liest
+
+TIFF (auch 16 Bit, mehrseitig: erste Seite), aufrecht gedreht, verkleinert auf `max_edge` (Standard 2048), `quality` (Standard 90). Body: die Datei. dmOffice nutzt es für die Vorschaubilder von TIFF (Kennung `tiffpreview`). Zählt zu `PHOTO_ENGINE_MAX_JOBS`.
+
 ### `POST /develop` → fertiges JPG
 - Body = Original-JPG, Header `X-Corrections: <JSON>`, Query `?max_edge=1400&quality=93`
 - oder JSON `{"image": "<base64>", "corrections": {...}, "max_edge": 1400, "quality": 93}`

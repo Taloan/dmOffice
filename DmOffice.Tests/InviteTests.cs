@@ -17,18 +17,19 @@ public class InviteTests
         return space;
     }
 
-    private static MimeMessage Invitation(string method = "REQUEST", int sequence = 0, string start = "20301015T100000", string summary = "Projekt-Review")
+    private static MimeMessage Invitation(string method = "REQUEST", int sequence = 0, string start = "20301015T100000", string summary = "Projekt-Review",
+        string? organizer = "laura.neumann@firma.example", string from = "laura.neumann@firma.example")
     {
         var ics = string.Join("\r\n",
             "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Test//Test//DE", "METHOD:" + method,
             "BEGIN:VEVENT", "UID:review-4711@firma.example", "SEQUENCE:" + sequence, "DTSTAMP:20301001T080000Z",
             "DTSTART;TZID=Europe/Berlin:" + start, "DTEND;TZID=Europe/Berlin:" + start[..9] + "113000",
             "SUMMARY:" + summary, "LOCATION:Raum 2.14",
-            "ORGANIZER;CN=Laura Neumann:mailto:laura.neumann@firma.example",
+            organizer == null ? null : "ORGANIZER;CN=Laura Neumann:mailto:" + organizer,
             "ATTENDEE;CN=Alex Berger;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:alex@beispiel.de",
-            "END:VEVENT", "END:VCALENDAR", "");
+            "END:VEVENT", "END:VCALENDAR", "").Replace("\r\n\r\n", "\r\n");
         var m = new MimeMessage();
-        m.From.Add(new MailboxAddress("Laura Neumann", "laura.neumann@firma.example"));
+        m.From.Add(new MailboxAddress("Laura Neumann", from));
         m.To.Add(new MailboxAddress("Alex Berger", "alex@beispiel.de"));
         m.Subject = "Einladung: " + summary;
         var cal = new TextPart("calendar") { Text = ics };
@@ -72,6 +73,35 @@ public class InviteTests
         // Absage des Organisators: entfernen
         await Invites.RespondAsync(space, account, Invitation("CANCEL", 2), "remove", false, default);
         Assert.Empty(PimStore.Objects(space.Db, dto.CalendarId.Value));
+    }
+
+    [Fact]
+    public async Task Einladung_ohne_Organisator_aendert_keinen_vorhandenen_Termin()
+    {
+        var space = NewSpace();
+        var account = space.Settings.MailAccounts[0];
+        await Invites.RespondAsync(space, account, Invitation(), "accept", false, default);
+        // Gleiche UID, aber ohne ORGANIZER und von fremdem Absender: weder ueberschreiben noch loeschen
+        await Assert.ThrowsAsync<ArgumentException>(() => Invites.RespondAsync(space, account,
+            Invitation(sequence: 5, summary: "Gekapert", organizer: null, from: "fremd@boese.example"), "accept", false, default));
+        await Assert.ThrowsAsync<ArgumentException>(() => Invites.RespondAsync(space, account,
+            Invitation("CANCEL", 5, organizer: null, from: "fremd@boese.example"), "remove", false, default));
+        Assert.Equal("Projekt-Review", Invites.Read(space, Invitation())!.Title);
+        Assert.NotNull(Invites.Read(space, Invitation())!.CalendarId);
+    }
+
+    [Fact]
+    public async Task Termin_ohne_Organisator_aendert_keine_Einladung()
+    {
+        var space = NewSpace();
+        var account = space.Settings.MailAccounts[0];
+        // Eigener Termin ohne Organisator (etwa aus einer ICS-Datei), dessen UID ein Fremder kennt
+        await Invites.RespondAsync(space, account, Invitation(organizer: null), "accept", false, default);
+        await Assert.ThrowsAsync<ArgumentException>(() => Invites.RespondAsync(space, account,
+            Invitation("CANCEL", 5, organizer: "fremd@boese.example", from: "fremd@boese.example"), "remove", false, default));
+        await Assert.ThrowsAsync<ArgumentException>(() => Invites.RespondAsync(space, account,
+            Invitation("REPLY", 5, organizer: "fremd@boese.example", from: "alex@beispiel.de"), "apply", false, default));
+        Assert.NotNull(Invites.Read(space, Invitation(organizer: null))!.CalendarId);
     }
 
     [Fact]

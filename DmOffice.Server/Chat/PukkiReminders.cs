@@ -68,6 +68,7 @@ public static partial class Pukki
     }
 
     private static readonly Regex ReminderWordRx = new(@"\berinnerung(?:en)?\b", RegexOptions.IgnoreCase);
+    private static readonly Regex ReminderNewRx = new(@"^(?:neue\s+)?erinnerung\s*[:,\-]?\s*(?:für\s+|fuer\s+)?(?<body>.+?)[\s!.]*$", RegexOptions.IgnoreCase);
     private static readonly Regex ReminderCancelRx = new(@"\b(?:abbrechen|stopp?e?n?|stop|löschen|loeschen|lösche|loesche|entfernen|entferne|weg|streichen|streiche|aufheben|absagen|cancel)\b", RegexOptions.IgnoreCase);
     private static readonly Regex ReminderMoveRx = new(@"\b(?:verschieb\w*|verleg\w*|änder\w*|aender\w*|später|spaeter|früher|frueher|umstellen|stell\w*)\b", RegexOptions.IgnoreCase);
     private static readonly Regex ReminderFillRx = new(@"\b(?:erinnerung|erinnerungen|die|der|den|das|dem|an|ans|am|für|fuer|zum|zur|meine|meinen|mein|bitte|mal|auf|um|von|nach|welche|welcher|habe|hab|ich|gibt|es|zeig\w*|liste|offene?n?|laufende?n?|alle|noch|kannst|du|mir)\b", RegexOptions.IgnoreCase);
@@ -79,11 +80,20 @@ public static partial class Pukki
         var all = ReminderTasks(c.Space).Where(r => r.AtUtc > DateTime.UtcNow).ToList();
         var cancel = ReminderCancelRx.IsMatch(t);
         var move = !cancel && ReminderMoveRx.IsMatch(t);
+        // „Erinnerung morgen 9 Uhr Crusader Kings“: mit Uhrzeit eine neue Erinnerung, keine Liste
+        // Auch nur mit Tag und Text („Erinnerung morgen früh Kirche stornieren“): dann als Aufgabe für den Tag
+        if (!cancel && !move && !t.Contains('?') && ReminderNewRx.Match(t) is { Success: true } nm
+            && PukkiParse.Parse(nm.Groups["body"].Value, c.Now) is { } np && (np.Start != null || np.Date != null && CleanTitle(np.Title).Length > 0))
+            return Remind(c, nm.Groups["body"].Value.Trim());
         var rest = ReminderCancelRx.Replace(t, " ");
         rest = ReminderMoveRx.Replace(rest, " ");
 
         if (cancel || move)
         {
+            // „Erinnerung morgen früh Kirche stornieren“ ohne vorhandene Erinnerung: „stornieren“ gehört zum Text einer neuen Erinnerung
+            if (all.Count == 0 && ReminderNewRx.Match(t) is { Success: true } nw
+                && PukkiParse.Parse(nw.Groups["body"].Value, c.Now) is { } nwp && (nwp.Start != null || nwp.Date != null))
+                return Remind(c, nw.Groups["body"].Value.Trim());
             if (all.Count == 0) return "Du hast gerade keine Erinnerung.";
             // Neue Zeit („auf 10 Uhr“, „auf morgen 9 Uhr“, „um 15 Minuten“) vom Namen trennen
             var shift = Regex.Match(t, @"\bum\s+(?<n>\d+|eine?n?|einer|zwei|drei|fünf|fuenf|zehn|fünfzehn|fuenfzehn|zwanzig|dreißig|dreissig|halbe?n?)\s*(?:halben\s+)?(?<u>minuten?|min|stunden?|std|tage?n?)\b", RegexOptions.IgnoreCase);

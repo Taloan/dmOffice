@@ -155,6 +155,21 @@ public static class OnlyOffice
         return (grant, space, file);
     }
 
+    /// <summary>
+    /// Signierter Abruf des Document Servers fuer genau diese Datei: Payload {url} oder {payload:{url}} mit demselben Token.
+    /// Das signierte Token der Editor-Konfiguration (steht im Browser) traegt keine solche url und zaehlt nicht.
+    /// </summary>
+    internal static bool SignedFetch(JsonObject? signed, string? t)
+    {
+        if (signed == null || string.IsNullOrEmpty(t)) return false;
+        var url = (signed["url"] as JsonValue)?.ToString() ?? (signed["payload"]?["url"] as JsonValue)?.ToString();
+        if (url == null) return false;
+        var q = url.IndexOf('?');
+        if (q < 0) return false;
+        var query = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(url[q..]);
+        return query.TryGetValue("t", out var v) && v.Count == 1 && v[0] == t;
+    }
+
     public static void Map(WebApplication app)
     {
         var g = app.MapGroup("/onlyoffice").AllowAnonymous();
@@ -171,7 +186,7 @@ public static class OnlyOffice
                 if (config.OfficeJwtSecret() is not { Length: > 0 } secret) return Results.StatusCode(403);
                 var header = http.Request.Headers[config.Current.OfficeJwtHeader is { Length: > 0 } h ? h : "Authorization"].ToString();
                 if (header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) header = header[7..];
-                if (Jwt.Read(header, secret) == null) return Results.StatusCode(403);
+                if (!SignedFetch(Jwt.Read(header, secret), t)) return Results.StatusCode(403);
             }
             if (r.File is not { } f) return Results.Json(new { error = "Der Tresor ist geschlossen.", locked = Tresor.Locked }, statusCode: 423);
             http.Response.Headers.CacheControl = "no-store";

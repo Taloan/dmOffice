@@ -9,6 +9,7 @@ public static class SecurityCenterApi
     public record AllowBody(string Cidr, string? Note);
     public record SettingsBody(bool Traps, int FirstDays, int SeenDays, int KeepDays, bool AbuseCheck = false, int AbuseScore = 90, int AbuseDays = 7, bool AbuseReport = false);
     public record KeyBody(string? Key);
+    public record ProxyBody(string Address); // [feature:proxyconfirm]
 
     private static SecurityCenter Sc => SecurityCenter.Shared ?? throw new InvalidOperationException("Das Security Center ist abgeschaltet (DMOFFICE_SECURITY=off).");
 
@@ -75,6 +76,35 @@ public static class SecurityCenterApi
         api.MapPut("/abuseipdb/key", (KeyBody body) => { Sc.SaveAbuseKey(body.Key); return Results.Ok(); });
         api.MapPost("/abuseipdb/verify", async (KeyBody body, CancellationToken ct) =>
             await Sc.VerifyAbuseKeyAsync(body.Key, ct) is { } error ? Results.BadRequest(new { error }) : Results.Ok());
+
+        // [feature:proxyconfirm]
+        // Reverse-Proxys: wer X-Forwarded-* schickt; bestätigte (und nach dem Update übernommene) gelten als Proxy
+        api.MapGet("/proxies", (HttpContext http) =>
+        {
+            var env = Environment.GetEnvironmentVariable("DMOFFICE_TRUSTED_PROXIES");
+            var pc = ProxyConfirm.Shared;
+            // Über welchen Absender kam diese Anfrage (vom Forwarded-Headers-Schritt vermerkt)?
+            var original = http.Request.Headers["X-Original-For"].FirstOrDefault();
+            string? via = null;
+            if (original != null && System.Net.IPEndPoint.TryParse(original, out var ep)) via = ProxyConfirm.Normal(ep.Address).ToString();
+            return Results.Ok(new
+            {
+                active = pc != null,
+                env = string.IsNullOrWhiteSpace(env) ? null : env,
+                learnUntil = pc?.LearnUntil,
+                learning = pc?.Learning(DateTime.UtcNow) == true,
+                via,
+                list = pc?.List() ?? [],
+            });
+        });
+        api.MapPost("/proxies/confirm", (ProxyBody body, HttpContext http) =>
+        {
+            (ProxyConfirm.Shared ?? throw new InvalidOperationException("Die Liste der Reverse-Proxys ist nicht aktiv.")).Confirm(body.Address, http.Space().User.Login);
+            return Results.Ok();
+        });
+        api.MapDelete("/proxies", (string address) =>
+            ProxyConfirm.Shared?.Remove(address) == true ? Results.Ok() : Results.NotFound(new { error = "Diesen Absender gibt es nicht in der Liste." }));
+        // [/feature:proxyconfirm]
     }
 
     /// <summary>Eine Zelle der TSV-Datei: ohne Tabulator und Zeilenumbruch, und was ein Tabellenprogramm als Formel liest

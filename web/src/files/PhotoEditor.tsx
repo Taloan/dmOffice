@@ -1,9 +1,20 @@
-import { Button, Slider, Spinner, Text, ToggleButton, Tooltip } from '@fluentui/react-components'
+// [feature:lenscorr]
+import { Button, Slider, Spinner, Switch, Text, ToggleButton, Tooltip } from '@fluentui/react-components'
+// [feature:lenscorr:else]
+// import { Button, Slider, Spinner, Text, ToggleButton, Tooltip } from '@fluentui/react-components'
+// [/feature:lenscorr]
 import { ArrowReset20Regular, ArrowRotateClockwise20Regular, ArrowRotateCounterclockwise20Regular, ArrowUndo16Regular, ChevronDown16Regular, ChevronRight16Regular, Copy20Regular, Save20Regular, Sparkle20Regular, Wand20Regular } from '@fluentui/react-icons'
 import { useEffect, useRef, useState } from 'react'
-import { api } from '../api'
+import { api, featureOn } from '../api'
 import { t } from '../i18n'
 import { ColorMixer, bandWeights, hueOf, mixKey, type MixPart } from './ColorMixer'
+// [feature:lenscorr]
+// [feature:lenslib]
+import { LensProfilePick, kindOf } from '../settings/LensLibrary'
+// [feature:lenslib:else]
+// import { FilterSelect } from '../shell/FilterSelect'
+// [/feature:lenslib]
+// [/feature:lenscorr]
 
 /** Ausschnitt in Anteilen (0..1) des gezeigten, schon gedrehten Bildes. */
 export interface CropRect { x: number; y: number; w: number; h: number }
@@ -17,7 +28,18 @@ export interface Adjust {
 const NONE: Adjust = { exposure: 0, contrast: 0, highlights: 0, shadows: 0, whites: 0, blacks: 0, temperature: 0, tint: 0, vibrance: 0, saturation: 0, dehaze: 0, clarity: 0 }
 
 /** Gespeicherte Entwicklungseinstellungen eines Fotos (nicht-destruktiv, das Original bleibt). */
-export interface PhotoSettings { rotate: number; crop: CropRect | null; adjust: Adjust | null; origin?: string }
+// [feature:lenscorr]
+/** Objektivkorrektur: profile leer = nach Regel, „-“ = ohne Profil (nur von Hand); Stärken in Prozent, von Hand −100 … +100. */
+export interface LensState { off?: boolean; profile?: string | null; distortion: number; vignetting: number; tca: boolean; manualDistortion: number; manualVignetting: number; midpoint: number }
+const LENS_DEF: LensState = { off: false, profile: null, distortion: 100, vignetting: 100, tca: true, manualDistortion: 0, manualVignetting: 0, midpoint: 50 }
+type LensInfo = { camera: string | null; lens: string | null; focal: number | null; aperture: number | null; rule: { id: string; profile: string; name: string | null } | null
+  /** Ohne passende Regel: Profil automatisch nach dem Objektiv und warum (camera: diese Kamera, format/make: gleicher Hersteller bzw. Sensorformat, lens/similar: nur der Name) */
+  library?: { profile: string; name: string; raw: boolean | null; camera: string | null; why: string; origin?: string } | null // [feature:lenslib]
+  profiles: { id: string; name: string }[]; engine: boolean }
+export interface PhotoSettings { rotate: number; crop: CropRect | null; adjust: Adjust | null; origin?: string; lens?: LensState | null }
+// [feature:lenscorr:else]
+// export interface PhotoSettings { rotate: number; crop: CropRect | null; adjust: Adjust | null; origin?: string }
+// [/feature:lenscorr]
 type Slide = [keyof Adjust, string, number, number]
 // Regler in Gruppen wie in Lightroom: Weißabgleich, Tonwert, Präsenz
 const WHITE: Slide[] = [['temperature', 'Temperatur', -50, 50], ['tint', 'Tönung', -50, 50]]
@@ -25,7 +47,11 @@ const TONE: Slide[] = [['exposure', 'Belichtung', -2, 2], ['contrast', 'Kontrast
   ['whites', 'Weiß', -50, 50], ['blacks', 'Schwarz', -50, 50]]
 // Klarheit und Dunst entfernen rechnet die Photo-Engine (−100 … +100 wie Lightroom); ohne sie wirkt Dunst grob, Klarheit nicht
 const PRESENCE: Slide[] = [['clarity', 'Klarheit', -100, 100], ['dehaze', 'Dunst entfernen', -100, 100], ['vibrance', 'Dynamik', -50, 50], ['saturation', 'Sättigung', -50, 50]]
-type Section = 'crop' | 'auto' | 'white' | 'tone' | 'presence' | 'mixer'
+// [feature:lenscorr]
+type Section = 'crop' | 'auto' | 'white' | 'tone' | 'presence' | 'mixer' | 'lens'
+// [feature:lenscorr:else]
+// type Section = 'crop' | 'auto' | 'white' | 'tone' | 'presence' | 'mixer'
+// [/feature:lenscorr]
 // Aufgeklappte Bereiche bleiben gemerkt
 const OPEN_KEY = 'dmoffice.photoEditor.open'
 const openAtStart = (): Set<Section> => { try { const v = localStorage.getItem(OPEN_KEY); if (v) return new Set(JSON.parse(v)) } catch { /* egal */ } return new Set<Section>(['auto', 'white', 'tone', 'presence']) }
@@ -82,23 +108,53 @@ export function PhotoEditor({ src, path, onApply, onExport, onCancel }: {
   // Das Original schon holen (Galerie-Ordner über den Tunnel) - Vorschläge und Speichern warten dann nicht darauf
   useEffect(() => { api.post('/api/files/photo-edit/prefetch', { path }).catch(() => { }) }, [path])
   const raw = RAW.test(path)
+  // [feature:lenscorr]
+  // Objektivkorrektur: gemerkte Einstellung oder - passt eine Regel - automatisch an (gilt als Änderung, gespeichert mit „Fertig“)
+  const [lens, setLens] = useState<LensState | null>(null)
+  const [lensInfo, setLensInfo] = useState<LensInfo | null>(null)
+  const [editsLoaded, setEditsLoaded] = useState(false)
+  useEffect(() => {
+    setLensInfo(null)
+    if (!featureOn('lenscorr')) return
+    api.get<LensInfo>('/api/gallery/lens/for?path=' + encodeURIComponent(path)).then(setLensInfo).catch(() => { })
+  }, [path])
+  // [feature:lenslib]
+  const lensAuto = !!(lensInfo?.rule || lensInfo?.library)
+  // [feature:lenslib:else]
+  // const lensAuto = !!lensInfo?.rule
+  // [/feature:lenslib]
+  useEffect(() => { if (editsLoaded && lensAuto) setLens(l => l ?? LENS_DEF) }, [editsLoaded, lensInfo]) // eslint-disable-line react-hooks/exhaustive-deps
+  const lensOn = lens != null && !lens.off
+  // [/feature:lenscorr]
   // Während der Server rechnet: kleiner Kringel im Bild
   const [pending, setPending] = useState(false)
   useEffect(() => {
-    if (neutral(adjust) && !raw) { setShown(src); setPending(false); return }
+    // [feature:lenscorr]
+    if (neutral(adjust) && !raw && !lensOn) { setShown(src); setPending(false); return }
+    // [feature:lenscorr:else]
+    // if (neutral(adjust) && !raw) { setShown(src); setPending(false); return }
+    // [/feature:lenscorr]
     let url: string | null = null
     // Überholte Anfragen abbrechen - sonst kann eine spät eintreffende ältere Vorschau die neuere überdecken
     const ctl = new AbortController()
     setPending(true)
     const timer = setTimeout(async () => {
       try {
-        const r = await fetch('/api/files/photo-adjust/preview', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, adjust }), signal: ctl.signal })
+        // [feature:lenscorr]
+        const r = await fetch('/api/files/photo-adjust/preview', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, adjust, lens: lensOn ? lens : null }), signal: ctl.signal })
+        // [feature:lenscorr:else]
+        // const r = await fetch('/api/files/photo-adjust/preview', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, adjust }), signal: ctl.signal })
+        // [/feature:lenscorr]
         if (r.ok) { const b = await r.blob(); if (!ctl.signal.aborted) { url = URL.createObjectURL(b); setShown(url) } }
       } catch { /* Vorschau bleibt */ }
       finally { if (!ctl.signal.aborted) setPending(false) }
     }, 250)
     return () => { clearTimeout(timer); ctl.abort(); if (url) URL.revokeObjectURL(url) }
-  }, [adjust, path, src, raw])
+  // [feature:lenscorr]
+  }, [adjust, path, src, raw, lens, lensOn])
+  // [feature:lenscorr:else]
+  // }, [adjust, path, src, raw])
+  // [/feature:lenscorr]
   // Vorschlag von der KI (Claude) oder der Photo-Engine (ohne KI) - beide belegen nur die Regler vor
   const suggest = async (from: 'suggest' | 'engine') => {
     setAsking(from)
@@ -131,12 +187,23 @@ export function PhotoEditor({ src, path, onApply, onExport, onCancel }: {
     api.get<{ edit: PhotoSettings | null }>('/api/files/photo-edits?path=' + encodeURIComponent(path)).then(r => {
       if (!r.edit) return
       setHadEdit(true); setRotate(r.edit.rotate ?? 0); setCrop(r.edit.crop ?? FULL); setAdjust({ ...NONE, ...(r.edit.adjust ?? {}) })
+      if (r.edit.lens) setLens({ ...LENS_DEF, ...r.edit.lens }) // [feature:lenscorr]
     }).catch(() => { })
+      .finally(() => setEditsLoaded(true)) // [feature:lenscorr]
   }, [path])
   const busy = saving != null
   const [open, setOpen] = useState<Set<Section>>(openAtStart)
-  const toggle = (k: Section) => setOpen(o => { const n = new Set(o); if (n.has(k)) n.delete(k); else n.add(k); try { localStorage.setItem(OPEN_KEY, JSON.stringify([...n])) } catch { /* egal */ } return n })
-  const mode: 'crop' | 'color' = open.has('crop') ? 'crop' : 'color'
+  const toggle = (k: Section) => {
+    // Zuschneiden und Zielwerkzeug schließen sich aus: wer das Raster öffnet, beendet das Zielwerkzeug
+    if (k === 'crop' && !open.has('crop')) setTarget(false)
+    setOpen(o => { const n = new Set(o); if (n.has(k)) n.delete(k); else n.add(k); try { localStorage.setItem(OPEN_KEY, JSON.stringify([...n])) } catch { /* egal */ } return n })
+  }
+  // Zielwerkzeug an: Abschnitt Zuschneiden zu (nur für jetzt, nicht gemerkt), damit das Bild Klicks fürs Zielwerkzeug annimmt
+  const targetOn = (on: boolean) => {
+    setTarget(on)
+    if (on) setOpen(o => { if (!o.has('crop')) return o; const n = new Set(o); n.delete('crop'); return n })
+  }
+  const mode: 'crop' | 'color' = open.has('crop') && !target ? 'crop' : 'color'
   // Im Farbmodus nur der Ausschnitt; beim Zuschneiden das ganze Bild
   const view = mode === 'color' ? crop : FULL
   const canvas = useRef<HTMLCanvasElement>(null)
@@ -241,11 +308,43 @@ export function PhotoEditor({ src, path, onApply, onExport, onCancel }: {
   const mixValues = Object.fromEntries(Object.entries(adjust).filter(([k]) => k.startsWith('hsl_'))) as Record<string, number>
   const mixChanged = Object.values(mixValues).some(v => Math.abs(v) >= 0.5)
   const full = crop.x < 0.001 && crop.y < 0.001 && crop.w > 0.999 && crop.h > 0.999
-  const settings = (): PhotoSettings => ({ rotate, crop: full ? null : crop, adjust: neutral(adjust) ? null : adjust })
+  // [feature:lenscorr]
+  const settings = (): PhotoSettings => ({ rotate, crop: full ? null : crop, adjust: neutral(adjust) ? null : adjust, lens })
+  // [feature:lenscorr:else]
+  // const settings = (): PhotoSettings => ({ rotate, crop: full ? null : crop, adjust: neutral(adjust) ? null : adjust })
+  // [/feature:lenscorr]
   const apply = async () => { setSaving('apply'); try { await onApply(unchanged ? null : settings()) } finally { setSaving(null) } }
   const exportJpg = async () => { setSaving('export'); try { await onExport(settings()) } finally { setSaving(null) } }
   const remove = async () => { setSaving('remove'); try { await onApply(null) } finally { setSaving(null) } }
-  const unchanged = full && rotate === 0 && neutral(adjust)
+  // [feature:lenscorr]
+  const unchanged = full && rotate === 0 && neutral(adjust) && lens == null
+  const resetLens = () => setLens(lensAuto ? LENS_DEF : null)
+  const lensChanged = JSON.stringify(lens ? { ...LENS_DEF, ...lens } : null) !== JSON.stringify(lensAuto ? LENS_DEF : null)
+  // Gewähltes Profil: eigenes, „ohne“ oder das der Regel
+  // [feature:lenslib]
+  const lensProfile = !lens || lens.profile === '-' ? null : lens.profile ? lensInfo?.profiles.find(x => x.id === lens.profile)
+    ?? (lens.profile.startsWith('lib:') ? { id: lens.profile, name: '' } : null)
+    : lensInfo?.rule ? { id: lensInfo.rule.profile, name: lensInfo.rule.name ?? '' }
+    : lensInfo?.library ? { id: lensInfo.library.profile, name: lensInfo.library.name } : null
+  const libWhy: Record<string, () => string> = {
+    camera: () => t('passend zu dieser Kamera'), format: () => t('gleicher Hersteller oder gleiches Sensorformat'), make: () => t('gleicher Hersteller'),
+    lens: () => t('passend zum Objektiv'), similar: () => t('ähnlicher Objektivname'),
+  }
+  // [feature:lenslib:else]
+  // const lensProfile = !lens || lens.profile === '-' ? null : lens.profile ? lensInfo?.profiles.find(x => x.id === lens.profile) ?? null
+  //   : lensInfo?.rule ? { id: lensInfo.rule.profile, name: lensInfo.rule.name ?? '' } : null
+  // [/feature:lenslib]
+  const setL = (v: Partial<LensState>) => setLens(l => ({ ...(l ?? LENS_DEF), ...v }))
+  const lensRow = (label: string, value: number, min: number, max: number, def: number, set: (v: number) => void, unit = '') =>
+    <div onDoubleClick={() => set(def)} title={t('Doppelklick: zurücksetzen')}
+      style={{ display: 'grid', gridTemplateColumns: '96px minmax(0, 1fr) 40px', alignItems: 'center', gap: 4, fontSize: 12 }}>
+      <span style={{ opacity: 0.85 }}>{label}</span>
+      <Slider size="small" min={min} max={max} step={1} value={value} style={{ minWidth: 0 }} onChange={(_, d) => set(d.value)} />
+      <span style={{ textAlign: 'right', opacity: 0.8, fontVariantNumeric: 'tabular-nums' }}>{(min < 0 && value > 0 ? '+' : '') + Math.round(value) + unit}</span>
+    </div>
+  // [feature:lenscorr:else]
+  // const unchanged = full && rotate === 0 && neutral(adjust)
+  // [/feature:lenscorr]
   // Zurücksetzen je Modus und alles zusammen
   const cropChanged = !full || rotate !== 0 || ratio != null
   const colorChanged = !neutral(adjust) || !!analysis
@@ -262,7 +361,11 @@ export function PhotoEditor({ src, path, onApply, onExport, onCancel }: {
           <canvas ref={canvas} style={{ display: 'block', cursor: mode === 'color' ? (target ? 'crosshair' : 'pointer') : undefined, touchAction: target ? 'none' : undefined }}
             onPointerDown={e => { if (mode === 'color') { if (target) targetDrag(e); else setPeek(true) } }} onPointerUp={() => setPeek(false)} onPointerLeave={() => setPeek(false)} />
           {pending && !peek && <Spinner size="tiny" style={{ position: 'absolute', right: 8, top: 8 }} />}
-          {peek && !neutral(adjust) && <span style={{ position: 'absolute', left: 8, top: 8, padding: '2px 8px', borderRadius: 6, background: 'rgba(0,0,0,.65)', color: '#fff', fontSize: 12 }}>{t('Original')}</span>}
+          {/* [feature:lenscorr] */}
+          {peek && (!neutral(adjust) || lensOn) && <span style={{ position: 'absolute', left: 8, top: 8, padding: '2px 8px', borderRadius: 6, background: 'rgba(0,0,0,.65)', color: '#fff', fontSize: 12 }}>{t('Original')}</span>}
+          {/* [feature:lenscorr:else] */}
+          {/* {peek && !neutral(adjust) && <span style={{ position: 'absolute', left: 8, top: 8, padding: '2px 8px', borderRadius: 6, background: 'rgba(0,0,0,.65)', color: '#fff', fontSize: 12 }}>{t('Original')}</span>} */}
+          {/* [/feature:lenscorr] */}
           {mode === 'crop' && size.w > 0 && <div onPointerDown={e => drag(e, 'move')} style={{
             position: 'absolute', left: crop.x * size.w, top: crop.y * size.h, width: crop.w * size.w, height: crop.h * size.h, cursor: 'move',
             boxShadow: '0 0 0 9999px rgba(0,0,0,.55)', outline: '2px solid #fff',
@@ -289,10 +392,10 @@ export function PhotoEditor({ src, path, onApply, onExport, onCancel }: {
                 onClick={() => applyRatio(r)}>{l === 'Frei' || l === 'Hochkant' || l === 'Original' ? t(l) : l}</ToggleButton>)}
             </div>
           </Part>
-          {(ai || engine) && <Part k="auto" label={t('Automatisch')} open={open} toggle={toggle}>
+          {(ai || engine) && <Part k="auto" label={featureOn('enhancebtn') ? t('Verbessern') : t('Automatisch')} open={open} toggle={toggle}>
             <div style={{ display: 'flex', gap: 6 }}>
               {ai && <Button size="small" icon={asking === 'suggest' ? <Spinner size="tiny" /> : <Sparkle20Regular />} disabled={!!asking} onClick={() => suggest('suggest')} style={{ ...ACTION, flex: 1 }}>{t('KI')}</Button>}
-              {engine && <Button size="small" icon={asking === 'engine' ? <Spinner size="tiny" /> : <Wand20Regular />} disabled={!!asking} onClick={() => suggest('engine')} style={{ ...ACTION, flex: 1 }}>{t('Engine')}</Button>}
+              {engine && <Button size="small" icon={asking === 'engine' ? <Spinner size="tiny" /> : <Wand20Regular />} disabled={!!asking} onClick={() => suggest('engine')} style={{ ...ACTION, flex: 1 }}>{featureOn('enhancebtn') ? t('Photo-Engine') : t('Engine')}</Button>}
             </div>
             {suggested && <div style={{ display: 'grid', gridTemplateColumns: '96px minmax(0, 1fr) 40px', alignItems: 'center', gap: 4, fontSize: 12 }}
               onDoubleClick={() => applyStrength(100)} title={t('Doppelklick: auf 100 %')}>
@@ -317,15 +420,60 @@ export function PhotoEditor({ src, path, onApply, onExport, onCancel }: {
             </Part>)}
           <Part k="mixer" label={t('Farbmischer')} open={open} toggle={toggle} changed={mixChanged}
             onReset={() => { setTarget(false); setAdjust(a => Object.fromEntries(Object.entries(a).filter(([k]) => !k.startsWith('hsl_'))) as unknown as Adjust) }}>
-            <ColorMixer values={mixValues} part={mixPart} onPart={p => setMixPart(p)} target={target} onTarget={setTarget}
+            <ColorMixer values={mixValues} part={mixPart} onPart={p => setMixPart(p)} target={target} onTarget={targetOn}
               onChange={(k, v) => setAdjust(a => ({ ...a, [k]: v }))} />
           </Part>
+          {/* [feature:lenscorr] */}
+          {lensInfo && <Part k="lens" label={t('Objektivkorrektur')} open={open} toggle={toggle} changed={lensChanged} onReset={resetLens}>
+            <Switch checked={lensOn} onChange={(_, d) => setL({ off: !d.checked })}
+              label={{ children: lensOn ? t('Objektivkorrektur an') : t('Objektivkorrektur aus'), style: { color: 'inherit' } }} />
+            <Text size={200} style={{ opacity: 0.8 }}>
+              {[lensInfo.lens || lensInfo.camera || t('Ohne Objektivangabe'), lensInfo.focal ? Math.round(lensInfo.focal) + ' mm' : null,
+                lensInfo.aperture ? 'f/' + lensInfo.aperture : null].filter(Boolean).join(' · ')}</Text>
+            {!lensInfo.engine && <Text size={200} style={{ opacity: 0.8 }}>{t('Die Objektivkorrektur rechnet die Photo-Engine; sie ist gerade nicht eingeschaltet.')}</Text>}
+            {lens && lensOn && <>
+              <Text size={200} style={{ opacity: 0.8 }}>{t('Profil')}</Text>
+              {/* [feature:lenslib] */}
+              <LensProfilePick size="small" value={lens.profile ?? ''} onChange={id => setL({ profile: id || null })} listWidth={320} hint={lensInfo.lens}
+                none={lensInfo.rule ? t('Nach Regel: {name}', { name: lensInfo.rule.name ?? '' })
+                  : lensInfo.library ? t('Automatisch nach dem Objektiv: {name}', { name: [lensInfo.library.name, kindOf(lensInfo.library.raw)].filter(Boolean).join(' · ') })
+                  : t('Automatisch (Regel oder nach dem Objektiv)')}
+                valueName={lens.profile === '-' ? t('Ohne Profil') : lens.profile ? lensInfo.profiles.find(x => x.id === lens.profile)?.name : null}
+                extra={[{ id: '-', label: t('Ohne Profil') }]} />
+              {!lens.profile && <Text size={200} style={{ opacity: 0.8 }}>
+                {lensInfo.rule ? ((lensInfo.rule as { own?: boolean }).own ? t('Grund: eigene Regel') : t('Grund: Regel vom Admin'))
+                  : lensInfo.library ? t('Grund: automatisch nach dem Objektiv, {why}', { why: (libWhy[lensInfo.library.why] ?? libWhy.lens)() })
+                    + (lensInfo.library.origin === 'admin' ? ' · ' + t('Profil vom Admin') : ' · ' + t('eigenes Profil'))
+                  : t('Für dieses Objektiv wählst du das Profil hier oder legst eine Regel an.')}
+              </Text>}
+              {/* [feature:lenslib:else] */}
+              {/* <FilterSelect size="small" value={lens.profile ?? ''} onChange={id => setL({ profile: id || null })} listWidth={260} */}
+              {/*   none={lensInfo.rule ? t('Nach Regel: {name}', { name: lensInfo.rule.name ?? '' }) : t('Nach Regel (keine passt)')} */}
+              {/*   items={[{ id: '-', label: t('Ohne Profil') }, ...lensInfo.profiles.map(x => ({ id: x.id, label: x.name }))]} /> */}
+              {/* [/feature:lenslib] */}
+              {lensProfile && <>
+                {lensRow(t('Verzeichnung'), lens.distortion, 0, 200, 100, v => setL({ distortion: v }), ' %')}
+                {lensRow(t('Vignettierung'), lens.vignetting, 0, 200, 100, v => setL({ vignetting: v }), ' %')}
+                <Switch checked={lens.tca} onChange={(_, d) => setL({ tca: d.checked })} label={{ children: t('Farbsäume entfernen'), style: { color: 'inherit' } }} />
+              </>}
+              <Text size={200} style={{ opacity: 0.8 }}>{t('Von Hand')}</Text>
+              {lensRow(t('Verzeichnung'), lens.manualDistortion, -100, 100, 0, v => setL({ manualDistortion: v }))}
+              {lensRow(t('Vignettierung'), lens.manualVignetting, -100, 100, 0, v => setL({ manualVignetting: v }))}
+              {Math.abs(lens.manualVignetting) >= 1 && lensRow(t('Mittelpunkt'), lens.midpoint, 0, 100, 50, v => setL({ midpoint: v }))}
+            </>}
+          </Part>}
+          {/* [/feature:lenscorr] */}
           <Text size={100} block style={{ opacity: 0.6, padding: '8px 12px' }}>{t('Vergleich mit dem Original: Alt gedrückt halten oder ins Bild drücken.')}</Text>
         </div>
         <div style={{ borderTop: '1px solid rgba(255,255,255,.12)', padding: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
           <div style={{ display: 'flex', gap: 6 }}>
-            <Button size="small" appearance="subtle" style={{ color: 'inherit', flex: 1 }} icon={<ArrowReset20Regular />} disabled={busy || (!cropChanged && !colorChanged)}
-              onMouseEnter={() => setPeek(true)} onMouseLeave={() => setPeek(false)} onClick={() => { resetCrop(); resetColor() }}>{t('Zurücksetzen')}</Button>
+            {/* [feature:lenscorr] */}
+            <Button size="small" appearance="subtle" style={{ color: 'inherit', flex: 1 }} icon={<ArrowReset20Regular />} disabled={busy || (!cropChanged && !colorChanged && !lensChanged)}
+              onMouseEnter={() => setPeek(true)} onMouseLeave={() => setPeek(false)} onClick={() => { resetCrop(); resetColor(); resetLens() }}>{t('Zurücksetzen')}</Button>
+            {/* [feature:lenscorr:else] */}
+            {/* <Button size="small" appearance="subtle" style={{ color: 'inherit', flex: 1 }} icon={<ArrowReset20Regular />} disabled={busy || (!cropChanged && !colorChanged)} */}
+            {/*   onMouseEnter={() => setPeek(true)} onMouseLeave={() => setPeek(false)} onClick={() => { resetCrop(); resetColor() }}>{t('Zurücksetzen')}</Button> */}
+            {/* [/feature:lenscorr] */}
             <Button size="small" appearance="subtle" style={{ color: 'inherit', flex: 1 }} onClick={onCancel} disabled={busy}>{t('Abbrechen')}</Button>
           </div>
           {/* Fertig merkt nur die Einstellungen - das Original bleibt; eine Datei gibt es mit „Als JPG exportieren“ */}

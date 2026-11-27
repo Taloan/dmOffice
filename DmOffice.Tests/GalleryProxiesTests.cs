@@ -40,4 +40,27 @@ public class GalleryProxiesTests : IDisposable
         Assert.False(p.Has("anna", "src1", "Urlaub/a.jpg", stamp));
         Assert.Equal(0, p.Usage("anna", "src1").Count);
     }
+
+    [Fact]
+    public void Umziehen_in_einen_gemeinsamen_Bereich_ersetzt_nichts()
+    {
+        var key = new byte[32]; Random.Shared.NextBytes(key);
+        var p = new GalleryProxies(_dir, key);
+        var stamp = GalleryProxies.Stamp(100, 1_700_000_000_000);
+        p.Put(GalleryProxies.SharedScope, "m2", "a.jpg", stamp, "RIFF....WEBPVP8 echt"u8.ToArray());
+        p.Put("anna", "src1", "a.jpg", stamp, "RIFF....WEBPVP8 anders"u8.ToArray());
+        p.Put("anna", "src1", "b.jpg", stamp, "RIFF....WEBPVP8 neu"u8.ToArray());
+
+        Assert.True(p.Relocate("anna", "src1", "a.jpg", GalleryProxies.SharedScope, "m2", "a.jpg", move: true, keep: true));
+        Assert.True(p.Relocate("anna", "src1", "b.jpg", GalleryProxies.SharedScope, "m2", "b.jpg", move: true, keep: true));
+        Assert.Equal("RIFF....WEBPVP8 echt"u8.ToArray(), p.Get(GalleryProxies.SharedScope, "m2", "a.jpg", stamp));
+        Assert.Equal("RIFF....WEBPVP8 neu"u8.ToArray(), p.Get(GalleryProxies.SharedScope, "m2", "b.jpg", stamp));
+        Assert.False(p.Has("anna", "src1", "a.jpg", stamp));
+        // Ohne keep wie bisher: ersetzt
+        p.Put("anna", "src1", "a.jpg", stamp, "RIFF....WEBPVP8 anders"u8.ToArray());
+        Assert.True(p.Relocate("anna", "src1", "a.jpg", "anna", "src2", "a.jpg", move: false));
+        Assert.True(p.Relocate("anna", "src1", "a.jpg", "anna", "src2", "a.jpg", move: false));
+        Assert.Equal("RIFF....WEBPVP8 anders"u8.ToArray(), p.Get("anna", "src2", "a.jpg", stamp));
+    }
+
 }

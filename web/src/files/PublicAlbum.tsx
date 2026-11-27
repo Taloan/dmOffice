@@ -25,7 +25,7 @@ export default function PublicAlbum({ token }: { token: string }) {
   const base = `/api/public-album/${token}`
   const [page, setPage] = useState<Page | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [locked, setLocked] = useState<string | null>(null)
+  const [locked, setLocked] = useState(false)
   const [password, setPassword] = useState('')
   const [open, setOpen] = useState<number | null>(null)
   const [more, setMore] = useState(false)
@@ -34,9 +34,9 @@ export default function PublicAlbum({ token }: { token: string }) {
   const load = useCallback(async (offset: number) => {
     const r = await fetch(`${base}/?offset=${offset}`, { credentials: 'same-origin' })
     const d = await r.json().catch(() => null)
-    if (r.status === 401 && d?.needsPassword) { setLocked(d.name ?? ''); return }
+    if (r.status === 401 && d?.needsPassword) { setLocked(true); return }
     if (!r.ok) { setError(d?.error ?? t('Diesen Link gibt es nicht (mehr).')); return }
-    setLocked(null)
+    setLocked(false)
     setPage(p => offset === 0 || !p ? d : { ...d, items: [...p.items, ...d.items] })
   }, [base])
   useEffect(() => { load(0) }, [load])
@@ -76,10 +76,10 @@ export default function PublicAlbum({ token }: { token: string }) {
   const thumb = (p: Photo, size: number) => `${base}/thumb?k=${encodeURIComponent(p.k)}&size=${size}&v=${encodeURIComponent(p.etag)}`
   const isVideo = (p: Photo) => (p.mime ?? '').startsWith('video/')
 
-  if (locked != null) return (
+  if (locked) return (
     <div className={s.root}><div className={s.center}>
       <LockClosed20Regular />
-      <Text size={500} weight="semibold">{locked}</Text>
+      <Text size={500} weight="semibold">{t('Passwort erforderlich')}</Text>
       <Text>{t('Dieses Album ist mit einem Passwort geschützt.')}</Text>
       <Input type="password" value={password} onChange={(_, d) => setPassword(d.value)} onKeyDown={e => { if (e.key === 'Enter') unlock() }} placeholder={t('Passwort')} autoFocus />
       {error && <Text style={{ color: tokens.colorPaletteRedForeground1 }}>{error}</Text>}

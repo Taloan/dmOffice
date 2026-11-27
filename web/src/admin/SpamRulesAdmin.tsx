@@ -1,14 +1,17 @@
 import {
   Badge, Button, Checkbox, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Dropdown, Field, Input, MessageBar,
-  MessageBarBody, Option, Switch, Text, Textarea, makeStyles, tokens,
+  MessageBarBody, Option, Switch, Text, Textarea, makeStyles, mergeClasses, tokens,
 } from '@fluentui/react-components'
 import { Add20Regular, ArrowReset20Regular, ClipboardPaste20Regular, Delete20Regular, Edit20Regular } from '@fluentui/react-icons'
 import { useEffect, useRef, useState } from 'react'
-import { api } from '../api'
+import { api, featureOn } from '../api'
+import { RibbonActions, RibbonButton, RibbonDivider } from '../shell/Ribbon'
 import { useApp } from '../App'
 import { t } from '../i18n'
 import { AdminHeading } from './AdminHeading'
+import { useAdminPart } from './AdminPage' // [feature:adminclean]
 import { askConfirm } from '../shell/context'
+import { useAdminDraft } from './draft' // [feature:savemode]
 
 /** Eine Erkennungsregel wie auf dem Server (Mail/SpamRules.cs). */
 interface SpamRule {
@@ -36,6 +39,7 @@ const useStyles = makeStyles({
   name: { display: 'flex', flexDirection: 'column', minWidth: 0 },
   code: { fontFamily: tokens.fontFamilyMonospace, fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3, overflowWrap: 'anywhere' },
   mono: { fontFamily: tokens.fontFamilyMonospace },
+  on: { backgroundColor: tokens.colorNeutralBackground1Selected, ':hover': { backgroundColor: tokens.colorNeutralBackground1Selected } },
 })
 
 /**
@@ -49,11 +53,31 @@ export function SpamRulesAdmin() {
   const [state, setState] = useState<State | null>(null)
   const [edit, setEdit] = useState<{ rule: SpamRule; index: number } | null>(null)
   const [importing, setImporting] = useState(false)
+  // Menüband (Kennung adminribbon): Klick auf eine Regel wählt sie aus, Bearbeiten/Löschen im Band
+  const ribbon = featureOn('adminribbon')
+  // [feature:adminclean]
+  // Kennung adminclean: eigener Reiter „Erkennungsregeln“ – der Reiter nennt den Abschnitt schon
+  const tabbed = useAdminPart().part != null
+  // [/feature:adminclean]
+  const [sel, setSel] = useState<string | null>(null)
   useEffect(() => { api.get<State>('/api/admin/spamrules').then(setState).catch(fail) }, []) // eslint-disable-line react-hooks/exhaustive-deps
-  if (!state) return null
   const save = async (on: boolean, rules: SpamRule[]) => {
     try { setState(await api.put<State>('/api/admin/spamrules', { on, rules })); return true } catch (e) { fail(e); return false }
   }
+  // [feature:savemode]
+  // Kennung savemode: Hauptschalter und Schalter der Regeln sammeln; Bearbeiten, Löschen, Einfügen wirken weiter sofort
+  const draft = useAdminDraft({ on: state?.on ?? false, enabled: Object.fromEntries((state?.rules ?? []).map(r => [r.id, r.enabled])) as Record<string, boolean> },
+    async v => state ? save(v.on, state.rules.map(r => ({ ...r, enabled: v.enabled[r.id] ?? r.enabled }))) : true)
+  const allOn = draft.on ? draft.value.on : !!state?.on
+  const ruleOn = (r: SpamRule) => draft.on ? draft.value.enabled[r.id] ?? r.enabled : r.enabled
+  const flipRule = (r: SpamRule, i: number, on: boolean) => draft.on ? draft.set({ ...draft.value, enabled: { ...draft.value.enabled, [r.id]: on } })
+    : state && save(state.on, state.rules.map((x, j) => j === i ? { ...x, enabled: on } : x))
+  // [feature:savemode:else]
+  // const allOn = !!state?.on
+  // const ruleOn = (r: SpamRule) => r.enabled
+  // const flipRule = (_: SpamRule, i: number, on: boolean) => state && save(state.on, state.rules.map((x, j) => j === i ? { ...x, enabled: on } : x))
+  // [/feature:savemode]
+  if (!state) return null
   const remove = async (i: number) => {
     if (!await askConfirm('', t('Regel „{name}“ löschen?', { name: state.rules[i].name }))) return
     save(state.on, state.rules.filter((_, j) => j !== i))
@@ -63,26 +87,45 @@ export function SpamRulesAdmin() {
     try { setState(await api.post<State>('/api/admin/spamrules/defaults')); notify(t('Startregeln wiederhergestellt')) } catch (e) { fail(e) }
   }
   const fresh: SpamRule = { id: '', name: '', enabled: true, part: 'subject', header: null, pattern: '', ignoreCase: true, negate: false, action: 'feature' }
+  const selIndex = state.rules.findIndex(r => r.id === sel)
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 820 }}>
-      <AdminHeading>{t('Zusätzliche Erkennungsregeln')}</AdminHeading>
+      {/* [feature:adminclean] */}
+      <AdminHeading first={tabbed}>{t('Zusätzliche Erkennungsregeln')}</AdminHeading>
+      {/* [feature:adminclean:else] */}
+      {/* <AdminHeading>{t('Zusätzliche Erkennungsregeln')}</AdminHeading> */}
+      {/* [/feature:adminclean] */}
       <Text>{t('Eigene reguläre Ausdrücke (.NET) auf Betreff, Absender, Kopfzeilen, Text oder Links. Ein Treffer geht als Merkmal in den lernenden Filter – wie viel er zählt, lernt der Filter aus den Mails jedes Benutzers. Auf Wunsch macht eine Regel die Mail auch direkt „unsicher“ oder zu Junk. Sichere Absender gehen immer vor.')}</Text>
       <Text size={200} className={s.muted}>{t('Jeder Ausdruck wird beim Speichern geprüft; ungültige oder zu langsame lassen sich nicht speichern. Braucht eine Regel bei einer Mail länger als 0,1 Sekunden, wird sie dort übersprungen. Mitgeliefert sind nur einige eigene Startregeln. Regeln aus anderen Quellen (etwa SpamAssassin) lassen sich einfügen; für deren Lizenz ist der Administrator verantwortlich.')}</Text>
-      <Switch label={t('Zusätzliche Erkennungsregeln verwenden')} checked={state.on} onChange={(_, d) => save(d.checked, state.rules)} />
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+      {/* [feature:savemode] */}
+      <Switch label={t('Zusätzliche Erkennungsregeln verwenden')} checked={allOn} onChange={(_, d) => draft.on ? draft.set({ ...draft.value, on: d.checked }) : save(d.checked, state.rules)} />
+      {/* [feature:savemode:else] */}
+      {/* <Switch label={t('Zusätzliche Erkennungsregeln verwenden')} checked={state.on} onChange={(_, d) => save(d.checked, state.rules)} /> */}
+      {/* [/feature:savemode] */}
+      {ribbon && <RibbonActions>
+        <RibbonButton primary icon={<Add20Regular />} label={t('Neue Regel')} onClick={() => setEdit({ rule: fresh, index: -1 })} />
+        <RibbonButton icon={<ClipboardPaste20Regular />} label={t('Im SpamAssassin-Format einfügen')} onClick={() => setImporting(true)} />
+        <RibbonDivider />
+        <RibbonButton icon={<Edit20Regular />} label={t('Bearbeiten')} disabled={selIndex < 0} onClick={() => setEdit({ rule: state.rules[selIndex], index: selIndex })} />
+        <RibbonButton icon={<Delete20Regular />} label={t('Löschen')} disabled={selIndex < 0} onClick={() => remove(selIndex)} />
+        <RibbonDivider />
+        <RibbonButton icon={<ArrowReset20Regular />} label={t('Startregeln wiederherstellen')} disabled={state.defaults} onClick={reset} />
+      </RibbonActions>}
+      {!ribbon && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <Button icon={<Add20Regular />} onClick={() => setEdit({ rule: fresh, index: -1 })}>{t('Regel hinzufügen')}</Button>
         <Button icon={<ClipboardPaste20Regular />} onClick={() => setImporting(true)}>{t('Im SpamAssassin-Format einfügen')}</Button>
         {!state.defaults && <Button icon={<ArrowReset20Regular />} onClick={reset}>{t('Startregeln wiederherstellen')}</Button>}
-      </div>
+      </div>}
       {state.rules.length === 0
         ? <Text className={s.muted}>{t('Keine Regeln.')}</Text>
-        : <div className={s.list} style={{ opacity: state.on ? 1 : 0.6 }}>
+        : <div className={s.list} style={{ opacity: allOn ? 1 : 0.6 }}>
           {state.rules.map((r, i) => {
             const st = state.stats[r.id]
             return (
-              <div key={r.id + i} className={s.row}>
-                <Switch checked={r.enabled} aria-label={t('Regel „{name}“ verwenden', { name: r.name })}
-                  onChange={(_, d) => save(state.on, state.rules.map((x, j) => j === i ? { ...x, enabled: d.checked } : x))} />
+              <div key={r.id + i} className={mergeClasses(s.row, ribbon && sel === r.id && s.on)} onClick={ribbon ? () => setSel(r.id) : undefined}
+                onDoubleClick={ribbon ? () => setEdit({ rule: r, index: i }) : undefined} aria-selected={ribbon ? sel === r.id : undefined}>
+                <Switch checked={ruleOn(r)} aria-label={t('Regel „{name}“ verwenden', { name: r.name })}
+                  onChange={(_, d) => flipRule(r, i, d.checked)} />
                 <div className={s.name}>
                   <Text weight="semibold">{r.name}</Text>
                   <span className={s.code}>
@@ -94,10 +137,10 @@ export function SpamRulesAdmin() {
                     {st && st.timeouts > 0 && <Badge appearance="tint" color="warning">{t('{n}× zu langsam', { n: st.timeouts })}</Badge>}
                   </div>
                 </div>
-                <div style={{ display: 'flex' }}>
+                {!ribbon && <div style={{ display: 'flex' }}>
                   <Button appearance="subtle" icon={<Edit20Regular />} aria-label={t('Bearbeiten')} onClick={() => setEdit({ rule: r, index: i })} />
                   <Button appearance="subtle" icon={<Delete20Regular />} aria-label={t('Löschen')} onClick={() => remove(i)} />
-                </div>
+                </div>}
               </div>
             )
           })}

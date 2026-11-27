@@ -53,6 +53,32 @@ public class ChunkedUploadTests : IClassFixture<ChatFixture>
     }
 
     [Fact]
+    public async Task Fertiger_Upload_als_Notiz_Anhang_statt_Formular()
+    {
+        // Große Anhänge (DMS, Notiz, Archiv, Server-Ordner) kommen in Stücken: ?upload=ID statt eines Formulars
+        var c = _fx.As("anna");
+        var note = (await Json(await c.PostAsJsonAsync("/api/notes", new { }))).GetProperty("id").GetInt64();
+        var data = RandomNumberGenerator.GetBytes(9 * 1024 * 1024 + 99);
+        var id = await Start("anna", "Plan.pdf", data.Length, "application/pdf");
+        const int chunk = 8 * 1024 * 1024;
+        // Noch nicht fertig: abgelehnt, Sitzung bleibt
+        Assert.False((await c.PostAsync($"/api/notes/{note}/attachments?upload={id}", null)).IsSuccessStatusCode);
+        await Json(await Put("anna", id, 0, data, 0, chunk));
+        await Json(await Put("anna", id, chunk, data, chunk, data.Length - chunk));
+        // Fremde Sitzung: gibt es nicht
+        var other = (await Json(await _fx.As("ben").PostAsJsonAsync("/api/notes", new { }))).GetProperty("id").GetInt64();
+        Assert.False((await _fx.As("ben").PostAsync($"/api/notes/{other}/attachments?upload={id}", null)).IsSuccessStatusCode);
+
+        Assert.Equal(System.Net.HttpStatusCode.OK, (await c.PostAsync($"/api/notes/{note}/attachments?upload={id}", null)).StatusCode);
+        var a = (await Json(await c.GetAsync($"/api/notes/{note}"))).GetProperty("attachments")[0];
+        Assert.Equal("Plan.pdf", a.GetProperty("name").GetString());
+        Assert.Equal(data.Length, a.GetProperty("size").GetInt64());
+        Assert.Equal(data, await c.GetByteArrayAsync($"/api/notes/blob/{a.GetProperty("blob").GetString()}"));
+        // Verbraucht: die Sitzung ist weg
+        Assert.Equal(System.Net.HttpStatusCode.NotFound, (await c.GetAsync($"/api/files/uploads/{id}")).StatusCode);
+    }
+
+    [Fact]
     public async Task Abbrechen_und_zu_grosses_Teil()
     {
         var data = RandomNumberGenerator.GetBytes(1000);

@@ -62,7 +62,11 @@ public static partial class ChatApi
         if (dir == null || !dir.IsDir) throw new KeyNotFoundException("Nicht mehr verfügbar.");
         var sub = FileStore.Normalize(rel ?? "");
         var full = sub.Length == 0 ? dir.Path : dir.Path.Length == 0 ? sub : dir.Path + "/" + sub;
-        // Systemordner (notizi, reservierter Ordner, Tresor) gehen nie mit, auch wenn ein Elternordner verschickt wurde
+        // [feature:journal]
+        // Systemordner (notizi, Tagebuch, Tresor) gehen nie mit, auch wenn ein Elternordner verschickt wurde
+        // [feature:journal:else]
+        // // Systemordner (notizi, reservierter Ordner, Tresor) gehen nie mit, auch wenn ein Elternordner verschickt wurde
+        // [/feature:journal]
         if (FileStore.IsSystem(owner.Db, full)) throw new KeyNotFoundException("Nicht mehr verfügbar.");
         return (owner, dir, full);
     }

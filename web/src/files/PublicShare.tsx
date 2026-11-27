@@ -76,7 +76,8 @@ export default function PublicShare({ token }: { token: string }) {
   const load = useCallback(async (p: string) => {
     const r = await fetch(`${base}?` + q({ path: p }), { credentials: 'same-origin' })
     const d = await r.json().catch(() => ({}))
-    if (r.status === 401 && d.needsPassword) { setState('password'); setInfo(i => i ?? ({ name: d.name } as Info)); return }
+    // Vor dem Passwort kennt die Seite nichts vom Inhalt - auch keinen Namen
+    if (r.status === 401 && d.needsPassword) { setState('password'); setInfo(null); return }
     if (!r.ok) { setError(d.error || `${r.status}`); setState('error'); return }
     setInfo(d); setState('ok')
   }, [base])
@@ -162,7 +163,7 @@ export default function PublicShare({ token }: { token: string }) {
       <div className={s.body}>
         <form className={mergeClasses(s.card, s.center)} onSubmit={unlock}>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}><LockClosed20Regular /><Title3>{t('Passwort erforderlich')}</Title3></div>
-          <Text>{t('„{name}“ ist mit einem Passwort geschützt.', { name: info?.name ?? '' })}</Text>
+          <Text>{t('Dieser Link ist mit einem Passwort geschützt.')}</Text>
           <Field label={t('Passwort')} validationMessage={pwError || undefined}>
             <Input type="password" value={pw} onChange={(_, d) => setPw(d.value)} autoFocus autoComplete="current-password" />
           </Field>

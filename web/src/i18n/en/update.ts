@@ -57,6 +57,7 @@ export const update: Record<string, string> = {
   'Keine Sicherungen vorhanden.': 'No backups.',
   'Sicherung': 'Backup',
   'Sicherung ansehen': 'View backup',
+  'Sicherung löschen': 'Delete backup',
   'Sicherung {name}': 'Backup {name}',
   'Ordner: {path}': 'Folder: {path}',
   'Angelegt mit Version {v} am {date}, {size}.': 'Created with version {v} on {date}, {size}.',

@@ -19,10 +19,27 @@ export interface AliasState {
   domains: { domain: string; folder: string | null }[]
   /** Adressen der Domain mit Post, die nicht in der Liste stehen - zum Übernehmen */
   unknown: { address: string; count: number; last: string }[]
+  // [feature:catchalldomains]
+  /** Je Domain: Postfach, annehmen (all/known), Posteingang, Antworten von (null: Alias) - nur mit Kennung */
+  sites?: AliasSite[] | null
+  // [/feature:catchalldomains]
+}
+
+/** Eine Domain der Catchall-Aliase mit ihren Einstellungen (Mail/CatchallDomains.cs, Site). Ohne Kennung aus der früheren Form. */
+export interface AliasSite { domain: string; account: string | null; accept: 'all' | 'known'; inbox: boolean; replyFrom: string | null; folder: string | null }
+
+/** Die Domains mit Postfach - mit Kennung catchalldomains je Domain, sonst alle im einen Postfach. */
+export function siteList(st: AliasState): AliasSite[] {
+  // [feature:catchalldomains]
+  if (st.sites) return st.sites
+  // [/feature:catchalldomains]
+  return st.domains.map(d => ({ domain: d.domain, account: st.config.account, accept: st.config.unknown === 'junk' ? 'known' : 'all', inbox: false, replyFrom: null, folder: d.folder }))
 }
 
 /** Neuer Catchall-Alias: Namen selbst wählen oder zufällig, Notiz „wofür“, danach in die Zwischenablage. */
-export function NewAliasDialog({ onClose, onCreated }: { onClose: () => void; onCreated?: (a: AliasItem) => void }) {
+export function NewAliasDialog({ onClose, onCreated, preset }: { onClose: () => void; onCreated?: (a: AliasItem) => void
+  /** Vorgewählte Domain (Seite je Domain) */
+  preset?: string }) {
   const { notify, fail } = useApp()
   const [config, setConfig] = useState<AliasConfig | null>(null)
   const [domain, setDomain] = useState('')
@@ -34,7 +51,7 @@ export function NewAliasDialog({ onClose, onCreated }: { onClose: () => void; on
   useEffect(() => {
     api.get<AliasState>('/api/mail/aliases').then(st => {
       setConfig(st.config)
-      setDomain(st.config.domains[0] ?? '')
+      setDomain(preset && st.config.domains.includes(preset) ? preset : st.config.domains[0] ?? '')
       if (st.config.domains.length) shuffle()
     }).catch(fail)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps

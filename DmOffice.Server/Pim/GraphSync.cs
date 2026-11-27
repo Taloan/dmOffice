@@ -258,7 +258,7 @@ public sealed class GraphEngine
         {
             var ics = GraphConvert.EventToIcs(master, [], [], null);
             var cal = Ical.Net.Calendar.Load(ics);
-            foreach (var occ in cal.GetOccurrences(from, to))
+            foreach (var occ in SeriesLimit.Occurrences(cal, from, to) ?? [])
             {
                 var s = occ.Period.StartTime;
                 var expected = allDay ? s.Value.Date : s.AsUtc;
@@ -490,13 +490,13 @@ public sealed class GraphSync : BackgroundService
         try { await Task.Delay(TimeSpan.FromSeconds(30), stop); } catch (OperationCanceledException) { return; }
         while (!stop.IsCancellationRequested)
         {
-            foreach (var space in _spaces.All())
+            foreach (var space in _spaces.Working())
             {
                 List<MailAccount> accounts;
                 try
                 {
                     // Mit Graph-Token immer: die Mail-Kategorien gehen darueber (Mail/GraphCategories.cs)
-                    accounts = space.Settings.MailAccounts.Where(GraphCategories.Uses).ToList();
+                    accounts = space.Settings.ActiveMailAccounts().Where(GraphCategories.Uses).ToList();
                 }
                 catch { continue; }
                 foreach (var account in accounts)

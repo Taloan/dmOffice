@@ -63,9 +63,33 @@ public static class ContactModel
     {
         var result = new List<ContactDto>();
         foreach (var book in books)
-            foreach (var obj in PimStore.Objects(space.Db, book))
-                if (Read(obj, withPhoto) is { } c) result.Add(c);
+            result.AddRange(withPhoto ? Parse(space.Db, book, true) : Book(space.Db, book));
         return result.OrderBy(c => c.DisplayName, StringComparer.CurrentCultureIgnoreCase).ToList();
+    }
+
+    private static List<ContactDto> Parse(UserDb db, long book, bool withPhoto)
+    {
+        var list = new List<ContactDto>();
+        foreach (var obj in PimStore.Objects(db, book))
+            if (Read(obj, withPhoto) is { } c) list.Add(c);
+        return list;
+    }
+
+    /// <summary>Gelesene Kontakte je Adressbuch (ohne Foto), solange sich das Buch nicht geändert hat: Liste, Übersicht und
+    /// Pukki lasen sonst bei jedem Aufruf alle vCards neu. Geändert = anderer Sync-Token (jedes Speichern und Löschen über
+    /// PimStore zählt ihn hoch), andere Anzahl oder höchste Kennung.</summary>
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<UserDb, System.Collections.Concurrent.ConcurrentDictionary<long, (string Key, List<ContactDto> List)>> Parsed = new();
+
+    private static IEnumerable<ContactDto> Book(UserDb db, long book)
+    {
+        var key = db.Query("SELECT c.synctoken, (SELECT COUNT(*) FROM objects WHERE collection=c.id), (SELECT COALESCE(MAX(id), 0) FROM objects WHERE collection=c.id) FROM collections c WHERE c.id=$c",
+            r => r.GetInt64(0) + "/" + r.GetInt64(1) + "/" + r.GetInt64(2), ("$c", book)).FirstOrDefault();
+        if (key == null) return [];
+        var cache = Parsed.GetValue(db, _ => new());
+        if (cache.TryGetValue(book, out var hit) && hit.Key == key) return hit.List;
+        var list = Parse(db, book, false);
+        cache[book] = (key, list);
+        return list;
     }
 
     /// <summary>Ein Kontakt als .vcf-Datei (Rechtsklick "Exportieren"): die gespeicherte vCard unveraendert, Dateiname aus dem Namen.</summary>
@@ -212,10 +236,21 @@ public static class ContactModel
         return $"data:image/{(type == "jpg" ? "jpeg" : type)};base64,{v}";
     }
 
+    public const string EmptyContact = "Bitte mindestens einen Namen, eine E-Mail-Adresse oder eine Telefonnummer eintragen.";
+
+    /// <summary>Kein Name, keine Firma, keine E-Mail-Adresse, keine Telefonnummer: daraus würde ein leerer Eintrag „Kontakt“.</summary>
+    public static bool IsEmpty(ContactDto c) =>
+        new[] { c.DisplayName, c.Prefix, c.Given, c.Additional, c.Family, c.Suffix, c.Nickname, c.Org }.All(string.IsNullOrWhiteSpace)
+        && c.Emails.All(e => string.IsNullOrWhiteSpace(e.Value)) && c.Phones.All(p => string.IsNullOrWhiteSpace(p.Value));
+
     public static string Save(UserSpace space, ContactDto input)
     {
         var db = space.Db;
         var coll = PimStore.Find(db, input.Book) ?? throw new KeyNotFoundException("Adressbuch nicht gefunden.");
+        // Nur das Verschieben eines vorhandenen Kontakts in ein anderes Adressbuch bleibt ohne Prüfung; das Formular schickt
+        // moveTo auch beim Neuanlegen mit (gewähltes Adressbuch)
+        var moving = input.MoveTo is long target && target != input.Book && !string.IsNullOrEmpty(input.Uri);
+        if (!moving && IsEmpty(input)) throw new ArgumentException(EmptyContact);
         Component card;
         string uri;
         string? etag = null;

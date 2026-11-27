@@ -1,9 +1,10 @@
-// Chat: Typen und Abgleich mit dem Server. Ein Long-Poll (/api/chat/wait) wartet auf Neues, dann holt
+// Chat: Typen und Abgleich mit dem Server. Der gemeinsame Long-Poll (wait.ts) meldet Neues, dann holt
 // /api/chat/changes alles seit dem letzten Stand. Laeuft, solange der Chat-Bereich offen ist.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, q } from '../api'
 import { lang } from '../i18n'
 import { finishToChat, uploadChunked } from '../files/chunked'
+import { onChatWait } from './wait'
 
 /** mode: show (Zeigen) | send (Senden); state: ok | expired (abgelaufen) | revoked (zurueckgezogen); forwarded: weitergeleitet */
 export interface ChatRef {
@@ -129,6 +130,14 @@ export function useChat() {
 
   useEffect(() => {
     let alive = true
+    let off: (() => void) | undefined
+    // Abgleich nie doppelt: kommt währenddessen Neues, läuft er danach noch einmal
+    let pulling = false, again = false
+    const kick = async () => {
+      if (pulling) { again = true; return }
+      pulling = true
+      try { do { again = false; await pull() } while (again && alive) } catch { /* nächster Anstoß holt es */ } finally { pulling = false }
+    }
     const run = async () => {
       // Erst den Stand, dann die Liste - was dazwischen passiert, holt der erste Abgleich
       try {
@@ -136,18 +145,16 @@ export function useChat() {
         const list = await api.get<ChatRoom[]>('/api/chat/rooms?' + q({ lang }))
         if (alive) setRooms(list)
       } catch { if (alive) setRooms([]) }
-      while (alive) {
-        try {
-          const r = await api.get<{ seq: number; busy?: number; busyRooms?: number[] }>('/api/chat/wait?' + q({ since: seq.current, timeout: 25, busy: busyVersion.current }))
-          if (alive && r.busy != null && r.busy !== busyVersion.current) { busyVersion.current = r.busy; setBusy(r.busyRooms ?? []) }
-          if (alive && r.seq > seq.current) await pull()
-        } catch {
-          await new Promise(res => setTimeout(res, 5000))
-        }
-      }
+      if (!alive) return
+      // Gemeinsamer Long-Poll aller Tabs (wait.ts)
+      off = onChatWait(r => {
+        if (!alive) return
+        if (r.busy != null && r.busy !== busyVersion.current) { busyVersion.current = r.busy; setBusy(r.busyRooms ?? []) }
+        if (r.seq > seq.current) kick()
+      })
     }
     run()
-    return () => { alive = false }
+    return () => { alive = false; off?.() }
   }, [pull])
 
   /** Verlauf einer Unterhaltung laden (beim Oeffnen). */
@@ -186,19 +193,29 @@ export function useChat() {
 }
 
 /** Hinweis im Verlauf (vom Server als JSON) in Worten. */
-export function systemText(text: string | null, sender: string, names: (id: string) => string, t: (s: string, v?: Record<string, string | number>) => string): string {
+export function systemText(text: string | null, sender: string, names: (id: string) => string, t: (s: string, v?: Record<string, string | number>) => string, me?: string): string {
   let p: { ev?: string; title?: string; users?: string[]; kind?: string } = {}
   try { p = JSON.parse(text ?? '{}') } catch { /* alter Text */ }
-  const by = names(sender)
-  const who = (p.users ?? []).map(names).join(', ')
+  // Namen und Titel isoliert (U+2068 … U+2069): ein Richtungszeichen darin dreht sonst den Rest des Satzes mit um
+  const iso = (x: string) => '\u2068' + x + '\u2069'
+  const by = iso(names(sender))
+  const who = (p.users ?? []).map(u => iso(names(u))).join(', ')
+  if (p.title != null) p.title = iso(p.title)
+  // Eigene Aktion: „Du hast …“ (names() liefert für einen selbst „Du“)
+  const self = me != null && sender === me
+  const left = me != null && p.users?.length === 1 && p.users[0] === me
   switch (p.ev) {
-    case 'created': return t('{by} hat die Gruppe „{title}“ erstellt', { by, title: p.title ?? '' })
-    case 'renamed': return t('{by} hat die Gruppe in „{title}“ umbenannt', { by, title: p.title ?? '' })
-    case 'added': return t('{by} hat {who} hinzugefügt', { by, who })
-    case 'removed': return t('{by} hat {who} entfernt', { by, who })
-    case 'left': return t('{who} hat die Gruppe verlassen', { who })
+    case 'created': return self ? t('Du hast die Gruppe „{title}“ erstellt', { title: p.title ?? '' }) : t('{by} hat die Gruppe „{title}“ erstellt', { by, title: p.title ?? '' })
+    case 'renamed': return self ? t('Du hast die Gruppe in „{title}“ umbenannt', { title: p.title ?? '' }) : t('{by} hat die Gruppe in „{title}“ umbenannt', { by, title: p.title ?? '' })
+    case 'added': return self ? t('Du hast {who} hinzugefügt', { who }) : t('{by} hat {who} hinzugefügt', { by, who })
+    case 'removed': return self ? t('Du hast {who} entfernt', { who }) : t('{by} hat {who} entfernt', { by, who })
+    case 'left': return left ? t('Du hast die Gruppe verlassen') : t('{who} hat die Gruppe verlassen', { who })
     // Gruppenraum eingerichtet (Stufe 4)
-    case 'space': return t('{by} hat für die Gruppe einen Raum eingerichtet: {kind} „{title}“', { by, title: p.title ?? '', kind: p.kind === 'calendar' ? t('Kalender') : p.kind === 'list' ? t('Liste') : p.kind === 'folder' ? t('Ordner') : t('Notizordner') })
+    case 'space': {
+      const kind = p.kind === 'calendar' ? t('Kalender') : p.kind === 'list' ? t('Liste') : p.kind === 'folder' ? t('Ordner') : t('Notizordner')
+      return self ? t('Du hast für die Gruppe einen Raum eingerichtet: {kind} „{title}“', { title: p.title ?? '', kind })
+        : t('{by} hat für die Gruppe einen Raum eingerichtet: {kind} „{title}“', { by, title: p.title ?? '', kind })
+    }
     default: return text ?? ''
   }
 }
@@ -220,13 +237,14 @@ export const chatRefItem = (m: ChatMessage, r: ChatRef, i: number) =>
 
 export const refBlobUrl = (message: number, i: number, name: string) => `/api/chat/messages/${message}/refs/${i}/blob/${encodeURIComponent(name)}`
 
-/** Datei roh hochladen (nicht durch den Umschlag - wie das Hochladen in der Dateiablage). */
-export async function uploadToRoom(room: number, file: File, text?: string, onProgress?: (done: number, total: number) => void, mode?: ChatMode): Promise<ChatMessage> {
-  // Version 2: in Stuecken (fortsetzbar, ohne Groessengrenze), danach als Anhang verschicken
-  const id = await uploadChunked(file, file.name || 'Bild.png', loaded => onProgress?.(loaded, file.size))
+/** Datei in Teilen hochladen (jedes Teil im Umschlag wie das Hochladen in der Dateiablage), danach als Anhang verschicken. */
+export async function uploadToRoom(room: number, file: File, text?: string, onProgress?: (done: number, total: number) => void, mode?: ChatMode,
+  signal?: AbortSignal, replyTo?: number): Promise<ChatMessage> {
+  const id = await uploadChunked(file, file.name || 'Bild.png', loaded => onProgress?.(loaded, file.size), undefined, undefined, signal)
   const params: Record<string, string> = {}
   if (text) params.text = text
   if (mode) params.mode = mode
+  if (replyTo) params.replyTo = String(replyTo)
   return finishToChat(id, room, params)
 }
 

@@ -25,8 +25,9 @@ public class Korrekturen21ApiTests : IClassFixture<FilesServerFixture>
     private static StringContent Body(string text) => new(text, Encoding.UTF8, "application/json");
 
     [Fact]
-    public async Task Release_Liste_gilt_auch_ohne_Anmeldung()
+    public async Task Release_Liste_gilt_fuer_Notfall_und_auch_ohne_Anmeldung()
     {
+        Assert.Equal(Features.Emergency, Features.OfPath("/api/auth/emergency/abc"));
         Assert.Equal(Features.Audio, Features.OfPath("/api/audio/tracks"));
         Assert.Null(Features.OfPath("/api/auth/login"));
 
@@ -40,13 +41,16 @@ public class Korrekturen21ApiTests : IClassFixture<FilesServerFixture>
             // Freigeschaltet: ohne Anmeldung 401
             Assert.Equal(HttpStatusCode.Unauthorized, (await _fx.Client(signedIn: false).GetAsync("/api/audio/tracks")).StatusCode);
             // Nicht freigeschaltet: 404, mit und ohne Anmeldung
-            Features.Set([Features.Audio]);
+            Features.Set([Features.Audio, Features.Emergency]);
             Assert.Equal(HttpStatusCode.NotFound, (await _fx.Client(signedIn: false).GetAsync("/api/audio/tracks")).StatusCode);
+            Assert.Equal(HttpStatusCode.NotFound, (await _fx.Client(signedIn: false).PostAsync("/api/auth/emergency/1", null)).StatusCode);
             var c = await SignedIn();
+            Assert.Equal(HttpStatusCode.NotFound, (await c.PostAsync("/api/auth/emergency/1", null)).StatusCode);
             Assert.Equal(HttpStatusCode.NotFound, (await c.GetAsync("/api/audio/tracks")).StatusCode);
         }
         finally { Features.Set(before); config.Update(s => s.ModulesOff = wasOff); }
     }
+
 
     [Fact]
     public async Task Einstellungen_der_Oberflaeche_nur_als_Objekt()

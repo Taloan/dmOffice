@@ -3,15 +3,19 @@ import {
   MenuPopover, Option, Text, Tooltip, makeStyles, mergeClasses, tokens,
 } from '@fluentui/react-components'
 import {
-  Add20Regular, ArrowMove20Regular, Delete20Regular, DocumentSearch20Regular, Edit20Regular, MoreHorizontal20Regular, Rename20Regular, Search20Regular, Sparkle20Regular,
+  Add20Regular, ArrowMove20Regular, Delete20Regular, Dismiss20Regular, DocumentSearch20Regular, Edit20Regular, Lightbulb20Regular, SelectAllOn20Regular, Merge20Regular, MoreHorizontal20Regular, Rename20Regular, Search20Regular, Sparkle20Regular,
 } from '@fluentui/react-icons'
-import { useEffect, useState } from 'react'
-import { api } from '../api'
+import { useEffect, useState, useRef } from 'react'
+import { api, featureOn, ApiError } from '../api'
 import { useApp } from '../App'
 import { lang, t } from '../i18n'
-import { askConfirm, askText } from '../shell/context'
-import { ColDef, useGridColumns } from '../shell/GridColumns'
+import { askConfirm, askText, isTyping, useMultiSelect } from '../shell/context'
+import { EntrySelect } from './EntrySelect'
+import { ColDef, tableHeadLook, useGridColumns } from '../shell/GridColumns'
 import { useIsMobile } from '../shell/mobile'
+import { FilterSelect } from '../shell/FilterSelect'
+import { RibbonActions, RibbonButton, RibbonDivider } from '../shell/Ribbon'
+import { dblOpen } from '../shell/rowOpen' // [feature:rowdblopen]
 import { Entry, Kind, kindLabel, Match, matchLabel, ordered } from './model'
 
 const useStyles = makeStyles({
@@ -21,7 +25,7 @@ const useStyles = makeStyles({
   row: { display: 'grid', gridTemplateColumns: 'minmax(160px, 2fr) minmax(110px, 1fr) 70px minmax(90px, 1fr) auto', alignItems: 'center', gap: '12px',
     padding: '4px 0', borderBottom: `1px solid ${tokens.colorNeutralStroke2}`,
     '@media (max-width: 767px)': { gridTemplateColumns: 'minmax(0, 1fr) auto' } },
-  head: { fontSize: '12px', color: tokens.colorNeutralForeground3, minHeight: '30px' },
+  head: { ...tableHeadLook, minHeight: '32px' },
   name: { display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'pointer',
     color: tokens.colorBrandForeground1, ':hover': { textDecoration: 'underline' } },
   chip: { display: 'inline-block', width: '12px', height: '12px', borderRadius: '3px', flexShrink: 0 },
@@ -30,7 +34,12 @@ const useStyles = makeStyles({
   cell: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   branch: { color: tokens.colorNeutralForeground4, flexShrink: 0 },
   dropOn: { outline: `2px solid ${tokens.colorBrandStroke1}`, outlineOffset: '-2px', borderRadius: tokens.borderRadiusMedium },
+  // Markiert (dmskeys): wie in den anderen Listen
+  sel: { backgroundColor: tokens.colorNeutralBackground1Selected },
 })
+
+/** Antwort beim Zusammenführen (dmsmerge): Dokumente im offenen Bereich und im Tresor (null: Tresor zu), Tresor später, Kennung für Rückgängig */
+interface MergeResult { docs: number; tresorDocs: number | null; tresorLater: boolean; change: string }
 
 /** Datentyp beim Ziehen eines Eintrags (nicht zu verwechseln mit Dateien bzw. Dokumenten) */
 const DRAG = 'application/x-dms-entry'
@@ -53,13 +62,56 @@ type MenuAt = { x: number; y: number; kind: Kind; entry: Entry | null; extra?: {
  * auf einen anderen (= darunter einordnen). ui gehört einmal in die Seite.
  */
 export function useEntryActions(entries: Entry[], onChanged: () => void, ai?: (kind: Kind, entry: Entry | null) => void) {
-  const { fail, notify } = useApp()
+  const { fail, notify, undoable } = useApp()
   const [menu, setMenu] = useState<MenuAt | null>(null)
   const [edit, setEdit] = useState<{ kind: Kind; entry: Entry | null; parent: string | null } | null>(null)
   const [moving, setMoving] = useState<Entry | null>(null)
   const [over, setOver] = useState<string | null>(null)
 
-  const put = (e: Entry, body: Record<string, unknown>) => api.put(`/api/dms/lists/${e.id}`, body).then(onChanged).catch(fail)
+  /**
+   * Zusammenführen (dmsmerge): Rückfrage mit der Anzahl betroffener Dokumente, danach Rückgängig über die Versionen der Dokumente.
+   * intro: Satz vor der Rückfrage (Umbenennen auf einen vorhandenen Namen). true: zusammengeführt.
+   */
+  const merge = async (sources: Entry[], target: Entry, intro?: string): Promise<boolean> => {
+    const src = sources.filter(e => e.id !== target.id)
+    if (!src.length) return false
+    try {
+      const body = { target: target.id, sources: src.map(e => e.id) }
+      const dry = await api.post<MergeResult>('/api/dms/lists/merge', { ...body, dryRun: true })
+      const n = dry.docs + (dry.tresorDocs ?? 0)
+      const text = [
+        intro,
+        src.length === 1 ? t('„{source}“ wird mit „{target}“ zusammengeführt.', { source: src[0].name, target: target.name })
+          : t('{n} Einträge werden mit „{target}“ zusammengeführt.', { n: src.length, target: target.name }),
+        n === 0 ? t('Kein Dokument ist betroffen.') : n === 1 ? t('1 Dokument bekommt „{target}“.', { target: target.name })
+          : t('{n} Dokumente bekommen „{target}“.', { n, target: target.name }),
+        src.length === 1 ? t('Das Gelernte geht auf „{target}“ über, „{source}“ wird gelöscht.', { source: src[0].name, target: target.name })
+          : t('Das Gelernte geht auf „{target}“ über, die übrigen Einträge werden gelöscht.', { target: target.name }),
+        dry.tresorLater ? t('Im Tresor werden die Dokumente beim nächsten Öffnen umgestellt.') : '',
+      ].filter(Boolean).join(' ')
+      if (!await askConfirm(t('{kind} zusammenführen', { kind: kindLabel(target.kind) }), text, t('Zusammenführen'))) return false
+      const r = await api.post<MergeResult>('/api/dms/lists/merge', body)
+      onChanged()
+      const done = t('Mit „{target}“ zusammengeführt', { target: target.name })
+      // Rückgängig: die Dokumente bekommen ihre Einträge zurück, gelöschte Einträge entstehen dabei wieder
+      if (featureOn('dmshistory') && (r.docs || r.tresorDocs)) undoable(done, async () => {
+        await api.post('/api/dms/history/undo', { change: r.change })
+        if (r.tresorDocs) await api.post('/api/dms/history/undo?area=tresor', { change: r.change })
+        onChanged()
+      })
+      else notify(done)
+      return true
+    } catch (x) { fail(x); return false }
+  }
+  /** Name schon vergeben (Antwort 409 mit dem vorhandenen Eintrag): Zusammenführen anbieten statt abzulehnen. true: behandelt. */
+  const offerMerge = async (x: unknown, e: Entry) => {
+    const existing = featureOn('dmsmerge') && x instanceof ApiError && x.status === 409 ? entries.find(y => y.id === x.data?.existing) : undefined
+    if (!existing) return false
+    await merge([e], existing, t('„{name}“ gibt es hier schon.', { name: existing.name }))
+    return true
+  }
+  const put = (e: Entry, body: Record<string, unknown>) => api.put(`/api/dms/lists/${e.id}`, body).then(onChanged)
+    .catch(async x => { if (!await offerMerge(x, e)) fail(x) })
   const rename = async (e: Entry) => {
     const n = (await askText(t('Umbenennen'), e.name))?.trim()
     if (n && n !== e.name) put(e, { name: n })
@@ -142,7 +194,7 @@ export function useEntryActions(entries: Entry[], onChanged: () => void, ai?: (k
       onClose={saved => { setEdit(null); if (saved) onChanged() }} />}
     {moving && <MoveEntry entry={moving} entries={entries} onClose={parent => { const e = moving; setMoving(null); if (parent !== undefined) moveTo(e, parent) }} />}
   </>
-  return { removeMany, openMenu, newEntry, editEntry, remove, dnd, over, ui }
+  return { removeMany, openMenu, newEntry, editEntry, remove, rename, merge, dnd, over, ui }
 }
 
 /** „Verschieben unter …“: übergeordneten Eintrag wählen (nicht sich selbst oder darunter). undefined: abgebrochen. */
@@ -157,11 +209,15 @@ function MoveEntry({ entry, entries, onClose }: { entry: Entry; entries: Entry[]
           <DialogTitle>{t('„{name}“ verschieben', { name: entry.name })}</DialogTitle>
           <DialogContent>
             <Field label={t('Übergeordneter Eintrag')}>
+              {featureOn('dmstreepick') ? <EntrySelect entries={entries} kind={entry.kind} value={parent} exclude={own} none={t('Keiner (oberste Ebene)')}
+                placeholder={t('Keiner (oberste Ebene)')} onPick={id => setParent(id || null)} /> :
+              featureOn('filterpick') ? <FilterSelect value={parent ?? ''} none={t('Keiner (oberste Ebene)')} onChange={id => setParent(id || null)}
+                items={options.map(p => ({ id: p.entry.id, label: p.entry.name, depth: p.depth }))} /> :
               <Dropdown value={parent ? options.find(p => p.entry.id === parent)?.entry.name ?? '' : t('Keiner (oberste Ebene)')} selectedOptions={[parent ?? '']}
                 onOptionSelect={(_, d) => setParent(d.optionValue || null)}>
                 <Option value="">{t('Keiner (oberste Ebene)')}</Option>
                 {options.map(p => <Option key={p.entry.id} value={p.entry.id} text={p.entry.name}><span style={{ paddingLeft: p.depth * 12 }}>{p.entry.name}</span></Option>)}
-              </Dropdown>
+              </Dropdown>}
             </Field>
           </DialogContent>
           <DialogActions>
@@ -218,8 +274,13 @@ export function ListsView({ kind, entries, onChanged, onShow }: {
   const { fail } = useApp()
   const mobile = useIsMobile()
   const [filter, setFilter] = useState('')
-  const [picked, setPicked] = useState<Set<string>>(new Set())
+  const [pickedOld, setPickedOld] = useState<Set<string>>(new Set())
   const act = useEntryActions(entries, onChanged)
+  // Tastatur und Mehrfachauswahl wie in den anderen Listen (dmskeys): Klick, Strg+Klick, Umschalt+Klick, Pfeile; Zusammenführen (dmsmerge)
+  const keys = featureOn('dmskeys')
+  const mergeOn = featureOn('dmsmerge')
+  const [merging, setMerging] = useState<Entry[] | null>(null)
+  const filterInput = useRef<HTMLInputElement>(null)
   // Spalten wie im Explorer; Sortieren ordnet die Einträge jeder Ebene, der Baum bleibt
   const roles = kind === 'role'
   const grid = useGridColumns(roles ? 'dms-roles' : 'dms-lists', roles ? ROLE_COLS : LIST_COLS, roles ? ROLE_DEFAULT : LIST_DEFAULT, '', 'minmax(max-content, 1fr)')
@@ -235,24 +296,56 @@ export function ListsView({ kind, entries, onChanged, onShow }: {
   const shown = new Set<string>()
   for (const id of hits) for (let e = entries.find(x => x.id === id); e && !shown.has(e.id); e = entries.find(x => x.id === e!.parent)) shown.add(e.id)
   const rows = all.filter(r => shown.has(r.entry.id))
+  const ms = useMultiSelect<string>(rows.map(r => r.entry.id))
+  const picked = keys ? new Set(ms.selected) : pickedOld
+  const setPicked = (p: Set<string>) => keys ? ms.setSelected(rows.map(r => r.entry.id).filter(id => p.has(id))) : setPickedOld(p)
   const suggestion = async () => {
     try { await api.post('/api/dms/lists/suggestion?lang=' + lang); onChanged() } catch (x) { fail(x) }
   }
   const pickedList = rows.map(r => r.entry).filter(e => picked.has(e.id))
   const empty = rows.map(r => r.entry).filter(e => e.count === 0)
-  const pick = (id: string, on: boolean) => setPicked(p => { const x = new Set(p); if (on) x.add(id); else x.delete(id); return x })
+  const pick = (id: string, on: boolean) => keys ? ms.setSelected(sel => on ? (sel.includes(id) ? sel : [...sel, id]) : sel.filter(x => x !== id))
+    : setPickedOld(p => { const x = new Set(p); if (on) x.add(id); else x.delete(id); return x })
+  // Tasten: Pfeile (mit Umschalt erweitern), Strg+A, Esc, Entf (mit Rückfrage), Enter zeigt die Dokumente, F2 benennt um, Strg+F filtert
+  const onKey = useRef<(e: KeyboardEvent) => void>(() => {})
+  onKey.current = e => {
+    if (!location.hash.startsWith('#/dms') || isTyping(e) || document.querySelector('[role=dialog],[role=alertdialog]')) return
+    const sel = pickedList
+    const k = e.key
+    if (k === 'ArrowDown' || k === 'ArrowUp') { e.preventDefault(); ms.step(k === 'ArrowDown' ? 1 : -1, e.shiftKey) }
+    else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'a') { e.preventDefault(); ms.all() }
+    else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'f') { e.preventDefault(); filterInput.current?.focus(); filterInput.current?.select() }
+    else if (k === 'Escape' && sel.length) { e.preventDefault(); ms.clear() }
+    else if (k === 'Delete' && sel.length) { e.preventDefault(); act.removeMany(sel).then(ok => { if (ok) ms.clear() }) }
+    else if (k === 'Enter' && sel.length === 1) { e.preventDefault(); onShow(sel[0]) }
+    else if (k === 'F2' && sel.length === 1) { e.preventDefault(); act.rename(sel[0]) }
+  }
+  useEffect(() => {
+    if (!keys) return
+    const on = (e: KeyboardEvent) => onKey.current(e)
+    document.addEventListener('keydown', on)
+    return () => document.removeEventListener('keydown', on)
+  }, [keys])
+  // Mit den Pfeilen erreichte Zeile sichtbar halten
+  const lastPicked = ms.selected[ms.selected.length - 1]
+  useEffect(() => {
+    if (keys && lastPicked) document.querySelector(`[data-dms-entry="${CSS.escape(lastPicked)}"]`)?.scrollIntoView({ block: 'nearest' })
+  }, [keys, lastPicked])
   return (
     <div className={s.root}>
       <div className={s.bar}>
-        <Input contentBefore={<Search20Regular />} placeholder={t('Filtern nach Name')} value={filter} onChange={(_, d) => setFilter(d.value)} style={{ minWidth: 240 }} />
-        <Button icon={<Add20Regular />} onClick={() => act.newEntry(kind)}>{t('Neuer Eintrag …')}</Button>
-        {kind === 'doctype' && !entries.some(e => e.kind === 'doctype') && <Button onClick={suggestion}>{t('Vorschlag übernehmen')}</Button>}
-        {empty.length > 0 && <Button onClick={() => setPicked(new Set(empty.map(e => e.id)))}>{t('Leere auswählen ({n})', { n: empty.length })}</Button>}
-        {pickedList.length > 0 && <>
-          <Button icon={<Delete20Regular />} onClick={async () => { if (await act.removeMany(pickedList)) setPicked(new Set()) }}>{t('{n} Einträge löschen', { n: pickedList.length })}</Button>
-          <Button appearance="subtle" onClick={() => setPicked(new Set())}>{t('Auswahl aufheben')}</Button>
-        </>}
+        <Input input={{ ref: filterInput }} contentBefore={<Search20Regular />} placeholder={t('Filtern nach Name')} value={filter} onChange={(_, d) => setFilter(d.value)} style={{ minWidth: 240 }} />
       </div>
+      <RibbonActions>
+        <RibbonButton primary icon={<Add20Regular />} label={t('Neuer Eintrag …')} onClick={() => act.newEntry(kind)} />
+        {kind === 'doctype' && !entries.some(e => e.kind === 'doctype') && <RibbonButton icon={<Lightbulb20Regular />} label={t('Vorschlag übernehmen')} onClick={suggestion} />}
+        <RibbonDivider />
+        <RibbonButton icon={<SelectAllOn20Regular />} label={t('Leere auswählen ({n})', { n: empty.length })} disabled={!empty.length} onClick={() => setPicked(new Set(empty.map(e => e.id)))} />
+        {mergeOn && <RibbonButton icon={<Merge20Regular />} label={t('Zusammenführen …')} disabled={pickedList.length < 2} onClick={() => setMerging(pickedList)} />}
+        <RibbonButton icon={<Delete20Regular />} label={pickedList.length ? t('{n} Einträge löschen', { n: pickedList.length }) : t('Löschen')} disabled={!pickedList.length}
+          onClick={async () => { if (await act.removeMany(pickedList)) setPicked(new Set()) }} />
+        <RibbonButton icon={<Dismiss20Regular />} label={t('Auswahl aufheben')} disabled={!pickedList.length} onClick={() => setPicked(new Set())} />
+      </RibbonActions>
       <Text size={200} className={s.muted}>{t('Untereinträge über Rechtsklick bzw. „…“ an einem Eintrag oder durch Ziehen eines Eintrags auf einen anderen.')}</Text>
       <div className={s.table} onContextMenu={e => act.openMenu(e, kind, null)}>
         <div className={`${s.row} ${s.head}`} style={mobile ? undefined : { gridTemplateColumns: grid.template, minWidth: 'max-content' }}
@@ -261,12 +354,16 @@ export function ListsView({ kind, entries, onChanged, onShow }: {
         </div>
         {grid.columnMenu}
         {rows.map(({ entry: e, depth }) => (
-          <div key={e.id} className={mergeClasses(s.row, act.over === e.id && s.dropOn)} style={mobile ? undefined : { gridTemplateColumns: grid.template, minWidth: 'max-content' }}
-            onContextMenu={x => act.openMenu(x, kind, e)} {...act.dnd(e)}>
+          <div key={e.id} data-dms-entry={e.id} className={mergeClasses(s.row, act.over === e.id && s.dropOn, keys && picked.has(e.id) && s.sel)}
+            style={mobile ? undefined : { gridTemplateColumns: grid.template, minWidth: 'max-content' }}
+            onClick={keys ? x => ms.click(x, e.id) : undefined}
+            {...dblOpen(() => onShow(e))} // [feature:rowdblopen]
+            onContextMenu={x => { if (keys) ms.pick(e.id); act.openMenu(x, kind, e) }} {...act.dnd(e)}>
             {(mobile ? ['name'] : grid.cols.map(c => c.key)).map(k => {
               switch (k) {
                 case 'name': return (
-                  <span key={k} className={s.name} style={{ paddingLeft: depth * 20 }} onClick={() => onShow(e)} title={t('Dokumente zeigen')}>
+                  <span key={k} className={s.name} style={{ paddingLeft: depth * 20 }} title={t('Dokumente zeigen')}
+                    onClick={x => { if (keys && (x.ctrlKey || x.metaKey || x.shiftKey)) return; x.stopPropagation(); onShow(e) }}>
                     <span onClick={x => x.stopPropagation()} style={{ display: 'inline-flex' }}>
                       <Checkbox checked={picked.has(e.id)} onChange={(_, d) => pick(e.id, !!d.checked)} aria-label={t('{name} auswählen', { name: e.name })} />
                     </span>
@@ -282,7 +379,7 @@ export function ListsView({ kind, entries, onChanged, onShow }: {
                 default: return <span key={k} className={s.cell}>{e.parent ? entries.find(x => x.id === e.parent)?.name ?? '' : ''}</span>
               }
             })}
-            <span className={s.actions}>
+            <span className={s.actions} onClick={x => x.stopPropagation()}>
               <Tooltip content={t('Dokumente zeigen')} relationship="label"><Button appearance="subtle" size="small" icon={<DocumentSearch20Regular />} onClick={() => onShow(e)} /></Tooltip>
               <Tooltip content={t('Bearbeiten')} relationship="label"><Button appearance="subtle" size="small" icon={<Edit20Regular />} onClick={() => act.editEntry(e)} /></Tooltip>
               <Tooltip content={t('Weitere Aktionen')} relationship="label"><Button appearance="subtle" size="small" icon={<MoreHorizontal20Regular />} onClick={x => act.openMenu(x, kind, e)} /></Tooltip>
@@ -293,7 +390,37 @@ export function ListsView({ kind, entries, onChanged, onShow }: {
         <Text size={200} className={s.muted}>{t('Insgesamt {n}', { n: entries.filter(e => e.kind === kind).length })}</Text>
       </div>
       {act.ui}
+      {merging && <MergeDialog kind={kind} entries={entries} picked={merging} onClose={async target => {
+        const list = merging
+        setMerging(null)
+        if (target && await act.merge(list, target)) setPicked(new Set())
+      }} />}
     </div>
+  )
+}
+
+/** Zusammenführen (dmsmerge): Ziel wählen - vorgeschlagen ist der markierte Eintrag mit den meisten Dokumenten. null: abgebrochen. */
+function MergeDialog({ kind, entries, picked, onClose }: { kind: Kind; entries: Entry[]; picked: Entry[]; onClose: (target: Entry | null) => void }) {
+  const [target, setTarget] = useState<string | null>(() => [...picked].sort((a, b) => b.count - a.count)[0]?.id ?? null)
+  const chosen = entries.find(e => e.id === target) ?? null
+  return (
+    <Dialog open onOpenChange={(_, d) => { if (!d.open) onClose(null) }}>
+      <DialogSurface style={{ maxWidth: 480 }}>
+        <DialogBody>
+          <DialogTitle>{t('{kind} zusammenführen', { kind: kindLabel(kind) })}</DialogTitle>
+          <DialogContent style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <Text>{t('Die markierten Einträge gehen im Ziel auf. Ihre Dokumente bekommen das Ziel.')}</Text>
+            <Field label={t('Ziel')}>
+              <EntrySelect entries={entries} kind={kind} value={target} onPick={id => setTarget(id || null)} />
+            </Field>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => onClose(null)}>{t('Abbrechen')}</Button>
+            <Button appearance="primary" disabled={!chosen || picked.every(e => e.id === chosen.id)} onClick={() => onClose(chosen)}>{t('Weiter …')}</Button>
+          </DialogActions>
+        </DialogBody>
+      </DialogSurface>
+    </Dialog>
   )
 }
 
@@ -337,11 +464,15 @@ export function EditEntry({ kind, entries, entry, initialName, initialParent, on
             <Field label={t('Name')} required><Input autoFocus value={f.name} onChange={(_, d) => set({ name: d.value })} /></Field>
             {kind === 'role' && <Text size={200}>{t('Zu jeder Rolle gibt es im gesamten DMS genau ein geltendes Dokument, etwa das aktuelle Testament. Bekommt ein anderes Dokument die Rolle, bleibt das bisherige als frühere Version erhalten.')}</Text>}
             {kind !== 'role' && <Field label={t('Übergeordneter Eintrag')}>
+              {featureOn('dmstreepick') ? <EntrySelect entries={entries} kind={kind} value={f.parent} exclude={own} none={t('Keiner (oberste Ebene)')}
+                placeholder={t('Keiner (oberste Ebene)')} onPick={id => set({ parent: id || null })} /> :
+              featureOn('filterpick') ? <FilterSelect value={f.parent ?? ''} none={t('Keiner (oberste Ebene)')} onChange={id => set({ parent: id || null })}
+                items={parents.map(p => ({ id: p.entry.id, label: p.entry.name, depth: p.depth }))} /> :
               <Dropdown value={f.parent ? parents.find(p => p.entry.id === f.parent)?.entry.name ?? '' : t('Keiner (oberste Ebene)')} selectedOptions={[f.parent ?? '']}
                 onOptionSelect={(_, d) => set({ parent: d.optionValue || null })}>
                 <Option value="">{t('Keiner (oberste Ebene)')}</Option>
                 {parents.map(p => <Option key={p.entry.id} value={p.entry.id} text={p.entry.name}><span style={{ paddingLeft: p.depth * 12 }}>{p.entry.name}</span></Option>)}
-              </Dropdown>
+              </Dropdown>}
             </Field>}
             {kind === 'tag' && <Field label={t('Farbe')}>
               <input type="color" value={f.color ?? '#7b9cde'} onChange={e => set({ color: e.target.value })} style={{ width: 60, height: 32, border: 'none', background: 'none' }} />

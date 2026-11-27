@@ -2,7 +2,7 @@ import {
   Button, Input, Menu, MenuDivider, MenuItem, MenuList, MenuPopover, MenuTrigger, Spinner, Text, makeStyles, mergeClasses, tokens,
 } from '@fluentui/react-components'
 import {
-  Album20Regular, ArrowDown16Regular, ArrowShuffle20Regular, ArrowUp16Regular, Delete20Regular, Dismiss20Regular, FolderOpen20Regular, MusicNote120Regular,
+  Album20Regular, Open20Regular, ArrowDown16Regular, ArrowShuffle20Regular, ArrowUp16Regular, Delete20Regular, Dismiss20Regular, FolderOpen20Regular, MusicNote120Regular,
   MusicNote224Regular, PanelLeft20Regular, Person20Regular, Play16Filled, Play20Filled, Prohibited16Filled, Search20Regular, Tag20Regular,
   TextBulletListLtr20Regular, TextBulletListSquare20Regular, TextGrammarArrowRight20Regular,
   Add20Regular, AppsListDetail20Regular, ArrowTrending20Regular, EyeOff20Regular, History20Regular, Hourglass20Regular, Rename20Regular, Save20Regular,
@@ -10,6 +10,8 @@ import {
 } from '@fluentui/react-icons'
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useApp } from '../App'
+import { featureOn } from '../api'
+import { tableHeadLook } from '../shell/GridColumns'
 import { t } from '../i18n'
 import { usePrefs } from '../prefs'
 import { AlphaBar, BAR_WIDTH, useLetters } from './AlphaBar'
@@ -40,7 +42,7 @@ const useStyles = makeStyles({
   empty: { margin: 'auto', textAlign: 'center', maxWidth: '420px', display: 'flex', flexDirection: 'column', gap: '12px', alignItems: 'center', padding: '24px' },
   // Titelliste: Kopf fest, Zeilen virtuell (zehntausende Titel)
   table: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' },
-  thead: { display: 'grid', alignItems: 'center', gap: '12px', padding: '0 20px', minHeight: '30px', flexShrink: 0, fontSize: '12px', color: tokens.colorNeutralForeground3,
+  thead: { display: 'grid', alignItems: 'center', gap: '12px', padding: '0 20px', minHeight: '32px', flexShrink: 0, ...tableHeadLook,
     borderBottom: `1px solid ${tokens.colorNeutralStroke2}` },
   th: { cursor: 'pointer', userSelect: 'none', display: 'flex', alignItems: 'center', gap: '2px', overflow: 'hidden', whiteSpace: 'nowrap', ':hover': { color: tokens.colorNeutralForeground1 } },
   // Rahmen um einen Scrollbereich: hält die A-Z-Leiste
@@ -78,7 +80,6 @@ const useStyles = makeStyles({
   heroText: { display: 'flex', flexDirection: 'column', gap: '4px', minWidth: 0 },
   heroTitle: { fontSize: '26px', fontWeight: 700, lineHeight: '32px', '@media (max-width: 767px)': { fontSize: '20px', lineHeight: '26px' } },
   link: { cursor: 'pointer', ':hover': { textDecoration: 'underline' } },
-  actions: { display: 'flex', gap: '8px', marginTop: '8px', flexWrap: 'wrap' },
   strip: { display: 'flex', gap: '14px', overflowX: 'auto', padding: '4px 20px 12px', flexShrink: 0, '& > *': { width: '130px', flexShrink: 0 } },
   // Gruppen (Interpreten, Genres)
   groupRow: { display: 'flex', alignItems: 'center', gap: '12px', padding: '0 20px', position: 'absolute', left: 0, right: 0, boxSizing: 'border-box', cursor: 'pointer',
@@ -156,7 +157,8 @@ function Link({ label, onGo }: { label: string; onGo: () => void }) {
 }
 
 /** Kontextmenü: die gewählten Titel; rows = ihre Stellen in der angezeigten Playlist (zum Entfernen) */
-type Ctx = { x: number; y: number; tracks: Track[]; rows?: number[] }
+/** open: Rechtsklick auf Album, Interpret oder Genre (ctxall) - „Öffnen“ zeigt die Seite */
+type Ctx = { x: number; y: number; tracks: Track[]; rows?: number[]; open?: () => void }
 type SortCol = 'title' | 'artist' | 'album' | 'year' | 'genre' | 'plays' | 'duration'
 /** Gezogene Titel (Kennungen) - Ablage auf eine Playlist in der Seitenleiste */
 const DRAG_TYPE = 'application/x-dmoffice-tracks'
@@ -337,13 +339,14 @@ function TrackTable({ tracks, mode, stats, onMenu, onReorder, onRemove, alpha }:
 }
 
 /** Kachel: Bild (Cover oder Mosaik), Name, Unterzeile; der Knopf spielt alle Titel der Kachel */
-function Card({ covers, icon, name, sub, tracks, onOpen }: {
-  covers: string[]; icon?: JSX.Element; name: string; sub?: string; tracks: Track[]; onOpen: () => void
+function Card({ covers, icon, name, sub, tracks, onOpen, onMenu }: {
+  covers: string[]; icon?: JSX.Element; name: string; sub?: string; tracks: Track[]; onOpen: () => void; onMenu?: (c: Ctx) => void
 }) {
   const s = useStyles()
   const { notify } = useApp()
   return (
-    <div className={s.card} onClick={onOpen} title={name}>
+    <div className={s.card} onClick={onOpen} title={name}
+      onContextMenu={onMenu ? e => { e.preventDefault(); onMenu({ x: e.clientX, y: e.clientY, tracks, open: onOpen }) } : undefined}>
       <div className={s.cardBox}>
         <Mosaic covers={covers} className={s.cardCover} icon={icon} />
         <Button className={mergeClasses(s.cardPlay, 'dm-play')} appearance="primary" shape="circular" icon={<Play20Filled />} aria-label={t('Abspielen')}
@@ -355,8 +358,8 @@ function Card({ covers, icon, name, sub, tracks, onOpen }: {
   )
 }
 
-function AlbumCard({ a, onOpen }: { a: Album; onOpen: () => void }) {
-  return <Card covers={a.cover ? [a.cover] : []} name={a.name} sub={[a.artist, a.year].filter(Boolean).join(' · ')} tracks={a.tracks} onOpen={onOpen} />
+function AlbumCard({ a, onOpen, onMenu }: { a: Album; onOpen: () => void; onMenu?: (c: Ctx) => void }) {
+  return <Card covers={a.cover ? [a.cover] : []} name={a.name} sub={[a.artist, a.year].filter(Boolean).join(' · ')} tracks={a.tracks} onOpen={onOpen} onMenu={onMenu} />
 }
 
 /** Kachel eines Titels: Klick spielt die Liste ab diesem Titel, der Interpret springt zum Interpreten */
@@ -417,13 +420,11 @@ function TileGrid<T>({ items, keyOf, render, letterOf }: {
   )
 }
 
-function Hero({ cover, icon, kind, title, sub, tracks, onSub, extra }: {
+/** Kopf eines geöffneten Albums, Interpreten, Genres oder einer Playlist; Abspielen und Weiteres stehen im Menüband */
+function Hero({ cover, icon, kind, title, sub, tracks, onSub }: {
   cover: string | null; icon?: JSX.Element; kind: string; title: string; sub?: string; tracks: Track[]; onSub?: () => void
-  /** Weitere Knöpfe (Zur Playlist, Umbenennen …) */
-  extra?: React.ReactNode
 }) {
   const s = useStyles()
-  const { notify } = useApp()
   const total = tracks.reduce((n, x) => n + (x.duration ?? 0), 0)
   return (
     <div className={s.hero}>
@@ -433,20 +434,16 @@ function Hero({ cover, icon, kind, title, sub, tracks, onSub, extra }: {
         <span className={s.heroTitle}>{title}</span>
         {sub && <Text weight="semibold" className={onSub ? s.link : undefined} onClick={onSub}>{sub}</Text>}
         <Text size={200} className={s.muted}>{t('{n} Titel', { n: tracks.length.toLocaleString() })}{total ? ' · ' + fmtDuration(total) : ''}</Text>
-        <div className={s.actions}>
-          <Button appearance="primary" icon={<Play20Filled />} onClick={() => playFrom(tracks, null, notify)}>{t('Abspielen')}</Button>
-          <Button icon={<ArrowShuffle20Regular />} onClick={() => { const ok = tracks.filter(playable); if (ok.length) player.shuffleAll(ok) }}>{t('Zufällig')}</Button>
-          <Button icon={<TextBulletListLtr20Regular />} onClick={() => { player.enqueue(tracks.filter(playable)); notify(t('Zur Warteschlange hinzugefügt')) }}>{t('Zur Warteschlange')}</Button>
-          {extra}
-        </div>
       </div>
     </div>
   )
 }
 
 /** Liste der Alben, Interpreten oder Genres: virtuell, mit A-Z-Leiste nach letterOf (in der Reihenfolge der Liste) */
-function RowList<T>({ items, keyOf, render, onOpen, letterOf, rowHeight }: {
+function RowList<T>({ items, keyOf, render, onOpen, letterOf, rowHeight, onMenu }: {
   items: T[]; keyOf: (x: T) => string; render: (x: T) => JSX.Element; onOpen: (x: T) => void; letterOf: (x: T) => string; rowHeight: number
+  /** Rechtsklick auf eine Zeile */
+  onMenu?: (e: React.MouseEvent, x: T) => void
 }) {
   const s = useStyles()
   const vl = useVirtual(items.length, rowHeight)
@@ -457,7 +454,8 @@ function RowList<T>({ items, keyOf, render, onOpen, letterOf, rowHeight }: {
       <div ref={vl.ref} className={s.scroll} style={barSpace(!!letters)} onScroll={vl.onScroll}>
         <div style={{ height: vl.total, position: 'relative' }}>
           {items.slice(vl.first, vl.last).map((x, k) => (
-            <div key={keyOf(x)} className={s.groupRow} style={{ top: (vl.first + k) * rowHeight, height: rowHeight }} onClick={() => onOpen(x)}>{render(x)}</div>
+            <div key={keyOf(x)} className={s.groupRow} style={{ top: (vl.first + k) * rowHeight, height: rowHeight }} onClick={() => onOpen(x)}
+              onContextMenu={onMenu ? e => { e.preventDefault(); onMenu(e, x) } : undefined}>{render(x)}</div>
           ))}
         </div>
       </div>
@@ -480,11 +478,11 @@ function PlaylistTargets({ lists, onPick }: { lists: PlaylistInfo[]; onPick: (id
   </>
 }
 
-/** Knopf mit Menü „Zur Playlist“ für Album, Interpret, Genre */
-function AddToPlaylistButton({ lists, onPick }: { lists: PlaylistInfo[]; onPick: (id: string | null) => void }) {
+/** Menübandknopf mit Menü „Zur Playlist“ für das geöffnete Album, den Interpreten, das Genre oder eine Auto-Playlist */
+function AddToPlaylistButton({ lists, onPick, disabled }: { lists: PlaylistInfo[]; onPick: (id: string | null) => void; disabled?: boolean }) {
   return (
     <Menu>
-      <MenuTrigger disableButtonEnhancement><Button icon={<TextBulletListAdd20Regular />}>{t('Zur Playlist')}</Button></MenuTrigger>
+      <MenuTrigger disableButtonEnhancement><RibbonButton icon={<TextBulletListAdd20Regular />} label={t('Zur Playlist')} disabled={disabled} /></MenuTrigger>
       <MenuPopover><MenuList><PlaylistTargets lists={lists} onPick={onPick} /></MenuList></MenuPopover>
     </Menu>
   )
@@ -505,7 +503,14 @@ function usePlaylistData(key: string | null, lists: PlaylistInfo[], fail: (e: un
       .then(r => setData({ key, name: r.name, ids: r.tracks }))
       .catch(e => { setData(null); fail(e) })
   }, [key]) // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(load, [load, stamp])
+  // Verschwindet die geöffnete Playlist aus der Liste (gelöscht), nicht noch einmal nachladen
+  const seen = useRef<string | null>(null)
+  useEffect(() => {
+    const own = !!key && !key.startsWith('auto:')
+    if (own && stamp === undefined && seen.current === key) return
+    seen.current = own && stamp !== undefined ? key : null
+    load()
+  }, [load, stamp]) // eslint-disable-line react-hooks/exhaustive-deps
   return data?.key === key ? data : null
 }
 
@@ -561,6 +566,8 @@ export default function AudioView() {
   const [query, setQuery] = useState(() => { try { return sessionStorage.getItem('dmoffice.audio.q') ?? '' } catch { return '' } })
   const [folders, setFolders] = useState(false)
   const [ctx, setCtx] = useState<Ctx | null>(null)
+  // Rechtsklick auf Album, Interpret, Genre (ctxall): dasselbe Menü wie bei Titeln, dazu „Öffnen“
+  const groupMenu = featureOn('ctxall') ? setCtx : undefined
   const [sidePane, toggleSide, closeSide] = useSidePane('audio')
   const mobile = useIsMobile()
   const { playlists, auto } = usePlaylists()
@@ -630,7 +637,8 @@ export default function AudioView() {
   const deletePlaylist = async () => {
     if (!ownPlaylist || !plData) return
     if (!await askConfirm(t('Playlist löschen'), t('„{name}“ löschen? Die Musikdateien bleiben.', { name: plData.name }), t('Löschen'))) return
-    try { await playlistApi.remove(ownPlaylist); goto('tracks') } catch (e) { fail(e) }
+    goto('tracks')
+    try { await playlistApi.remove(ownPlaylist) } catch (e) { fail(e) }
   }
   /** Gezogene Titel auf eine Playlist der Seitenleiste */
   const dropProps = (id: string) => ({
@@ -668,11 +676,7 @@ export default function AudioView() {
     if (!key && query && !found.length) return <div className={s.empty}><Text className={s.muted}>{t('Keine Treffer.')}</Text></div>
     if (plKey) return !plData ? <Spinner style={{ margin: 'auto' }} /> : <>
       <Hero cover={plTracks.find(x => x.cover)?.cover ?? null} icon={<AppsListDetail20Regular style={{ fontSize: 48 }} />}
-        kind={ownPlaylist ? t('Playlist') : t('Auto-Playlist')} title={plData.name} tracks={plTracks}
-        extra={ownPlaylist ? <>
-          <Button icon={<Rename20Regular />} onClick={renamePlaylist}>{t('Umbenennen')}</Button>
-          <Button icon={<Delete20Regular />} onClick={deletePlaylist}>{t('Löschen')}</Button>
-        </> : <AddToPlaylistButton lists={playlists} onPick={id => addTo(id, plTracks)} />} />
+        kind={ownPlaylist ? t('Playlist') : t('Auto-Playlist')} title={plData.name} tracks={plTracks} />
       {plTracks.length === 0
         ? <div className={s.empty}><Text className={s.muted}>{ownPlaylist ? t('Noch leer. Titel kommen über das Kontextmenü „Zur Playlist hinzufügen“ oder per Ziehen auf die Playlist links dazu.') : t('Noch keine passenden Titel.')}</Text></div>
         : <TrackTable tracks={plTracks} mode="playlist" stats={stats} onMenu={setCtx}
@@ -680,25 +684,24 @@ export default function AudioView() {
     </>
     if (album) return <>
       <Hero cover={album.cover} kind={t('Album')} title={album.name} sub={[album.artist, album.year].filter(Boolean).join(' · ')} tracks={album.tracks}
-        onSub={album.artist ? () => goto('artists', album.artist) : undefined} extra={<AddToPlaylistButton lists={playlists} onPick={id => addTo(id, album.tracks)} />} />
+        onSub={album.artist ? () => goto('artists', album.artist) : undefined} />
       <TrackTable tracks={album.tracks} mode="album" stats={stats} onMenu={setCtx} />
     </>
     if (artist) return <>
-      <Hero cover={artist.albums.find(a => a.cover)?.cover ?? null} icon={<Person20Regular style={{ fontSize: 48 }} />} kind={t('Interpret')} title={artist.name} tracks={artist.tracks}
-        extra={<AddToPlaylistButton lists={playlists} onPick={id => addTo(id, [...artist.tracks].sort(byLibrary))} />} />
-      {artist.albums.length > 0 && <div className={s.strip}>{artist.albums.map(a => <AlbumCard key={a.key} a={a} onOpen={() => goto('albums', a.key)} />)}</div>}
+      <Hero cover={artist.albums.find(a => a.cover)?.cover ?? null} icon={<Person20Regular style={{ fontSize: 48 }} />} kind={t('Interpret')} title={artist.name} tracks={artist.tracks} />
+      {artist.albums.length > 0 && <div className={s.strip}>{artist.albums.map(a => <AlbumCard key={a.key} a={a} onOpen={() => goto('albums', a.key)} onMenu={groupMenu} />)}</div>}
       <TrackTable tracks={[...artist.tracks].sort(byLibrary)} stats={stats} onMenu={setCtx} />
     </>
     if (genre) return <>
-      <Hero cover={genre.tracks.find(x => x.cover)?.cover ?? null} icon={<Tag20Regular style={{ fontSize: 48 }} />} kind={t('Genre')} title={genre.name} tracks={genre.tracks}
-        extra={<AddToPlaylistButton lists={playlists} onPick={id => addTo(id, genre.tracks)} />} />
+      <Hero cover={genre.tracks.find(x => x.cover)?.cover ?? null} icon={<Tag20Regular style={{ fontSize: 48 }} />} kind={t('Genre')} title={genre.name} tracks={genre.tracks} />
       <TrackTable tracks={genre.tracks} stats={stats} onMenu={setCtx} />
     </>
     const tiles = shapeOf(view) === 'tiles'
     const big = { style: { fontSize: 40 } }
     if (view === 'albums') return tiles
-      ? <TileGrid items={albums} keyOf={a => a.key} letterOf={a => a.artist} render={a => <AlbumCard a={a} onOpen={() => goto('albums', a.key)} />} />
-      : <RowList items={albums} keyOf={a => a.key} letterOf={a => a.artist} rowHeight={mobile ? 56 : 48} onOpen={a => goto('albums', a.key)} render={a => <>
+      ? <TileGrid items={albums} keyOf={a => a.key} letterOf={a => a.artist} render={a => <AlbumCard a={a} onOpen={() => goto('albums', a.key)} onMenu={groupMenu} />} />
+      : <RowList items={albums} keyOf={a => a.key} letterOf={a => a.artist} rowHeight={mobile ? 56 : 48} onOpen={a => goto('albums', a.key)}
+        onMenu={groupMenu && ((e, a) => groupMenu({ x: e.clientX, y: e.clientY, tracks: a.tracks, open: () => goto('albums', a.key) }))} render={a => <>
         <Cover id={a.cover} className={mergeClasses(s.thumb, mobile && s.thumbLarge)} />
         <div className={s.two} style={{ flex: 1 }}>
           <span className={s.cell}>{a.name}</span>
@@ -712,8 +715,9 @@ export default function AudioView() {
       const icon = (props?: { style: React.CSSProperties }) => isArtists ? <Person20Regular {...props} /> : <Tag20Regular {...props} />
       return tiles
         ? <TileGrid items={list} keyOf={g => g.name} letterOf={g => g.name} render={g =>
-          <Card covers={coversOf(g.tracks)} icon={icon(big)} name={g.name} sub={groupSub(g, isArtists)} tracks={g.tracks} onOpen={() => goto(view, g.name)} />} />
-        : <RowList items={list} keyOf={g => g.name} letterOf={g => g.name} rowHeight={mobile ? 52 : 40} onOpen={g => goto(view, g.name)} render={g => <>
+          <Card covers={coversOf(g.tracks)} icon={icon(big)} name={g.name} sub={groupSub(g, isArtists)} tracks={g.tracks} onOpen={() => goto(view, g.name)} onMenu={groupMenu} />} />
+        : <RowList items={list} keyOf={g => g.name} letterOf={g => g.name} rowHeight={mobile ? 52 : 40} onOpen={g => goto(view, g.name)}
+          onMenu={groupMenu && ((e, g) => groupMenu({ x: e.clientX, y: e.clientY, tracks: g.tracks, open: () => goto(view, g.name) }))} render={g => <>
           {icon()}
           <span className={s.cell} style={{ flex: 1 }}>{g.name}</span>
           <Text size={200} className={s.muted}>{groupSub(g, isArtists)}</Text>
@@ -726,6 +730,8 @@ export default function AudioView() {
 
   const heading = view === 'queue' ? t('Warteschlange') : view === 'albums' ? t('Alben') : view === 'artists' ? t('Interpreten') : view === 'genres' ? t('Genres') : t('Titel')
   const listView = !key && view !== 'playlist'
+  // Ein Album, Interpret, Genre oder eine Playlist ist geöffnet: deren Befehle im Menüband
+  const opened = !!(plKey || album || artist || genre)
   // Liste oder Kacheln gibt es in den vier Bereichen der Bibliothek
   const shapeable = listView && view !== 'queue'
   const count = view === 'queue' ? queueLength : view === 'albums' ? albums.length : view === 'artists' ? artists.length : view === 'genres' ? genres.length : found.length
@@ -736,6 +742,13 @@ export default function AudioView() {
           <RibbonButton primary icon={<Play20Filled />} label={t('Alle abspielen')} disabled={!visible.length || view === 'queue'} onClick={() => playFrom(visible, null, notify)} />
           <RibbonButton icon={<ArrowShuffle20Regular />} label={t('Zufällig abspielen')} disabled={!visible.length || view === 'queue'}
             onClick={() => { const ok = visible.filter(playable); if (ok.length) player.shuffleAll(ok) }} />
+          {opened && <>
+            <RibbonButton icon={<TextBulletListLtr20Regular />} label={t('Zur Warteschlange')} disabled={!visible.length}
+              onClick={() => { player.enqueue(visible.filter(playable)); notify(t('Zur Warteschlange hinzugefügt')) }} />
+            {!ownPlaylist && <AddToPlaylistButton lists={playlists} disabled={!visible.length} onPick={id => addTo(id, visible)} />}
+            {ownPlaylist && <RibbonButton icon={<Rename20Regular />} label={t('Playlist umbenennen')} disabled={!plData} onClick={renamePlaylist} />}
+            {ownPlaylist && <RibbonButton icon={<Delete20Regular />} label={t('Playlist löschen')} disabled={!plData} onClick={deletePlaylist} />}
+          </>}
           <RibbonDivider />
           <RibbonButton icon={<TextBulletListLtr20Regular />} label={t('Warteschlange')} pressed={view === 'queue'} onClick={() => goto('queue')} />
           {view === 'queue' && <RibbonButton icon={<Save20Regular />} label={t('Als Playlist speichern')} disabled={!queueLength}
@@ -752,7 +765,7 @@ export default function AudioView() {
           <RibbonButton icon={<Grid20Regular />} label={t('Kacheln')} disabled={!shapeable} pressed={shapeable && shapeOf(view) === 'tiles'} onClick={() => setShape('tiles')} />
         </>} />
       <div className={s.root}>
-        <SidePane as="aside" className={mergeClasses(s.side, nv.pane)} open={sidePane} onClose={closeSide} width={{ key: 'audio.side', def: 220 }}>
+        <SidePane as="aside" className={mergeClasses(s.side, nv.pane)} open={sidePane} onClose={closeSide} width={{ key: 'audio.side', def: 240 }}>
           <div className={mergeClasses(nv.section, nv.first)}>{t('Bibliothek')}</div>
           {nav('tracks', <MusicNote120Regular />, t('Titel'), all.length)}
           {nav('albums', <Album20Regular />, t('Alben'))}
@@ -781,6 +794,7 @@ export default function AudioView() {
           positioning={{ autoSize: 'height', target: { getBoundingClientRect: () => ({ x: ctx.x, y: ctx.y, top: ctx.y, left: ctx.x, bottom: ctx.y, right: ctx.x, width: 0, height: 0 }) } as any }}>
           <MenuPopover>
             <MenuList>
+              {ctx.open && <MenuItem icon={<Open20Regular />} onClick={ctx.open}>{t('Öffnen')}</MenuItem>}
               <MenuItem icon={<Play20Filled />} disabled={!ctx.tracks.some(playable)} onClick={() => playFrom(ctx.tracks, null, notify)}>{t('Abspielen')}</MenuItem>
               <MenuItem icon={<TextGrammarArrowRight20Regular />} disabled={!ctx.tracks.some(playable)} onClick={() => player.playNext(ctx.tracks.filter(playable))}>{t('Als Nächstes abspielen')}</MenuItem>
               <MenuItem icon={<TextBulletListLtr20Regular />} disabled={!ctx.tracks.some(playable)}
@@ -790,9 +804,9 @@ export default function AudioView() {
                 <MenuPopover><MenuList><PlaylistTargets lists={playlists} onPick={id => { const list = ctx.tracks; setCtx(null); addTo(id, list) }} /></MenuList></MenuPopover>
               </Menu>
               {ownPlaylist && ctx.rows && <MenuItem icon={<Dismiss20Regular />} onClick={() => removeRows(ctx.rows!)}>{t('Aus der Playlist entfernen')}</MenuItem>}
-              <MenuDivider />
-              {ctx.tracks.length === 1 && <MenuItem icon={<Album20Regular />} onClick={() => openAlbum(ctx.tracks[0])}>{t('Album öffnen')}</MenuItem>}
-              {ctx.tracks.length === 1 && artistOf(ctx.tracks[0]) && <MenuItem icon={<Person20Regular />} onClick={() => goto('artists', ctx.tracks[0].artist || artistOf(ctx.tracks[0]))}>{t('Interpret öffnen')}</MenuItem>}
+              {!ctx.open && <MenuDivider />}
+              {!ctx.open && ctx.tracks.length === 1 && <MenuItem icon={<Album20Regular />} onClick={() => openAlbum(ctx.tracks[0])}>{t('Album öffnen')}</MenuItem>}
+              {!ctx.open && ctx.tracks.length === 1 && artistOf(ctx.tracks[0]) && <MenuItem icon={<Person20Regular />} onClick={() => goto('artists', ctx.tracks[0].artist || artistOf(ctx.tracks[0]))}>{t('Interpret öffnen')}</MenuItem>}
             </MenuList>
           </MenuPopover>
         </Menu>

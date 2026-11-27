@@ -27,7 +27,7 @@ public sealed class GalleryShared
     internal GalleryShared(string path, byte[] key)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        _connectionString = new SqliteConnectionStringBuilder { DataSource = path, Password = "x'" + Convert.ToHexString(key) + "'", DefaultTimeout = 30 }.ToString();
+        _connectionString = DmOffice.Core.UserDb.ConnectionStringOf(path, key);
         try { Create(); }
         catch (SqliteException)
         {
@@ -54,6 +54,18 @@ public sealed class GalleryShared
         // Version 2 (01.11.2026): Markierung wie Lightroom (xmpDM:pick)
         if (!UserDb.Query(conn, "PRAGMA table_info(media)", r => r.GetString(1)).Contains("pick", StringComparer.OrdinalIgnoreCase))
             UserDb.Exec(conn, "ALTER TABLE media ADD COLUMN pick INTEGER");
+    }
+
+    // [feature:galsharedskip]
+    private long _changes;
+    /// <summary>Zählt jeden Schreibzugriff seit dem Start: unverändert = der Bestand ist derselbe wie beim letzten Blick.</summary>
+    public long Changes => Interlocked.Read(ref _changes);
+    // [/feature:galsharedskip]
+
+    private SqliteConnection OpenWrite()
+    {
+        Interlocked.Increment(ref _changes); // [feature:galsharedskip]
+        return Open();
     }
 
     private SqliteConnection Open()
@@ -95,7 +107,7 @@ public sealed class GalleryShared
     {
         lock (_write)
         {
-            using var conn = Open();
+            using var conn = OpenWrite();
             UserDb.Exec(conn, @"INSERT INTO media(mount, path, stamp, stage, taken, camera, lens, focal, aperture, exposure, iso, width, height, duration, rating, title, keywords, label, thumb, pick)
                 VALUES($m, $p, $s, $st, $t, $c, $l, $f, $a, $x, $i, $w, $h, $d, $r, $ti, $k, $lb, $th, $pk)
                 ON CONFLICT(mount, path) DO UPDATE SET stage = excluded.stage, taken = excluded.taken, camera = excluded.camera, lens = excluded.lens, focal = excluded.focal,
@@ -113,7 +125,7 @@ public sealed class GalleryShared
     {
         lock (_write)
         {
-            using var conn = Open();
+            using var conn = OpenWrite();
             // Ohne Eintrag für diesen Stand: nur das Vorschaubild, Stufe 1 - die Bildangaben liest dann jeder selbst (Stufe 2 hieße
             // „fertig“, und andere übernähmen das Foto ohne Aufnahmezeit)
             if (UserDb.Exec(conn, "UPDATE media SET thumb = $t WHERE mount = $m AND path = $p AND stamp = $s", ("$t", thumb), ("$m", mount), ("$p", path), ("$s", stamp)) == 0)
@@ -121,10 +133,43 @@ public sealed class GalleryShared
         }
     }
 
+    private const string Cols = "stamp, stage, taken, camera, lens, focal, aperture, exposure, iso, width, height, duration, rating, title, keywords, label, thumb, pick";
+
+    /// <summary>
+    /// Einträge unter anderem Ordner und Pfad übernehmen (Galerie-Ordner neu zugeordnet: dieselben Dateien an anderem Ort) - mit
+    /// Stand, Bildangaben und Vorschaubild, nichts neu gelesen. Gibt die Zahl der übernommenen zurück.
+    /// </summary>
+    public int CopyAll(string fromMount, string toMount, IEnumerable<(string From, string To)> pairs)
+    {
+        var n = 0;
+        lock (_write)
+        {
+            using var conn = OpenWrite();
+            using var tx = conn.BeginTransaction();
+            foreach (var (from, to) in pairs)
+                n += UserDb.Exec(conn, $"INSERT OR IGNORE INTO media(mount, path, {Cols}) SELECT $tm, $tp, {Cols} FROM media WHERE mount = $fm AND path = $fp",
+                    ("$tm", toMount), ("$tp", to), ("$fm", fromMount), ("$fp", from));
+            tx.Commit();
+        }
+        return n;
+    }
+
+    /// <summary>Vorschaubilder mehrerer Dateien in einem Zug (Pfad → Bild), nur zum passenden Stand.</summary>
+    public Dictionary<string, byte[]> ThumbsOf(string mount, IEnumerable<(string Path, long Stamp)> items)
+    {
+        var map = new Dictionary<string, byte[]>(StringComparer.Ordinal);
+        using var conn = Open();
+        foreach (var (path, stamp) in items)
+            if (UserDb.Query(conn, "SELECT thumb FROM media WHERE mount = $m AND path = $p AND stamp = $s AND thumb IS NOT NULL",
+                    r => (byte[])r.GetValue(0), ("$m", mount), ("$p", path), ("$s", stamp)).FirstOrDefault() is { } t)
+                map[path] = t;
+        return map;
+    }
+
     /// <summary>Datei verschwunden: auch hier weg.</summary>
     public void Remove(string mount, string path)
     {
-        lock (_write) { using var conn = Open(); UserDb.Exec(conn, "DELETE FROM media WHERE mount = $m AND path = $p", ("$m", mount), ("$p", path)); }
+        lock (_write) { using var conn = OpenWrite(); UserDb.Exec(conn, "DELETE FROM media WHERE mount = $m AND path = $p", ("$m", mount), ("$p", path)); }
     }
 
     /// <summary>Server-Ordner, zu denen etwas gespeichert ist.</summary>
@@ -137,7 +182,7 @@ public sealed class GalleryShared
     /// <summary>Der Admin hat den Server-Ordner aus der Freigabe genommen: alles dazu weg.</summary>
     public void RemoveMount(string mount)
     {
-        lock (_write) { using var conn = Open(); UserDb.Exec(conn, "DELETE FROM media WHERE mount = $m", ("$m", mount)); }
+        lock (_write) { using var conn = OpenWrite(); UserDb.Exec(conn, "DELETE FROM media WHERE mount = $m", ("$m", mount)); }
     }
 
     /// <summary>Was zu einem Server-Ordner mit Vorschaubild da ist (Pfad und Stand).</summary>
@@ -145,6 +190,42 @@ public sealed class GalleryShared
     {
         using var conn = Open();
         return UserDb.Query(conn, "SELECT path, stamp FROM media WHERE mount = $m AND thumb IS NOT NULL", r => (r.GetString(0), r.GetInt64(1)), ("$m", mount)).ToHashSet();
+    }
+
+    /// <summary>Alles zu einem Server-Ordner: Pfad → (Stand, mit Vorschaubild) - für die Prüfung, ob die Galerie-Ordner dazu passen.</summary>
+    public Dictionary<string, (long Stamp, bool Thumb, int Stage)> Index(string mount)
+    {
+        using var conn = Open();
+        return UserDb.Query(conn, "SELECT path, stamp, thumb IS NOT NULL, stage FROM media WHERE mount = $m", r => (r.GetString(0), r.GetInt64(1), r.GetBoolean(2), r.GetInt32(3)), ("$m", mount))
+            .ToDictionary(x => x.Item1, x => (x.Item2, x.Item3, x.Item4), StringComparer.Ordinal);
+    }
+
+    /// <summary>
+    /// Anbieten statt überschreiben: neu eintragen, wenn es zu dem Pfad noch nichts gibt; ein vorhandenes Vorschaubild nur ergänzen,
+    /// wenn der Eintrag den gleichen Stand hat und keins hat. Was jemand anderes schon gelesen hat (auch zu einem anderen Stand), bleibt.
+    /// </summary>
+    public bool Offer(string mount, string path, long stamp, int stage, FileMeta.Row? m, byte[]? thumb)
+    {
+        lock (_write)
+        {
+            using var conn = OpenWrite();
+            return UserDb.Exec(conn, @"INSERT INTO media(mount, path, stamp, stage, taken, camera, lens, focal, aperture, exposure, iso, width, height, duration, rating, title, keywords, label, thumb, pick)
+                VALUES($m, $p, $s, $st, $t, $c, $l, $f, $a, $x, $i, $w, $h, $d, $r, $ti, $k, $lb, $th, $pk)
+                ON CONFLICT(mount, path) DO UPDATE SET thumb = excluded.thumb WHERE media.stamp = excluded.stamp AND media.thumb IS NULL AND excluded.thumb IS NOT NULL",
+                ("$m", mount), ("$p", path), ("$s", stamp), ("$st", stage), ("$t", m?.Taken), ("$c", m?.Camera), ("$l", m?.Lens), ("$f", m?.Focal), ("$a", m?.Aperture),
+                ("$x", m?.Exposure), ("$i", m?.Iso), ("$w", m?.Width), ("$h", m?.Height), ("$d", m?.Duration), ("$r", m?.Rating), ("$ti", m?.Title), ("$k", m?.Keywords),
+                ("$lb", m?.Label), ("$th", thumb), ("$pk", m?.Pick)) > 0;
+        }
+    }
+
+    /// <summary>Gleiche Datei, nur die Zeit anders gemerkt (Bruchteile vom früheren Ort): Stand angleichen, Bildangaben und Vorschaubild bleiben.</summary>
+    public void Restamp(string mount, string path, long from, long to)
+    {
+        lock (_write)
+        {
+            using var conn = OpenWrite();
+            UserDb.Exec(conn, "UPDATE media SET stamp = $t WHERE mount = $m AND path = $p AND stamp = $f", ("$t", to), ("$m", mount), ("$p", path), ("$f", from));
+        }
     }
 
     public long Count(string mount)

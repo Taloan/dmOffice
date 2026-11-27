@@ -7,22 +7,25 @@ import {
   Copy20Regular, Delete20Regular, Dismiss20Regular, Edit20Regular, Emoji20Regular, Folder20Regular, ImageMultiple20Regular, MoreHorizontal20Regular,
   Note20Regular, People20Regular, Search20Regular, Send20Filled, Speaker220Regular, SpeakerMute20Regular, ArrowExit20Regular,
   Rename20Regular, DocumentArrowUp20Regular, Save20Regular, Eye16Regular, ArrowForward16Regular, ArrowForward20Regular,
-  CalendarLtr20Regular, TaskListSquareLtr20Regular, Person20Regular, Mic20Regular, Location20Regular, Open20Regular, CheckmarkCircle20Regular,
+  CalendarLtr20Regular, TaskListSquareLtr20Regular, Person20Regular, Mic20Regular, Location20Regular, Open20Regular, CheckmarkCircle20Regular, AddSquare20Regular, Color20Regular,
 } from '@fluentui/react-icons'
 import { Fragment, lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { api, demoMode, fmtSize, q } from '../api'
+import { api, demoMode, featureOn, fmtSize, q } from '../api'
 import { useApp } from '../App'
 import { t, tError, locale } from '../i18n'
 import { fmtDate, fmtDay, fmtTime } from '../shell/hooks'
-import { askConfirm, askText, ColorMenu, ContextMenu, useContextMenu } from '../shell/context'
+import { askConfirm, askText, ColorMenu, ColorSwatches, ContextMenu, useContextMenu } from '../shell/context'
 import { BackBar, useIsMobile, useMobileStyles } from '../shell/mobile'
 import { KindIcon } from '../files/common'
+import { useFilePreview } from '../files/FilePreview'
 import { gallerySource, isExt } from '../files/GalleryFolders'
 import { PickPhotoDialog } from '../files/PickPhotoDialog'
+import { UploadBar, useLeaveWarning } from '../files/UploadBar'
+import type { SendProgress } from '../files/chunked'
 import { ChatMessage, ChatMode, ChatRef, ChatRoom, chatRefItem, chatRefSource, chatStatusChanged, fromDevice, isPukki, PUKKI, refUrl, systemText, uploadToRoom, useChat } from './store'
 import { ThumbDislike16Filled, ThumbDislike16Regular, ThumbLike16Filled, ThumbLike16Regular } from '@fluentui/react-icons'
-import { SpacesBar, SpacesMenu, useSpaces } from './Spaces'
-import { RibbonButton, RibbonDivider, RibbonHeader, useSidePane } from '../shell/Ribbon'
+import { SpacesBar, SpacesMenu, spaceKinds, useSpaces } from './Spaces'
+import { RibbonActions, RibbonButton, RibbonDivider, RibbonHeader, RibbonSlot, useSidePane } from '../shell/Ribbon'
 import { attach, cancel, offline, queue, useOutbox } from './outbox'
 import { ChatInfo, useWide } from './ChatInfo'
 import { pukkiPose, RoomAvatar, UserAvatar, usePukkiFigure, usePukkiImage } from './UserAvatar'
@@ -31,6 +34,8 @@ import { usePaneWidth } from '../shell/Splitter'
 import { copyText } from '../shell/browser'
 
 const QUICK = ['👍', '❤️', '😂', '😮', '😢', '🙏']
+// Schmale Knöpfe: mit der üblichen Mindestbreite passten nur vier der sechs ins Menü
+const QUICK_BTN = { minWidth: 0, padding: '0 6px', fontSize: 18 }
 
 const useStyles = makeStyles({
   // Menüband oben über die ganze Breite (wie in den anderen Bereichen), darunter Liste und Unterhaltung
@@ -280,7 +285,7 @@ export default function ChatView() {
   // Rechtsklick auf eine Unterhaltung: dieselben Befehle wie im Menüband, ohne sie erst zu öffnen
   const cm = useContextMenu<ChatRoom>()
   const leave = async (r: ChatRoom) => {
-    if (!await askConfirm('', r.kind === 'group' ? t('Gruppe „{name}“ verlassen?', { name: r.title }) : t('Unterhaltung mit {name} ausblenden?', { name: r.title }))) return
+    if (!await askConfirm('', r.kind === 'group' ? t('Gruppe „{name}“ verlassen?', { name: r.title }) : t('Unterhaltung mit {name} ausblenden? Der Verlauf bleibt erhalten, mit der nächsten Nachricht erscheint sie wieder.', { name: r.title }))) return
     roomCall(() => api.post(`/api/chat/rooms/${r.id}/leave`)).then(() => { if (r.id === selected) select(null) })
   }
   const pukki = rooms.find(isPukki)
@@ -344,7 +349,7 @@ export default function ChatView() {
               <div className={s.roomLast}>
                 {r.muted && <SpeakerMute20Regular style={{ width: 14, height: 14 }} />}
                 <span className={s.roomLastText}>
-                  {r.last?.kind === 'system' ? systemText(r.last.text, r.last.sender, nameIn(r, me.id), t)
+                  {r.last?.kind === 'system' ? systemText(r.last.text, r.last.sender, nameIn(r, me.id, [r.last]), t, me.id)
                     : r.kind === 'group' && r.last && r.last.sender !== me.id ? `${r.last.senderName}: ${snippet(r.last)}` : snippet(r.last)}
                 </span>
                 {!!r.mentioned && <span className={s.atBadge} title={t('Du wurdest erwähnt')}>@</span>}
@@ -374,6 +379,7 @@ export default function ChatView() {
   )
 
   // Menüband wie in Mail, Kalender & Co.: Start (Neu, die offene Unterhaltung, Pukki, Einstellungen) und Ansicht
+  const [slot, setSlot] = useState<HTMLElement | null>(null)
   const ribbon = (
     <RibbonHeader area="chat" onMenu={mobile ? undefined : toggleList}
       start={<>
@@ -385,10 +391,12 @@ export default function ChatView() {
         <RibbonButton icon={<ArrowDownload20Regular />} label={t('Exportieren')} disabled={!room} onClick={() => { if (room) location.href = `/api/chat/rooms/${room.id}/export` }} />
         <RibbonButton icon={<ArrowExit20Regular />} label={room?.kind === 'group' ? t('Gruppe verlassen') : t('Ausblenden')} disabled={!room}
           onClick={async () => {
-            if (!room || !await askConfirm('', room.kind === 'group' ? t('Gruppe „{name}“ verlassen?', { name: room.title }) : t('Unterhaltung mit {name} ausblenden?', { name: room.title }))) return
+            if (!room || !await askConfirm('', room.kind === 'group' ? t('Gruppe „{name}“ verlassen?', { name: room.title }) : t('Unterhaltung mit {name} ausblenden? Der Verlauf bleibt erhalten, mit der nächsten Nachricht erscheint sie wieder.', { name: room.title }))) return
             roomCall(() => api.post(`/api/chat/rooms/${room.id}/leave`)).then(() => select(null))
           }} />
         <RibbonDivider />
+        {/* Die offene Unterhaltung trägt hier Mitglieder, Gruppenräume, Umbenennen und Farbe ein (wie im Menü „…“) */}
+        <div ref={setSlot} style={{ display: 'contents' }} />
         {pukki && <RibbonButton icon={<img src={pukkiImage} alt="" width={24} height={24} style={{ borderRadius: '50%' }} />} label={t('Pukki')} onClick={() => open(pukki.id)} />}
         <RibbonButton icon={<Settings20Regular />} label={t('Einstellungen')} onClick={() => { location.hash = '#/settings/chat' }} />
       </>}
@@ -406,7 +414,7 @@ export default function ChatView() {
       {(!mobile || !room) && (mobile || listOn || !room) && list}
       {room ? (
         <div className={mergeClasses(s.conv, mobile && ms.full)}>
-          <Conversation key={room.id} room={room} chat={chat} onBack={back} focus={focus} />
+          <RibbonSlot.Provider value={slot}><Conversation key={room.id} room={room} chat={chat} onBack={back} focus={focus} /></RibbonSlot.Provider>
         </div>
       ) : !mobile && (
         <div className={s.empty}><Chat48Regular /><Text>{t('Wähle links eine Unterhaltung.')}</Text></div>
@@ -417,9 +425,9 @@ export default function ChatView() {
   )
 }
 
-/** Namen in einer Unterhaltung; "du" fuer einen selbst. */
-const nameIn = (room: ChatRoom, me: string) => (id: string) =>
-  id === me ? t('Du') : room.members.find(m => m.id === id)?.name ?? t('Jemand')
+/** Namen in einer Unterhaltung; "du" fuer einen selbst. Wer nicht mehr Mitglied ist: Name aus seinen Nachrichten im Verlauf. */
+const nameIn = (room: ChatRoom, me: string, list?: ChatMessage[]) => (id: string) =>
+  id === me ? t('Du') : room.members.find(m => m.id === id)?.name ?? list?.find(m => m.sender === id && m.senderName)?.senderName ?? t('Jemand')
 
 /** Ab dieser Pause zwischen zwei Nachrichten steht die Uhrzeit als Trenner im Verlauf. */
 const PAUSE = 4 * 3600 * 1000
@@ -445,7 +453,17 @@ function Conversation({ room, chat, onBack, focus }: { room: ChatRoom; chat: Ret
     showPhotos(m.refs.map((r, i) => ({ m, r, i })).filter(x => x.r.type === 'file' && isImage(x.r) && x.r.state === 'ok'), { m, i: ri })
   const [saving, setSaving] = useState<{ message: ChatMessage; index: number } | null>(null)
   const [forwarding, setForwarding] = useState<ChatMessage | null>(null)
-  const [uploading, setUploading] = useState<string | null>(null)
+  // Rechtsklick auf eine Nachricht (Kennung ctxall): dieselben Aktionen wie das Menü „Mehr“ und die Reaktionen
+  const msgMenu = useContextMenu<ChatMessage>()
+  // Laufendes Hochladen: Fortschritt für die Leiste, Abbrechen über den Controller; Verlassen der Seite fragt nach
+  const [uploading, setUploading] = useState<SendProgress | null>(null)
+  const uploadCtl = useRef<AbortController | null>(null)
+  useLeaveWarning(!!uploading)
+  const uploadOne = (file: File, i: number, count: number, text?: string, replyTo?: number) => {
+    const c = uploadCtl.current!
+    setUploading({ bytes: 0, total: file.size, done: i, count, name: file.name })
+    return uploadToRoom(room.id, file, text, loaded => { if (!c.signal.aborted) setUploading({ bytes: loaded, total: file.size, done: i, count, name: file.name }) }, undefined, c.signal, replyTo)
+  }
   // Angehängt, aber noch nicht gesendet (Einfügen, Ziehen, Auswählen): erst mit „Senden“ hochgeladen
   const [staged, setStaged] = useState<{ file: File; url: string | null }[]>([])
   const stage = (files: File[]) => {
@@ -462,7 +480,7 @@ function Conversation({ room, chat, onBack, focus }: { room: ChatRoom; chat: Ret
   const input = useRef<HTMLTextAreaElement>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const atBottom = useRef(true)
-  const names = nameIn(room, me.id)
+  const names = nameIn(room, me.id, list)
   // @Erwaehnungen: Hervorheben und Vorschlaege beim Schreiben („@“ + Anfang des Namens)
   const { names: mention, people } = useMemo(() => mentionNames(room, me.id), [room, me.id])
   // Infobereich rechts (nur breit genug, nicht am Handy)
@@ -541,6 +559,8 @@ function Conversation({ room, chat, onBack, focus }: { room: ChatRoom; chat: Ret
   // Bewertungen von Pukkis Antworten (1 / -1) und das kurze „Danke!“ nach einem 👍
   const [ratings, setRatings] = useState<Record<number, number>>({})
   const [thanked, setThanked] = useState<number | null>(null)
+  // Offenes Reaktionsmenü (eine Nachricht): nach der Auswahl schließen
+  const [reacting, setReacting] = useState<number | null>(null)
   useEffect(() => {
     if (isPukki(room)) api.get<Record<number, number>>('/api/chat/pukki/ratings').then(setRatings).catch(() => {})
   }, [room.id]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -632,19 +652,23 @@ function Conversation({ room, chat, onBack, focus }: { room: ChatRoom; chat: Ret
       const files = staged
       setStaged([])
       setText('')
+      uploadCtl.current = new AbortController()
       for (let i = 0; i < files.length; i++) {
         const { file, url } = files[i]
-        setUploading(file.name)
-        try { atBottom.current = true; chat.put(await uploadToRoom(room.id, file, i === files.length - 1 && value ? value : undefined)) }
+        // Text und Antwort-Bezug hängen an der letzten Nachricht
+        const last = i === files.length - 1
+        try { atBottom.current = true; chat.put(await uploadOne(file, i, files.length, last && value ? value : undefined, last ? reply?.id : undefined)) }
         catch (e) {
-          // Nicht gesendet: zurück in die Liste, der Text auch
-          fail(new Error(tError(e instanceof Error ? e.message : String(e))))
+          // Nicht gesendet (Fehler oder abgebrochen): zurück in die Liste, der Text auch
+          if (uploadCtl.current?.signal.aborted) notify(t('Hochladen abgebrochen'))
+          else fail(new Error(tError(e instanceof Error ? e.message : String(e))))
           setStaged(files.slice(i))
           setText(value)
           break
         }
         if (url) URL.revokeObjectURL(url)
       }
+      uploadCtl.current = null
       setUploading(null)
       setReply(null)
       chatStatusChanged()
@@ -669,11 +693,16 @@ function Conversation({ room, chat, onBack, focus }: { room: ChatRoom; chat: Ret
   }
 
   const upload = async (files: File[]) => {
-    for (const f of files) {
-      setUploading(f.name)
-      try { atBottom.current = true; chat.put(await uploadToRoom(room.id, f)) }
-      catch (e) { fail(new Error(tError(e instanceof Error ? e.message : String(e)))); break }
+    uploadCtl.current = new AbortController()
+    for (let i = 0; i < files.length; i++) {
+      try { atBottom.current = true; chat.put(await uploadOne(files[i], i, files.length)) }
+      catch (e) {
+        if (uploadCtl.current?.signal.aborted) notify(t('Hochladen abgebrochen'))
+        else fail(new Error(tError(e instanceof Error ? e.message : String(e))))
+        break
+      }
     }
+    uploadCtl.current = null
     setUploading(null)
   }
 
@@ -816,7 +845,7 @@ function Conversation({ room, chat, onBack, focus }: { room: ChatRoom; chat: Ret
             <MenuItem icon={<ArrowDownload20Regular />} onClick={() => { location.href = `/api/chat/rooms/${room.id}/export` }}>{t('Unterhaltung exportieren')}</MenuItem>
             <MenuDivider />
             <MenuItem icon={<ArrowExit20Regular />} onClick={async () => {
-              if (!await askConfirm('', room.kind === 'group' ? t('Gruppe „{name}“ verlassen?', { name: room.title }) : t('Unterhaltung mit {name} ausblenden?', { name: room.title }))) return
+              if (!await askConfirm('', room.kind === 'group' ? t('Gruppe „{name}“ verlassen?', { name: room.title }) : t('Unterhaltung mit {name} ausblenden? Der Verlauf bleibt erhalten, mit der nächsten Nachricht erscheint sie wieder.', { name: room.title }))) return
               roomAction(() => api.post(`/api/chat/rooms/${room.id}/leave`)).then(onBack)
             }}>{room.kind === 'group' ? t('Gruppe verlassen') : t('Unterhaltung ausblenden')}</MenuItem>
           </MenuList>
@@ -824,9 +853,31 @@ function Conversation({ room, chat, onBack, focus }: { room: ChatRoom; chat: Ret
       </Menu>
   )
 
+  // Dasselbe wie im Menü „…“ auch im Menüband (Stummschalten, Standort, Exportieren, Verlassen stehen dort schon)
+  const freeSpaces = spaceKinds.filter(k => !sp.spaces.some(x => x.kind === k))
+  const ribbonActions = (
+    <RibbonActions>
+      {room.kind === 'group' && <RibbonButton icon={<People20Regular />} label={t('Mitglieder')} onClick={() => setMembers(true)} />}
+      {room.kind === 'group' && <Menu>
+        <MenuTrigger disableButtonEnhancement><RibbonButton icon={<AddSquare20Regular />} label={t('Gruppenräume')}
+          disabled={!(room.admin && freeSpaces.length) && !sp.spaces.some(x => x.mine)} /></MenuTrigger>
+        <MenuPopover><MenuList><SpacesMenu room={room} spaces={sp.spaces} onChanged={sp.setSpaces} fail={fail} /></MenuList></MenuPopover>
+      </Menu>}
+      {room.kind === 'group' && <RibbonButton icon={<Rename20Regular />} label={t('Umbenennen')} disabled={!room.admin} onClick={async () => {
+        const title = await askText(t('Gruppe umbenennen'), room.title)
+        if (title) roomAction(() => api.put(`/api/chat/rooms/${room.id}`, { title }))
+      }} />}
+      <Menu>
+        <MenuTrigger disableButtonEnhancement><RibbonButton icon={<Color20Regular />} label={t('Farbe')} /></MenuTrigger>
+        <MenuPopover><ColorSwatches current={room.color} none onPick={color => roomAction(() => api.put(`/api/chat/rooms/${room.id}`, { color: color ?? '' }))} /></MenuPopover>
+      </Menu>
+    </RibbonActions>
+  )
+
   let lastDay = ''
   return (
     <>
+      {!mobile && ribbonActions}
       {mobile
         ? <BackBar onBack={onBack} title={<div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>{info}</div>}>{menu}</BackBar>
         : <div className={s.head}>{info}{menu}</div>}
@@ -844,7 +895,7 @@ function Conversation({ room, chat, onBack, focus }: { room: ChatRoom; chat: Ret
           // Neuer Tag: Datum; am selben Tag nach mehr als 4 Stunden Pause (etwa morgens nach einer spaeten Nachricht): die Uhrzeit
           const dayLine = day !== lastDay ? (lastDay = day, <div className={s.day}>{dayLabel(m.created)}</div>)
             : prevAny && Date.parse(m.created) - Date.parse(prevAny.created) >= PAUSE ? <div className={s.day}>{fmtTime(new Date(m.created))}</div> : null
-          if (m.kind === 'system') return <Fragment key={m.id}>{dayLine}<div className={s.system}>{systemText(m.text, m.sender, names, t)}</div></Fragment>
+          if (m.kind === 'system') return <Fragment key={m.id}>{dayLine}<div className={s.system}>{systemText(m.text, m.sender, names, t, me.id)}</div></Fragment>
           const own = m.sender === me.id
           const prev = list[i - 1]
           const first = !prev || prev.sender !== m.sender || prev.kind === 'system' || !!dayLine
@@ -862,7 +913,12 @@ function Conversation({ room, chat, onBack, focus }: { room: ChatRoom; chat: Ret
               <div id={`msg-${m.id}`} className={mergeClasses(s.line, own && s.lineOwn, first && s.gap)}>
                 {fromPukki && (pose ? <img src={pukkiPose(figure, moodOf(m))} alt="" className={s.pose} /> : <span className={s.poseSpace} />)}
                 {own && (selfPic && self ? <span className={s.self}><UserAvatar id={self.id} name={self.name} login={self.login} avatar={self.avatar} accent={self.accent} size={32} /></span> : <span className={s.selfSpace} />)}
-                <div className={mergeClasses(s.bubble, own && s.bubbleOwn)} style={flash === m.id ? { outline: `2px solid ${tokens.colorBrandStroke1}`, outlineOffset: 2 } : undefined}>
+                <div className={mergeClasses(s.bubble, own && s.bubbleOwn)} style={flash === m.id ? { outline: `2px solid ${tokens.colorBrandStroke1}`, outlineOffset: 2 } : undefined}
+                  onContextMenu={featureOn('ctxall') && !m.deleted ? e => {
+                    // Markierter Text oder ein Link: das Menü des Browsers (Kopieren, Link öffnen) bleibt
+                    if (window.getSelection()?.toString() || (e.target as HTMLElement).closest('a')) return
+                    msgMenu.open(e, m)
+                  } : undefined}>
                   {first && !own && room.kind === 'group' && <div className={s.sender}>{m.senderName}</div>}
                   {m.replyTo && (
                     <div className={s.quote} onClick={() => document.getElementById(`msg-${m.replyTo}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' })}>
@@ -923,13 +979,13 @@ function Conversation({ room, chat, onBack, focus }: { room: ChatRoom; chat: Ret
                 {thanked === m.id && <span className={s.thanks} role="status">{t('Danke!')}</span>}
                 {!m.deleted && (
                   <div className={mergeClasses(s.actions, 'dm-actions')} style={mobile ? { visibility: 'visible' } : undefined}>
-                    <Menu>
+                    <Menu open={reacting === m.id} onOpenChange={(_, d) => setReacting(d.open ? m.id : null)}>
                       <MenuTrigger disableButtonEnhancement>
                         <Button size="small" appearance="subtle" icon={<Emoji20Regular />} aria-label={t('Reagieren')} />
                       </MenuTrigger>
                       <MenuPopover>
                         <div style={{ display: 'flex', gap: 2, padding: 4 }}>
-                          {QUICK.map(e => <Button key={e} size="small" appearance="subtle" onClick={() => react(m, e)}>{e}</Button>)}
+                          {QUICK.map(e => <Button key={e} size="small" appearance="subtle" style={QUICK_BTN} onClick={() => { setReacting(null); react(m, e) }}>{e}</Button>)}
                         </div>
                       </MenuPopover>
                     </Menu>
@@ -1000,7 +1056,7 @@ function Conversation({ room, chat, onBack, focus }: { room: ChatRoom; chat: Ret
           ))}
         </div>
       )}
-      {uploading && <div className={s.bar}><Spinner size="extra-tiny" /><span className={s.barText}>{t('Wird hochgeladen: {name}', { name: uploading })}</span></div>}
+      {uploading && <UploadBar p={uploading} onCancel={() => uploadCtl.current?.abort()} style={{ padding: '6px 12px' }} />}
       {staged.length > 0 && !editing && (
         <div className={s.staged}>
           {staged.map((x, i) => (
@@ -1084,6 +1140,31 @@ function Conversation({ room, chat, onBack, focus }: { room: ChatRoom; chat: Ret
       }} />}
       {picker === 'note' && <NotePickerDialog onClose={() => setPicker(null)} onPick={(n, mode) => sendRefs([{ type: 'note', noteId: n.id, mode }])} />}
       {members && <MembersDialog room={room} me={me.id} onClose={() => setMembers(false)} onChanged={() => chat.refresh()} />}
+      {msgMenu.ctx && (() => {
+        const m = msgMenu.ctx.data, own = m.sender === me.id
+        const run = (f: () => void) => () => { msgMenu.close(); f() }
+        const canDelete = (own && changeable(m)) || (room.kind === 'group' && room.admin)
+        return (
+          <ContextMenu at={msgMenu.ctx.at} onClose={msgMenu.close}>
+            <MenuItem icon={<ArrowReply20Regular />} onClick={run(() => { setReply(m); setEditing(null); input.current?.focus() })}>{t('Antworten')}</MenuItem>
+            {own && m.text != null && changeable(m) && (
+              <MenuItem icon={<Edit20Regular />} onClick={run(() => { setEditing(m); setReply(null); setText(m.text ?? ''); input.current?.focus() })}>{t('Bearbeiten')}</MenuItem>
+            )}
+            <Menu>
+              <MenuTrigger disableButtonEnhancement><MenuItem icon={<Emoji20Regular />}>{t('Reagieren')}</MenuItem></MenuTrigger>
+              <MenuPopover>
+                <div style={{ display: 'flex', gap: 2, padding: 4 }}>
+                  {QUICK.map(x => <Button key={x} size="small" appearance="subtle" style={QUICK_BTN} onClick={run(() => react(m, x))}>{x}</Button>)}
+                </div>
+              </MenuPopover>
+            </Menu>
+            <MenuItem icon={<ArrowForward20Regular />} onClick={run(() => setForwarding(m))}>{t('Weiterleiten')}</MenuItem>
+            {m.text && <MenuItem icon={<Copy20Regular />} onClick={run(() => { void copyText(m.text ?? '') })}>{t('Text kopieren')}</MenuItem>}
+            {canDelete && <MenuDivider />}
+            {canDelete && <MenuItem icon={<Delete20Regular />} onClick={run(() => remove(m))}>{t('Für alle löschen')}</MenuItem>}
+          </ContextMenu>
+        )
+      })()}
       {forwarding && (
         <ForwardDialog message={forwarding} rooms={(chat.rooms ?? []).filter(r => r.id !== room.id)} onClose={() => setForwarding(null)}
           onDone={list => { setForwarding(null); list.forEach(chat.put); notify(t('Weitergeleitet')) }} />
@@ -1185,7 +1266,11 @@ function Linkified({ text, mention, fromAi }: { text: string; mention?: MentionN
     // Text aus der KI: keine Sprünge innerhalb von dmOffice, Links nur mit Rückfrage
     if (fromAi && md) return md[2].startsWith('#/') ? <Fragment key={i}>{md[1]}</Fragment> : <AiLink key={i} url={md[2]} label={md[1]} />
     if (fromAi && /^https?:/i.test(p)) return <AiLink key={i} url={p} label={p} />
-    // Interne Links (#/…): in dmOffice selbst öffnen
+    // [feature:journal]
+    // Interne Links (#/journal/entry/…): in dmOffice selbst öffnen
+    // [feature:journal:else]
+    // // Interne Links (#/…): in dmOffice selbst öffnen
+    // [/feature:journal]
     if (md && md[2].startsWith('#/')) return <a key={i} href={md[2]}>{md[1]}</a>
     // Fremde Adresse hinter einem Titel: das Ziel steht dabei - sonst ließe sich über eine untergeschobene Nachricht (etwa ein
     // Mail-Betreff, den die KI im Verlauf sieht) ein harmlos klingender Titel mit einem fremden Ziel zeigen
@@ -1286,6 +1371,17 @@ function RefView({ message, r, index, own, onPreview, onImage, onSave, onLoad, o
 }) {
   const s = useStyles()
   const [gone, setGone] = useState(false)
+  // Bild ohne Vorschau (kaputt, leer, nur dem Namen nach ein Bild): als Datei mit Herunterladen zeigen
+  const [noPreview, setNoPreview] = useState(false)
+  // Vorschau scheitert: gelöscht nur, wenn auch die Datei selbst fehlt - sonst ist es kein lesbares Bild
+  const imageFailed = () => {
+    fetch(refUrl(message.id, index, 'file'), { credentials: 'same-origin', headers: { Range: 'bytes=0-0' } })
+      .then(res => { void res.body?.cancel(); if (res.status === 404 || res.status === 410) setGone(true); else setNoPreview(true) })
+      .catch(() => setNoPreview(true))
+  }
+  // Datei im Betrachter von dmOffice statt in einem neuen Fenster
+  const { fail } = useApp()
+  const preview = useFilePreview(fail)
   const label = r.type === 'location' ? t('Standort') : r.name
   // Abgelaufen oder zurueckgezogen: Empfaenger sehen nur noch den Hinweis, der Besitzer kann wieder freigeben
   if (r.state !== 'ok' && !own) return (
@@ -1319,10 +1415,10 @@ function RefView({ message, r, index, own, onPreview, onImage, onSave, onLoad, o
       {badge}
     </div>
   )
-  if (r.type === 'file' && isImage(r) && !gone) return (
+  if (r.type === 'file' && isImage(r) && !gone && !noPreview) return (
     <div>
-      <img className={s.image} src={refUrl(message.id, index, 'thumb', { size: 512 })} alt={r.name} loading="lazy"
-        onClick={onImage} onLoad={onLoad} onError={() => setGone(true)} />
+      <img className={s.image} src={refUrl(message.id, index, 'thumb', { size: 512, quiet: 1 })} alt={r.name} loading="lazy"
+        onClick={onImage} onLoad={onLoad} onError={imageFailed} />
       <div className={s.badgeRow}>
         <ModeBadge r={r} />
         {canSave && <Tooltip content={t('Bei mir speichern')} relationship="label"><Button size="small" appearance="subtle" icon={<Save20Regular />} onClick={onSave} /></Tooltip>}
@@ -1362,7 +1458,8 @@ function RefView({ message, r, index, own, onPreview, onImage, onSave, onLoad, o
         <KindIcon item={{ name: r.name, isDir: false, mime: r.mime }} />
         <span className={s.cardText}>
           {gone ? <span className={s.gone}>{t('{name} – nicht mehr verfügbar', { name: r.name })}</span> : (
-            <a href={refUrl(message.id, index, 'file', { inline: true })} target="_blank" rel="noopener noreferrer" style={{ color: 'inherit' }}>{r.name}</a>
+            <a href={refUrl(message.id, index, 'file', { inline: true })} style={{ color: 'inherit' }}
+              onClick={e => { e.preventDefault(); preview.open({ url: refUrl(message.id, index, 'file', { inline: true }), download: refUrl(message.id, index, 'file'), name: r.name, mime: r.mime, size: r.size ?? undefined, noDownload: !canDownload }) }}>{r.name}</a>
           )}
           {r.size != null && <><br /><span className={s.gone} style={{ fontStyle: 'normal' }}>{fmtSize(r.size)}</span></>}
         </span>
@@ -1374,6 +1471,7 @@ function RefView({ message, r, index, own, onPreview, onImage, onSave, onLoad, o
         {!gone && canSave && <Tooltip content={t('Bei mir speichern')} relationship="label"><Button size="small" appearance="subtle" icon={<Save20Regular />} onClick={onSave} /></Tooltip>}
       </div>
       {badge}
+      {preview.element}
     </div>
   )
 }

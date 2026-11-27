@@ -157,23 +157,59 @@ public static class Focus
         UserDb.Exec(conn, "INSERT INTO kv(key,value) VALUES($k,$v) ON CONFLICT(key) DO UPDATE SET value=$v", ("$k", key), ("$v", next.ToString()));
     }
 
-    /// <summary>Noch nicht eingeordnete Mails eines Ordners einordnen - mit Inhalt, wo er hier liegt, sonst nach Absender.</summary>
+    /// <summary>Je Ordner läuft höchstens ein Einordnen; wer dazukommt, wartet darauf statt dieselben Mails noch einmal zu lesen.</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(UserDb, string, string), SemaphoreSlim> Running = new();
+    /// <summary>Mails, deren Inhalt sich nicht lesen ließ - nicht bei jedem Aufruf erneut versuchen.</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(UserDb, string, string, uint), byte> Unreadable = new();
+
+    /// <summary>So lange darf das Einordnen eine Anfrage aufhalten; der Rest läuft danach weiter.</summary>
+    private static readonly TimeSpan InRequest = TimeSpan.FromMilliseconds(400);
+
+    /// <summary>
+    /// Noch nicht eingeordnete Mails eines Ordners einordnen - mit Inhalt, wo er hier liegt, sonst nach Absender. Die neuesten
+    /// zuerst; die Anfrage wartet höchstens kurz (InRequest), die übrigen ordnet derselbe Lauf danach im Hintergrund ein.
+    /// </summary>
     public static void Backfill(UserSpace space, string account, string folder, int limit = 500)
     {
-        var db = space.Db;
-        var rows = db.Query("SELECT uid FROM mail WHERE account=$a AND folder=$f AND focus IS NULL ORDER BY date DESC LIMIT $n",
-            r => (uint)r.GetInt64(0), ("$a", account), ("$f", folder), ("$n", limit));
-        foreach (var uid in rows)
+        var gate = Running.GetOrAdd((space.Db, account, folder), _ => new SemaphoreSlim(1, 1));
+        // Läuft schon einer: kurz warten, sonst ordnet der laufende weiter ein - nicht dieselben Mails doppelt lesen
+        if (!gate.Wait(InRequest)) return;
+        var done = new ManualResetEventSlim();
+        _ = Task.Run(() =>
         {
-            bool focused;
-            if (MailStore.Raw(db, account, folder, uid) is { } raw)
+            try { Run(space, account, folder, limit); }
+            catch (Exception) { /* Einordnen ist Beiwerk: Liste kommt auch ohne */ }
+            finally { done.Set(); gate.Release(); }
+        });
+        // Was in der kurzen Zeit fertig wird, zeigt die Anfrage schon richtig
+        done.Wait(InRequest);
+    }
+
+    private static void Run(UserSpace space, string account, string folder, int limit)
+    {
+        var db = space.Db;
+        var skip = Unreadable.Keys.Where(k => k.Item1 == db && k.Item2 == account && k.Item3 == folder).Select(k => k.Item4).ToHashSet();
+        var left = limit;
+        while (left > 0)
+        {
+            // Stückweise: jedes Stück in einer Schreibtransaktion, die Anfrage bekommt das erste
+            var rows = db.Query("SELECT uid FROM mail WHERE account=$a AND folder=$f AND focus IS NULL ORDER BY date DESC LIMIT $n",
+                r => (uint)r.GetInt64(0), ("$a", account), ("$f", folder), ("$n", Math.Min(left, 50) + skip.Count))
+                .Where(u => !skip.Contains(u)).Take(Math.Min(left, 50)).ToList();
+            if (rows.Count == 0) break;
+            var result = new List<(uint Uid, bool Focused)>();
+            foreach (var uid in rows)
             {
-                try { focused = Classify(space, MimeMessage.Load(new MemoryStream(raw))); }
-                catch (FormatException) { continue; }
+                if (MailStore.Raw(db, account, folder, uid) is { } raw)
+                {
+                    try { result.Add((uid, Classify(space, MimeMessage.Load(new MemoryStream(raw))))); }
+                    catch (FormatException) { Unreadable[(db, account, folder, uid)] = 0; skip.Add(uid); }
+                }
+                else if (MailStore.Row(db, account, folder, uid) is { } row) result.Add((uid, ClassifyRow(space, row)));
+                else skip.Add(uid);
             }
-            else if (MailStore.Row(db, account, folder, uid) is { } row) focused = ClassifyRow(space, row);
-            else continue;
-            MailStore.SetFocus(db, account, folder, new[] { uid }, focused);
+            MailStore.SetFocus(db, account, folder, result);
+            left -= rows.Count;
         }
     }
 }

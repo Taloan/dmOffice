@@ -22,6 +22,13 @@ const APP = path.join(ROOT, 'apps', 'mobile', 'app', 'src', 'main', 'assets', 't
 const readJson = f => JSON.parse(fs.readFileSync(f, 'utf8').replace(/^﻿/, ''))
 const exists = f => { try { fs.accessSync(f); return true } catch { return false } }
 const zusatz = readJson(path.join(HERE, 'zusatz.json'))
+// Funktionen dieses Stands (DmOffice.Server/features.json): Einträge mit „feature“ gehören zu einer Funktion und entfallen, wenn
+// der Release-Schnitt sie entfernt hat (tools/release-strip.mjs). Texte können statt eines Strings eine Liste von Varianten sein
+// ([{ "feature": "faces", "text": "…" }, { "text": "…" }]): es gilt die erste, deren Funktion es hier gibt.
+const features = exists(path.join(SERVER, 'features.json')) ? Object.keys(readJson(path.join(SERVER, 'features.json'))) : null
+const hasFeature = f => !f || !features || features.includes(f)
+const isVariants = v => Array.isArray(v) && v.length > 0 && v.every(x => x && typeof x === 'object' && 'text' in x)
+const pick = v => isVariants(v) ? (v.find(x => hasFeature(x.feature))?.text ?? '') : v
 const old = exists(OUT) ? readJson(OUT) : { sections: [], texts: {} }
 
 // Lizenztexte: je Text ein Schlüssel; Standardtexte (tools/lizenzen/texte/<SPDX>.txt) unter ihrer SPDX-Kennung,
@@ -174,7 +181,7 @@ function appSection() {
   return app.sections.find(s => s.id === 'app')?.entries || []
 }
 function extra(id) {
-  return (zusatz[id] || []).map(e => ({ ...e, texts: e.texts || spdxTexts(e.license) }))
+  return (zusatz[id] || []).filter(e => hasFeature(e.feature)).map(({ feature, ...e }) => ({ ...e, texts: e.texts || spdxTexts(e.license) }))
 }
 
 function keep(id) {
@@ -204,7 +211,7 @@ if (!exists(OUT) || fs.readFileSync(OUT, 'utf8') !== json) fs.writeFileSync(OUT,
 if (exists(path.join(ROOT, 'LICENSE'))) {
   const L = zusatz.markdown
   for (const lang of ['en', 'de']) {
-    const m = L[lang]
+    const m = Object.fromEntries(Object.entries(L[lang]).map(([k, v]) => [k, pick(v)]))
     const esc = s => String(s ?? '').replace(/\|/g, '\\|')
     let md = `# ${m.title}\n\n${lang === 'en' ? '[Deutsch](THIRD-PARTY-NOTICES.de.md) · **English**' : '**Deutsch** · [English](THIRD-PARTY-NOTICES.md)'}\n\n${m.intro}\n`
     for (const s of sections) {

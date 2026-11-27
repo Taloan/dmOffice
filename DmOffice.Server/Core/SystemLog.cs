@@ -4,8 +4,9 @@ namespace DmOffice.Core;
 
 /// <summary>
 /// Systemprotokoll für die Verwaltung: Warnungen und Fehler des Servers seit dem Start (die letzten 2000), dazu Antworten 429
-/// und 5xx mit Pfad (ohne Abfrageteil - der kann Tokens enthalten). Nur im Speicher; das vollständige Protokoll bleibt das des
-/// Containers (docker logs). Inhalte von Mails, Dateien oder Passwörter schreibt dmOffice nicht ins Protokoll.
+/// und 5xx mit Pfad (ohne Abfrageteil - der kann Tokens enthalten). Im Speicher; mit der Kennung syslogfile zusätzlich je Tag in
+/// eine Datei unter &lt;Daten&gt;/logs (<see cref="SystemLogFile"/>), dort auch Informationsmeldungen der Hintergrundaufgaben.
+/// Inhalte von Mails, Dateien oder Passwörter schreibt dmOffice nicht ins Protokoll.
 /// </summary>
 public sealed class SystemLog : ILoggerProvider
 {
@@ -38,8 +39,13 @@ public sealed class SystemLog : ILoggerProvider
             e == null ? null : e.GetType().Name + ": " + e.Message);
         Entries.Enqueue(entry);
         while (Entries.Count > Keep && Entries.TryDequeue(out _)) { }
+        SystemLogFile.Current?.Write(entry.At, entry.Level, entry.Category, Redact(message), e);
         return entry;
     }
+
+    /// <summary>Der Einrichtungscode steht in der Konsole und (bis er verbraucht ist) im Speicher - nicht dauerhaft in der Datei.</summary>
+    private static string Redact(string message) =>
+        Auth.SetupCode is { Length: > 0 } code && message.Contains(code, StringComparison.Ordinal) ? message.Replace(code, "(Code ausgeblendet)") : message;
 
     /// <summary>429 festhalten - weitere von derselben Adresse kurz danach im selben Eintrag.</summary>
     internal static void Throttled(string ip, string request)
@@ -51,6 +57,9 @@ public sealed class SystemLog : ILoggerProvider
                 b.Count++; b.Last = now;
                 b.Entry.At = now;
                 b.Entry.Message = $"429 – {b.Count} Anfragen von {ip} gebremst, zuletzt {request}";
+                // In der Datei steht der Eintrag vom Anfang der Serie - den Zwischenstand bei 10, 100, 1000 … dazu
+                if (b.Count is 10 or 100 or 1000 || b.Count % 10000 == 0)
+                    SystemLogFile.Current?.Write(now, b.Entry.Level, b.Entry.Category, b.Entry.Message, (string?)null);
                 return;
             }
         Bursts[ip] = new Burst { Entry = Add(LogLevel.Warning, "Http", $"429 {request} ({ip})"), Count = 1, Last = now };
@@ -66,7 +75,7 @@ public sealed class SystemLog : ILoggerProvider
     }
 
     /// <summary>Microsoft.AspNetCore.Server.Kestrel → Kestrel, DmOffice.Mail.MailSync → Mail.MailSync</summary>
-    private static string Short(string category)
+    internal static string Short(string category)
     {
         if (category.StartsWith("DmOffice.", StringComparison.Ordinal)) return category[9..];
         var dot = category.LastIndexOf('.');
@@ -78,12 +87,16 @@ public sealed class SystemLog : ILoggerProvider
 
     private sealed class Logger(string category) : ILogger
     {
+        // Informationsmeldungen dieser Kategorie gehen in die Datei (nur Hintergrundaufgaben, nicht in den Speicher)
+        private readonly bool _info = SystemLogFile.InfoWanted(category);
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-        public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Warning;
+        public bool IsEnabled(LogLevel logLevel) =>
+            logLevel >= LogLevel.Warning && logLevel != LogLevel.None || logLevel == LogLevel.Information && _info && SystemLogFile.Current != null;
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
         {
             if (!IsEnabled(logLevel)) return;
-            Add(logLevel, category, formatter(state, exception), exception);
+            if (logLevel >= LogLevel.Warning) Add(logLevel, category, formatter(state, exception), exception);
+            else SystemLogFile.Current?.Write(DateTime.UtcNow, logLevel.ToString(), Short(category), formatter(state, exception), exception);
         }
     }
 

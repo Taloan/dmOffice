@@ -4,10 +4,15 @@ using Microsoft.Data.Sqlite;
 
 namespace DmOffice.Gallery;
 
-/// <summary>Ein Album: fest (Einträge von Hand) oder smart (gespeicherte Filterleiste über die Fotos des Besitzers).</summary>
+/// <summary>
+/// Ein Album: fest (Einträge von Hand), smart (gespeicherte Filterleiste über die Fotos des Besitzers) oder die Schnellsammlung
+/// (wie ein festes, eine je Benutzer, vom System angelegt: nicht umbenennbar, nicht löschbar, nicht teilbar - Kennung quickcoll).
+/// </summary>
 public sealed record Album(long Id, string Owner, string Name, string Kind, string? Rule, string Created, List<string> Members)
 {
-    public const string Fixed = "fixed", Smart = "smart";
+    public const string Fixed = "fixed", Smart = "smart", Quick = "quick";
+    /// <summary>Einträge von Hand (fest oder Schnellsammlung).</summary>
+    public bool Holds => Kind is Fixed or Quick;
     public bool Sees(string user) => user == Owner || Members.Contains(user);
 }
 
@@ -39,7 +44,7 @@ public sealed class AlbumStore
 
     public AlbumStore(string path, byte[] key)
     {
-        _connectionString = new SqliteConnectionStringBuilder { DataSource = path, Password = "x'" + Convert.ToHexString(key) + "'", DefaultTimeout = 30 }.ToString();
+        _connectionString = DmOffice.Core.UserDb.ConnectionStringOf(path, key);
         using var conn = Open();
         UserDb.Exec(conn, @"CREATE TABLE IF NOT EXISTS albums (id INTEGER PRIMARY KEY AUTOINCREMENT, owner TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL,
                 rule TEXT NULL, created TEXT NOT NULL);
@@ -120,6 +125,23 @@ public sealed class AlbumStore
         }
     }
 
+    /// <summary>Die Schnellsammlung eines Benutzers; beim ersten Mal angelegt.</summary>
+    public Album Quick(string owner)
+    {
+        lock (_write)
+        {
+            using var conn = Open();
+            var id = UserDb.Query(conn, "SELECT id FROM albums WHERE owner=$o AND kind=$k ORDER BY id LIMIT 1", r => r.GetInt64(0), ("$o", owner), ("$k", Album.Quick)).FirstOrDefault();
+            if (id == 0)
+            {
+                UserDb.Exec(conn, "INSERT INTO albums(owner, name, kind, rule, created) VALUES($o,$n,$k,NULL,$c)",
+                    ("$o", owner), ("$n", "Schnellsammlung"), ("$k", Album.Quick), ("$c", DateTime.UtcNow.ToString("o")));
+                id = UserDb.Query(conn, "SELECT last_insert_rowid()", r => r.GetInt64(0)).First();
+            }
+            return UserDb.Query(conn, "SELECT id, owner, name, kind, rule, created FROM albums WHERE id=$i", r => Read(conn, r), ("$i", id)).First();
+        }
+    }
+
     public void Update(long id, string? name, string? rule)
     {
         lock (_write)
@@ -138,6 +160,8 @@ public sealed class AlbumStore
             using var tx = conn.BeginTransaction();
             UserDb.Exec(conn, "DELETE FROM album_members WHERE album=$i", ("$i", id));
             foreach (var m in members.Distinct()) UserDb.Exec(conn, "INSERT INTO album_members(album, user) VALUES($i,$u)", ("$i", id), ("$u", m));
+            // Wie beim Aussteigen: Fotos eines entfernten Mitglieds gehen mit
+            UserDb.Exec(conn, Foreign("DELETE FROM album_items WHERE album=$i AND"), ("$i", id));
             tx.Commit();
         }
     }
@@ -155,17 +179,22 @@ public sealed class AlbumStore
         }
     }
 
+    /// <summary>Bedingung "Foto gehört weder dem Besitzer des Albums noch einem Mitglied" an <paramref name="head"/> angehängt.</summary>
+    private static string Foreign(string head) =>
+        head + " (owner NOT IN (SELECT owner FROM albums WHERE id=$i) AND owner NOT IN (SELECT user FROM album_members WHERE album=$i))";
+
     public List<AlbumItem> Items(long id)
     {
         using var conn = Open();
-        return UserDb.Query(conn, "SELECT owner, ref, added_by, added FROM album_items WHERE album=$i ORDER BY added DESC",
+        // Nur Fotos von Besitzer und Mitgliedern (Altbestand: entfernte Mitglieder blieben früher drin)
+        return UserDb.Query(conn, Foreign("SELECT owner, ref, added_by, added FROM album_items WHERE album=$i AND NOT") + " ORDER BY added DESC",
             r => new AlbumItem(r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3)), ("$i", id)).ToList();
     }
 
     public bool Contains(long id, string owner, string reference)
     {
         using var conn = Open();
-        return UserDb.Query(conn, "SELECT 1 FROM album_items WHERE album=$i AND owner=$o AND ref=$r", r => 1, ("$i", id), ("$o", owner), ("$r", reference)).Any();
+        return UserDb.Query(conn, Foreign("SELECT 1 FROM album_items WHERE album=$i AND owner=$o AND ref=$r AND NOT"), r => 1, ("$i", id), ("$o", owner), ("$r", reference)).Any();
     }
 
     public int Add(long id, string owner, IEnumerable<string> refs, string addedBy)
@@ -178,6 +207,19 @@ public sealed class AlbumStore
             foreach (var r in refs.Distinct())
                 n += UserDb.Exec(conn, "INSERT OR IGNORE INTO album_items(album, owner, ref, added_by, added) VALUES($i,$o,$r,$b,$t)",
                     ("$i", id), ("$o", owner), ("$r", r), ("$b", addedBy), ("$t", DateTime.UtcNow.ToString("o")));
+            tx.Commit();
+            return n;
+        }
+    }
+
+    /// <summary>Einträge eines Benutzers mit Präfix <paramref name="from"/> umschreiben (Galerie-Ordner neu zugeordnet).</summary>
+    public int RenameRefs(string owner, string from, string to)
+    {
+        lock (_write)
+        {
+            using var conn = Open();
+            using var tx = conn.BeginTransaction();
+            var n = DmOffice.Storage.FolderRelink.RenameKeys(conn, "album_items", "ref", from, to, "owner = $o", ("$o", owner));
             tx.Commit();
             return n;
         }

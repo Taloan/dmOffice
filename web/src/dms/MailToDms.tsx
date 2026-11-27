@@ -38,10 +38,38 @@ async function file(items: MailRef[], what: What, profile: string | null, parts?
 
 /** Knopf „Ins DMS ablegen“ für die Leiste des Mail-Bereichs, mit Auswahl wie bei „Nachverfolgen“. */
 export function DmsMailRibbon({ items, disabled }: { items: MailRef[]; disabled: boolean }) {
+  const { profiles, choices } = useDmsChoices(items)
+  if (!featureOn('dms')) return null
+  return (
+    <Menu>
+      <MenuTrigger disableButtonEnhancement>
+        <RibbonButton icon={<DocumentBulletList20Regular />} label={t('Ins DMS')} disabled={disabled} />
+      </MenuTrigger>
+      <MenuPopover>
+        <MenuList>{profileChoices(profiles, choices)}</MenuList>
+      </MenuPopover>
+    </Menu>
+  )
+}
+
+/** Dieselbe Auswahl wie der Knopf „Ins DMS“ als Untermenü im Rechtsklick-Menü der Mail (Kennung ctxall). */
+export function DmsMailMenuItem({ items, onDone }: { items: MailRef[]; onDone?: () => void }) {
+  const { profiles, choices } = useDmsChoices(items, onDone)
+  if (!featureOn('dms') || !items.length) return null
+  return (
+    <Menu>
+      <MenuTrigger disableButtonEnhancement><MenuItem icon={<DocumentBulletList20Regular />}>{t('Ins DMS')}</MenuItem></MenuTrigger>
+      <MenuPopover><MenuList>{profileChoices(profiles, choices)}</MenuList></MenuPopover>
+    </Menu>
+  )
+}
+
+/** Ganze Mail / Nur Anhänge / Mail und Anhänge - für ein Ablageprofil. */
+function useDmsChoices(items: MailRef[], onDone?: () => void) {
   const { fail, notify } = useApp()
   const profiles = useProfiles()
-  if (!featureOn('dms')) return null
   const go = async (what: What, profile: string | null) => {
+    onDone?.()
     try {
       const { n, dup } = await file(items, what, profile)
       notify(n || dup ? [n === 1 ? t('1 Dokument im DMS abgelegt') : t('{n} Dokumente im DMS abgelegt', { n }), dup ? t('{d} schon vorhanden', { d: dup }) : ''].filter(Boolean).join(', ') : t('Nichts zum Ablegen (keine Anhänge)'))
@@ -52,23 +80,17 @@ export function DmsMailRibbon({ items, disabled }: { items: MailRef[]; disabled:
     <MenuItem key="a" icon={<Attach20Regular />} onClick={() => go('attachments', profile)}>{t('Nur Anhänge')}</MenuItem>,
     <MenuItem key="b" icon={<MailAttach20Regular />} onClick={() => go('both', profile)}>{t('Mail und Anhänge')}</MenuItem>,
   ]
-  return (
-    <Menu>
-      <MenuTrigger disableButtonEnhancement>
-        <RibbonButton icon={<DocumentBulletList20Regular />} label={t('Ins DMS')} disabled={disabled} />
-      </MenuTrigger>
-      <MenuPopover>
-        <MenuList>
-          {profiles.length <= 1 ? choices(profiles[0]?.id ?? null) : profiles.map(p => (
-            <Menu key={p.id}>
-              <MenuTrigger disableButtonEnhancement><MenuItem>{p.name}{p.default ? ' · ' + t('Standard') : ''}</MenuItem></MenuTrigger>
-              <MenuPopover><MenuList>{choices(p.id)}</MenuList></MenuPopover>
-            </Menu>
-          ))}
-        </MenuList>
-      </MenuPopover>
+  return { profiles, choices }
+}
+
+/** Ein Ablageprofil: gleich die Auswahl; mehrere: je Profil ein Untermenü. */
+function profileChoices(profiles: Profile[], choices: (profile: string | null) => React.ReactNode[]) {
+  return profiles.length <= 1 ? choices(profiles[0]?.id ?? null) : profiles.map(p => (
+    <Menu key={p.id}>
+      <MenuTrigger disableButtonEnhancement><MenuItem>{p.name}{p.default ? ' · ' + t('Standard') : ''}</MenuItem></MenuTrigger>
+      <MenuPopover><MenuList>{choices(p.id)}</MenuList></MenuPopover>
     </Menu>
-  )
+  ))
 }
 
 /** Kleiner Knopf am Anhang, rechts neben „Herunterladen“ und abgetrennt: diesen Anhang ins DMS ablegen (bei mehreren Ablageprofilen mit Auswahl). */
@@ -100,14 +122,40 @@ export function DmsAttachmentButton({ mail, index, name }: { mail: MailRef; inde
   )
 }
 
+/** „Ins DMS ablegen“ für einen Anhang als Eintrag im Rechtsklick-Menü (Kennung ctxall), bei mehreren Ablageprofilen als Untermenü. */
+export function DmsAttachmentMenuItem({ mail, index, name, onDone }: { mail: MailRef; index: number; name: string; onDone?: () => void }) {
+  const { fail, notify } = useApp()
+  const profiles = useProfiles()
+  if (!featureOn('dms')) return null
+  const go = async (profile: string | null) => {
+    onDone?.()
+    try {
+      const { n } = await file([mail], 'attachments', profile, [index])
+      notify(n ? t('„{name}“ im DMS abgelegt', { name }) : t('„{name}“ ist schon im DMS', { name }))
+    } catch (e) { fail(e) }
+  }
+  if (profiles.length <= 1) return <MenuItem icon={<DocumentBulletList20Regular />} onClick={() => go(profiles[0]?.id ?? null)}>{t('Ins DMS ablegen')}</MenuItem>
+  return (
+    <Menu>
+      <MenuTrigger disableButtonEnhancement><MenuItem icon={<DocumentBulletList20Regular />}>{t('Ins DMS ablegen')}</MenuItem></MenuTrigger>
+      <MenuPopover><MenuList>{profiles.map(p => <MenuItem key={p.id} onClick={() => go(p.id)}>{p.name}</MenuItem>)}</MenuList></MenuPopover>
+    </Menu>
+  )
+}
+
 /** Hinweis in der Lese-Ansicht: diese Mail (oder Anhänge daraus) liegt schon im DMS. */
-export function DmsFiledHint({ account, messageId }: { account: string; messageId?: string }) {
+export function useDmsFiled(account: string, messageId?: string) {
   const [count, setCount] = useState(0)
   useEffect(() => {
     setCount(0)
     if (!featureOn('dms') || !messageId) return
     api.get<unknown[]>('/api/dms/by-ref?' + q({ ref: `${account}|${messageId}` })).then(r => setCount(r.length)).catch(() => {})
   }, [account, messageId])
+  return count
+}
+
+export function DmsFiledHint({ account, messageId }: { account: string; messageId?: string }) {
+  const count = useDmsFiled(account, messageId)
   if (!count) return null
   return (
     <Text size={200} style={{ color: tokens.colorNeutralForeground3, display: 'flex', alignItems: 'center', gap: 4 }}>

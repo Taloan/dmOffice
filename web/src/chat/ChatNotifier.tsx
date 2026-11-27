@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { api, q } from '../api'
+import { api } from '../api'
 import { useApp } from '../App'
 import { usePrefs } from '../prefs'
 import { beep, desktopPossible } from '../shell/Notifier'
 import { t } from '../i18n'
 import { ChatRoom } from './store'
+import { onChatWait } from './wait'
 
 export interface ChatStatus {
   seq: number; unread: number
@@ -15,7 +16,7 @@ export interface ChatStatus {
 }
 
 /**
- * Stand des Chats fuer die ganze Oberflaeche (Zahl am Symbol, Hinweise): wartet per Long-Poll auf Aenderungen
+ * Stand des Chats fuer die ganze Oberflaeche (Zahl am Symbol, Hinweise): wartet über den gemeinsamen Long-Poll auf Aenderungen
  * und holt dann den Stand. Auf Zuruf (dmoffice:chatstatus, etwa nach dem Lesen) sofort.
  */
 export function useChatStatus(): ChatStatus | null {
@@ -24,18 +25,13 @@ export function useChatStatus(): ChatStatus | null {
     let alive = true
     let seq = 0
     const load = () => api.get<ChatStatus>('/api/chat/status').then(s => { if (alive) { seq = Math.max(seq, s.seq); setStatus(s) } }).catch(() => {})
-    const run = async () => {
-      await load()
-      while (alive) {
-        try {
-          const r = await api.get<{ seq: number }>('/api/chat/wait?' + q({ since: seq, timeout: 25 }))
-          if (alive && r.seq > seq) await load()
-        } catch { await new Promise(res => setTimeout(res, 10000)) }
-      }
-    }
-    run()
+    let off: (() => void) | undefined
+    load().then(() => {
+      // Gemeinsamer Long-Poll aller Tabs (wait.ts)
+      if (alive) off = onChatWait(r => { if (alive && r.seq > seq) { seq = r.seq; load() } })
+    })
     window.addEventListener('dmoffice:chatstatus', load)
-    return () => { alive = false; window.removeEventListener('dmoffice:chatstatus', load) }
+    return () => { alive = false; off?.(); window.removeEventListener('dmoffice:chatstatus', load) }
   }, [])
   return status
 }

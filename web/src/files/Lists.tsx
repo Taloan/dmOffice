@@ -2,16 +2,16 @@
 // dazu die Liste zum Zeichnen.
 import { rightLabel, rightOf } from '../calendar/ShareDialog'
 import {
-  Button, Checkbox, Input, Spinner, Table, TableBody, TableCell, TableCellLayout, TableHeader, TableHeaderCell, TableRow, Text, Tooltip, makeStyles, mergeClasses, tokens,
+  Button, Checkbox, Input, MenuDivider, MenuItem, Spinner, Table, TableBody, TableCell, TableCellLayout, TableHeader, TableHeaderCell, TableRow, Text, Tooltip, makeStyles, mergeClasses, tokens,
 } from '@fluentui/react-components'
-import { Copy20Regular, Delete20Regular, Dismiss20Regular, LockClosed16Regular, People16Regular, Search20Regular } from '@fluentui/react-icons'
+import { ArrowReset20Regular, Copy20Regular, Delete20Regular, DeleteDismiss20Regular, Dismiss20Regular, LockClosed16Regular, People16Regular, Search20Regular } from '@fluentui/react-icons'
 import { useCallback, useEffect, useState } from 'react'
-import { api, fmtSize, q } from '../api'
+import { api, featureOn, fmtSize, q } from '../api'
 import { locale, t } from '../i18n'
 import { useIsMobile } from '../shell/mobile'
-import { Item, KindIcon, parentOf } from './common'
+import { Item, KindIcon, ShownName, parentOf } from './common'
 import { Link, copyText, linkStatus, linkUrl } from './Dialogs'
-import { askConfirm } from '../shell/context'
+import { ContextMenu, askConfirm, useContextMenu } from '../shell/context'
 import { ColDef, useGridColumns } from '../shell/GridColumns'
 
 const useStyles = makeStyles({
@@ -97,7 +97,16 @@ export function TrashList({ trash, tiles = false, search, onSearch }: { trash: R
   const mobile = useIsMobile()
   const { data, selected, setSelected } = trash
   const grid = useGridColumns('files-trash', TRASH_COLS, ['name', 'place', 'deleted', 'size'], '24px', 'minmax(130px, 1fr)')
+  // Rechtsklick (ctxall): ausserhalb der Auswahl gilt er genau diesem Eintrag, sonst der ganzen Auswahl
+  const menu = useContextMenu<number[]>()
   if (!data) return <Spinner />
+  const ctxOn = featureOn('ctxall')
+  const openMenu = (e: React.MouseEvent, id: number) => {
+    if (!ctxOn) return
+    const ids = selected.includes(id) ? selected : [id]
+    if (!selected.includes(id)) setSelected([id])
+    menu.open(e, ids)
+  }
   const toggle = (id: number) => setSelected(sl => sl.includes(id) ? sl.filter(x => x !== id) : [...sl, id])
   const valueOf = (i: TrashItem): string | number => grid.sort?.key === 'place' ? placeOf(i.path) : grid.sort?.key === 'deleted' ? i.deleted : grid.sort?.key === 'size' ? i.size : i.name
   const rows = grid.sort ? [...data.items].sort((a, b) => (grid.sort!.desc ? -1 : 1) * compare(valueOf(a), valueOf(b))) : data.items
@@ -119,10 +128,10 @@ export function TrashList({ trash, tiles = false, search, onSearch }: { trash: R
             const isSel = selected.includes(i.id)
             return (
               <div key={i.id} className={mergeClasses(s.trashTile, isSel && s.sel)} aria-selected={isSel} title={`${i.name}\n${placeOf(i.path)} · ${new Date(i.deleted).toLocaleString(locale)} · ${fmtSize(i.size)}`}
-                onClick={e => e.ctrlKey || e.metaKey || mobile ? toggle(i.id) : setSelected([i.id])}>
+                onClick={e => e.ctrlKey || e.metaKey || mobile ? toggle(i.id) : setSelected([i.id])} onContextMenu={ctxOn ? e => openMenu(e, i.id) : undefined}>
                 <span className={s.trashCheck} onClick={e => { e.stopPropagation(); toggle(i.id) }}><Checkbox checked={isSel} aria-label={t('Auswählen')} /></span>
                 <div className={s.trashThumb}><TrashThumb item={i} /></div>
-                <Text size={200} truncate wrap={false} block>{i.name}</Text>
+                <Text size={200} truncate wrap={false} block><ShownName name={i.name} /></Text>
                 {i.matches && i.matches.length > 0 && <Text size={100} className={s.muted} truncate wrap={false} block title={i.matches.join(', ')}>{t('enthält {names}', { names: i.matches.map(m => m.split('/').pop()).join(', ') })}</Text>}
                 <Button size="small" appearance="subtle" onClick={e => { e.stopPropagation(); trash.restore([i.id]) }}>{t('Wiederherstellen')}</Button>
               </div>
@@ -145,7 +154,7 @@ export function TrashList({ trash, tiles = false, search, onSearch }: { trash: R
             {data.items.map(i => {
               const isSel = selected.includes(i.id)
               return (
-                <TableRow key={i.id} className={mergeClasses(s.row, isSel && s.sel)} aria-selected={isSel} onClick={() => toggle(i.id)}>
+                <TableRow key={i.id} className={mergeClasses(s.row, isSel && s.sel)} aria-selected={isSel} onClick={() => toggle(i.id)} onContextMenu={ctxOn ? e => openMenu(e, i.id) : undefined}>
                   <TableCell onClick={e => { e.stopPropagation(); toggle(i.id) }}><Checkbox checked={isSel} aria-label={t('Auswählen')} /></TableCell>
                   <TableCell><TableCellLayout media={<KindIcon item={i} />}
                     description={[`${placeOf(i.path)} · ${new Date(i.deleted).toLocaleString(locale)}`,
@@ -171,14 +180,14 @@ export function TrashList({ trash, tiles = false, search, onSearch }: { trash: R
             const isSel = selected.includes(i.id)
             return (
               <div key={i.id} role="row" className={mergeClasses(s.gridRow, s.row, isSel && s.sel)} aria-selected={isSel} style={{ gridTemplateColumns: grid.template }}
-                onClick={e => e.ctrlKey || e.metaKey ? toggle(i.id) : setSelected([i.id])}>
+                onClick={e => e.ctrlKey || e.metaKey ? toggle(i.id) : setSelected([i.id])} onContextMenu={ctxOn ? e => openMenu(e, i.id) : undefined}>
                 <span onClick={e => { e.stopPropagation(); toggle(i.id) }}><Checkbox checked={isSel} aria-label={t('Auswählen')} /></span>
                 {grid.cols.map(c => {
                   switch (c.key) {
                     case 'place': return <span key={c.key} className={mergeClasses(s.cell, s.muted)} title={placeOf(i.path)}>{placeOf(i.path)}</span>
                     case 'deleted': return <span key={c.key} className={s.cell}>{new Date(i.deleted).toLocaleString(locale)}</span>
                     case 'size': return <span key={c.key} className={s.cell}>{fmtSize(i.size)}</span>
-                    default: return <span key={c.key} className={s.nameCell} title={i.matches?.length ? t('enthält {names}', { names: i.matches.join(', ') }) : i.name}><KindIcon item={i} /><span className={s.cell}>{i.name}</span></span>
+                    default: return <span key={c.key} className={s.nameCell} title={i.matches?.length ? t('enthält {names}', { names: i.matches.join(', ') }) : i.name}><KindIcon item={i} /><span className={s.cell}><ShownName name={i.name} /></span></span>
                   }
                 })}
                 <span onClick={e => e.stopPropagation()}><Button size="small" appearance="subtle" onClick={() => trash.restore([i.id])}>{t('Wiederherstellen')}</Button></span>
@@ -187,6 +196,11 @@ export function TrashList({ trash, tiles = false, search, onSearch }: { trash: R
           })}
         </div>
       )}
+      {menu.ctx && <ContextMenu at={menu.ctx.at} onClose={menu.close}>
+        <MenuItem icon={<ArrowReset20Regular />} onClick={() => trash.restore(menu.ctx!.data)}>{t('Wiederherstellen')}</MenuItem>
+        <MenuDivider />
+        <MenuItem icon={<DeleteDismiss20Regular />} onClick={() => trash.purge(menu.ctx!.data)}>{t('Endgültig löschen')}</MenuItem>
+      </ContextMenu>}
     </>
   )
 }
@@ -261,7 +275,7 @@ export function LinksList({ links, onOpen, onManage, notify, fail }: {
   </>
   if (!mobile) return (<>
     {links.people.length > 0 && <>
-      <Text weight="semibold" block style={{ padding: '4px 0' }}>{t('Mit Personen geteilt')}</Text>
+      <Text weight="semibold" block style={{ padding: '4px 0' }}>{t('Mit Benutzern geteilt')}</Text>
       <div className={s.grid} role="table">
         <div className={mergeClasses(s.gridRow, s.gridHead)} role="row" style={{ gridTemplateColumns: shareGrid.template }} onContextMenu={shareGrid.openMenu}>{shareGrid.cells}<span /></div>
         {shareGrid.columnMenu}
@@ -307,7 +321,7 @@ export function LinksList({ links, onOpen, onManage, notify, fail }: {
   </>)
   return (<>
     {links.people.length > 0 && <>
-      <Text weight="semibold" block style={{ padding: '4px 0' }}>{t('Mit Personen geteilt')}</Text>
+      <Text weight="semibold" block style={{ padding: '4px 0' }}>{t('Mit Benutzern geteilt')}</Text>
       <Table size="small">
         <TableHeader>
           <TableRow>

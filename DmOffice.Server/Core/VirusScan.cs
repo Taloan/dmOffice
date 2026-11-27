@@ -7,7 +7,11 @@ public sealed class VirusFoundException(string message) : ArgumentException(mess
 
 /// <summary>
 /// Virenprüfung mit ClamAV (Verwaltung → Sicherheit, aus bis der Admin sie einschaltet): Dateien beim Eintragen in die Ablage
-/// (FileStore.Commit - Web, WebDAV, App, Chat, Office, Mail-Anhänge), Bilder und Anhänge von Notizen beim Hochladen und
+// [feature:journal]
+/// (FileStore.Commit - Web, WebDAV, App, Chat, Tagebuch, Office, Mail-Anhänge), Bilder und Anhänge von Notizen beim Hochladen und
+// [feature:journal:else]
+// /// (FileStore.Commit - Web, WebDAV, App, Chat, Office, Mail-Anhänge), Bilder und Anhänge von Notizen beim Hochladen und
+// [/feature:journal]
 /// neue Mails im Posteingang. Ist der Scanner nicht erreichbar, geht es weiter (Eintrag im Protokoll) - außer der Admin hat
 /// „Ohne Scanner nichts annehmen“ gewählt. Funde stehen in data/virus-findings.json (nur Zeit, Benutzer, Ort, Name des Fundes).
 /// </summary>
@@ -33,7 +37,7 @@ public static class VirusScan
     {
         if (!Enabled || blob.Id == null || blob.Size == 0) return;
         var s = S!;
-        if (blob.Size > s.ClamAvMaxMb * 1024L * 1024) return;   // größer als die Grenze: nicht prüfen (clamd lehnt es sonst ab)
+        if (TooLarge(blob.Size, s, where)) return;   // größer als die Grenze: nicht prüfen (clamd lehnt es sonst ab)
         ClamAv.Result r;
         using (var stream = blobs.OpenRead(blob.Id))
             r = ClamAv.ScanAsync(s.ClamAvHost!, s.ClamAvPort, stream, Timeout, CancellationToken.None).GetAwaiter().GetResult();
@@ -45,7 +49,7 @@ public static class VirusScan
     {
         if (!Enabled || data.Length == 0) return;
         var s = S!;
-        if (data.Length > s.ClamAvMaxMb * 1024L * 1024) return;
+        if (TooLarge(data.Length, s, where)) return;
         var r = ClamAv.ScanAsync(s.ClamAvHost!, s.ClamAvPort, new MemoryStream(data), Timeout, CancellationToken.None).GetAwaiter().GetResult();
         Handle(r, user, where);
     }
@@ -55,11 +59,19 @@ public static class VirusScan
     {
         if (!Enabled) return null;
         var s = S!;
-        if (size > s.ClamAvMaxMb * 1024L * 1024) return null;
+        if (TooLarge(size, s, where)) return null;
         var r = await ClamAv.ScanAsync(s.ClamAvHost!, s.ClamAvPort, data, Timeout, ct);
         if (r.Verdict == ClamAv.Verdict.Infected) { Record(user, where, r.Name ?? "?"); return r.Name ?? "?"; }
         if (r.Verdict == ClamAv.Verdict.Error) Log?.LogWarning("Virenscanner: {Where}: {Error}", where, r.Error);
         return null;
+    }
+
+    /// <summary>Über der eingestellten Grenze wird nicht geprüft - das steht im Protokoll, damit es nicht unbemerkt bleibt.</summary>
+    private static bool TooLarge(long size, ServerSettings s, string where)
+    {
+        if (size <= s.ClamAvMaxMb * 1024L * 1024) return false;
+        Log?.LogInformation("Virenscanner: {Where} nicht geprüft ({Mb} MB, Grenze {Max} MB).", where, size / (1024 * 1024), s.ClamAvMaxMb);
+        return true;
     }
 
     private static void Handle(ClamAv.Result r, string user, string where)

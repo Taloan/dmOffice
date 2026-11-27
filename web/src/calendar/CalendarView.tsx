@@ -1,3 +1,4 @@
+import { saveUrl } from '../shell/browser'
 import { sendToChat } from '../chat/SendToChat'
 import FullCalendar from '@fullcalendar/react'
 import dayGridPlugin from '@fullcalendar/daygrid'
@@ -17,21 +18,24 @@ import {
   PanelLeft20Regular, Settings20Regular, TaskListLtr20Regular, Clock20Regular, CalendarWeekStart20Regular,
   MoreHorizontal16Regular, Open20Regular, Edit20Regular, Rename20Regular, ArrowImport20Regular, ArrowExport20Regular, Delete20Regular,
   ArrowSync20Regular, Eye20Regular, CheckmarkCircle20Regular, CalendarEmpty20Regular, People16Regular, People20Regular, PersonDelete20Regular, ChevronDown16Regular, ChevronRight16Regular,
-  Chat20Regular, Cloud16Regular, Cloud20Regular,
+  Chat20Regular, Cloud16Regular, Cloud20Regular, Copy20Regular, Cut20Regular, ClipboardPaste20Regular, Alert20Regular,
 } from '@fluentui/react-icons'
+import { clearEventClip, durationOf, placeEvent, setEventClip, useEventClip } from './eventClip'
 import { ColorMenu, ContextMenu, TargetMenu, askChoice, askConfirm, askText, isTyping, useContextMenu } from '../shell/context'
 import { graphAccounts, graphTitle } from './graph'
 import { useNavStyles } from '../shell/nav'
-import { RibbonButton, RibbonDivider, RibbonHeader, useSidePane } from '../shell/Ribbon'
+import { RibbonButton, RibbonDivider, RibbonHeader, RibbonSlot, useSidePane } from '../shell/Ribbon'
 import { SidePane, useIsMobile } from '../shell/mobile'
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
-import { Account, api, CalEvent, Collection, featureOn, q, Task } from '../api'
+import { Account, api, ApiError, CalEvent, Collection, featureOn, q, Task } from '../api'
 import { CalendarSearch } from './CalendarSearch'
 import { useApp } from '../App'
-import { usePrefs } from '../prefs'
+import { defaultReminderOf, usePrefs } from '../prefs'
 import { EVENT_RESTORED, EventDialog, EventDraft, askScope, restoreEvent } from './EventDialog'
-import { CollectionDialog, importInto, removeCollection } from './CollectionDialog'
+import { CollectionDialog, importDetail, importInto, removeCollection } from './CollectionDialog'
+import { SharedRemindDialog } from './ReminderEditor'
 import { SubscribeDialog } from './SubscribeDialog'
+import { SUBSCRIBE_EVENT, takeSubscribe } from './handoff'
 import { ShareDialog } from './ShareDialog'
 import { artOf } from './arts'
 import { CALENDAR_KINDS, inNormalViews, kindOf } from './kinds'
@@ -102,13 +106,32 @@ export default function CalendarView() {
   // Terminsuche: solange etwas eingetippt ist, steht die Trefferliste statt des Kalenders da
   const [search, setSearch] = useState('')
   const searching = featureOn('calsearch') && search.trim().length > 0
+  // Nach dem Speichern eines Termins aus der Suche: Trefferliste neu laden
+  const [reloadSearch, setReloadSearch] = useState(0)
   const [editColl, setEditColl] = useState<Collection | 'new' | null>(null)
+  // Geteilter Kalender: Standard-Erinnerung des Besitzers ansehen (calremdefault)
+  const [sharedRemind, setSharedRemind] = useState<Collection | null>(null)
   const [newKind, setNewKind] = useState<string | undefined>()
   const [subscribe, setSubscribe] = useState<Collection | 'new' | null>(null)
+  // Kalender-Abo aus einem Link (webcal:, webcals:): Dialog mit vorausgefüllter Adresse
+  const [subscribeUrl, setSubscribeUrl] = useState<string | undefined>()
+  useEffect(() => {
+    const check = () => {
+      const url = takeSubscribe()
+      if (url) { setSubscribeUrl(url); setSubscribe('new') }
+    }
+    check()
+    window.addEventListener('hashchange', check)
+    window.addEventListener(SUBSCRIBE_EVENT, check)
+    return () => { window.removeEventListener('hashchange', check); window.removeEventListener(SUBSCRIBE_EVENT, check) }
+  }, [])
   // Planungsansicht einer Kalenderart (z. B. "meal" = Essensplan) statt der normalen Kalenderansicht; null: normale Ansicht
   const [plan, setPlan] = useState<string | null>(() => localStorage.getItem(PLAN) || (localStorage.getItem('dmoffice.calendar.meal') === '1' ? 'meal' : null))
   const togglePlan = (key: string) => setPlan(p => { const n = p === key ? null : key; try { localStorage.setItem(PLAN, n ?? ''); localStorage.removeItem('dmoffice.calendar.meal') } catch { /* egal */ } return n })
   const planKind = CALENDAR_KINDS.find(k => k.key === plan && k.plan)
+  const [planSlot, setPlanSlot] = useState<HTMLElement | null>(null)
+  // Knöpfe der Suchergebnisse (Mehrfachauswahl, calbulkremind)
+  const [searchSlot, setSearchSlot] = useState<HTMLElement | null>(null)
   const toggleGroup = (key: string) => setCollapsed(l => { const n = l.includes(key) ? l.filter(x => x !== key) : [...l, key]; try { localStorage.setItem(COLLAPSED, JSON.stringify(n)) } catch { /* egal */ } return n })
   const [shareColl, setShareColl] = useState<Collection | null>(null)
   const refreshSub = async (c: Collection) => {
@@ -196,6 +219,18 @@ export default function CalendarView() {
     return () => { clearTimeout(h); window.removeEventListener('hashchange', open) }
   }, [])
   useEffect(() => { refetch() }, [hidden, calendars, showTasks])
+  // Zurück in den Kalender (anderer Tab, anderes Fenster): neu laden - Aufgaben und Termine können sich inzwischen geändert haben
+  useEffect(() => {
+    let last = Date.now()
+    const on = () => {
+      if (document.hidden || Date.now() - last < 2000) return
+      last = Date.now()
+      refetch()
+    }
+    document.addEventListener('visibilitychange', on)
+    window.addEventListener('focus', on)
+    return () => { document.removeEventListener('visibilitychange', on); window.removeEventListener('focus', on) }
+  }, [])
   useEffect(() => { try { localStorage.setItem(HIDDEN, JSON.stringify(hidden)) } catch { /* egal */ } }, [hidden])
   const isOff = (c: Collection) => hidden.includes(c.id)
 
@@ -239,21 +274,46 @@ export default function CalendarView() {
         id: 'task:' + task.id, title: task.title, allDay: task.dueAllDay, start: task.dueAllDay ? task.due.slice(0, 10) : task.due,
         end: task.dueAllDay ? undefined : new Date(due.getTime() + 30 * 60000).toISOString(),
         backgroundColor: 'transparent', borderColor: color, textColor: 'inherit',
-        editable: !taskLists.find(c => c.id === task.list)?.subscription && taskLists.find(c => c.id === task.list)?.canWrite !== false, durationEditable: false,
+        editable: !taskLists.find(c => c.id === task.list)?.subscription && taskLists.find(c => c.id === task.list)?.canWrite !== false,
+        durationEditable: false,
         classNames: ['dm-task', task.completed ? 'dm-task-done' : ''], extendedProps: { task, color },
       } as FcEvent)
     }
     return events
   }, [calendars, taskLists, hidden, showTasks]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  /**
+   * Aufgabe aus dem Kalender speichern. Wurde sie inzwischen anderswo geändert (Projektplan, Aufgaben, Pukki, anderes Gerät),
+   * kennt der Kalender einen alten Stand: dann die Aufgabe frisch holen (über die UID) und die Änderung darauf anwenden.
+   * false: die Aufgabe gibt es nicht mehr.
+   */
+  const saveTask = async (task: Task, change: Partial<Task>): Promise<boolean> => {
+    const body = (x: Task) => {
+      const y = { ...x, ...change }
+      return {
+        list: y.list, uri: y.uri, etag: y.etag, title: y.title, description: y.description, due: y.due, dueAllDay: y.dueAllDay,
+        priority: y.priority, completed: y.completed, percent: y.percent, categories: y.categories,
+      }
+    }
+    try {
+      await api.post('/api/pim/tasks', body(task))
+      return true
+    } catch (e) {
+      if (!(e instanceof ApiError) || (e.status !== 404 && e.status !== 409)) throw e
+      const now = await api.get<Task[]>('/api/pim/tasks?' + q({ lists: String(task.list) })).catch(() => [] as Task[])
+      const fresh = now.find(x => !!task.uid && x.uid === task.uid) ?? now.find(x => x.uri === task.uri)
+      if (!fresh) return false
+      await api.post('/api/pim/tasks', body(fresh))
+      return true
+    }
+  }
+  const gone = () => notify(t('Die Aufgabe gibt es nicht mehr. Der Kalender ist neu geladen.'), undefined, 'warning')
+
   const toggleTask = async (task: Task) => {
     try {
-      await api.post('/api/pim/tasks', {
-        list: task.list, uri: task.uri, etag: task.etag, title: task.title, description: task.description, due: task.due, dueAllDay: task.dueAllDay,
-        priority: task.priority, completed: !task.completed, percent: task.completed ? 0 : 100, categories: task.categories,
-      })
-      refetch()
+      if (!await saveTask(task, { completed: !task.completed, percent: task.completed ? 0 : 100 })) gone()
     } catch (e) { fail(e) }
+    refetch()
   }
 
   // Listenansicht: zum heutigen Tag (oder dem naechsten mit Terminen) scrollen
@@ -287,9 +347,12 @@ export default function CalendarView() {
       setNewKind(undefined); setEditColl('new')
       return
     }
+    const pref = defaultReminderOf(prefs)
     setDraft({
       calendar: target,
-      title: '', start: st, end: end ?? new Date(st.getTime() + 3600000), allDay, rRule: '', reminder: prefs.defaultReminder === undefined ? 15 : prefs.defaultReminder, busy: true,
+      title: '', start: st, end: end ?? new Date(st.getTime() + 3600000), allDay, rRule: '', reminder: pref, busy: true,
+      // calremind: Hat der Kalender einen Standard (calremdefault), gilt er; sonst die persönliche Vorgabe
+      ...(featureOn('calremind') ? { reminders: featureOn('calremdefault') && calendars.find(c => c.id === target)?.remind ? null : pref == null ? [] : [{ minutes: pref }] } : {}),
     })
   }
 
@@ -316,18 +379,25 @@ export default function CalendarView() {
     const start = a.event.start!
     const allDay = a.event.allDay
     try {
-      await api.post('/api/pim/tasks', {
-        list: task.list, uri: task.uri, etag: task.etag, title: task.title, description: task.description,
-        due: allDay ? start.toLocaleDateString('sv-SE') : start.toISOString(), dueAllDay: allDay,
-        priority: task.priority, completed: task.completed, percent: task.percent, categories: task.categories,
-      })
-      refetch()
+      if (!await saveTask(task, { due: allDay ? start.toLocaleDateString('sv-SE') : start.toISOString(), dueAllDay: allDay })) { gone(); a.revert() }
     } catch (err) { fail(err); a.revert() }
+    refetch()
   }
 
   const onMove = async (a: EventDropArg | EventResizeDoneArg) => {
     if (a.event.extendedProps.task) return onMoveTask(a)
     const e: CalEvent = a.event.extendedProps.ev
+    // Mit Strg gezogen: Kopie an der neuen Stelle, der Termin selbst bleibt (calclip)
+    if (clipOn && 'oldEvent' in a && (a.jsEvent as MouseEvent | undefined)?.ctrlKey) {
+      const start = a.event.start!, end = a.event.end, allDay = a.event.allDay
+      a.revert()
+      if (calendars.find(c => c.id === e.calendar)?.showOnly) return
+      try {
+        await placeEvent(e, { start, end: end ?? new Date(start.getTime() + durationOf(e)), allDay, calendar: pasteTarget(e) })
+        refetch(); notify(t('Kopiert'))
+      } catch (err) { fail(err) }
+      return
+    }
     let scope: 'series' | 'instance' = 'series'
     if (e.recurring) {
       const r = await askScope(t('Termin verschieben'))
@@ -352,8 +422,7 @@ export default function CalendarView() {
   const onImport = async (file: File) => {
     try {
       const r = await importInto(importTarget.current, file)
-      notify(r.added === 1 ? t('1 Termin übernommen') : t('{n} Termine übernommen', { n: r.added }),
-        r.failed ? (r.failed === 1 ? t('1 Eintrag ließ sich nicht lesen') : t('{n} ließen sich nicht lesen', { n: r.failed })) : undefined)
+      notify(r.added === 1 ? t('1 Termin übernommen') : t('{n} Termine übernommen', { n: r.added }), importDetail(r))
       loadCalendars()
     } catch (e) { fail(e) }
   }
@@ -365,6 +434,30 @@ export default function CalendarView() {
     | { kind: 'slot'; start: Date; allDay: boolean }
   const cm = useContextMenu<Ctx>()
   const writable = calendars.filter(c => !c.subscription && c.canWrite !== false)
+  // Kopieren, Ausschneiden, Einfügen von Terminen (Kennung calclip)
+  const clipOn = featureOn('calclip')
+  const clip = useEventClip()
+  /** Kalender für eine Kopie: der des Termins, wenn beschreibbar, sonst der erste beschreibbare */
+  const pasteTarget = (e: CalEvent) => {
+    const targets = writable.filter(c => c.components.includes('VEVENT'))
+    return (targets.find(c => c.id === e.calendar) ?? targets[0])?.id ?? e.calendar
+  }
+  const canCut = (e: CalEvent) => !e.recurring && !calendars.find(c => c.id === e.calendar)?.subscription && e.canWrite !== false
+  /** Eingefügt an einer freien Stelle: Uhrzeit des Platzes, Dauer des Termins; ganztägig bleibt ganztägig */
+  const pasteAt = async (start: Date, slotAllDay: boolean) => {
+    if (!clip) return
+    const e = clip.ev
+    const orig = new Date(e.start)
+    const day = new Date(start.getFullYear(), start.getMonth(), start.getDate())
+    const from = e.allDay ? day : slotAllDay ? new Date(day.getFullYear(), day.getMonth(), day.getDate(), orig.getHours(), orig.getMinutes()) : start
+    const notifyPeople = clip.cut ? await askNotify(e) : true
+    if (notifyPeople == null) return
+    try {
+      await placeEvent(e, { start: from, end: new Date(from.getTime() + durationOf(e)), allDay: e.allDay, calendar: clip.cut ? e.calendar : pasteTarget(e), move: clip.cut, notify: notifyPeople })
+      if (clip.cut) clearEventClip()
+      refetch(); notify(clip.cut ? t('Verschoben') : t('Eingefügt'))
+    } catch (err) { fail(err) }
+  }
   const nv = useNavStyles()
   const toggleHidden = (c: Collection) => setHidden(h => h.includes(c.id) ? h.filter(x => x !== c.id) : [...h, c.id])
   // Nur diesen anzeigen: die anderen derselben Gruppe aus, andere Gruppen bleiben wie sie sind
@@ -398,7 +491,7 @@ export default function CalendarView() {
   const openEvent = (e: CalEvent, start: Date, end: Date) => setDraft({
     calendar: e.calendar, uri: e.uri, etag: e.etag, title: e.title, location: e.location, description: e.description,
     start, end, allDay: e.allDay, rRule: e.rRule ?? '',
-    reminder: e.reminder ?? null, busy: e.busy, recurring: e.recurring, instance: e.recurrenceId,
+    reminder: e.reminder ?? null, reminders: e.reminders, myReminders: e.myReminders, busy: e.busy, recurring: e.recurring, instance: e.recurrenceId,
     attendees: e.attendees ?? [], organizer: e.organizer ?? null, categories: e.categories,
   })
   /** Termin so speichern wie geladen, mit einer Aenderung (anderer Kalender, frei/beschaeftigt). */
@@ -449,16 +542,22 @@ export default function CalendarView() {
     cm.open(ev, { kind: 'event', e, start: fcEv.start, end: fcEv.end ?? fcEv.start })
   }
   /** Rechtsklick auf freie Flaeche im Kalender: welcher Tag, welche Uhrzeit? */
-  const slotMenu = (ev: React.MouseEvent) => {
-    if ((ev.target as HTMLElement).closest('.fc-event')) return
-    const els = document.elementsFromPoint(ev.clientX, ev.clientY) as HTMLElement[]
+  const slotAt = (cx: number, cy: number) => {
+    const els = document.elementsFromPoint(cx, cy) as HTMLElement[]
     const day = els.find(x => x.matches('.fc-timegrid-col[data-date], .fc-daygrid-day[data-date], .fc-list-day[data-date]'))
-    if (!day) return
+    if (!day) return null
     const [y, m, d] = day.dataset.date!.split('-').map(Number)
     const lane = day.matches('.fc-timegrid-col') ? els.find(x => x.matches('.fc-timegrid-slot-lane[data-time]')) : undefined
     const [hh, mm] = (lane?.dataset.time ?? '09:00').split(':').map(Number)
-    cm.open(ev, { kind: 'slot', start: new Date(y, m - 1, d, lane ? hh : 9, lane ? mm : 0), allDay: !lane })
+    return { start: new Date(y, m - 1, d, lane ? hh : 9, lane ? mm : 0), allDay: !lane }
   }
+  const slotMenu = (ev: React.MouseEvent) => {
+    if ((ev.target as HTMLElement).closest('.fc-event')) return
+    const at = slotAt(ev.clientX, ev.clientY)
+    if (at) cm.open(ev, { kind: 'slot', ...at })
+  }
+  // Mausposition für Strg+C/X/V (Termin bzw. Platz unter der Maus)
+  const mouse = useRef<{ x: number; y: number } | null>(null)
   // Termin auf einen Kalender in der Seitenleiste gezogen: dorthin verschieben (mit Strg: kopieren)
   const dropOnCalendar = (a: { event: any; jsEvent: MouseEvent }) => {
     const row = (document.elementsFromPoint(a.jsEvent.clientX, a.jsEvent.clientY) as HTMLElement[]).find(x => x.dataset?.cal)
@@ -482,6 +581,26 @@ export default function CalendarView() {
       else if (e.key === 'PageDown') { e.preventDefault(); cal?.next() }
       else if (e.key === 'PageUp') { e.preventDefault(); cal?.prev() }
       else if (e.ctrlKey && e.altKey && /^[1-5]$/.test(e.key)) { e.preventDefault(); changeView(views[Number(e.key) - 1].key) }
+      else if (clipOn && e.ctrlKey && !e.altKey && !e.shiftKey && ['c', 'x', 'v'].includes(e.key.toLowerCase()) && mouse.current) {
+        // Strg+C/X auf dem Termin unter der Maus, Strg+V an der freien Stelle unter der Maus
+        const els = document.elementsFromPoint(mouse.current.x, mouse.current.y) as HTMLElement[]
+        const fcEl = els.find(el => el.classList?.contains('fc-event')) as (HTMLElement & { fcEvent?: any }) | undefined
+        const key = e.key.toLowerCase()
+        if (key !== 'v') {
+          const ev: CalEvent | undefined = fcEl?.fcEvent?.extendedProps.ev
+          if (!ev || calendars.find(c => c.id === ev.calendar)?.showOnly || (key === 'x' && !canCut(ev))) return
+          if (window.getSelection()?.toString()) return
+          e.preventDefault()
+          const fe = fcEl!.fcEvent
+          setEventClip(key === 'c' ? { ...ev, start: fe.start.toISOString(), end: (fe.end ?? fe.start).toISOString() } : ev, key === 'x')
+          notify(key === 'x' ? t('Ausgeschnitten. Mit Strg+V an anderer Stelle einfügen.') : t('Kopiert. Mit Strg+V an anderer Stelle einfügen.'))
+        } else if (clip) {
+          const at = slotAt(mouse.current.x, mouse.current.y)
+          if (!at) return
+          e.preventDefault()
+          pasteAt(at.start, at.allDay)
+        }
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -502,6 +621,7 @@ export default function CalendarView() {
           {t('Neuer Termin um {time}', { time: x.start.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', hour12: prefs.timeFormat === '12' }) })}
         </MenuItem>}
         <MenuItem icon={<CalendarEmpty20Regular />} onClick={() => newEvent(day, nextDay, true)}>{t('Neuer ganztägiger Termin')}</MenuItem>
+        {clipOn && clip && <MenuItem icon={<ClipboardPaste20Regular />} secondaryContent="Strg+V" onClick={() => pasteAt(x.start, x.allDay)}>{t('„{name}“ einfügen', { name: clip.ev.title || t('Termin') })}</MenuItem>}
         <MenuDivider />
         <MenuItem icon={<CalendarDay20Regular />} disabled={view === 'timeGridDay'} onClick={() => goDay(day)}>{t('Tagesansicht')}</MenuItem>
         <MenuItem icon={<CalendarToday20Regular />} onClick={goToday}>{t('Heute')}</MenuItem>
@@ -519,6 +639,8 @@ export default function CalendarView() {
       const targets = writable.filter(c => c.components.includes('VEVENT'))
       return <>
         <MenuItem icon={<Open20Regular />} onClick={() => openEvent(e, x.start, x.end)}>{t('Öffnen')}</MenuItem>
+        {clipOn && !shown && <MenuItem icon={<Copy20Regular />} secondaryContent="Strg+C" onClick={() => setEventClip({ ...e, start: x.start.toISOString(), end: x.end.toISOString() }, false)}>{t('Kopieren')}</MenuItem>}
+        {clipOn && canCut(e) && <MenuItem icon={<Cut20Regular />} secondaryContent="Strg+X" onClick={() => setEventClip(e, true)}>{t('Ausschneiden')}</MenuItem>}
         {!ro && <>
           <MenuDivider />
           <Menu>
@@ -535,7 +657,7 @@ export default function CalendarView() {
         {!ro && <TargetMenu kind="move" targets={targets.filter(c => c.id !== e.calendar).map(c => ({ id: c.id, label: c.name }))}
           onPick={id => resave(e, { moveTo: Number(id) })} />}
         {!shown && <TargetMenu kind="copy" targets={targets.map(c => ({ id: c.id, label: c.name }))} onPick={id => copyEvent(e, x.start, x.end, Number(id))} />}
-        {!shown && <MenuItem icon={<ArrowExport20Regular />} onClick={() => window.open(`/api/pim/events/${e.calendar}/${encodeURIComponent(e.uri)}/ics`)}>{t('Exportieren (.ics)')}</MenuItem>}
+        {!shown && <MenuItem icon={<ArrowExport20Regular />} onClick={() => saveUrl(`/api/pim/events/${e.calendar}/${encodeURIComponent(e.uri)}/ics`)}>{t('Exportieren (.ics)')}</MenuItem>}
         {e.calendar > 0 && <MenuItem icon={<Chat20Regular />} onClick={() => sendToChat([{ type: 'event', collection: e.calendar, item: e.uri }])}>{t('Im Chat …')}</MenuItem>}
         {!ro && <>
           <MenuDivider />
@@ -559,7 +681,8 @@ export default function CalendarView() {
       <MenuItem icon={<Eye20Regular />} onClick={() => onlyThis(c)}>{t('Nur diesen anzeigen')}</MenuItem>
       {!c.subscription && c.canWrite !== false && c.components.includes('VEVENT') && <MenuItem icon={<CalendarAdd20Regular />} onClick={() => { setHidden(h => h.filter(i => i !== c.id)); newEvent(undefined, undefined, false, c.id) }}>{t('Neuer Termin')}</MenuItem>}
       <MenuDivider />
-      {c.owner ? null : c.subscription ? <>
+      {c.owner ? (featureOn('calremdefault') && c.components.includes('VEVENT')
+        ? <MenuItem icon={<Alert20Regular />} onClick={() => setSharedRemind(c)}>{t('Standard-Erinnerung …')}</MenuItem> : null) : c.subscription ? <>
         <MenuItem icon={<ArrowSync20Regular />} onClick={() => refreshSub(c)}>{t('Jetzt aktualisieren')}</MenuItem>
         <MenuItem icon={<Edit20Regular />} onClick={() => setSubscribe(c)}>{t('Abo bearbeiten …')}</MenuItem>
       </> : <>
@@ -571,7 +694,7 @@ export default function CalendarView() {
       {!c.owner && <ColorMenu current={c.color} onPick={color => { cm.close(); if (color) setCollection(c, { color }) }} />}
       <MenuDivider />
       {!c.subscription && c.canWrite !== false && <MenuItem icon={<ArrowImport20Regular />} onClick={() => { importTarget.current = c.id; importInput.current?.click() }}>{t('Importieren (.ics) …')}</MenuItem>}
-      {!c.showOnly && <MenuItem icon={<ArrowExport20Regular />} onClick={() => window.open(`/api/pim/export/${c.id}`)}>{t('Exportieren (.ics)')}</MenuItem>}
+      {!c.showOnly && <MenuItem icon={<ArrowExport20Regular />} onClick={() => saveUrl(`/api/pim/export/${c.id}`)}>{t('Exportieren (.ics)')}</MenuItem>}
       <MenuDivider />
       {c.owner
         ? <MenuItem icon={<PersonDelete20Regular />} onClick={() => leaveShared(c)}>{t('Nicht mehr anzeigen')}</MenuItem>
@@ -630,6 +753,9 @@ export default function CalendarView() {
           <RibbonButton icon={<Rss20Regular />} label={t('Kalender abonnieren')} onClick={() => setSubscribe('new')} />
           <RibbonDivider />
           {CALENDAR_KINDS.flatMap(k => k.plan ? [{ key: k.key, ...k.plan }] : []).map(({ key, icon: Icon, label }) => <RibbonButton key={key} icon={<Icon />} label={label()} pressed={plan === key} onClick={() => togglePlan(key)} />)}
+          {/* Knöpfe der Planansicht (etwa Essensplan) */}
+          {planKind?.plan && <><RibbonDivider /><div ref={setPlanSlot} style={{ display: 'contents' }} /></>}
+          {searching && !planKind && featureOn('calbulkremind') && <><RibbonDivider /><div ref={setSearchSlot} style={{ display: 'contents' }} /></>}
         </>}
         view={<>
           {views.map(v => <RibbonButton key={v.key} icon={v.icon} label={v.label} pressed={view === v.key} onClick={() => changeView(v.key)} />)}
@@ -730,21 +856,23 @@ export default function CalendarView() {
         <input ref={importInput} type="file" accept=".ics,text/calendar" hidden onChange={e => { const f = e.target.files?.[0]; if (f) onImport(f); e.target.value = '' }} />
       </SidePane>
       <div className={s.main}>
-        <Toolbar className={s.bar} size="small" style={planKind ? { display: 'none' } : undefined}>
+        <Toolbar className={s.bar} size="small" style={planKind ? { display: 'none' } : mobile ? { flexWrap: 'wrap' } : undefined}>
           <ToolbarButton icon={<CalendarToday20Regular />} onClick={goToday}>{t('Heute')}</ToolbarButton>
           <ToolbarButton icon={<ChevronLeft20Regular />} onClick={() => fc.current?.getApi().prev()} aria-label={t('Zurück')} />
           <ToolbarButton icon={<ChevronRight20Regular />} onClick={() => fc.current?.getApi().next()} aria-label={t('Weiter')} />
           <Text className={s.title} style={mobile ? { fontSize: 15, marginLeft: 4 } : undefined}>{searching ? t('Suchergebnisse') : title}</Text>
-          {featureOn('calsearch') && <SearchBox size="small" placeholder={t('Termine suchen')} value={search} style={{ width: mobile ? 150 : 260, flexShrink: 0 }}
+          {/* Handy: Suchfeld in eigener Zeile über die volle Breite - neben dem Datum ragte es über den Rand */}
+          {featureOn('calsearch') && <SearchBox size="small" placeholder={t('Termine suchen')} value={search} style={mobile ? { width: '100%', maxWidth: 'none' } : { width: 260, flexShrink: 0 }}
             // Eingabe nimmt nur den Platz zwischen Lupe und Löschen-x, damit das x im Feld bleibt
             input={{ style: { width: 0 } }}
             onChange={(_, d) => setSearch(d.value)} onKeyDown={e => { if (e.key === 'Escape') setSearch('') }} />}
         </Toolbar>
-        {searching && !planKind && <CalendarSearch query={search} calendars={calendars.filter(c => inNormalViews(c) && !isOff(c))}
-          onOpen={e => openEvent(e, new Date(e.allDay ? e.start + 'T00:00:00' : e.start), new Date(e.allDay ? e.end + 'T00:00:00' : e.end))} />}
-        {planKind?.plan && <planKind.plan.view calendars={calendars.filter(c => c.calendarKind === planKind.key && !c.subscription && !isOff(c))}
-          total={calendars.filter(c => c.calendarKind === planKind.key && !c.subscription).length} onCreate={() => { setNewKind(planKind.key); setEditColl('new') }} />}
-        <div className={s.cal} ref={calBox} onContextMenu={slotMenu} style={planKind || searching ? { display: 'none' } : undefined}>
+        {searching && !planKind && <RibbonSlot.Provider value={searchSlot}><CalendarSearch query={search} calendars={calendars.filter(c => inNormalViews(c) && !isOff(c))}
+          taskLists={taskLists.filter(l => l.id > 0 && l.canWrite !== false && !l.subscription)} reload={reloadSearch}
+          onOpen={e => openEvent(e, new Date(e.allDay ? e.start + 'T00:00:00' : e.start), new Date(e.allDay ? e.end + 'T00:00:00' : e.end))} /></RibbonSlot.Provider>}
+        {planKind?.plan && <RibbonSlot.Provider value={planSlot}><planKind.plan.view calendars={calendars.filter(c => c.calendarKind === planKind.key && !c.subscription && !isOff(c))}
+          total={calendars.filter(c => c.calendarKind === planKind.key && !c.subscription).length} onCreate={() => { setNewKind(planKind.key); setEditColl('new') }} /></RibbonSlot.Provider>}
+        <div className={s.cal} ref={calBox} onContextMenu={slotMenu} onMouseMove={ev => { mouse.current = { x: ev.clientX, y: ev.clientY } }} onMouseLeave={() => { mouse.current = null }} style={planKind || searching ? { display: 'none' } : undefined}>
           <FullCalendar
             ref={fc}
             plugins={[dayGridPlugin, timeGridPlugin, listPlugin, interactionPlugin]}
@@ -790,7 +918,7 @@ export default function CalendarView() {
                 </span>
               )
             }}
-            eventDidMount={arg => { if (!arg.event.extendedProps.task) arg.el.title = arg.event.title; arg.el.addEventListener('contextmenu', ev => eventMenu.current(ev, arg.event)) }}
+            eventDidMount={arg => { (arg.el as HTMLElement & { fcEvent?: unknown }).fcEvent = arg.event; if (!arg.event.extendedProps.task) arg.el.title = arg.event.title; arg.el.addEventListener('contextmenu', ev => eventMenu.current(ev, arg.event)) }}
             eventDragStop={dropOnCalendar}
             select={onSelect}
             eventClick={onClick}
@@ -802,10 +930,11 @@ export default function CalendarView() {
         </div>
       </div>
       <ContextMenu at={cm.ctx?.at} onClose={cm.close}>{ctxMenu()}</ContextMenu>
-      {draft && <EventDialog draft={draft} calendars={calendars} onClose={changed => { closeDraft(); if (changed) refetch() }} />}
-      {subscribe && <SubscribeDialog collection={subscribe === 'new' ? null : subscribe} onClose={c => { setSubscribe(null); if (c) loadCalendars() }} />}
+      {draft && <EventDialog draft={draft} calendars={calendars} taskLists={taskLists} onClose={changed => { closeDraft(); if (changed) { refetch(); setReloadSearch(n => n + 1) } }} />}
+      {subscribe && <SubscribeDialog key={subscribeUrl ?? ''} collection={subscribe === 'new' ? null : subscribe} url={subscribe === 'new' ? subscribeUrl : undefined} taskLists={taskLists.filter(l => l.id > 0 && l.canWrite !== false && !l.subscription)} onClose={c => { setSubscribe(null); setSubscribeUrl(undefined); if (c) loadCalendars() }} />}
       {shareColl && <ShareDialog list={shareColl} onClose={changed => { setShareColl(null); if (changed) loadCalendars() }} />}
-      {editColl && <CollectionDialog kind="calendars" collection={editColl === 'new' ? null : editColl} defaultKind={newKind} onClose={changed => { setEditColl(null); setNewKind(undefined); if (changed) loadCalendars() }} />}
+      {sharedRemind && <SharedRemindDialog collection={sharedRemind} onClose={() => setSharedRemind(null)} />}
+      {editColl && <CollectionDialog kind="calendars" collection={editColl === 'new' ? null : editColl} defaultKind={newKind} taskLists={taskLists.filter(l => l.id > 0 && l.canWrite !== false && !l.subscription)} onClose={changed => { setEditColl(null); setNewKind(undefined); if (changed) loadCalendars() }} />}
       </div>
     </div>
   )

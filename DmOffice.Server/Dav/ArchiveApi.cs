@@ -215,7 +215,7 @@ public static partial class FilesApi
             var added = new List<string>();
             try
             {
-                await foreach (var file in MultipartUpload.Files(request, ct))
+                await foreach (var file in MultipartUpload.Files(request, ct, http.Space().Db))
                 {
                     var inner = Archives.Inner(baseDir.Length == 0 ? file.FileName : baseDir + "/" + file.FileName);
                     if (s.Files.ContainsKey(inner) && conflict != "replace")

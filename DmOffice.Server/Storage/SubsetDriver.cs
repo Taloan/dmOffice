@@ -7,6 +7,8 @@ namespace DmOffice.Storage;
 /// </summary>
 public sealed class SubsetDriver(IStorageDriver inner, IEnumerable<string> include) : IStorageDriver, IRealPaths
 {
+    public int Parallel => inner.Parallel;
+
     private readonly HashSet<string> _include = new(include, StringComparer.Ordinal);
 
     private static string Top(string path) => path.Split('/')[0];

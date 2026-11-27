@@ -16,6 +16,17 @@ Endpunkte
        a) Body = Original-JPG, Header X-Corrections: <JSON>,
           Query ?max_edge=1400&quality=93 (beides optional)
        b) Body = JSON {"image": "<base64>", "corrections": {...}, "max_edge": 1400, "quality": 93}
+  POST /preview           → JPG (image/jpeg) für Formate, die dmOffice nicht selbst liest (TIFF, auch 16 Bit)
+       Body = Bild-Bytes, Query ?max_edge=2048&quality=90 (beides optional)
+  # [feature:lenscorr]
+  POST /lens/import       → {"profiles": [...]} aus .lcp (Adobe), lensfun-XML oder eigenem JSON (Body = Datei)
+  POST /lens/corners      → Schachbrett-Ecken eines Fotos, Query ?cols=15&rows=8 (Body = Bild-Bytes)
+  POST /lens/fit          → Verzeichnung aus Ecken mehrerer Fotos einer Brennweite
+       Body = JSON {"images": [<Antworten von /lens/corners>], "terms": 2}
+  # [feature:lenslib]
+  POST /lens/library      → {"items": [{"profile": {...}, "meta": {...}}]} - wie /lens/import, dazu Angaben für die Bibliothek
+  # [/feature:lenslib]
+  # [/feature:lenscorr]
 
 Optional: Umgebungsvariable PHOTO_ENGINE_TOKEN → Header X-Api-Key erforderlich.
 PHOTO_ENGINE_MAX_JOBS (Standard 2) begrenzt gleichzeitige /develop-Aufträge (Speicher).
@@ -35,8 +46,17 @@ import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
+from PIL import Image
+
 from . import __version__
+# [feature:lenscorr]
+from . import lens
+# [feature:lenslib]
+from . import lenslib
+# [/feature:lenslib]
+# [/feature:lenscorr]
 from .analyzer import analyze, refine
+from .preview import preview_jpeg
 from .jpegio import ImageTooLarge, develop_jpeg
 from .metrics import face_detector_status, load_image, merge_exif
 from .schema import RESPONSE_SCHEMA, SCHEMA_VERSION, sanitize
@@ -132,6 +152,24 @@ class Handler(BaseHTTPRequestHandler):
                 result = self._analyze()
             elif route == "/refine":
                 result = self._refine()
+            # [feature:lenscorr]
+            elif route == "/lens/import":
+                result = self._lens_import()
+            elif route == "/lens/corners":
+                result = self._lens_corners()
+            elif route == "/lens/fit":
+                result = self._lens_fit()
+            # [feature:lenslib]
+            elif route == "/lens/library":
+                result = self._lens_library()
+            # [/feature:lenslib]
+            # [/feature:lenscorr]
+            elif route == "/preview":
+                body, info = self._preview()
+                return self._send_bytes(body, "image/jpeg", {
+                    "X-Processing-Ms": round((time.perf_counter() - t0) * 1000),
+                    "X-Image-Width": info["width"], "X-Image-Height": info["height"],
+                })
             elif route == "/develop":
                 body, info = self._develop()
                 return self._send_bytes(body, "image/jpeg", {
@@ -176,6 +214,63 @@ class Handler(BaseHTTPRequestHandler):
         rgb, exif = self._decode(self._b64(data.get("image")))
         return refine(rgb, data["previous"], merge_exif(exif, data.get("exif")))
 
+    # [feature:lenscorr]
+    def _lens_import(self) -> dict:
+        try:
+            return {"profiles": lens.parse_any(self._body())}
+        except (ValueError, SyntaxError, UnicodeDecodeError) as e:  # ParseError ist ein SyntaxError
+            raise BadRequest(f"Profil nicht lesbar: {e}")
+
+    # [feature:lenslib]
+    def _lens_library(self) -> dict:
+        try:
+            return {"items": lenslib.read(self._body())}
+        except (ValueError, SyntaxError, UnicodeDecodeError, KeyError, TypeError) as e:
+            raise BadRequest(f"Profil nicht lesbar: {e}")
+
+    # [/feature:lenslib]
+    def _lens_corners(self) -> dict:
+        q = {k: v[-1] for k, v in parse_qs(urlsplit(self.path).query).items()}
+        try:
+            cols, rows = int(q.get("cols") or 15), int(q.get("rows") or 8)
+        except ValueError:
+            raise BadRequest("cols/rows müssen ganze Zahlen sein")
+        if not (3 <= cols <= 40 and 3 <= rows <= 40):
+            raise BadRequest("cols/rows 3..40")
+        raw = self._body()
+        with DEVELOP_SLOTS:
+            try:
+                return lens.find_corners(raw, cols, rows)
+            except (OSError, SyntaxError, ValueError, cv2_error()) as e:
+                raise BadRequest(f"Bild nicht lesbar: {e}")
+
+    def _lens_fit(self) -> dict:
+        data = self._json(self._body())
+        imgs = [i for i in (data.get("images") or []) if isinstance(i, dict) and i.get("found")]
+        if not imgs:
+            raise BadRequest("Keine Fotos mit erkanntem Muster")
+        try:
+            return lens.fit_distortion(imgs[:20], int(data.get("terms") or 2))
+        except (ValueError, KeyError, TypeError, np_linalg_error()) as e:
+            raise BadRequest(f"Ausgleich nicht möglich: {e}")
+
+    # [/feature:lenscorr]
+    def _preview(self) -> tuple[bytes, dict]:
+        q = {k: v[-1] for k, v in parse_qs(urlsplit(self.path).query).items()}
+        try:
+            max_edge = int(q.get("max_edge") or 2048)
+            quality = int(q.get("quality") or 90)
+        except ValueError:
+            raise BadRequest("max_edge/quality müssen ganze Zahlen sein")
+        if not 64 <= max_edge <= 8000 or not 50 <= quality <= 100:
+            raise BadRequest("max_edge 64..8000, quality 50..100")
+        raw = self._body()
+        with DEVELOP_SLOTS:
+            try:
+                return preview_jpeg(raw, max_edge=max_edge, quality=quality)
+            except (OSError, SyntaxError, ValueError, Image.DecompressionBombError) as e:
+                raise BadRequest(f"Bild nicht lesbar: {e}")
+
     def _develop(self) -> tuple[bytes, dict]:
         raw = self._body()
         ctype = (self.headers.get("Content-Type") or "").lower()
@@ -212,6 +307,18 @@ class Handler(BaseHTTPRequestHandler):
                 raise BadRequest(f"Bild nicht lesbar: {e}")
 
 
+# [feature:lenscorr]
+def cv2_error():
+    import cv2
+    return cv2.error
+
+
+def np_linalg_error():
+    import numpy as np
+    return np.linalg.LinAlgError
+
+
+# [/feature:lenscorr]
 def main() -> None:
     ap = argparse.ArgumentParser(description="Photo-Engine HTTP-Server")
     ap.add_argument("--host", default=os.environ.get("PHOTO_ENGINE_HOST", "127.0.0.1"))

@@ -26,34 +26,67 @@ public class ModulesTests : IClassFixture<ChatFixture>
         {
             Features.Set([]);
             config.Update(s => s.ModulesOff = []);
-            Assert.NotEqual(HttpStatusCode.NotFound, (await c.GetAsync("/api/audio/tracks")).StatusCode);
+            // [feature:journal]
+            Assert.NotEqual(HttpStatusCode.NotFound, (await c.GetAsync("/api/journal/journals")).StatusCode);
+            // [feature:journal:else]
+            // Assert.NotEqual(HttpStatusCode.NotFound, (await c.GetAsync("/api/audio/tracks")).StatusCode);
+            // [/feature:journal]
 
             // Ausschalten über die Verwaltung
-            var put = await c.PutAsJsonAsync("/api/admin/modules", new { id = "audio", on = false });
+            // [feature:journal]
+            var put = await c.PutAsJsonAsync("/api/admin/modules", new { id = "journal", on = false });
+            // [feature:journal:else]
+            // var put = await c.PutAsJsonAsync("/api/admin/modules", new { id = "audio", on = false });
+            // [/feature:journal]
             Assert.Equal(HttpStatusCode.OK, put.StatusCode);
-            Assert.False(Features.On(Features.Audio));
-            Assert.Equal(new[] { "audio" }, config.Current.ModulesOff);
-            Assert.Equal(HttpStatusCode.NotFound, (await c.GetAsync("/api/audio/tracks")).StatusCode);
-            Assert.Contains("\"featuresOff\":[\"audio\",", await c.GetStringAsync("/api/auth/state"));
+            // [feature:journal]
+            Assert.False(Features.On(Features.Journal));
+            Assert.Equal(new[] { "journal" }, config.Current.ModulesOff);
+            Assert.Equal(HttpStatusCode.NotFound, (await c.GetAsync("/api/journal/journals")).StatusCode);
+            Assert.Contains("journal", JsonDocument.Parse(await c.GetStringAsync("/api/auth/state")).RootElement.GetProperty("featuresOff").EnumerateArray().Select(x => x.GetString()));
+            // [feature:journal:else]
+            // Assert.False(Features.On(Features.Audio));
+            // Assert.Equal(new[] { "audio" }, config.Current.ModulesOff);
+            // Assert.Equal(HttpStatusCode.NotFound, (await c.GetAsync("/api/audio/tracks")).StatusCode);
+            // Assert.Contains("\"featuresOff\":[\"audio\",", await c.GetStringAsync("/api/auth/state"));
+            // [/feature:journal]
             var list = await c.GetFromJsonAsync<JsonElement>("/api/admin/modules");
-            var audio = list.EnumerateArray().Single(m => m.GetProperty("id").GetString() == "audio");
-            Assert.False(audio.GetProperty("on").GetBoolean());
-            Assert.True(audio.GetProperty("released").GetBoolean());
+            // [feature:journal]
+            var journal = list.EnumerateArray().Single(m => m.GetProperty("id").GetString() == "journal");
+            Assert.False(journal.GetProperty("on").GetBoolean());
+            Assert.True(journal.GetProperty("released").GetBoolean());
+            // [feature:journal:else]
+            // var audio = list.EnumerateArray().Single(m => m.GetProperty("id").GetString() == "audio");
+            // Assert.False(audio.GetProperty("on").GetBoolean());
+            // Assert.True(audio.GetProperty("released").GetBoolean());
+            // [/feature:journal]
             Assert.Equal(Features.Modules.Length, list.GetArrayLength());
 
             // Nur die Verwaltung schaltet
-            Assert.NotEqual(HttpStatusCode.OK, (await _fx.As("cleo").PutAsJsonAsync("/api/admin/modules", new { id = "audio", on = true })).StatusCode);
-            Assert.False(Features.On(Features.Audio));
+            // [feature:journal]
+            Assert.NotEqual(HttpStatusCode.OK, (await _fx.As("cleo").PutAsJsonAsync("/api/admin/modules", new { id = "journal", on = true })).StatusCode);
+            Assert.False(Features.On(Features.Journal));
+            // [feature:journal:else]
+            // Assert.NotEqual(HttpStatusCode.OK, (await _fx.As("cleo").PutAsJsonAsync("/api/admin/modules", new { id = "audio", on = true })).StatusCode);
+            // Assert.False(Features.On(Features.Audio));
+            // [/feature:journal]
 
             // Unbekanntes Modul und Grundausstattung: nicht schaltbar
             Assert.Equal(HttpStatusCode.BadRequest, (await c.PutAsJsonAsync("/api/admin/modules", new { id = "mail", on = false })).StatusCode);
             Assert.Equal(HttpStatusCode.BadRequest, (await c.PutAsJsonAsync("/api/admin/modules", new { id = "notes", on = false })).StatusCode);
 
             // Wieder an
-            Assert.Equal(HttpStatusCode.OK, (await c.PutAsJsonAsync("/api/admin/modules", new { id = "audio", on = true })).StatusCode);
-            Assert.True(Features.On(Features.Audio));
-            Assert.NotEqual(HttpStatusCode.NotFound, (await c.GetAsync("/api/audio/tracks")).StatusCode);
-            Assert.Contains("\"featuresOff\":[\"journal\",", await c.GetStringAsync("/api/auth/state"));
+            // [feature:journal]
+            Assert.Equal(HttpStatusCode.OK, (await c.PutAsJsonAsync("/api/admin/modules", new { id = "journal", on = true })).StatusCode);
+            Assert.True(Features.On(Features.Journal));
+            Assert.NotEqual(HttpStatusCode.NotFound, (await c.GetAsync("/api/journal/journals")).StatusCode);
+            Assert.DoesNotContain("journal", await c.GetStringAsync("/api/auth/state"));
+            // [feature:journal:else]
+            // Assert.Equal(HttpStatusCode.OK, (await c.PutAsJsonAsync("/api/admin/modules", new { id = "audio", on = true })).StatusCode);
+            // Assert.True(Features.On(Features.Audio));
+            // Assert.NotEqual(HttpStatusCode.NotFound, (await c.GetAsync("/api/audio/tracks")).StatusCode);
+            // Assert.Contains("\"journal\"", await c.GetStringAsync("/api/auth/state"));
+            // [/feature:journal]
 
             // Früher gespeicherter Schalter für die Grundausstattung zählt nicht mehr
             config.Update(s => s.ModulesOff = ["notes"]);

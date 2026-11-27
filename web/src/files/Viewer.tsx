@@ -5,15 +5,15 @@ import {
   ArrowDownload20Regular, ChevronLeft24Regular, ChevronRight24Regular, Dismiss24Regular, Edit20Regular, Info20Regular, Open20Regular,
   Save20Regular, ZoomIn20Regular, ZoomOut20Regular,
   Chat20Regular,
-  ImageEdit20Regular, Delete20Regular, Share20Regular, Star20Regular, Star20Filled, Filmstrip20Regular,
+  ImageEdit20Regular, Wand20Regular, Delete20Regular, Share20Regular, Star20Regular, Star20Filled, Filmstrip20Regular,
   CloudArrowUp20Regular,
 } from '@fluentui/react-icons'
 import { MARK_LABELS, labelColor, labelName } from './PhotoFilter'
 import { Adjust, CropRect, PhotoEditor, PhotoSettings, RAW, photoCaps } from './PhotoEditor'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { fmtSize } from '../api'
+import { featureOn, fmtSize } from '../api'
 import { locale, t } from '../i18n'
-import { Item, KindIcon, Source, extOf, fmtWhen, viewKind } from './common'
+import { Item, KindIcon, ShownName, Source, plainName, extOf, fmtWhen, viewKind } from './common'
 import { Markdown } from './Markdown'
 import { askConfirm } from '../shell/context'
 
@@ -69,7 +69,11 @@ const useStyles = makeStyles({
 /** Text bis zu dieser Groesse laden (Rest abgeschnitten), bearbeiten nur darunter. */
 const TEXT_LIMIT = 2 * 1024 * 1024
 
-export function Viewer({ items, index, source, onIndex, onClose, onSeen, onDownload, onDetails, onChat, onSave, startEdit, side, onPhotoEdit, onPhotoSettings, markOf, onMark, onShare, onFavorite, onDelete, groupOf, onSaveToAblage }: {
+/** RAW-Fotos (DNG, ARW, CR3 …): der Browser zeigt die Datei nicht - „Originalgröße“ kommt aus der großen Vorschau des Servers (eingebettetes JPEG). */
+const RAW_RE = /\.(arw|cr2|cr3|nef|nrw|orf|rw2|raf|pef|dng|srw|3fr|erf)$/i
+const previewOnly = (name: string) => RAW_RE.test(name) || (featureOn('tiffpreview') && /\.tiff?$/i.test(name))
+
+export function Viewer({ items, index, source, onIndex, onClose, onSeen, onDownload, onDetails, onChat, onSave, startEdit, side, onPhotoEdit, onPhotoSettings, markOf, onMark, onShare, onFavorite, onDelete, groupOf, onSaveToAblage, onEnhance }: {
   items: Item[]; index: number; source: Source; onIndex: (i: number) => void; onClose: () => void
   /** Eine Weile angezeigt - für „Zuletzt verwendet“ */
   onSeen?: (i: Item) => void
@@ -80,13 +84,17 @@ export function Viewer({ items, index, source, onIndex, onClose, onSeen, onDownl
   /** Details als Leiste rechts neben dem Bild (statt zurück in die Liste); close blendet sie wieder aus */
   side?: (i: Item, close: () => void) => React.ReactNode
   /** Als JPG exportieren: neue Datei mit der Bearbeitung (der Server rechnet aus dem Original) */
-  onPhotoEdit?: (i: Item, rotate: number, crop: CropRect | null, overwrite: boolean, adjust: Adjust | null) => Promise<void>
+  // [feature:lenscorr]
+  onPhotoEdit?: (i: Item, rotate: number, crop: CropRect | null, overwrite: boolean, adjust: Adjust | null, lens?: PhotoSettings['lens']) => Promise<void>
+  // [feature:lenscorr:else]
+  // onPhotoEdit?: (i: Item, rotate: number, crop: CropRect | null, overwrite: boolean, adjust: Adjust | null) => Promise<void>
+  // [/feature:lenscorr]
   /** Fertig: Entwicklungseinstellungen merken (null: Bearbeitung entfernen) - das Original bleibt */
   onPhotoSettings?: (i: Item, s: PhotoSettings | null) => Promise<void>
   /** Im Chat zeigen oder senden (nur Dateien aus der eigenen Ablage) */
   onChat?: (i: Item) => void
   /** Galerie: Markierung, Sterne, Farbe des Fotos und setzen (Tasten P/X/U, 0–5, 6–9 wie in der Galerie) */
-  markOf?: (i: Item) => { pick?: number | null; rating?: number | null; label?: string | null } | undefined
+  markOf?: (i: Item) => { pick?: number | null; rating?: number | null; label?: string | null; width?: number | null; height?: number | null } | undefined
   onMark?: (i: Item, body: { pick?: number; rating?: number; label?: string }) => void
   /** Teilen (Link, Personen), Favorit, Löschen */
   onShare?: (i: Item) => void
@@ -94,6 +102,7 @@ export function Viewer({ items, index, source, onIndex, onClose, onSeen, onDownl
   onDelete?: (i: Item) => void
   /** „In Ablage sichern“ - nur für Fotos, die nur in einem Galerie-Ordner liegen */
   onSaveToAblage?: (i: Item) => void
+  onEnhance?: (i: Item) => void
   /** Gruppe in der Liste (etwa der Tag): der Filmstreifen zeigt nur die Gruppe des gezeigten Bilds */
   groupOf?: (i: Item) => string
   /** Text speichern (nur angemeldet); wirft bei Konflikt ApiError 409 */
@@ -178,6 +187,21 @@ export function Viewer({ items, index, source, onIndex, onClose, onSeen, onDownl
   const pathRef = useRef<string | undefined>(undefined)
   pathRef.current = item?.path
   const imgRef = useRef<HTMLImageElement | null>(null)
+  // [feature:galmedium]
+  // Vergrößern zeigt sofort die vorhandene Vorschau groß; das Original lädt im Hintergrund und ersetzt sie, sobald es da ist
+  // (Ausschnitt und Bildlauf bleiben). Kein Kringel über dem Bild, nur ein Hinweis unten.
+  const bgOn = featureOn('galmedium')
+  const [bgFull, setBgFull] = useState<{ path: string; url: string } | null>(null)
+  const [bgLoading, setBgLoading] = useState(false)
+  const bgReq = useRef<{ path: string; ctl: AbortController } | null>(null)
+  // Größe des Originals unbekannt: erst die Vorschau in ihrer Größe, beim Eintreffen auf 100 % des Originals
+  const want100 = useRef<string | null>(null)
+  useEffect(() => () => {
+    bgReq.current?.ctl.abort(); bgReq.current = null; want100.current = null
+    setBgLoading(false)
+    setBgFull(old => { if (old) URL.revokeObjectURL(old.url); return null })
+  }, [item?.path])
+  // [/feature:galmedium]
   const centerOn = () => {
     const st = stageRef.current, img = imgRef.current
     if (!st || !img || !img.offsetWidth || !img.offsetHeight) return
@@ -186,6 +210,27 @@ export function Viewer({ items, index, source, onIndex, onClose, onSeen, onDownl
     st.scrollTop = img.offsetTop + at.fy * img.offsetHeight - at.cy
   }
   useLayoutEffect(() => { if (zoom) centerOn(); else { zoomAt.current = null; setZoomW(null) } }, [zoom, loadedSrc, zoomW]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Eingepasst immer auf die volle Fläche: die mittlere Vorschau (1280 px) ist kleiner als die Fläche und stand sonst kleiner da
+  // als der Platzhalter davor - das Bild „zoomte“ nach dem Laden kurz heraus. Hochrechnen nur, wenn das Original größer ist.
+  const [stageBox, setStageBox] = useState<{ w: number; h: number } | null>(null)
+  const [natural, setNatural] = useState<{ src: string; w: number; h: number } | null>(null)
+  useLayoutEffect(() => {
+    const el = stageRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => setStageBox({ w: el.clientWidth, h: el.clientHeight }))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [kind])
+  const fitBox = (src: string): { w: number; h: number } | null => {
+    if (!stageBox || natural?.src !== src) return null
+    const { w, h } = natural
+    const m = markOf?.(item)
+    const long = Math.max(w, h)
+    const orig = !edited && m?.width && m.height ? Math.max(m.width, m.height) : long >= 1280 ? Infinity : long
+    if (orig <= long) return null
+    const f = Math.min(stageBox.w / w, stageBox.h / h, orig / long)
+    return f > 1 ? { w: Math.floor(w * f), h: Math.floor(h * f) } : null
+  }
   const followScroll = () => {
     const st = stageRef.current, img = imgRef.current
     if (!zoom || !st || !img || !img.offsetWidth || !img.offsetHeight) return
@@ -219,13 +264,18 @@ export function Viewer({ items, index, source, onIndex, onClose, onSeen, onDownl
         const img = imgRef.current
         if (!img || !img.naturalWidth) return
         const b = img.getBoundingClientRect(), sb = el.getBoundingClientRect()
-        const fit = Math.min(el.clientWidth / img.naturalWidth, el.clientHeight / img.naturalHeight, 1) * img.naturalWidth
+        const fit = zoom ? Math.min(el.clientWidth / img.naturalWidth, el.clientHeight / img.naturalHeight, 1) * img.naturalWidth : b.width
         const cur = zoom ? zoomRef.current?.w ?? img.offsetWidth : b.width
         const ratio = zoomRef.current ? zoomRef.current.h / zoomRef.current.w : img.naturalHeight / img.naturalWidth
         const next = Math.min(cur * Math.pow(1.0015, -e.deltaY), Math.max(img.naturalWidth, fit) * 8)
         if (next <= fit * 1.01) { setZoom(false); return }
         zoomAt.current = { fx: (e.clientX - b.left) / b.width, fy: (e.clientY - b.top) / b.height, cx: e.clientX - sb.left, cy: e.clientY - sb.top }
-        if (next > img.naturalWidth) setOriginal(true)
+        // [feature:galmedium]
+        if (next > img.naturalWidth && bgOn) loadFull()
+        else if (next > img.naturalWidth) setOriginal(true)
+        // [feature:galmedium:else]
+        // if (next > img.naturalWidth) setOriginal(true)
+        // [/feature:galmedium]
         setZoomW({ w: next, h: next * ratio }); setZoom(true)
         return
       }
@@ -259,8 +309,9 @@ export function Viewer({ items, index, source, onIndex, onClose, onSeen, onDownl
     let gone = false
     fetch(source.download(item, true), { credentials: 'same-origin', cache: 'no-store', headers: { Range: `bytes=0-${TEXT_LIMIT - 1}` } })
       .then(async r => {
-        if (!r.ok) throw new Error(`${r.status}`)
-        const buf = await r.arrayBuffer()
+        // 416: leere Datei - ein Bereich ab Byte 0 gibt es dort nicht, der Inhalt ist einfach leer
+        if (!r.ok && r.status !== 416) throw new Error(`${r.status}`)
+        const buf = r.status === 416 ? new ArrayBuffer(0) : await r.arrayBuffer()
         if (gone) return
         const body = new TextDecoder('utf-8').decode(buf)
         setText({ body, cut: item.size > TEXT_LIMIT })
@@ -351,11 +402,72 @@ export function Viewer({ items, index, source, onIndex, onClose, onSeen, onDownl
   const canEdit = !!onSave && (kind === 'text' || kind === 'markdown') && text !== null && !text.cut
   // Bearbeitet (Einstellungen gemerkt): der Etag trägt den Fingerabdruck
   const edited = kind === 'image' && !!item.etag?.includes('~e')
+  /** Bearbeitet, vergrößert: die bearbeitete Fassung in voller Auflösung (Größe 0; ohne Engine liefert der Server die große). */
+  // [feature:editfull]
+  const editedBig = (it: Item) => source.thumb(it, featureOn('editfull') ? 0 : 2048)
+  const loadingLabel = edited && featureOn('editfull') ? t('Volle Auflösung wird geladen …') : t('Original wird geladen …')
+  // [feature:editfull:else]
+  // const editedBig = (it: Item) => source.thumb(it, 2048)
+  // const loadingLabel = t('Original wird geladen …')
+  // [/feature:editfull]
 
   /** Klick bzw. Lupe: auf 100 % des Originals, der Punkt at bleibt an seiner Stelle (null: Mitte). Erst das Original laden, dann in
    *  einem Schritt vergrößern - nicht erst auf die Größe der Vorschau und danach noch einmal. */
+  // [feature:galmedium]
+  /** Original im Hintergrund holen (einmal je Foto); bei Ankunft ersetzt es die Vorschau an Ort und Stelle. */
+  function loadFull() {
+    const it = items[index]
+    if (!it || bgFull?.path === it.path || bgReq.current?.path === it.path) return
+    const path = it.path
+    const ctl = new AbortController()
+    bgReq.current = { path, ctl }
+    setBgLoading(true)
+    const done = () => { if (bgReq.current?.ctl === ctl) bgReq.current = null; if (pathRef.current === path) setBgLoading(false) }
+    const isEdited = !!it.etag?.includes('~e')
+    fetch(isEdited ? editedBig(it) : previewOnly(it.name) ? source.thumb(it, 2048) : source.download(it, true),{ credentials: 'same-origin', signal: ctl.signal })
+      .then(r => { if (!r.ok) throw new Error(String(r.status)); return r.blob() })
+      .then(b => {
+        if (pathRef.current !== path) return done()
+        const url = URL.createObjectURL(b)
+        const im = new Image()
+        im.onload = () => {
+          if (pathRef.current !== path) { URL.revokeObjectURL(url); return done() }
+          const z = zoomRef.current
+          // Auf 100 % (Größe vorher unbekannt) oder Seitenverhältnis weicht ab (Drehung): Größe aus dem Original, der Punkt bleibt
+          if (z && want100.current === path) setZoomW({ w: im.naturalWidth, h: im.naturalHeight })
+          else if (z && Math.abs(z.h / z.w - im.naturalHeight / im.naturalWidth) > 0.02) setZoomW({ w: z.w, h: z.w * im.naturalHeight / im.naturalWidth })
+          want100.current = null
+          setBgFull(old => { if (old) URL.revokeObjectURL(old.url); return { path, url } })
+          done()
+        }
+        // Zeigt der Browser nicht (etwa HEIC): die Vorschau bleibt
+        im.onerror = () => { URL.revokeObjectURL(url); want100.current = null; done() }
+        im.src = url
+      })
+      .catch(() => done())
+  }
+  // [/feature:galmedium]
+
   const zoom100 = (at: { fx: number; fy: number; cx: number; cy: number } | null) => {
     const path = item.path
+    // [feature:galmedium]
+    if (bgOn) {
+      const img = imgRef.current
+      const pw = img?.naturalWidth ?? 0, ph = img?.naturalHeight ?? 0
+      const have = bgFull?.path === path
+      const m = markOf?.(item)
+      let dims = !edited && !previewOnly(item.name) && m?.width && m.height ? { w: m.width, h: m.height } : null
+      if (dims && pw && ph && (dims.w > dims.h) !== (pw > ph)) dims = { w: dims.h, h: dims.w }
+      zoomAt.current = at
+      if (have && pw) setZoomW({ w: pw, h: ph })
+      else if (dims) setZoomW(dims)
+      else if (pw) { setZoomW({ w: pw, h: ph }); want100.current = path }
+      else return
+      setZoom(true)
+      if (!have) loadFull()
+      return
+    }
+    // [/feature:galmedium]
     const show = (w: number, h: number) => {
       if (pathRef.current !== path) return
       setLoadingFull(false)
@@ -366,7 +478,7 @@ export function Viewer({ items, index, source, onIndex, onClose, onSeen, onDownl
     im.onload = () => show(im.naturalWidth, im.naturalHeight)
     im.onerror = () => { const img = imgRef.current; if (img?.naturalWidth) show(img.naturalWidth, img.naturalHeight); else setLoadingFull(false) }
     setLoadingFull(true)
-    im.src = edited ? source.thumb(item, 2048) : source.download(item, true)
+    im.src = edited ? editedBig(item) : previewOnly(item.name) ? source.thumb(item, 2048) : source.download(item, true)
     if (im.complete && im.naturalWidth) show(im.naturalWidth, im.naturalHeight)
   }
 
@@ -375,12 +487,16 @@ export function Viewer({ items, index, source, onIndex, onClose, onSeen, onDownl
       case 'image': {
         // Bearbeitet: „Originalgröße“ ist die große bearbeitete Fassung (die Datei selbst ist unbearbeitet)
         const src = peek && edited ? source.thumb(item, 1600) + '&orig=1'
-          : original ? (edited ? source.thumb(item, 2048) : source.download(item, true))
+          : bgOn && bgFull?.path === item.path ? bgFull.url // [feature:galmedium]
+          // TIFF (Kennung tiffpreview): der Browser zeigt die Datei nicht - auch „Originalgröße“ aus der großen Vorschau
+          : original ? (edited ? editedBig(item) : previewOnly(item.name) ? source.thumb(item, 2048) : source.download(item, true))
           : imgFailed > 0 ? source.download(item, true) : source.thumb(item, 1600)
         if (imgFailed > 1) return <NoPreview item={item} onDownload={onDownload} />
+        const fit = fitBox(src)
         // Original lädt nach: eingepasst die unscharfe Vorschau darüber; vergrößert bleibt das bisherige Bild stehen (dasselbe
         // Element, der Browser zeigt es, bis das neue da ist) - sonst sprang die Ansicht kurz auf „eingepasst“
         const waiting = loadedSrc !== src && !zoom
+          && !(bgOn && bgFull?.url === src) // [feature:galmedium]
         return <>
           {loadingFull && <Spinner style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: 1 }} />}
           {waiting && <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
@@ -389,9 +505,9 @@ export function Viewer({ items, index, source, onIndex, onClose, onSeen, onDownl
           </div>}
           <img key={item.path} src={src} alt={item.name} className={mergeClasses(s.img, zoom && s.imgFull)} draggable={false}
             style={{ ...(scale > 1.01 && !zoom ? { transform: `translate(${pan.x}px, ${pan.y}px) scale(${scale})`, transformOrigin: origin } : {}),
-              ...(zoom && zoomW ? { width: zoomW.w, height: zoomW.h } : {}),
+              ...(zoom && zoomW ? { width: zoomW.w, height: zoomW.h } : !zoom && fit ? { width: fit.w, height: fit.h } : {}),
               ...(enlarged ? { cursor: dragging ? 'grabbing' : 'grab' } : {}), ...(waiting ? { opacity: 0 } : {}) }}
-            onLoad={() => { setLoadedSrc(src); setLoadedPath(item.path) }} onPointerDown={dragStart} onPointerMove={dragMove} onPointerUp={dragEnd} onPointerCancel={dragEnd}
+            onLoad={e => { setNatural({ src, w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight }); setLoadedSrc(src); setLoadedPath(item.path) }} onPointerDown={dragStart} onPointerMove={dragMove} onPointerUp={dragEnd} onPointerCancel={dragEnd}
             ref={imgRef}
             onClick={e => {
               if (dragged.current) { dragged.current = false; return }
@@ -440,9 +556,9 @@ export function Viewer({ items, index, source, onIndex, onClose, onSeen, onDownl
       }}>
       <div className={s.bar}>
         <div className={s.title}>
-          <span className={s.name} title={item.name}>{item.name}</span>
+          <span className={s.name} title={plainName(item.name)}><ShownName name={item.name} /></span>
           <span className={s.sub}>
-            {items.length > 1 && `${index + 1} / ${items.length} · `}{fmtSize(item.size)} · {fmtWhen(item.modified, locale)}{edited && ` · ${t('bearbeitet')}`}
+            {items.length > 1 && `${index + 1} / ${items.length} · `}{fmtSize(item.size)}{item.modified && ` · ${fmtWhen(item.modified, locale)}`}{edited && ` · ${t('bearbeitet')}`}
           </span>
         </div>
         {/* Markieren (Galerie) */}
@@ -499,8 +615,9 @@ export function Viewer({ items, index, source, onIndex, onClose, onSeen, onDownl
         </Tooltip>}
         <span className={s.sep} />
         {kind === 'image' && onPhotoEdit && (/\.jpe?g$/i.test(item.name) || rawEdit && RAW.test(item.name)) && !cropping && <Tooltip content={t('Foto bearbeiten')} relationship="label">
-          <Button appearance="transparent" className={s.btn} icon={<ImageEdit20Regular />} onClick={() => { setZoom(false); setScale(1); setCropping(true) }} />
+          <Button appearance="transparent" className={s.btn} icon={<ImageEdit20Regular />} onClick={() => { setZoom(false); setScale(1); setCropping(true) }}>{featureOn('enhancebtn') && !mobile ? t('Bearbeiten') : undefined}</Button>
         </Tooltip>}
+        {featureOn('enhancebtn') && kind === 'image' && onEnhance && !cropping && <Button appearance="transparent" className={s.btn} icon={<Wand20Regular />} disabled={!(/\.jpe?g$/i.test(item.name) || rawEdit && RAW.test(item.name))} onClick={() => onEnhance(item)}>{mobile ? undefined : t('Verbessern')}</Button>}
         {canEdit && edit === null && <Button appearance="transparent" className={s.btn} icon={<Edit20Regular />} onClick={() => setEdit(text!.body)}>{mobile ? undefined : t('Bearbeiten')}</Button>}
         {edit !== null && <>
           <Button appearance="primary" icon={saving ? <Spinner size="tiny" /> : <Save20Regular />} disabled={saving} onClick={() => save()}>{t('Speichern')}</Button>
@@ -547,13 +664,24 @@ export function Viewer({ items, index, source, onIndex, onClose, onSeen, onDownl
       {/* Der Editor arbeitet auf dem Original (orig=1) und lädt gemerkte Einstellungen selbst */}
       {cropping && onPhotoEdit ? <PhotoEditor src={source.thumb(item, 1600) + '&orig=1'} path={item.path} onCancel={() => setCropping(false)}
         onApply={async st => { if (onPhotoSettings) await onPhotoSettings(item, st); setCropping(false); setOriginal(false) }}
-        onExport={async st => { await onPhotoEdit(item, st.rotate, st.crop, false, st.adjust); setCropping(false); setOriginal(false) }} /> :
+        // [feature:lenscorr]
+        onExport={async st => { await onPhotoEdit(item, st.rotate, st.crop, false, st.adjust, st.lens); setCropping(false); setOriginal(false) }}
+        // [feature:lenscorr:else]
+        // onExport={async st => { await onPhotoEdit(item, st.rotate, st.crop, false, st.adjust); setCropping(false); setOriginal(false) }}
+        // [/feature:lenscorr]
+        /> :
       <div style={{ flex: 1, minHeight: 0, display: 'flex', position: 'relative' }}>
         {/* Pfeile außerhalb der scrollenden Bühne: bleiben beim Vergrößern an ihrem Platz */}
         <div style={{ flex: 1, minWidth: 0, position: 'relative', display: 'flex' }}>
           <div ref={stageRef} className={mergeClasses(s.stage, zoom && s.zoomed)} onScroll={followScroll}>
             {body()}
           </div>
+          {/* [feature:galmedium] */}
+          {/* Original lädt im Hintergrund: Hinweis unten über der Bühne (nicht in ihr - sie scrollt beim Vergrößern) */}
+          {bgOn && bgLoading && kind === 'image' && <div role="status" style={{ position: 'absolute', bottom: '10px', left: '50%', transform: 'translateX(-50%)', zIndex: 2,
+            pointerEvents: 'none', fontSize: '12px', padding: '3px 10px', borderRadius: '10px', backgroundColor: 'rgba(0,0,0,.5)', color: 'rgba(255,255,255,.85)', whiteSpace: 'nowrap' }}>
+            {loadingLabel}</div>}
+          {/* [/feature:galmedium] */}
           {index > 0 && edit === null && <button className={s.nav} style={{ left: 8 }} onClick={() => go(-1)} aria-label={t('Zurück')}><ChevronLeft24Regular /></button>}
           {index < items.length - 1 && edit === null && <button className={s.nav} style={{ right: 8 }} onClick={() => go(1)} aria-label={t('Weiter')}><ChevronRight24Regular /></button>}
         </div>
@@ -613,7 +741,7 @@ function NoPreview({ item, onDownload }: { item: Item; onDownload?: (i: Item) =>
   return (
     <div className={s.none}>
       <div style={{ transform: 'scale(1.6)' }}><KindIcon item={item} large /></div>
-      <Text size={400} weight="semibold">{item.name}</Text>
+      <Text size={400} weight="semibold"><ShownName name={item.name} /></Text>
       <Text>{t('Für diese Datei gibt es keine Vorschau.')}</Text>
       {onDownload
         ? <Button appearance="primary" icon={<ArrowDownload20Regular />} onClick={() => onDownload(item)}>{t('Herunterladen')} ({fmtSize(item.size)})</Button>

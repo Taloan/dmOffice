@@ -34,8 +34,84 @@ public sealed class UserDb : ISqlStore
         Blobs = new BlobStore(blobDir ?? path + ".blobs", key) { Mirrored = true };
         // "x'…'": roher Schluessel, keine Ableitung - er ist schon zufaellig.
         _connectionString = ConnectionStringOf(path, key);
+        _gate = Gates.GetOrAdd(Path.GetFullPath(path), _ => new WriteGate());
 
         Migrate();
+        // Ab hier gibt es die Datei. Wird das Konto geloescht, waehrend ein Hintergrunddienst diese Instanz noch haelt,
+        // scheitert dessen naechster Zugriff, statt eine leere Datenbank unter dem alten Namen neu anzulegen.
+        _connectionString = new SqliteConnectionStringBuilder(_connectionString) { Mode = SqliteOpenMode.ReadWrite }.ToString();
+    }
+
+    // ---------------- Schreiben der Reihe nach ----------------
+
+    /// <summary>Je Datenbankdatei eine Warteschlange fuer Schreibtransaktionen dieses Prozesses.</summary>
+    internal sealed class WriteGate
+    {
+        public readonly SemaphoreSlim Lock = new(1, 1);
+        /// <summary>Haelt dieser Ablauf die Sperre schon (verschachtelt)? Dann nicht noch einmal warten.</summary>
+        public readonly AsyncLocal<bool> Held = new();
+    }
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, WriteGate> Gates = new();
+    private readonly WriteGate _gate;
+
+    /// <summary>Hoechstens so lange auf die eigene Warteschlange warten, dann wie bisher SQLite warten lassen.</summary>
+    private static readonly TimeSpan GateWait = TimeSpan.FromSeconds(60);
+
+    /// <summary>Eine offene Schreibtransaktion (BEGIN IMMEDIATE) samt Verbindung; Dispose ohne Commit rollt zurueck.</summary>
+    public sealed class Writer : IDisposable
+    {
+        private readonly WriteGate? _held;
+        public SqliteConnection Conn { get; }
+        public SqliteTransaction Tx { get; }
+
+        internal Writer(SqliteConnection conn, WriteGate? held)
+        {
+            _held = held;
+            Conn = conn;
+            try { Tx = conn.BeginTransaction(); }
+            catch { conn.Dispose(); Release(); throw; }
+        }
+
+        public void Commit() => Tx.Commit();
+
+        public void Dispose()
+        {
+            try { Tx.Dispose(); Conn.Dispose(); }
+            finally { Release(); }
+        }
+
+        private bool _released;
+        private void Release()
+        {
+            if (_released || _held == null) return;
+            _released = true;
+            _held.Held.Value = false;
+            _held.Lock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Schreibtransaktion, die im Prozess der Reihe nach drankommt. Mehrere Schreiber auf dieselbe Datei warteten sonst
+    /// nur ueber das Nachfragen von SQLite (alle 100 ms) - unter Last kam ein Schreiber dabei bis 30 s nicht dran und
+    /// scheiterte mit "database is locked".
+    /// </summary>
+    public Writer BeginWrite()
+    {
+        WriteGate? held = null;
+        if (!_gate.Held.Value && _gate.Lock.Wait(GateWait))
+        {
+            held = _gate;
+            held.Held.Value = true;
+        }
+        SqliteConnection conn;
+        try { conn = Open(); }
+        catch
+        {
+            if (held != null) { held.Held.Value = false; held.Lock.Release(); }
+            throw;
+        }
+        return new Writer(conn, held);
     }
 
     public SqliteConnection Open()
@@ -99,7 +175,7 @@ public sealed class UserDb : ISqlStore
         var pageSize = Query(conn, "PRAGMA page_size", r => r.GetInt64(0)).First();
         var free = Query(conn, "PRAGMA freelist_count", r => r.GetInt64(0)).First();
         long Size(string f) => File.Exists(f) ? new FileInfo(f).Length : 0;
-        var path = new SqliteConnectionStringBuilder(_connectionString).DataSource;
+        var path = PathOf(_connectionString);
         return (Size(path), Size(path + "-wal"), free * pageSize);
     }
 
@@ -134,22 +210,56 @@ public sealed class UserDb : ISqlStore
         using (var conn = Open())
         {
             if (Query(conn, "PRAGMA auto_vacuum", r => r.GetInt64(0)).First() != 2) return 0;
-            using var cmd = conn.CreateCommand();
-            cmd.CommandTimeout = 0;
-            cmd.CommandText = "PRAGMA incremental_vacuum; PRAGMA wal_checkpoint(TRUNCATE);";
-            // Jeder Schritt gibt Seiten frei - bis zum Ende lesen
-            using var r = cmd.ExecuteReader();
-            do { while (r.Read()) { } } while (r.NextResult());
+            // In Portionen, jede ihre eigene kurze Sperre, mit Pause dazwischen: alle freien Seiten auf einmal sperrten
+            // die Datenbank nach dem Verwerfen vieler Inhalte lange - andere Schreiber liefen in "database is locked"
+            for (int round = 0; round < 100_000; round++)
+            {
+                if (Query(conn, "PRAGMA freelist_count", r => r.GetInt64(0)).First() == 0) break;
+                using (var cmd = conn.CreateCommand())
+                {
+                    cmd.CommandTimeout = 0;
+                    cmd.CommandText = "PRAGMA incremental_vacuum(2000)";
+                    // Jeder Schritt gibt Seiten frei - bis zum Ende lesen
+                    using var r = cmd.ExecuteReader();
+                    do { while (r.Read()) { } } while (r.NextResult());
+                }
+                Thread.Sleep(Breather);
+            }
+            TryTruncateWal(conn);
         }
         var after = SpaceInfo();
         return Math.Max(0, before.File + before.Wal - after.File - after.Wal);
     }
 
-    /// <summary>Journal einarbeiten und kuerzen - nach groesseren Schreibvorgaengen.</summary>
+    /// <summary>Zeilen je Transaktion bei Massen-Schreibvorgaengen im Hintergrund (Mail-Abgleich).</summary>
+    public const int WriteChunk = 500;
+
+    /// <summary>Pause zwischen zwei Portionen eines Massen-Schreibvorgangs. Wer auf die Sperre wartet, schaut nur etwa alle
+    /// 100 ms nach (busy_timeout) - ohne Luecke dieser Laenge kommt er gegen eine Schreibschleife nicht an.</summary>
+    public static readonly TimeSpan Breather = TimeSpan.FromMilliseconds(120);
+
+    /// <summary>Journal einarbeiten und kuerzen - nach groesseren Schreibvorgaengen. Wartet nicht: TRUNCATE haelt die
+    /// Schreibsperre, solange es auf Leser wartet, und liess so Speichern anderer Anfragen bis 30 s haengen und scheitern.
+    /// Lesen gerade welche, wird nur eingearbeitet, was geht; gekuerzt wird beim naechsten Mal.</summary>
     public void Checkpoint()
     {
         using var conn = Open();
-        Exec(conn, "PRAGMA wal_checkpoint(TRUNCATE)");
+        TryTruncateWal(conn);
+    }
+
+    /// <summary>wal_checkpoint(TRUNCATE) ohne Warten auf Leser oder Schreiber.</summary>
+    public static void TryTruncateWal(SqliteConnection conn)
+    {
+        Exec(conn, "PRAGMA busy_timeout=0");
+        try
+        {
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "PRAGMA wal_checkpoint(TRUNCATE)";
+            // Microsoft.Data.Sqlite wiederholt bei "busy" bis zum CommandTimeout - hier nicht
+            cmd.CommandTimeout = 1;
+            try { cmd.ExecuteNonQuery(); } catch (SqliteException e) when (e.SqliteErrorCode is 5 or 6) { }
+        }
+        finally { Exec(conn, "PRAGMA busy_timeout=30000"); }
     }
 
     // ---------------- Schluessel/Wert ----------------
@@ -387,7 +497,27 @@ UPDATE files SET path = 'dmVAULT' || substr(path, 20),
 WHERE path = 'dmOfficeSystemVault' OR path GLOB 'dmOfficeSystemVault/*';
 UPDATE files SET etag = '""' || lower(hex(randomblob(8))) || '""'
 WHERE is_dir = 1 AND path IN ('', 'dmVAULT', 'dmVAULT (eigener Ordner)');")),
+        // Unterhaltungen (Kennung mailthreads): Schlüssel ohne spitze Klammern, reine Antworten (nur In-Reply-To) hängen an der
+        // Unterhaltung der Vorgängermail - zweimal, damit auch Antwort auf Antwort ankommt. Index für Gruppieren und Nachschlagen.
+        new(22, "Mail-Unterhaltungen", c => Run(c, ThreadSql)),
+        // Antworten finden ihre Unterhaltung über die Message-ID; ohne Index wächst die Zeit quadratisch mit der Zahl der Mails
+        new(23, "Mail: Index für Message-ID", c => Run(c, "CREATE INDEX IF NOT EXISTS mail_msgid ON mail(account, message_id);")),
+        // Zählen je Sammlung und Art (Termine, Aufgaben) ohne die Einträge selbst zu lesen - bei Tausenden Einträgen sonst spürbar
+        new(24, "Kalender: Index für Termine und Aufgaben je Sammlung", c => Run(c, "CREATE INDEX IF NOT EXISTS objects_component ON objects(collection, component);")),
     ];
+
+    // INDEXED BY: ohne Statistik nimmt SQLite sonst mail_thread (Bereich ueber alle Mails des Kontos) - wieder quadratisch
+    internal const string ThreadLinkSql = @"
+UPDATE mail SET thread = (SELECT p.thread FROM mail p INDEXED BY mail_msgid WHERE p.account = mail.account
+        AND p.message_id IN (trim(mail.in_reply_to, '<> '), '<' || trim(mail.in_reply_to, '<> ') || '>') AND p.thread IS NOT NULL LIMIT 1)
+WHERE in_reply_to IS NOT NULL AND thread = trim(in_reply_to, '<> ')
+    AND EXISTS (SELECT 1 FROM mail p INDEXED BY mail_msgid WHERE p.account = mail.account
+        AND p.message_id IN (trim(mail.in_reply_to, '<> '), '<' || trim(mail.in_reply_to, '<> ') || '>') AND p.thread IS NOT NULL AND p.thread <> mail.thread);";
+
+    internal const string ThreadSql = @"
+UPDATE mail SET thread = NULLIF(trim(COALESCE(thread, message_id), '<> '), '');
+CREATE INDEX IF NOT EXISTS mail_thread ON mail(account, thread);
+CREATE INDEX IF NOT EXISTS mail_msgid ON mail(account, message_id);" + ThreadLinkSql + ThreadLinkSql;
 
     /// <summary>Die Schemaversion, auf die dieser Stand die Datenbank bringt.</summary>
     public static int LatestVersion => Steps[^1].Version;
@@ -396,9 +526,18 @@ WHERE is_dir = 1 AND path IN ('', 'dmVAULT', 'dmVAULT (eigener Ordner)');")),
     /// eine Ausnahme bricht den Schritt ab wie ein Absturz.</summary>
     public static System.Collections.Concurrent.ConcurrentDictionary<string, Action<int>> StepHooks { get; } = new();
 
+    /// <summary>Nach den Kern-Schritten: Schemaschritte der Plugins (Plugins/PluginSchemas, Tabelle plugin_schema). Null: keine Plugins.</summary>
+    public static Action<SqliteConnection, string>? PluginSteps { get; set; }
+
     private void Migrate()
     {
         using var conn = Open();
+        MigrateCore(conn);
+        PluginSteps?.Invoke(conn, UserId);
+    }
+
+    private void MigrateCore(SqliteConnection conn)
+    {
         var version = Convert.ToInt32(Query(conn, "PRAGMA user_version", r => r.GetInt64(0)).First());
         var todo = Steps.Where(s => s.Version > version).ToList();
         if (todo.Count == 0) return;
@@ -420,13 +559,46 @@ WHERE is_dir = 1 AND path IN ('', 'dmVAULT', 'dmVAULT (eigener Ordner)');")),
         Exec(conn, "PRAGMA wal_checkpoint(TRUNCATE)");
     }
 
-    /// <summary>Verbindungsstring mit dem rohen Schluessel (SQLCipher "x'…'").</summary>
+    /// <summary>Verbindungsstring mit dem rohen Schluessel (SQLCipher "x'…'"), Dateiformat SQLCipher 4 (siehe <see cref="SourceOf"/>).</summary>
     public static string ConnectionStringOf(string path, byte[] key) => new SqliteConnectionStringBuilder
     {
-        DataSource = path,
+        DataSource = SourceOf(path),
         Password = "x'" + Convert.ToHexString(key) + "'",
         DefaultTimeout = 30
     }.ToString();
+
+    // SQLite3 Multiple Ciphers liest und schreibt das Format von SQLCipher 4 nur mit diesen Angaben beim Öffnen
+    // (eine globale Vorgabe nimmt die Bibliothek nicht an). So bleiben alle bisherigen Dateien lesbar und ein Rückweg
+    // auf eine Version mit SQLCipher möglich.
+    private const string CipherQuery = "?cipher=sqlcipher&legacy=4";
+
+    /// <summary>Datei als SQLite-URI mit dem Verschlüsselungsformat.</summary>
+    public static string SourceOf(string path)
+    {
+        var p = Path.DirectorySeparatorChar == '\\' ? path.Replace('\\', '/') : path;
+        p = p.Replace("%", "%25").Replace("?", "%3f").Replace("#", "%23");
+        return "file:" + p + CipherQuery;
+    }
+
+    /// <summary>Dateipfad aus einer Verbindungsangabe – auch aus der URI-Form von <see cref="SourceOf"/>.</summary>
+    public static string PathOf(string connectionString)
+    {
+        var ds = new SqliteConnectionStringBuilder(connectionString).DataSource;
+        if (!ds.StartsWith("file:", StringComparison.Ordinal)) return ds;
+        var p = ds[5..];
+        var q = p.IndexOf('?');
+        if (q >= 0) p = p[..q];
+        p = Uri.UnescapeDataString(p);
+        return Path.DirectorySeparatorChar == '\\' ? p.Replace('/', '\\') : p;
+    }
+
+    /// <summary>Dieselbe Verbindungsangabe für eine andere Datei (gleiches Format, gleicher Schlüssel).</summary>
+    public static string WithFile(string connectionString, string file)
+    {
+        var b = new SqliteConnectionStringBuilder(connectionString);
+        b.DataSource = b.DataSource.StartsWith("file:", StringComparison.Ordinal) ? SourceOf(file) : file;
+        return b.ToString();
+    }
 
     /// <summary>Stand einer vorhandenen Datenbank, ohne sie zu veraendern oder zu migrieren.</summary>
     public sealed record Inspection(int Version, long FileBytes, long WalBytes, long MailRawBytes, long FileDataBytes, long ContentBytes);

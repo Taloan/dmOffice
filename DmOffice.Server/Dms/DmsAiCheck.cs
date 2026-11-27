@@ -19,13 +19,15 @@ public static class DmsAiCheck
     public const string Check = "check", Assign = "assign";
     public const string Existing = "existing", AllowNew = "new";
     public const string Fits = "fits", Doubt = "doubt", Wrong = "wrong";
-    public const int MaxDocs = 200, Batch = 8, TextChars = 1500;
+    // Antwortlänge: je Dokument Nummern, Name und Grund (~150 Tokens); 8 Dokumente passten nicht in die Standard-1024, die Antwort brach ab
+    public const int MaxDocs = 200, Batch = 8, TextChars = 1500, AnswerTokens = 4096;
 
     public sealed record Run(long Id, string Kind, string Field, string? Entry, string Mode, string State, int Total, int Done, DateTime Created, string? Error);
     public sealed record Suggestion(long Id, long Run, long Doc, string Field, string? Current, string? Verdict, string? ProposalEntry, string? ProposalNew,
         string? ProposalParent, int Confidence, string? Reason, string State);
 
-    private static readonly ConcurrentDictionary<long, CancellationTokenSource> Running = new();
+    /// <summary>Laufende Läufe je Benutzer und Nummer - die Nummern zählt jeder Benutzer für sich.</summary>
+    private static readonly ConcurrentDictionary<(string User, long Run), CancellationTokenSource> Running = new();
 
     public static void Ensure(UserDb db)
     {
@@ -105,20 +107,22 @@ public static class DmsAiCheck
             ("$k", kind), ("$f", field), ("$e", entry), ("$m", mode == AllowNew && kind == Assign ? AllowNew : Existing), ("$t", docs.Count), ("$c", Now));
         var id = Convert.ToInt64(db.Scalar("SELECT last_insert_rowid()"));
         var cts = new CancellationTokenSource();
-        Running[id] = cts;
+        var key = (space.User.Id, id);
+        Running[key] = cts;
         _ = Task.Run(async () =>
         {
             try { await ProcessAsync(space, ai, id, kind, field, entry, mode == AllowNew && kind == Assign, docs, cts.Token); db.Exec("UPDATE dms_ai_runs SET state = 'done' WHERE id = $i AND state = 'running'", ("$i", id)); }
             catch (OperationCanceledException) { db.Exec("UPDATE dms_ai_runs SET state = 'cancelled' WHERE id = $i", ("$i", id)); }
             catch (Exception e) { db.Exec("UPDATE dms_ai_runs SET state = 'failed', error = $e WHERE id = $i", ("$e", e.Message), ("$i", id)); }
-            finally { Running.TryRemove(id, out _); }
+            finally { Running.TryRemove(key, out _); }
         });
         return id;
     }
 
-    public static void Cancel(long run)
+    /// <summary>Eigenen Lauf abbrechen; Läufe anderer Benutzer bleiben unberührt.</summary>
+    public static void Cancel(UserSpace space, long run)
     {
-        if (Running.TryGetValue(run, out var cts)) cts.Cancel();
+        if (Running.TryGetValue((space.User.Id, run), out var cts)) cts.Cancel();
     }
 
     private const string CheckSystem =
@@ -152,7 +156,8 @@ public static class DmsAiCheck
                 : "Neue Einträge sind nicht erlaubt; \"new\" ist immer null. ").Replace("{NEUFELD}", allowNew ? "\"Name\" oder null" : "null");
         var label = field == Dms.Correspondent ? "Korrespondenten" : field == Dms.Doctype ? "Dokumenttypen" : "Tags";
         var done = 0;
-        foreach (var chunk in docs.Chunk(Batch))
+        // Ein Paket fragen und die Antworten ablegen; gibt die Dokumente zurück, zu denen keine lesbare Antwort kam
+        async Task<List<DmsDoc>> Ask(DmsDoc[] chunk)
         {
             ct.ThrowIfCancellationRequested();
             var sb = new StringBuilder();
@@ -166,10 +171,12 @@ public static class DmsAiCheck
                   .Append($"Korrespondent: {Name(d.Correspondent)}\nDokumenttyp: {Name(d.Doctype)}\nTags: {string.Join(", ", d.Tags.Select(t => Name(t.Id)))}\n")
                   .Append($"Text:\n{text}\n\n");
             }
-            var answer = await ai.WriteAsync(system, sb.ToString(), ct);
+            var answer = await ai.WriteAsync(system, sb.ToString(), ct, AnswerTokens);
+            var answered = new HashSet<long>();
             foreach (var item in Parse(answer))
             {
                 if (chunk.FirstOrDefault(d => d.Id == item.Doc) is not { } d) continue;
+                answered.Add(d.Id);
                 string? Pick(int? n) => n is int x && numbered.FirstOrDefault(y => y.No == x) is { Entry: { } e } ? e.Id : null;
                 if (kind == Check)
                 {
@@ -183,20 +190,30 @@ public static class DmsAiCheck
                 {
                     var target = Pick(item.Entry);
                     var newName = allowNew && target == null && item.New is { Length: > 0 and <= 120 } nn ? nn.Trim() : null;
-                    if (target == null && newName == null) continue;
+                    // Kein passender Eintrag: trotzdem als Zeile zeigen (mit Grund), damit klar ist, dass das Dokument geprüft wurde
                     if (dropped.Contains((d.Id, (target ?? "") + "|" + (newName ?? "")))) continue;
                     Insert(db, run, d.Id, field, null, null, target, newName, newName != null ? Pick(item.Parent) : null, item.Confidence, item.Reason);
                 }
             }
+            return chunk.Where(d => !answered.Contains(d.Id)).ToList();
+        }
+        foreach (var chunk in docs.Chunk(Batch))
+        {
+            // Fehlt die Antwort zu einzelnen Dokumenten (abgebrochen, unlesbar), einmal einzeln nachfragen statt sie still zu übergehen
+            foreach (var d in await Ask(chunk)) await Ask([d]);
             done += chunk.Length;
             db.Exec("UPDATE dms_ai_runs SET done = $d WHERE id = $i", ("$d", done), ("$i", run));
         }
     }
 
-    private static void Insert(UserDb db, long run, long doc, string field, string? current, string? verdict, string? entry, string? newName, string? parent, int confidence, string? reason) =>
+    private static void Insert(UserDb db, long run, long doc, string field, string? current, string? verdict, string? entry, string? newName, string? parent, int confidence, string? reason)
+    {
+        // Ein neuer Lauf ersetzt offene Vorschläge früherer Läufe zum selben Dokument und Feld - sonst stünde es doppelt in der Liste
+        db.Exec("UPDATE dms_ai_sugg SET state = 'replaced' WHERE doc = $d AND field = $f AND state = 'open' AND run <> $r", ("$d", doc), ("$f", field), ("$r", run));
         db.Exec("INSERT INTO dms_ai_sugg(run, doc, field, current, verdict, entry, new_name, parent, confidence, reason, state) VALUES($r, $d, $f, $c, $v, $e, $n, $p, $co, $re, 'open')",
             ("$r", run), ("$d", doc), ("$f", field), ("$c", current), ("$v", verdict), ("$e", entry), ("$n", newName), ("$p", parent),
             ("$co", Math.Clamp(confidence, 0, 100)), ("$re", reason is { Length: > 300 } ? reason[..300] : reason));
+    }
 
     internal sealed record Item(long Doc, string? Verdict, int? Better, int? Entry, string? New, int? Parent, int Confidence, string? Reason);
 
@@ -206,22 +223,38 @@ public static class DmsAiCheck
         var list = new List<Item>();
         if (answer == null) return list;
         var start = answer.IndexOf('[');
+        if (start < 0) return list;
         var end = answer.LastIndexOf(']');
-        if (start < 0 || end <= start) return list;
-        try
-        {
-            using var doc = JsonDocument.Parse(answer[start..(end + 1)]);
-            foreach (var e in doc.RootElement.EnumerateArray())
+        if (end > start)
+            try
             {
-                if (e.ValueKind != JsonValueKind.Object) continue;
-                int? Num(string p) => e.TryGetProperty(p, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var n) ? n : null;
-                string? Str(string p) => e.TryGetProperty(p, out var v) && v.ValueKind == JsonValueKind.String && v.GetString() is { Length: > 0 } s && s != "null" ? s : null;
-                if (!(e.TryGetProperty("doc", out var dv) && dv.ValueKind == JsonValueKind.Number && dv.TryGetInt64(out var docId))) continue;
-                list.Add(new Item(docId, Str("verdict"), Num("better"), Num("entry"), Str("new"), Num("parent"), Num("confidence") ?? 50, Str("reason")));
+                using var doc = JsonDocument.Parse(answer[start..(end + 1)]);
+                foreach (var e in doc.RootElement.EnumerateArray()) Add(e);
+                return list;
             }
+            catch (JsonException) { list.Clear(); }
+        // Abgebrochene (zu lange) oder fehlerhafte Antwort: jedes vollständige Objekt für sich lesen, damit ein Fehler nicht das ganze Paket kostet
+        int depth = 0, from = -1;
+        bool inStr = false, esc = false;
+        for (var i = start + 1; i < answer.Length; i++)
+        {
+            var c = answer[i];
+            if (inStr) { if (esc) esc = false; else if (c == '\\') esc = true; else if (c == '"') inStr = false; continue; }
+            if (c == '"') inStr = true;
+            else if (c == '{') { if (depth++ == 0) from = i; }
+            else if (c == '}' && depth > 0 && --depth == 0)
+                try { using var one = JsonDocument.Parse(answer[from..(i + 1)]); Add(one.RootElement); } catch (JsonException) { }
         }
-        catch (JsonException) { }
         return list;
+
+        void Add(JsonElement e)
+        {
+            if (e.ValueKind != JsonValueKind.Object) return;
+            int? Num(string p) => e.TryGetProperty(p, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var n) ? n : null;
+            string? Str(string p) => e.TryGetProperty(p, out var v) && v.ValueKind == JsonValueKind.String && v.GetString() is { Length: > 0 } s && s != "null" ? s : null;
+            if (!(e.TryGetProperty("doc", out var dv) && dv.ValueKind == JsonValueKind.Number && dv.TryGetInt64(out var docId))) return;
+            list.Add(new Item(docId, Str("verdict"), Num("better"), Num("entry"), Str("new"), Num("parent"), Num("confidence") ?? 50, Str("reason")));
+        }
     }
 
     /// <summary>Vorschlag vor dem Übernehmen ändern: anderer vorhandener Eintrag, neuer Name (mit Oberbegriff) oder „keiner“ (bei Prüfung: nur entfernen).</summary>
@@ -277,7 +310,8 @@ public static class DmsAiCheck
             }
             else
             {
-                if (target == null) continue;
+                // „Kein Vorschlag“ und nichts von Hand gewählt: Zeile ist erledigt, am Dokument ändert sich nichts
+                if (target == null) { db.Exec("UPDATE dms_ai_sugg SET state = 'taken' WHERE id = $i", ("$i", s.Id)); continue; }
                 body = s.Field == Dms.Tag ? new DmsApi.DocBody(null, null, null, null, null, [target], null, null)
                     : s.Field == Dms.Correspondent ? new DmsApi.DocBody(null, null, target, null, null, null, null, null)
                     : new DmsApi.DocBody(null, null, null, target, null, null, null, null);

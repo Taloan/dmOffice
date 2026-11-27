@@ -42,5 +42,15 @@ public class SafeSendersTests
         Assert.False(SafeSenders.IsKnown(space, From("werbung@spam.example")));
         // Eigene Adresse ist kein sicherer Absender (gefaelschter Absender)
         Assert.False(SafeSenders.IsKnown(space, From("ich@beispiel.de")));
+
+        // Aus Junk zurückholen nur mit bestätigter Absenderdomain (DMARC oder passende DKIM-Signatur): ohne DMARC der Domain
+        // kann jeder Annas Adresse als Absender eintragen
+        space.UpdateSettings(s => s.Spam.TrustKnown = true);
+        var plain = new SpamSignals.Result(null, false, [], null, false, false, false, false);
+        var verified = plain with { VerifiedDomain = "example.org" };
+        Assert.True(SpamSignals.Trusted(space, From("anna@example.org"), plain).Trusted);
+        Assert.False(SpamSignals.Trusted(space, From("anna@example.org"), plain, verifiedOnly: true).Trusted);
+        Assert.True(SpamSignals.Trusted(space, From("anna@example.org"), verified, verifiedOnly: true).Trusted);
+        Assert.False(SpamSignals.Trusted(space, From("anna@example.org"), verified with { DmarcFailed = true }, verifiedOnly: true).Trusted);
     }
 }

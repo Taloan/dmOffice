@@ -38,7 +38,9 @@ public class PimUndoTests : IClassFixture<FilesServerFixture>
     public async Task Geloeschter_Termin_liefert_seinen_Stand_fuer_Rueckgaengig()
     {
         var c = _fx.Client();
-        var calendar = await FirstId(c, "calendars");
+        // Kalender mit Terminen (eine reine Aufgabenliste kann vorne stehen)
+        using var cals = JsonDocument.Parse(await c.GetStringAsync("/api/pim/collections/calendars"));
+        var calendar = cals.RootElement.EnumerateArray().First(x => x.GetProperty("components").EnumerateArray().Any(y => y.GetString() == "VEVENT")).GetProperty("id").GetInt64();
         const string ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//EN\r\nBEGIN:VEVENT\r\nUID:undo-termin\r\nDTSTAMP:20261105T100000Z\r\nDTSTART:20261110T100000Z\r\nDTEND:20261110T110000Z\r\nSUMMARY:Zahnarzt\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
         (await c.PostAsJsonAsync($"/api/pim/events/{calendar}/undo-termin.ics/restore", new { data = ics })).EnsureSuccessStatusCode();
         var deleted = await c.DeleteAsync($"/api/pim/events/{calendar}/undo-termin.ics");
@@ -48,5 +50,34 @@ public class PimUndoTests : IClassFixture<FilesServerFixture>
         Assert.Contains("Zahnarzt", undo);
         (await c.PostAsJsonAsync($"/api/pim/events/{calendar}/undo-termin.ics/restore", new { data = undo })).EnsureSuccessStatusCode();
         Assert.Contains("Zahnarzt", await c.GetStringAsync($"/api/pim/events/{calendar}/undo-termin.ics/ics"));
+    }
+
+    [Fact]
+    public async Task Geloeschte_Aufgabe_kommt_mit_Rueckgaengig_zurueck()
+    {
+        var before = DmOffice.Core.Features.InReleaseOff.ToList();
+        DmOffice.Core.Features.Set(before.Where(x => x != DmOffice.Core.Features.TaskClip && x != DmOffice.Core.Features.Tasks));
+        try
+        {
+            var c = _fx.Client();
+            using var lists = JsonDocument.Parse(await c.GetStringAsync("/api/pim/collections/calendars"));
+            var list = lists.RootElement.EnumerateArray().First(x => x.GetProperty("components").EnumerateArray().Any(y => y.GetString() == "VTODO")).GetProperty("id").GetInt64();
+            const string ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//EN\r\nBEGIN:VTODO\r\nUID:undo-aufgabe\r\nDTSTAMP:20261105T100000Z\r\nSUMMARY:Altglas wegbringen\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
+            (await c.PostAsJsonAsync($"/api/pim/tasks/{list}/undo-aufgabe.ics/restore", new { data = ics })).EnsureSuccessStatusCode();
+            Assert.Contains("Altglas wegbringen", await c.GetStringAsync("/api/pim/tasks"));
+            var deleted = await c.DeleteAsync($"/api/pim/tasks/{list}/undo-aufgabe.ics");
+            deleted.EnsureSuccessStatusCode();
+            using var answer = JsonDocument.Parse(await deleted.Content.ReadAsStringAsync());
+            var undo = answer.RootElement.GetProperty("undo").GetString();
+            Assert.Contains("Altglas wegbringen", undo);
+            Assert.DoesNotContain("Altglas wegbringen", await c.GetStringAsync("/api/pim/tasks"));
+            (await c.PostAsJsonAsync($"/api/pim/tasks/{list}/undo-aufgabe.ics/restore", new { data = undo })).EnsureSuccessStatusCode();
+            Assert.Contains("Altglas wegbringen", await c.GetStringAsync("/api/pim/tasks"));
+
+            // Ohne Kennung: Wiederherstellen gibt es nicht
+            DmOffice.Core.Features.Set(before.Where(x => x != DmOffice.Core.Features.Tasks).Append(DmOffice.Core.Features.TaskClip));
+            Assert.Equal(System.Net.HttpStatusCode.NotFound, (await c.PostAsJsonAsync($"/api/pim/tasks/{list}/undo-aufgabe.ics/restore", new { data = undo })).StatusCode);
+        }
+        finally { DmOffice.Core.Features.Set(before); }
     }
 }

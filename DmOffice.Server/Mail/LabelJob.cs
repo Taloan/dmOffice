@@ -14,7 +14,7 @@ public sealed class LabelJob(Spaces spaces, ImapPool pool, ILogger<LabelJob> log
         try { await Task.Delay(TimeSpan.FromMinutes(1), stop); } catch (OperationCanceledException) { return; }
         while (!stop.IsCancellationRequested)
         {
-            foreach (var space in spaces.All())
+            foreach (var space in spaces.Working())
             {
                 try
                 {
@@ -33,6 +33,9 @@ public sealed class LabelJob(Spaces spaces, ImapPool pool, ILogger<LabelJob> log
         foreach (var (account, folder, cat, uids) in SmartInbox.Pending(space.Db))
         {
             if (space.Settings.MailAccounts.FirstOrDefault(a => a.Id == account) is not { } acc) { SmartInbox.DonePending(space.Db, account, folder, cat, uids); continue; }
+            // [feature:mailaccountoff]
+            if (acc.Off) continue; // deaktiviert: bleibt vorgemerkt bis zum Aktivieren
+            // [/feature:mailaccountoff]
             try
             {
                 if (GraphCategories.Uses(acc)) await GraphCategories.SetAsync(space, acc, folder, uids, cat, true, ct);

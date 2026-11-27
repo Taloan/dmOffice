@@ -1,8 +1,10 @@
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import { createHash } from 'node:crypto'
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { brotliCompressSync, constants as zlib, gzipSync } from 'node:zlib'
 
 const here = (p: string) => fileURLToPath(new URL(p, import.meta.url))
 
@@ -33,9 +35,34 @@ function serviceWorker(): Plugin {
   }
 }
 
+/**
+ * Legt neben jede Text-Datei (js, css, json, svg, html) eine vorkomprimierte .br und .gz.
+ * Der Server liefert sie aus, wenn der Browser das annimmt (Program.cs). Erst nach dem Schreiben
+ * (closeBundle), damit sie nicht in der Vorab-Liste des Service Workers landen.
+ */
+function precompress(): Plugin {
+  let outDir = ''
+  return {
+    name: 'dmoffice-precompress',
+    apply: 'build',
+    configResolved(c) { outDir = resolve(c.root, c.build.outDir) },
+    closeBundle() {
+      const files = (readdirSync(outDir, { recursive: true }) as string[]).map(f => resolve(outDir, f))
+        .filter(f => /\.(js|css|json|svg|html)$/.test(f) && statSync(f).isFile() && statSync(f).size >= 1024)
+      for (const f of files) {
+        const raw = readFileSync(f)
+        const br = brotliCompressSync(raw, { params: { [zlib.BROTLI_PARAM_QUALITY]: 11, [zlib.BROTLI_PARAM_SIZE_HINT]: raw.length } })
+        const gz = gzipSync(raw, { level: 9 })
+        if (br.length < raw.length * 0.9) writeFileSync(f + '.br', br)
+        if (gz.length < raw.length * 0.9) writeFileSync(f + '.gz', gz)
+      }
+    },
+  }
+}
+
 // Gebaut wird in den wwwroot des Servers; im Entwickeln leitet Vite /api und /dav dorthin weiter.
 export default defineConfig({
-  plugins: [react(), serviceWorker()],
+  plugins: [react(), serviceWorker(), precompress()],
   build: {
     outDir: '../DmOffice.Server/wwwroot',
     emptyOutDir: true,

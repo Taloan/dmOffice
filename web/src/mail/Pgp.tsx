@@ -50,7 +50,8 @@ export function PgpSignButton({ sign, onChange }: { sign: boolean; onChange: (v:
 function bar(sig: PgpSignature, from?: string): { intent: 'success' | 'info' | 'warning' | 'error'; text: string } {
   const who = sig.name ? `${sig.name} <${sig.email}>` : sig.email ?? ''
   switch (sig.state) {
-    case 'valid': return { intent: 'success', text: t('Signiert von {who} – geprüft.', { who }) }
+    // Inline-PGP neben HTML oder weiterem Text: geprüft ist nur der signierte Textblock, nicht das, was angezeigt wird
+    case 'valid': return { intent: sig.kind === 'inline' && sig.partial ? 'info' : 'success', text: t('Signiert von {who} – geprüft.', { who }) }
     case 'unconfirmed': return { intent: 'info', text: t('Signiert von {who}. Die Signatur stimmt, der Schlüssel kam aber nur per Mail und ist noch nicht bestätigt.', { who }) }
     case 'mismatch': return { intent: 'warning', text: t('Die Signatur stimmt, der Schlüssel gehört aber zu {who}, nicht zum Absender {from}.', { who, from: from ?? '' }) }
     case 'bad': return { intent: 'error', text: t('Vorsicht: Die Signatur ist ungültig. Der Inhalt wurde nach dem Signieren verändert, oder die Signatur ist gefälscht.') }
@@ -65,9 +66,8 @@ function bar(sig: PgpSignature, from?: string): { intent: 'success' | 'info' | '
   }
 }
 
-/** Balken über dem Inhalt einer signierten Mail; bei Mails, die nur einen Schlüssel mitbringen, ein kurzer Hinweis */
-export function PgpBar({ message, className }: { message: Message; className?: string }) {
-  const { fail, notify } = useApp()
+/** Signatur einer Mail laden (Kopf der Lese-Ansicht und Prüfbereich teilen sich den Stand) */
+export function usePgpSignature(message: Message) {
   const [sig, setSig] = useState<PgpSignature | null>(null)
   const [keyAdded, setKeyAdded] = useState(false)
   const url = (lookup?: boolean) => `/api/mail/${encodeURIComponent(message.account)}/signature?folder=${encodeURIComponent(message.folder)}&uid=${message.uid}${lookup ? '&lookup=true' : ''}`
@@ -77,7 +77,22 @@ export function PgpBar({ message, className }: { message: Message; className?: s
     setSig(null); setKeyAdded(false)
     if (message.pgp) load().catch(() => { })
   }, [message.account, message.folder, message.uid]) // eslint-disable-line react-hooks/exhaustive-deps
+  return { sig, keyAdded, load }
+}
+export type PgpState = ReturnType<typeof usePgpSignature>
 
+/** Farbe der Signatur für das Symbol im Prüfbereich */
+export const pgpIntent = (state: PgpState, from?: string) => state.sig ? bar(state.sig, from).intent : state.keyAdded ? 'info' : null
+
+/** Balken über dem Inhalt einer signierten Mail; bei Mails, die nur einen Schlüssel mitbringen, ein kurzer Hinweis */
+export function PgpBar({ message, className }: { message: Message; className?: string }) {
+  const state = usePgpSignature(message)
+  return <PgpBarView message={message} state={state} className={className} />
+}
+
+export function PgpBarView({ message, state, className }: { message: Message; state: PgpState; className?: string }) {
+  const { fail, notify } = useApp()
+  const { sig, keyAdded, load } = state
   if (!sig) return keyAdded ? (
     <MessageBar intent="info" className={className} layout="singleline">
       <MessageBarBody>{t('Der OpenPGP-Schlüssel des Absenders wurde gespeichert (noch nicht bestätigt).')}</MessageBarBody>

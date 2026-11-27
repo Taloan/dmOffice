@@ -11,7 +11,9 @@ import { UserAvatar } from './UserAvatar'
 
 /** Bild quadratisch aus der Mitte zuschneiden und auf 512 Pixel bringen (JPEG) - der Server macht daraus 256 Pixel WebP. */
 async function square(file: File): Promise<Blob> {
-  const img = await createImageBitmap(file)
+  // Der Browser meldet ein unlesbares Bild nur englisch und technisch („The source image could not be decoded“)
+  let img: ImageBitmap
+  try { img = await createImageBitmap(file) } catch { throw new Error(t('Das ist kein Bild, das sich anzeigen lässt.')) }
   const side = Math.min(img.width, img.height)
   const canvas = document.createElement('canvas')
   canvas.width = canvas.height = Math.min(512, side)

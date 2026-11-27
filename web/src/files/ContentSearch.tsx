@@ -6,6 +6,8 @@ import { Document20Regular, DocumentPdf20Regular, Image20Regular, Open16Regular 
 import { useEffect, useState } from 'react'
 import { api, fmtSize, q } from '../api'
 import { t } from '../i18n'
+import { useApp } from '../App'
+import { useFilePreview } from './FilePreview'
 import { useDebounced } from '../shell/hooks'
 import { Snippet } from '../shell/Snippet'
 
@@ -34,6 +36,9 @@ export function ContentSearch({ under, onGo, onClose }: { under: string; onGo: (
   const [enabled, setEnabled] = useState(true)
   const [error, setError] = useState('')
   const [onlyHere, setOnlyHere] = useState(false)
+  // Treffer im Betrachter von dmOffice ansehen, nicht in einem neuen Fenster
+  const { fail } = useApp()
+  const preview = useFilePreview(fail)
 
   useEffect(() => {
     if (!query.trim()) { setHits(null); return }
@@ -47,7 +52,7 @@ export function ContentSearch({ under, onGo, onClose }: { under: string; onGo: (
 
   const icon = (h: Hit) => h.mime?.startsWith('image/') ? <Image20Regular /> : h.mime === 'application/pdf' || h.name.toLowerCase().endsWith('.pdf') ? <DocumentPdf20Regular /> : <Document20Regular />
 
-  return (
+  return (<>
     <Dialog open onOpenChange={(_, d) => { if (!d.open) onClose() }}>
       <DialogSurface style={{ maxWidth: 720 }}>
         <DialogBody>
@@ -79,7 +84,7 @@ export function ContentSearch({ under, onGo, onClose }: { under: string; onGo: (
                     <span className={s.snippet}><Snippet text={h.snippet} /></span>
                   </div>
                   <Button appearance="subtle" size="small" icon={<Open16Regular />} aria-label={t('Öffnen')} title={t('Öffnen')}
-                    onClick={e => { e.stopPropagation(); window.open('/api/files/download?' + q({ path: h.path, inline: true }), '_blank') }} />
+                    onClick={e => { e.stopPropagation(); preview.open({ url: '/api/files/download?' + q({ path: h.path, inline: true }), download: '/api/files/download?' + q({ path: h.path }), name: h.name, size: h.size }) }} />
                 </div>
               ))}
             </div>
@@ -88,5 +93,7 @@ export function ContentSearch({ under, onGo, onClose }: { under: string; onGo: (
         </DialogBody>
       </DialogSurface>
     </Dialog>
+    {preview.element}
+  </>
   )
 }

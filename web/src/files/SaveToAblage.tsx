@@ -82,9 +82,10 @@ export function useSaveToAblage() {
   const available = featureOn('ablagesave')
   const start = async (items: Item[]) => {
     const ids = items.map(i => i.path)
+    // Zwischensymbol sofort, nicht erst nach der Antwort
+    markSaving(ids, true)
     try {
       const r = await api.post<{ count: number }>('/api/gallery/save', { ids })
-      markSaving(ids, true)
       notify(r.count === 1 ? t('Das Foto wird in die Ablage gesichert. Den Fortschritt zeigt die Aktivität.')
         : t('{n} Fotos werden in die Ablage gesichert. Den Fortschritt zeigt die Aktivität.', { n: r.count }))
     } catch (e) { markSaving(ids, false); fail(e) }
@@ -92,11 +93,14 @@ export function useSaveToAblage() {
   const save = async (list: Item[]) => {
     const items = list.filter(onlyInFolder)
     if (!items.length) { notify(t('Die ausgewählten Fotos liegen schon in der Ablage.')); return }
+    const ids = items.map(i => i.path)
+    markSaving(ids, true)
     try {
       const s = await api.get<SaveSettings>('/api/gallery/save/settings')
-      if (!s.hintSeen) { setAsk({ items, settings: s }); return }
+      // Beim ersten Mal erst der Hinweis, wohin sie kommen - bis dahin ohne Zwischensymbol
+      if (!s.hintSeen) { markSaving(ids, false); setAsk({ items, settings: s }); return }
       await start(items)
-    } catch (e) { fail(e) }
+    } catch (e) { markSaving(ids, false); fail(e) }
   }
   const dialog = ask && <Dialog open onOpenChange={(_, d) => { if (!d.open) setAsk(null) }}>
     <DialogSurface style={{ maxWidth: 520 }}>
@@ -105,7 +109,7 @@ export function useSaveToAblage() {
         <DialogContent style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <Text>{t('Die Fotos werden in deine Ablage kopiert, etwa nach:')}</Text>
           <Text font="monospace" size={200} style={{ color: tokens.colorNeutralForeground2 }}>{examplePath(ask.settings)}</Text>
-          <Text size={200}>{t('Die Originale im Galerie-Ordner bleiben unverändert. Was schon in der Ablage liegt, wird übersprungen.')}</Text>
+          <Text size={200}>{t('Die Originale im externen Galerie-Ordner bleiben unverändert. Was schon in der Ablage liegt, wird übersprungen.')}</Text>
           <Text size={200}>{t('Zielordner und Ordnung lassen sich unter Einstellungen › Galerie › In Ablage sichern ändern.')}</Text>
         </DialogContent>
         <DialogActions>
@@ -135,7 +139,7 @@ export function SaveToAblageSettings() {
     try { setS(await api.put<SaveSettings>('/api/gallery/save/settings', next)); notify(t('Gespeichert')) } catch (e) { fail(e) }
   }
   return <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 560 }}>
-    <Text>{t('Fotos und Videos aus Galerie-Ordnern lassen sich in der Galerie markieren und mit „In Ablage sichern“ in deine Ablage kopieren. Die Originale bleiben unverändert.')}</Text>
+    <Text>{t('Fotos und Videos aus externen Galerie-Ordnern lassen sich in der Galerie markieren und mit „In Ablage sichern“ in deine Ablage kopieren. Die Originale bleiben unverändert.')}</Text>
     <Field label={t('Zielordner')} hint={t('In deiner Ablage')}>
       <div style={{ display: 'flex', gap: 6, maxWidth: 360 }}>
         <Input value={s.folder} onChange={(_, d) => setS({ ...s, folder: d.value })} onBlur={() => store(s)} style={{ flex: 1 }} />
@@ -156,7 +160,7 @@ export function SaveToAblageSettings() {
       </Dropdown>
     </Field>
     <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>{t('Beispiel: {path}', { path: examplePath(s) })}</Text>
-    <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>{t('Herkunft ist der Name des Galerie-Ordners. Jahr und Monat kommen aus dem Aufnahmedatum, fehlt es, aus dem Dateidatum.')}</Text>
+    <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>{t('Herkunft ist der Name des externen Galerie-Ordners. Jahr und Monat kommen aus dem Aufnahmedatum, fehlt es, aus dem Dateidatum.')}</Text>
     <Switch checked={s.skipKnown} label={t('Überspringen, was schon in der Ablage liegt')} onChange={(_, d) => store({ ...s, skipKnown: d.checked })} />
     <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>{t('Erkannt werden gleiche Dateien und dasselbe Bild mit anderen Bildangaben, etwa aus Lightroom.')}</Text>
   </div>

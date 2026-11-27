@@ -9,6 +9,9 @@ import { useApp } from '../App'
 import { askConfirm, askPassword } from '../shell/context'
 import { copyText, saveText } from '../shell/browser'
 import { t, tError, locale } from '../i18n'
+import { PersonDelete20Regular, SignOut20Regular } from '@fluentui/react-icons'
+import { RibbonActions, RibbonButton } from '../shell/Ribbon'
+import { Section, usePageTab } from './parts'
 
 const useStyles = makeStyles({
   form: { display: 'flex', flexDirection: 'column', gap: '12px', maxWidth: '420px' },
@@ -99,7 +102,7 @@ export function SecuritySettings() {
         t('Von dir im Chat gesendete Dateien sind danach nicht mehr verfügbar. Mails bei deinem Anbieter bleiben dort.'),
         t('Vorhandene Core-Backups bleiben bestehen, bis neuere sie ersetzen. Bis dahin enthalten sie deine Daten verschlüsselt.'),
       ]
-      if (info.shares > 0) parts.push(t('Du hast {n} Freigaben für {names}. Diese Personen verlieren den Zugriff, auch auf alles, was sie dort abgelegt haben.', { n: info.shares, names: info.members.join(', ') }))
+      if (info.shares > 0) parts.push(t('Du hast {n} Freigaben für {names}. Diese Benutzer verlieren den Zugriff, auch auf alles, was sie dort abgelegt haben.', { n: info.shares, names: info.members.join(', ') }))
       if (!await askConfirm(t('Konto löschen'), parts.join(' '), t('Weiter'))) return
       const r = await askPassword(t('Zum Löschen bestätigen'), info.twoFactor, t('Konto endgültig löschen'))
       if (!r) return
@@ -109,15 +112,18 @@ export function SecuritySettings() {
     } catch (e) { fail(e) }
   }
 
+  const [tab, tabBar] = usePageTab('security', [['login', t('Anmeldung')], ['sessions', t('Sitzungen')], ['log', t('Sicherheitsprotokoll')], ['delete', t('Konto löschen')]])
+
   const endSession = async (id: string) => {
     try { await api.del(`/api/auth/sessions/${id}`); notify(t('Abgemeldet')); loadSessions() } catch (e) { fail(e) }
   }
 
   return (
     <>
-      <Text size={600} weight="semibold">{t('Sicherheit')}</Text>
+      {tabBar}
+      {tab === 'login' && <>
       {/* Auch mit OIDC verknüpft: Das Passwort gilt zum Bestätigen und - wenn erlaubt - für die Anmeldung mit Anmeldename und Passwort */}
-      <Text weight="semibold">{noOwn ? t('Passwort festlegen') : t('Passwort ändern')}</Text>
+      <Section title={noOwn ? t('Passwort festlegen') : t('Passwort ändern')}>
       {noOwn && <Text>{t('Dein Konto wurde über {name} angelegt und hat noch kein eigenes Passwort.', { name: sso?.name ?? 'OIDC' })}</Text>}
       {noOwn && sso?.confirm === 'provider' && !sso.confirmed
         ? <div><Button onClick={() => { window.location.href = '/api/auth/oidc/start?reauth=1&back=' + encodeURIComponent('#/settings/security') }}>{t('Bei {name} bestätigen', { name: sso?.name ?? 'OIDC' })}</Button></div>
@@ -128,8 +134,11 @@ export function SecuritySettings() {
           <Field label={t('password|Wiederholen')}><Input type="password" value={pw2} onChange={(_, d) => setPw2(d.value)} autoComplete="new-password" /></Field>
           <div><Button type="submit" appearance="primary" disabled={(!noOwn && !old) || (noOwn && sso?.confirm === 'code' && !pwCode) || !pw}>{noOwn ? t('Festlegen') : t('Ändern')}</Button></div>
         </form>}
+      </Section>
+      </>}
 
-      <Text weight="semibold" style={{ marginTop: 16 }}>{t('Sitzungen')}</Text>
+      {tab === 'sessions' && <Section title={t('Sitzungen')} last>
+      <RibbonActions><RibbonButton icon={<SignOut20Regular />} label={t('Überall abmelden')} onClick={logoutAll} /></RibbonActions>
       <Text>{t('Browser, in denen du angemeldet bist. Einzelne lassen sich abmelden. Programme mit App-Passwort stehen unter Geräte & Sync.')}</Text>
       {sessions && sessions.length > 0 && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: '6px 16px', alignItems: 'center', maxWidth: 640 }}>
@@ -140,10 +149,9 @@ export function SecuritySettings() {
           ])}
         </div>
       )}
-      <div><Button onClick={logoutAll}>{t('Überall abmelden')}</Button></div>
+      </Section>}
 
-      {sso?.available && <>
-        <Text weight="semibold" style={{ marginTop: 16 }}>{t('Anmeldung über {name}', { name: sso.name ?? 'SSO' })}</Text>
+      {tab === 'login' && sso?.available && <Section title={t('Anmeldung über {name}', { name: sso.name ?? 'SSO' })}>
         <Text>{sso.linked
           ? (sso.passwordLogin
             ? t('Dein Konto ist mit {name} verknüpft: Du meldest dich mit „Anmelden mit {name}“ an. Anmeldename und Passwort gelten weiterhin.', { name: sso.name ?? 'SSO' })
@@ -170,9 +178,9 @@ export function SecuritySettings() {
           </div>
         </form>}
         {!sso.linked && <div><Button appearance="primary" onClick={linkSso}>{t('Verknüpfen')}</Button></div>}
-      </>}
+      </Section>}
 
-      <Text weight="semibold" style={{ marginTop: 16 }}>{t('Zwei-Faktor-Anmeldung')}</Text>
+      {tab === 'login' && <Section title={t('Zwei-Faktor-Anmeldung')} last>
       <Text>
         {t('Beim Anmelden im Browser zusätzlich ein Code aus einer Authenticator-App. Programme mit App-Passwort (Handy-Kalender, notizi) sind davon nicht betroffen.')}
       </Text>
@@ -195,6 +203,7 @@ export function SecuritySettings() {
           </form>
         </div>
       )}
+      </Section>}
 
       {codes && (
         <Dialog open onOpenChange={(_, d) => !d.open && setCodes(null)}>
@@ -220,11 +229,12 @@ export function SecuritySettings() {
         </Dialog>
       )}
       {disable && <DisableDialog onClose={done => { setDisable(false); if (done) refreshMe() }} />}
-      <SecurityLog />
+      {tab === 'log' && <SecurityLog />}
 
-      <Text weight="semibold" style={{ marginTop: 16 }}>{t('Konto löschen')}</Text>
-      <Text>{t('Löscht dein Konto und deine Daten in dmOffice endgültig.')}</Text>
-      <div><Button onClick={removeAccount}>{t('Konto löschen …')}</Button></div>
+      {tab === 'delete' && <Section title={t('Konto löschen')} last>
+        <RibbonActions><RibbonButton icon={<PersonDelete20Regular />} label={t('Konto löschen …')} onClick={removeAccount} /></RibbonActions>
+        <Text>{t('Löscht dein Konto und deine Daten in dmOffice endgültig.')}</Text>
+      </Section>}
     </>
   )
 }
@@ -288,7 +298,7 @@ function SecurityLog() {
   if (!log) return null
   return (
     <>
-      <Text weight="semibold" style={{ marginTop: 16 }}>{t('Sicherheitsprotokoll')}</Text>
+      <Section title={t('Sicherheitsprotokoll')} last>
       <Text size={200}>{t('Wichtige Änderungen an deinem Konto und neue Anmeldungen meldet dir Pukki sofort, zusätzlich per Mail an dich selbst. Das gilt auch für Änderungen durch einen Administrator.')}</Text>
       {log.length === 0 ? <Text size={200}>{t('Noch keine Einträge.')}</Text> : (
         <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '4px 16px', maxWidth: 640 }}>
@@ -298,6 +308,7 @@ function SecurityLog() {
           ])}
         </div>
       )}
+      </Section>
     </>
   )
 }

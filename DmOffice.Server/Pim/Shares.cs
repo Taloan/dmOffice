@@ -137,17 +137,30 @@ public static class SharedLists
 {
     /// <summary>
     /// Id aus der Oberflaeche aufloesen: positiv = eigene Sammlung, negativ = mit mir geteilt (-Share.Id).
-    /// Fremde Sammlungen ohne Freigabe: KeyNotFound - wie eine, die es nicht gibt. Reservierte Sammlungen
-    /// (<see cref="PimStore.IsReserved"/>) ebenso.
+    // [feature:journal]
+    /// Fremde Sammlungen ohne Freigabe: KeyNotFound - wie eine, die es nicht gibt. Geteilte Tagebücher nur für /api/journal
+    /// (<paramref name="journals"/>): Dort bleiben private Einträge und fremde Medien außen vor.
+    // [feature:journal:else]
+    // /// Fremde Sammlungen ohne Freigabe: KeyNotFound - wie eine, die es nicht gibt. Reservierte Sammlungen
+    // /// (<see cref="PimStore.IsReserved"/>) ebenso.
+    // [/feature:journal]
     /// </summary>
-    public static ListRef Resolve(HttpContext http, long id)
+    // [feature:journal]
+    public static ListRef Resolve(HttpContext http, long id, bool journals = false)
+    // [feature:journal:else]
+    // public static ListRef Resolve(HttpContext http, long id)
+    // [/feature:journal]
     {
         var me = http.Space();
         if (id >= 0) return new ListRef(me, id, id, null);
         var share = http.RequestServices.GetRequiredService<ShareStore>().ById((int)-id);
         if (share == null || share.Folder != null || !share.Members.Contains(me.User.Id)) throw new KeyNotFoundException("Nicht gefunden.");
         var owner = http.RequestServices.GetRequiredService<Spaces>().Get(share.Owner);
-        if (PimStore.Find(owner.Db, share.Collection) is not { } coll || PimStore.IsReserved(coll)) throw new KeyNotFoundException("Nicht gefunden.");
+        // [feature:journal]
+        if (PimStore.Find(owner.Db, share.Collection) is not { } coll || (!journals && PimStore.IsReserved(coll))) throw new KeyNotFoundException("Nicht gefunden.");
+        // [feature:journal:else]
+        // if (PimStore.Find(owner.Db, share.Collection) is not { } coll || PimStore.IsReserved(coll)) throw new KeyNotFoundException("Nicht gefunden.");
+        // [/feature:journal]
         return new ListRef(owner, share.Collection, id, share, !share.ReadOnly.Contains(me.User.Id), share.IsShowOnly(me.User.Id));
     }
 

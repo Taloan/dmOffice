@@ -67,12 +67,13 @@ public static class FileStore
     /// Ordner des System-Tresors (docs/tresor-cryptomator-konzept.md, 2.1): darin keine Versionen und kein Papierkorb - der Tresor
     /// verwaltet seine Dateien selbst, alte Stände verschlüsselter Dateien hätten keinen Nutzen.
     /// </summary>
+    /// <summary>Reservierter Systemordner (Medien eines Moduls): bleibt in Dateien, DAV, Freigaben, Übersicht und Datenexport unsichtbar
+    /// und unangetastet - auch wenn das Modul fehlt oder ausgeschaltet ist.</summary>
+    public const string ReservedRoot = "sys-dmoffice-journal";
+
     public const string SystemVault = "dmVAULT";
     /// <summary>Bis 02.11.2026 hieß der Ordner so (Umzug: Schema-Schritt 21 in <see cref="UserDb"/>).</summary>
     public const string OldSystemVault = "dmOfficeSystemVault";
-    /// <summary>Systemordner, den diese Version selbst nicht nutzt (Testserver können ihn mit früheren Ständen angelegt haben):
-    /// bleibt unsichtbar und unangetastet.</summary>
-    public const string ReservedRoot = "sys-dmoffice-journal";
 
     /// <summary>
     /// Ordner und Kerndateien des System-Tresors (docs/tresor-cryptomator-konzept.md, 2.2): auf keinem Weg löschen, verschieben oder
@@ -220,6 +221,9 @@ public static class FileStore
 
     /// <summary>Was hoechstens noch geschrieben werden darf, bevor die Grenze erreicht ist (die ersetzte Datei zaehlt mit).</summary>
     private static long Room(UserDb db, long replaced) => Math.Min(QuotaRoom(db, replaced), CacheRoom?.Invoke() ?? long.MaxValue);
+
+    /// <summary>Was noch Platz hat (Kontingent und Zwischenspeicher); long.MaxValue ohne Grenze.</summary>
+    public static long FreeRoom(UserDb db) => Room(db, 0); // [feature:photoexport]
 
     private static long QuotaRoom(UserDb db, long replaced)
     {
@@ -449,8 +453,9 @@ public static class FileStore
         // nicht als Bild - keine Kameradaten, keine Galerie-Art)
         if (mime is null or "" or "application/octet-stream") mime = DavServer.Mime(path);
         var root = ProtectedRoot(db);
-        using var conn = db.Open();
-        using var tx = conn.BeginTransaction();
+        using var w = db.BeginWrite();
+        var conn = w.Conn;
+        var tx = w.Tx;
         var parent = Parent(path)!;
         var p = UserDb.Query(conn, "SELECT is_dir FROM files WHERE path=$p", r => r.GetInt64(0), ("$p", parent)).FirstOrDefault(-1);
         if (p != 1) throw new DavConflictException("Übergeordneter Ordner fehlt.");
@@ -485,8 +490,9 @@ public static class FileStore
     public static void Mkcol(UserDb db, string path)
     {
         GuardNewName(path);
-        using var conn = db.Open();
-        using var tx = conn.BeginTransaction();
+        using var w = db.BeginWrite();
+        var conn = w.Conn;
+        var tx = w.Tx;
         var parent = Parent(path) ?? throw new DavConflictException("Gibt es schon.");
         if (UserDb.Query(conn, "SELECT is_dir FROM files WHERE path=$p", r => r.GetInt64(0), ("$p", parent)).FirstOrDefault(-1) != 1)
             throw new DavConflictException("Übergeordneter Ordner fehlt.");
@@ -515,7 +521,10 @@ public static class FileStore
                 if (!e.IsDir) throw new DavConflictException($"Ist eine Datei, kein Ordner: {current}");
                 continue;
             }
-            Mkcol(db, current);
+            // Laden mehrere Anfragen zugleich in denselben neuen Ordner hoch, legt ihn eine an - die anderen nehmen ihn
+            // (vorher scheiterte das ganze Hochladen der anderen mit "Gibt es schon.")
+            try { Mkcol(db, current); }
+            catch (InvalidOperationException) when (Get(db, current) is { IsDir: true }) { }
         }
     }
 
@@ -556,8 +565,9 @@ public static class FileStore
         GuardFixed(db, path, true);
         var root = ProtectedRoot(db);
         trashId = 0;
-        using var conn = db.Open();
-        using var tx = conn.BeginTransaction();
+        using var w = db.BeginWrite();
+        var conn = w.Conn;
+        var tx = w.Tx;
         if (!Exists(conn, path)) return false;
         if (!InRoot(path, root) && !InRoot(path, SystemVault)) trashId = ToTrash(conn, path, root);
         UserDb.Exec(conn, "DELETE FROM files WHERE path=$p OR path GLOB $l", ("$p", path), ("$l", Glob(path) + "/*"));
@@ -584,6 +594,10 @@ public static class FileStore
 
     // ---------------- Papierkorb ----------------
 
+    /// <summary>Der jüngste Papierkorb-Eintrag für diesen Pfad (etwa gleich nach dem Löschen, für „Rückgängig“); null: keiner.</summary>
+    public static long? TrashIdOf(UserDb db, string path) =>
+        db.Query("SELECT id FROM file_trash WHERE path=$p ORDER BY id DESC LIMIT 1", r => r.GetInt64(0), ("$p", Normalize(path))).Select(x => (long?)x).FirstOrDefault();
+
     public static List<TrashEntry> Trash(UserDb db) =>
         db.Query(@"SELECT t.id, t.path, t.is_dir, t.size, t.deleted, i.mime FROM file_trash t
             LEFT JOIN file_trash_items i ON i.trash_id=t.id AND i.rel='' ORDER BY t.deleted DESC, t.id DESC",
@@ -594,8 +608,9 @@ public static class FileStore
     public static string Restore(UserDb db, long id)
     {
         var root = ProtectedRoot(db);
-        using var conn = db.Open();
-        using var tx = conn.BeginTransaction();
+        using var w = db.BeginWrite();
+        var conn = w.Conn;
+        var tx = w.Tx;
         var e = UserDb.Query(conn, "SELECT path, size FROM file_trash WHERE id=$i", r => (Path: r.GetString(0), Size: r.GetInt64(1)), ("$i", id))
             .FirstOrDefault() ;
         if (e.Path == null) throw new KeyNotFoundException("Nicht im Papierkorb.");
@@ -637,8 +652,9 @@ public static class FileStore
     /// <summary>Endgueltig loeschen: diese Eintraege, oder alle (ids = null).</summary>
     public static int PurgeTrash(UserDb db, IEnumerable<long>? ids)
     {
-        using var conn = db.Open();
-        using var tx = conn.BeginTransaction();
+        using var w = db.BeginWrite();
+        var conn = w.Conn;
+        var tx = w.Tx;
         int n = 0;
         if (ids == null) n = UserDb.Exec(conn, "DELETE FROM file_trash");
         else foreach (var id in ids) n += UserDb.Exec(conn, "DELETE FROM file_trash WHERE id=$i", ("$i", id));
@@ -652,8 +668,9 @@ public static class FileStore
     /// <summary>Papierkorb nach Tagen leeren und Verwaistes wegraeumen (Hintergrunddienst; die Versionen regelt FileRetention).</summary>
     public static int Expire(UserDb db, int trashDays, DateTime now)
     {
-        using var conn = db.Open();
-        using var tx = conn.BeginTransaction();
+        using var w = db.BeginWrite();
+        var conn = w.Conn;
+        var tx = w.Tx;
         int n = 0;
         if (trashDays > 0)
             n = UserDb.Exec(conn, "DELETE FROM file_trash WHERE deleted < $c", ("$c", now.AddDays(-trashDays).ToUniversalTime().ToString("o")));
@@ -840,8 +857,9 @@ public static class FileStore
         var root = ProtectedRoot(db);
         // Kopie eines Ordners, in dem der notizi-Ordner liegt: ihn auslassen - sonst laege eine sichtbare Kopie daneben
         var skip = copy && Contains(from, root) ? root : null;
-        using var conn = db.Open();
-        using var tx = conn.BeginTransaction();
+        using var w = db.BeginWrite();
+        var conn = w.Conn;
+        var tx = w.Tx;
         if (!Exists(conn, from)) throw new KeyNotFoundException();
         var parent = Parent(to)!;
         if (UserDb.Query(conn, "SELECT is_dir FROM files WHERE path=$p", r => r.GetInt64(0), ("$p", parent)).FirstOrDefault(-1) != 1)
@@ -971,13 +989,17 @@ public static class FileStore
     }
 
     /// <summary>Zuletzt geoeffnet oder geaendert, neueste zuerst - mit dem Zeitpunkt.</summary>
-    public static List<(FileEntry File, DateTime Used)> Recent(UserDb db, int limit = 60)
+    /// <param name="since">Verlauf geleert: nur, was danach geöffnet oder geändert wurde</param>
+    /// <summary>„Zuletzt verwendet“ leeren: geöffnete Dateien vergessen. Den Zeitpunkt für geänderte Dateien hält die Einstellung.</summary>
+    public static void ClearRecent(UserDb db) => db.Exec("DELETE FROM file_recent");
+
+    public static List<(FileEntry File, DateTime Used)> Recent(UserDb db, int limit = 60, DateTime? since = null)
     {
         var opened = db.Query($"SELECT {ColumnsF}, r.used FROM file_recent r JOIN files f ON f.fileid=r.fileid WHERE f.is_dir=0 ORDER BY r.used DESC LIMIT $n",
             r => (Read(r), Time(r.GetString(8))), ("$n", limit));
         var changed = db.Query($"SELECT {Columns} FROM files WHERE is_dir=0 ORDER BY modified DESC LIMIT $n", Read, ("$n", limit))
             .Select(f => (f, f.Modified));
-        return opened.Concat(changed).GroupBy(x => x.Item1.Path).Select(g => g.MaxBy(x => x.Item2))
+        return opened.Concat(changed).Where(x => since == null || x.Item2 > since).GroupBy(x => x.Item1.Path).Select(g => g.MaxBy(x => x.Item2))
             .OrderByDescending(x => x.Item2).Take(limit).Select(x => (x.Item1, x.Item2)).ToList();
     }
 

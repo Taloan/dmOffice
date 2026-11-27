@@ -5,6 +5,8 @@ import { api } from '../api'
 import { useApp } from '../App'
 import { t } from '../i18n'
 import { copyText } from '../shell/browser'
+import { featureOn } from '../api' // [feature:sftptrust]
+import { SftpTrustRow } from './SftpTrust' // [feature:sftptrust]
 
 export const isSftp = (url: string | null | undefined) => /^\s*sftp:\/\//i.test(url ?? '')
 
@@ -90,7 +92,14 @@ export function SftpFields({ url, onUrl, user, onUser, secret, onSecret, hasSecr
     <Field label={t('Gleichzeitige Verbindungen')}>
       <SpinButton value={p.connections} min={1} max={16} style={{ width: 110 }} onChange={(_, d) => set({ connections: d.value ?? (Number(d.displayValue) || 4) })} />
     </Field>
-    <Text size={200} style={muted}>{t('Beim ersten Verbinden merkt sich dmOffice den Schlüssel des Servers. Meldet sich später ein anderer, bricht die Verbindung ab.')}</Text>
+    {/* [feature:sftptrust] */}
+    {featureOn('sftptrust')
+      ? <Text size={200} style={muted}>{t('Beim ersten Verbinden zeigt dmOffice den Fingerabdruck des Servers zum Bestätigen. Meldet sich später ein anderer, wird erst nach erneuter Bestätigung verbunden.')}</Text>
+      : <Text size={200} style={muted}>{t('Beim ersten Verbinden merkt sich dmOffice den Schlüssel des Servers. Meldet sich später ein anderer, bricht die Verbindung ab.')}</Text>}
+    <SftpTrustRow url={url} saved={!!hasSecret} />
+    {/* [feature:sftptrust:else] */}
+    {/* <Text size={200} style={muted}>{t('Beim ersten Verbinden merkt sich dmOffice den Schlüssel des Servers. Meldet sich später ein anderer, bricht die Verbindung ab.')}</Text> */}
+    {/* [/feature:sftptrust] */}
     {admin && p.host && <div><Button size="small" appearance="subtle" onClick={forget}>{t('Gemerkten Server-Schlüssel zurücksetzen')}</Button></div>}
   </>
 }

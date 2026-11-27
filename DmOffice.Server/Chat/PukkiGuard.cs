@@ -101,4 +101,7 @@ public static partial class PukkiGuard
     /// <summary>Wissensfrage („Was ist …“, „Wie viel …“, „Tipps …“, „Erklär mir …“) - nicht „Haben wir noch Zucker?“ oder Termine.</summary>
     [GeneratedRegex(@"^(?:und\s+|aber\s+|also\s+|sag mal,?\s+)?(was|wie|warum|wieso|weshalb|welche\w*|wo|soll|sollte|darf|kann|könnte|ist|sind|hilft|helfen|macht|stimmt|brauche|braucht|gibt es|gibt's|bringt|lohnt|worauf|wann)\b|\b(erklär\w*|tipps?|ratschl\w*|infos?|information\w*|was weißt du|was weisst du|erzähl\w*|kannst du mir|was kann ich|was soll ich|was tun|was hilft|wie schaffe ich|wie kann ich|woran liegt|warum|wieso|weshalb)\b", I)]
     private static partial Regex KnowledgeRx();
+
+    /// <summary>Ist der Text eine Wissensfrage (nicht „Haben wir noch Zucker?“ oder Termine)?</summary>
+    public static bool IsQuestion(string text) => KnowledgeRx().IsMatch(text);
 }

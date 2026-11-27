@@ -25,7 +25,11 @@ public static partial class FilesApi
     public const int MaxChunks = 4096, MaxOpenPerLink = 50;
     /// <summary>Offene Sitzungen je Benutzer (ohne Link).</summary>
     public const int MaxOpenPerUser = 10;
-    private static readonly TimeSpan SessionLife = TimeSpan.FromDays(1);
+    /// <summary>So lange ohne neues Teil, dann verfaellt eine Sitzung.</summary>
+    private static readonly TimeSpan SessionLife = TimeSpan.FromHours(6);
+    /// <summary>So lange ohne neues Teil gilt eine Sitzung als liegen geblieben (Seite neu geladen, Tab zu): sie zaehlt nicht
+    /// mehr zur Grenze und weicht, wenn neue Uploads Platz brauchen.</summary>
+    private static readonly TimeSpan IdleAfter = TimeSpan.FromMinutes(10);
     private const string SessionPrefix = "upload.session.";
     private static readonly JsonSerializerOptions SessionJson = new(JsonSerializerDefaults.Web);
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> SessionLocks = new();
@@ -37,6 +41,24 @@ public static partial class FilesApi
         public long Size { get; set; }
         public string? Mime { get; set; }
         public DateTime Created { get; set; }
+        /// <summary>Letztes angekommenes Teil (aeltere Sitzungen ohne: Created).</summary>
+        public DateTime Touched { get; set; }
+        [System.Text.Json.Serialization.JsonIgnore] public DateTime LastActive => Touched > Created ? Touched : Created;
+        [System.Text.Json.Serialization.JsonIgnore] public bool Idle => DateTime.UtcNow - LastActive > IdleAfter;
+        /// <summary>Unvollständig und seit einer Weile kein neues Teil (mindestens 60 s, bei langsamer Leitung das Dreifache der
+        /// bisherigen Zeit je Teil; ohne Teil 2 min): vermutlich abgebrochen (Seite neu geladen, Netz weg, Abbruch nicht angekommen).
+        /// Solche Sitzungen weichen sofort, wenn ein neuer Upload Platz braucht - nicht erst nach IdleAfter.</summary>
+        [System.Text.Json.Serialization.JsonIgnore] public bool Stalled
+        {
+            get
+            {
+                if (Received >= Size) return false;
+                var quiet = DateTime.UtcNow - LastActive;
+                var after = Chunks.Count == 0 ? TimeSpan.FromMinutes(2)
+                    : TimeSpan.FromTicks(Math.Max(TimeSpan.FromSeconds(60).Ticks, 3 * (LastActive - Created).Ticks / Chunks.Count));
+                return quiet > after;
+            }
+        }
         /// <summary>Teile der Reihe nach: Blob (null bei leerem Teil) und Laenge.</summary>
         public List<UploadChunk> Chunks { get; set; } = new();
         /// <summary>Ueber einen Upload-Link (Kennung des Links): nur dieser Link darf weitermachen.</summary>
@@ -69,7 +91,7 @@ public static partial class FilesApi
     public static void SweepSessions(UserDb db)
     {
         foreach (var s in OpenSessions(db).ToList())
-            if (DateTime.UtcNow - s.Created > SessionLife) DropSession(db, s);
+            if (DateTime.UtcNow - s.LastActive > SessionLife) DropSession(db, s);
     }
 
     /// <summary>Alles fertig hochgeladen? Sonst Fehler mit dem Stand.</summary>
@@ -86,6 +108,32 @@ public static partial class FilesApi
     /// <summary>Blobs der Reihe nach als ein Strom (auch fuer Nextcloud-Uploads in Stuecken).</summary>
     public static Stream OpenBlobs(UserDb db, List<string> ids) => new ChunkStream(db.Blobs, ids);
 
+    /// <summary>Hoechstens so viele fertige Uploads in einer Anfrage (?upload=...).</summary>
+    public const int MaxSessionsPerRequest = 100;
+
+    /// <summary>
+    /// Fertige Uploads in Stuecken als Dateien einer Anfrage (?upload=ID, auch mehrfach) - fuer Endpunkte, die sonst ein Formular
+    /// nehmen (DMS, Archiv, Server-Ordner, Notiz-Anhaenge). Eine Sitzung wird weggeraeumt, sobald der Aufrufer ihre Datei
+    /// verarbeitet hat und die naechste verlangt; scheitert die Verarbeitung, bleibt sie fuer einen zweiten Versuch liegen.
+    /// </summary>
+    public static async IAsyncEnumerable<UploadPart> SessionParts(UserDb db, IEnumerable<string?> ids, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+    {
+        var list = ids.Where(i => !string.IsNullOrEmpty(i)).Select(i => i!).Distinct().ToList();
+        if (list.Count > MaxSessionsPerRequest) throw new ArgumentException("Zu viele Uploads auf einmal.");
+        foreach (var id in list)
+        {
+            ct.ThrowIfCancellationRequested();
+            var s = RequireComplete(db, id);
+            var body = OpenSession(db, s);
+            try { yield return new UploadPart(s.Name, s.Mime, body); }
+            finally { await body.DisposeAsync(); }
+            DropSession(db, s);
+        }
+    }
+
+    /// <summary>Groesse eines fertigen Uploads (vorab pruefen, ohne ihn zu lesen).</summary>
+    public static long SessionSize(UserDb db, string id) => RequireComplete(db, id).Size;
+
     private static readonly IResult SessionGone = Results.NotFound(new { error = "Diesen Upload gibt es nicht (mehr)." });
 
     /// <summary>Neue Sitzung - angemeldet oder ueber einen Upload-Link (link: dessen Kennung, hoechstens 50 offene je Link).</summary>
@@ -98,17 +146,28 @@ public static partial class FilesApi
         if (size > (long)MaxChunks * ChunkSize) throw new ArgumentException("Die Datei ist zu groß für das Hochladen in Stücken.");
         SweepSessions(db);
         var open = OpenSessions(db).ToList();
-        if (link != null && open.Count(x => x.Link == link) >= MaxOpenPerLink)
-            return Results.Json(new { error = "Zu viele Uploads auf einmal. Bitte später noch einmal." }, statusCode: 429);
-        if (link == null && open.Count(x => x.Link == null) >= MaxOpenPerUser)
-            return Results.Json(new { error = "Zu viele angefangene Uploads. Warte, bis einer fertig ist, oder brich einen ab." }, statusCode: 429);
+        var limit = link != null ? MaxOpenPerLink : MaxOpenPerUser;
+        // Liegen gebliebene Sitzungen (nach Neuladen nie fortgesetzt) machen Platz, die aeltesten zuerst - die Grenze gilt
+        // nur fuer Uploads, die gerade laufen. Angemeldet weichen auch unvollständige ohne neues Teil (Stalled), sofern gerade
+        // kein Teil geschrieben wird - sonst sähe nach einem Absturz beim Hochladen jemand bis zu 10 min „Zu viele Uploads“.
+        var mine = open.Where(x => x.Link == link).ToList();
+        bool Writing(UploadSession x) => SessionLocks.TryGetValue(x.Id, out var g) && g.CurrentCount == 0;
+        foreach (var idle in mine.Where(x => x.Idle || (link == null && x.Stalled && !Writing(x))).OrderBy(x => x.LastActive).Take(Math.Max(0, mine.Count - limit + 1)).ToList())
+        {
+            DropSession(db, idle);
+            open.Remove(idle);
+            mine.Remove(idle);
+        }
+        if (mine.Count >= limit)
+            return Results.Json(new { error = link != null ? "Zu viele Uploads auf einmal. Bitte später noch einmal."
+                : "Zu viele Uploads gleichzeitig. Warte, bis einer fertig ist, oder brich einen ab." }, statusCode: 429);
         // Passt es ueberhaupt? Was in allen offenen Sitzungen schon angekuendigt ist, zaehlt mit - sonst liessen sich mit
         // vielen Sitzungen zugleich beliebig viele Teile ablegen. (In geteilte Ordner zaehlt am Ende das Kontingent des Besitzers.)
         var quota = FileStore.Quota(db);
         var pending = open.Sum(x => x.Size - x.Received) + open.Sum(x => x.Received);
         if (quota > 0 && size + pending > quota - FileStore.Usage(db))
             return Results.Json(new { error = new QuotaExceededException(quota).Message }, statusCode: 507);
-        var s = new UploadSession { Id = Guid.NewGuid().ToString("N"), Name = name, Size = size, Mime = mime, Created = DateTime.UtcNow, Link = link };
+        var s = new UploadSession { Id = Guid.NewGuid().ToString("N"), Name = name, Size = size, Mime = mime, Created = DateTime.UtcNow, Touched = DateTime.UtcNow, Link = link };
         SaveSession(db, s);
         return Results.Ok(new { id = s.Id, chunkSize = ChunkSize });
     }
@@ -116,6 +175,11 @@ public static partial class FilesApi
     private static IEnumerable<UploadSession> OpenSessions(UserDb db) =>
         db.Query("SELECT key FROM kv WHERE key LIKE $p", r => r.GetString(0), ("$p", SessionPrefix + "%"))
             .Select(k => GetSession(db, k[SessionPrefix.Length..])).OfType<UploadSession>();
+
+    // [feature:uploadlimit]
+    /// <summary>In laufenden Sitzungen eines Upload-Links angekündigt (Bytes) - liegen gebliebene zählen erst wieder beim Abschließen.</summary>
+    public static long AnnouncedForLink(UserDb db, string link) => OpenSessions(db).Where(s => s.Link == link && !s.Idle).Sum(s => s.Size);
+    // [/feature:uploadlimit]
 
     public static IResult SessionStatus(UserDb db, string id, string? link = null) =>
         GetSession(db, id, link) is { } s ? Results.Ok(new { received = s.Received, size = s.Size }) : SessionGone;
@@ -140,6 +204,7 @@ public static partial class FilesApi
                 throw new ArgumentException("Das Teil ist zu klein – nur das letzte darf kleiner als ein Stück sein.");
             }
             s.Chunks.Add(new UploadChunk(blob.Id, blob.Size));
+            s.Touched = DateTime.UtcNow;
             SaveSession(db, s);
             return Results.Ok(new { received = s.Received });
         }

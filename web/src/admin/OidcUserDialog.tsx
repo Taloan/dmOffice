@@ -51,7 +51,7 @@ export function OidcUserDialog({ user, onClose }: { user: OidcUser; onClose: (ch
             </DialogActions>
           </> : user.isAdmin ? <>
             <DialogContent>
-              <Text>{t('Administratorkonten verknüpft die Person selbst unter Einstellungen → Sicherheit, bestätigt mit Passwort und gegebenenfalls Code.')}</Text>
+              <Text>{t('Ein Administratorkonto kann nur der Benutzer selbst verknüpfen, unter Einstellungen → Sicherheit. Dafür muss er sein Passwort und gegebenenfalls einen Code eingeben.')}</Text>
             </DialogContent>
             <DialogActions><Button onClick={() => onClose(false)}>{t('Schließen')}</Button></DialogActions>
           </> : <>
@@ -65,10 +65,10 @@ export function OidcUserDialog({ user, onClose }: { user: OidcUser; onClose: (ch
               </div> : <div><Button onClick={makeInvite}>{user.oidcInvite ? t('Neuen Einladungslink erstellen') : t('Einladungslink erstellen')}</Button></div>}
               <Text weight="semibold" style={{ marginTop: 8 }}>{t('Oder über die E-Mail-Adresse')}</Text>
               <Field label={t('E-Mail-Adresse beim Anbieter')}
-                hint={t('Meldet sich die Person zum ersten Mal über OIDC an und bestätigt der Anbieter genau diese Adresse, wird das Konto verknüpft. Unbestätigte Adressen zählen nicht.')}>
+                hint={t('Meldet sich der Benutzer zum ersten Mal über OIDC an und bestätigt der Anbieter genau diese Adresse, wird das Konto verknüpft. Unbestätigte Adressen zählen nicht.')}>
                 <Input type="email" value={expected} onChange={(_, d) => setExpected(d.value)} />
               </Field>
-              <Text size={200} style={muted}>{t('Solange sich die Person noch mit Passwort anmelden kann, kann sie ihr Konto auch selbst verknüpfen: unter Einstellungen → Sicherheit.')}</Text>
+              <Text size={200} style={muted}>{t('Solange sich der Benutzer noch mit Passwort anmelden kann, kann er sein Konto auch selbst verknüpfen, unter Einstellungen → Sicherheit.')}</Text>
             </DialogContent>
             <DialogActions>
               {(user.oidcExpected || user.oidcInvite) && <Button onClick={() => link('')}>{t('Vormerkung entfernen')}</Button>}

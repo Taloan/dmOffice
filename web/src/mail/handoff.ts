@@ -6,9 +6,13 @@ import type { ComposeInit } from './Compose'
  */
 let pending: ComposeInit | null = null
 
+export const COMPOSE_EVENT = 'dmoffice:compose'
+
 export function handOverCompose(init: ComposeInit) {
   pending = init
-  location.hash = '#/mail'
+  // Schon im Mailbereich (etwa ein E-Mail-Link beim Start): kein hashchange - der Mailbereich hört auf das Ereignis
+  if (location.hash.startsWith('#/mail')) window.dispatchEvent(new Event(COMPOSE_EVENT))
+  else location.hash = '#/mail'
 }
 
 export function takeCompose(): ComposeInit | null {

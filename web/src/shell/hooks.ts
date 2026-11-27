@@ -85,6 +85,21 @@ export function useLoad<T>(load: () => Promise<T>, deps: unknown[]): [T | null, 
 }
 
 /** Wert erst nach einer Pause uebernehmen - fuer Suchfelder. */
+/**
+ * Schutz vor Doppelklick: run(f) startet f nur, wenn kein Lauf mehr unterwegs ist; busy sperrt den Knopf solange.
+ * Die Sperre steht sofort (Ref), nicht erst nach dem nächsten Zeichnen - sonst kommen zehn schnelle Klicks noch durch.
+ */
+export function useOnce(): [boolean, (f: () => Promise<unknown>) => Promise<void>] {
+  const running = useRef(false)
+  const [busy, setBusy] = useState(false)
+  const run = useCallback(async (f: () => Promise<unknown>) => {
+    if (running.current) return
+    running.current = true; setBusy(true)
+    try { await f() } finally { running.current = false; setBusy(false) }
+  }, [])
+  return [busy, run]
+}
+
 export function useDebounced<T>(value: T, ms = 300): T {
   const [v, setV] = useState(value)
   useEffect(() => {

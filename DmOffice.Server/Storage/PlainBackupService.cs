@@ -22,6 +22,9 @@ public sealed class PlainBackupService(Spaces spaces, ServerConfig config, DataP
     public const int TellAfter = 3;
 
     public static void RunNow(string userId) { Wanted[userId] = true; if (Signal.CurrentCount == 0) Signal.Release(); }
+
+    /// <summary>Nach „Fortsetzen“ (jobcontrol): der angehaltene Lauf hat seinen Termin als erledigt vermerkt - gleich weitermachen.</summary>
+    static PlainBackupService() => JobControl.Resumed += (user, kind) => { if (kind == JobControl.DataExport && user != JobControl.Server) RunNow(user); };
     public static PlainProgress? Progress(string userId) => Running.GetValueOrDefault(userId);
     public static bool Queued(string userId) => Wanted.ContainsKey(userId);
 
@@ -45,6 +48,29 @@ public sealed class PlainBackupService(Spaces spaces, ServerConfig config, DataP
         return TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(slot, DateTimeKind.Unspecified), zone);
     }
 
+    private static bool Custom(PlainBackupSettings s) => Features.On(Features.ExportCron) && s.ScheduleKind is BackupSchedule.KindEvery or BackupSchedule.KindCron;
+    private static ServerSettings PlanOf(PlainBackupSettings s) => BackupSchedule.Plan(s.ScheduleKind, s.Time, s.EveryCount, s.EveryUnit, s.Weekday, s.Cron);
+    private static DateTime ToUtc(DateTime local, TimeZoneInfo zone)
+    {
+        var l = DateTime.SpecifyKind(local, DateTimeKind.Unspecified);
+        if (zone.IsInvalidTime(l)) l = l.AddHours(1);
+        return TimeZoneInfo.ConvertTimeToUtc(l, zone);
+    }
+
+    /// <summary>Der zuletzt fällige Zeitpunkt (UTC) nach dem Zeitplan der Person; null, wenn die Regel bisher nie zutraf.</summary>
+    public static DateTime? Slot(PlainBackupSettings s, TimeZoneInfo zone, DateTime nowUtc)
+    {
+        if (!Custom(s)) return LastSlot(s.Time, zone, nowUtc);
+        return BackupSchedule.Previous(PlanOf(s), TimeZoneInfo.ConvertTimeFromUtc(nowUtc, zone)) is { } p ? ToUtc(p, zone) : null;
+    }
+
+    /// <summary>Die nächsten Läufe (UTC) nach dem Zeitplan.</summary>
+    public static List<DateTime> NextSlots(PlainBackupSettings s, TimeZoneInfo zone, DateTime nowUtc, int count)
+    {
+        if (!Custom(s)) return Enumerable.Range(1, count).Select(i => LastSlot(s.Time, zone, nowUtc).AddDays(i)).ToList();
+        return BackupSchedule.Next(PlanOf(s), TimeZoneInfo.ConvertTimeFromUtc(nowUtc, zone), count).Select(x => ToUtc(x, zone)).ToList();
+    }
+
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
         try { await Task.Delay(TimeSpan.FromSeconds(60), ct); } catch (OperationCanceledException) { return; }
@@ -59,8 +85,13 @@ public sealed class PlainBackupService(Spaces spaces, ServerConfig config, DataP
                         var s = Settings(space);
                         var wanted = Wanted.ContainsKey(space.User.Id);
                         if (!PlainBackup.Ready(s)) { Wanted.TryRemove(space.User.Id, out _); continue; }
+                        // Angehalten oder übersprungen (jobcontrol): „Jetzt sichern“ hebt nur das Überspringen auf
+                        if (wanted) JobControl.ClearSkip(space.User.Id, JobControl.DataExport);
+                        if (JobControl.Blocked(space.User.Id, JobControl.DataExport)) continue;
                         var state = PlainBackup.State(space.Db);
-                        var slot = LastSlot(s.Time, space.Zone, DateTime.UtcNow);
+                        // Eine Regel, die bisher nie zutraf: nur „Jetzt sichern“ läuft
+                        if (Slot(s, space.Zone, DateTime.UtcNow) == null && !wanted) continue;
+                        var slot = Slot(s, space.Zone, DateTime.UtcNow) ?? DateTime.UtcNow;
                         if (state.LastSlot == null && !wanted)
                         {
                             // Gerade eingeschaltet: erst zur nächsten Uhrzeit (oder „Jetzt sichern“)
@@ -90,6 +121,7 @@ public sealed class PlainBackupService(Spaces spaces, ServerConfig config, DataP
         PlainBackup.Result result;
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
         Stops[space.User.Id] = stop;
+        using var control = JobControl.Run(space.User.Id, JobControl.DataExport);
         try
         {
             using var d = Driver(config, space, s, services.GetService<DmOffice.Mail.MicrosoftOAuth>());
@@ -194,7 +226,9 @@ public sealed class PlainBackupService(Spaces spaces, ServerConfig config, DataP
     // ---------------- Schnittstelle ----------------
 
     public sealed record SaveBody(bool Enabled, string? Target, string? Mount, string? Folder, string? Url, string? User, string? Password, string? Time,
-        int TrashDays, bool Versions, List<string>? Areas, List<string>? Skip, bool Confirm, string? AccountPassword = null, string? Code = null);
+        int TrashDays, bool Versions, List<string>? Areas, List<string>? Skip, bool Confirm, string? AccountPassword = null, string? Code = null,
+        string? ScheduleKind = null, int? EveryCount = null, string? EveryUnit = null, int? Weekday = null, string? Cron = null);
+    public sealed record PreviewBody(string? ScheduleKind, string? At, int? EveryCount, string? EveryUnit, int? Weekday, string? Cron);
     public sealed record TestBody(string? Target, string? Mount, string? Folder, string? Url, string? User, string? Password);
 
     private static object View(UserSpace space, ServerConfig config, DmOffice.Mail.MicrosoftOAuth? oauth)
@@ -205,9 +239,11 @@ public sealed class PlainBackupService(Spaces spaces, ServerConfig config, DataP
         {
             allowed = !config.Current.PlainBackupOff,
             available = PlainBackupAreas.Available(space),
+            // Bereiche der Plugins (W5): Kennung und Name in beiden Sprachen
+            pluginAreas = PlainBackupAreas.PluginAreas().Select(a => new { key = a.Key, label = new { de = a.Label.De, en = a.Label.En } }),
             settings = new
             {
-                s.Enabled, s.Target, s.Mount, s.Folder, s.Url, s.User, hasPassword = !string.IsNullOrEmpty(s.Password), s.Time, s.TrashDays, s.Versions, s.Areas, s.Skip,
+                s.Enabled, s.Target, s.Mount, s.Folder, s.Url, s.User, hasPassword = !string.IsNullOrEmpty(s.Password), s.Time, s.ScheduleKind, s.EveryCount, s.EveryUnit, s.Weekday, s.Cron, s.TrashDays, s.Versions, s.Areas, s.Skip,
                 oneDrive = string.IsNullOrEmpty(s.OneDriveToken) ? null : s.OneDriveAccount ?? "",
             },
             // OneDrive geht nur, wenn die Anmeldung bei Microsoft eingerichtet ist (DMOFFICE_MS_CLIENT_ID) und die Verwaltung OneDrive freigibt
@@ -221,7 +257,7 @@ public sealed class PlainBackupService(Spaces spaces, ServerConfig config, DataP
             confirmed = s.Confirmed != null && s.Confirmed == PlainBackup.ConfirmKey(s),
             ready = PlainBackup.Ready(s),
             state,
-            next = PlainBackup.Ready(s) ? LastSlot(s.Time, space.Zone, DateTime.UtcNow).AddDays(1) : (DateTime?)null,
+            next = PlainBackup.Ready(s) ? NextSlots(s, space.Zone, DateTime.UtcNow, 1).Cast<DateTime?>().FirstOrDefault() : null,
             running = Progress(space.User.Id),
             queued = Queued(space.User.Id),
         };
@@ -366,6 +402,15 @@ public sealed class PlainBackupService(Spaces spaces, ServerConfig config, DataP
         api.MapGet("", (HttpContext http, ServerConfig config) =>
             Results.Ok(View(http.Space(), config, Ms(http))));
 
+        // Vorschau der nächsten Läufe (Kennung exportcron), in der Zeitzone der Person
+        api.MapPost("/preview", (PreviewBody body, HttpContext http) =>
+        {
+            if (!Features.On(Features.ExportCron)) return Results.NotFound();
+            if (body.ScheduleKind == BackupSchedule.KindCron && !DmOffice.Core.Cron.TryParse(body.Cron, out _, out var error)) return Results.BadRequest(new { error });
+            var s = new PlainBackupSettings { ScheduleKind = body.ScheduleKind, Time = body.At ?? "03:00", EveryCount = body.EveryCount ?? 1, EveryUnit = body.EveryUnit ?? "d", Weekday = body.Weekday ?? 1, Cron = body.Cron };
+            return Results.Ok(new { next = NextSlots(s, http.Space().Zone, DateTime.UtcNow, 3) });
+        });
+
         api.MapPut("", (SaveBody body, HttpContext http, ServerConfig config) =>
         {
             var space = http.Space();
@@ -379,9 +424,26 @@ public sealed class PlainBackupService(Spaces spaces, ServerConfig config, DataP
                 return Results.BadRequest(new { error = "Die Uhrzeit bitte als HH:MM angeben." });
             if (!PlainBackup.TrashChoices.Contains(body.TrashDays)) return Results.BadRequest(new { error = "Unbekannte Frist." });
             s.Time = time;
+            if (Features.On(Features.ExportCron) && body.ScheduleKind != null)
+            {
+                if (body.ScheduleKind is not (BackupSchedule.KindEvery or BackupSchedule.KindCron)) return Results.BadRequest(new { error = "Unbekannter Zeitplan." });
+                if (body.ScheduleKind == BackupSchedule.KindCron && !DmOffice.Core.Cron.TryParse(body.Cron, out _, out var cronError)) return Results.BadRequest(new { error = cronError });
+                var plan = BackupSchedule.Plan(body.ScheduleKind, time, body.EveryCount, body.EveryUnit, body.Weekday, body.Cron?.Trim());
+                s.ScheduleKind = plan.S3BackupScheduleKind;
+                s.EveryCount = plan.S3BackupEveryCount;
+                s.EveryUnit = plan.S3BackupEveryUnit;
+                s.Weekday = plan.S3BackupWeekday;
+                s.Cron = plan.S3BackupCron;
+            }
+            // Zeitplan geändert: erst ab dem nächsten Zeitpunkt der neuen Regel, nicht sofort nachholen
+            if (s.Time != saved.Time || s.ScheduleKind != saved.ScheduleKind || s.EveryCount != saved.EveryCount || s.EveryUnit != saved.EveryUnit || s.Weekday != saved.Weekday || s.Cron != saved.Cron)
+            {
+                var st = PlainBackup.State(space.Db);
+                if (st.LastSlot != null) { st.LastSlot = Slot(s, space.Zone, DateTime.UtcNow) ?? st.LastSlot; PlainBackup.Save(space.Db, st); }
+            }
             s.TrashDays = body.TrashDays;
             s.Versions = body.Versions;
-            s.Areas = (body.Areas ?? []).Where(PlainBackup.AllAreas.Contains).Distinct().ToList();
+            s.Areas = (body.Areas ?? []).Where(PlainBackup.IsArea).Distinct().ToList();
             s.Skip = (body.Skip ?? []).Where(x => x.Contains(':') && x.Length < 2000).Distinct().Take(2000).ToList();
             // Neues Ziel bestätigen (dorthin gehen ab jetzt alle Daten lesbar): nur mit dem Anmelde-Passwort, und gemeldet
             var newTarget = body.Confirm && saved.Confirmed != PlainBackup.ConfirmKey(s);
@@ -453,7 +515,11 @@ public sealed class PlainBackupService(Spaces spaces, ServerConfig config, DataP
             var db = space.Db;
             object list = area switch
             {
-                // Ohne den reservierten Systemordner
+                // [feature:journal]
+                // Ohne die Medien des Tagebuchs: Die kommen mit dem Bereich „Tagebuch“
+                // [feature:journal:else]
+                // // Ohne den reservierten Systemordner
+                // [/feature:journal]
                 PlainBackup.Files => FileStore.FilesOff(db) ? [] : FileStore.Children(db, FileStore.Normalize(path ?? ""))
                     .Where(f => f.IsDir && !FileStore.InRoot(f.Path, FileStore.ReservedRoot))
                     .Select(f => new { id = f.Path, name = f.Name, folder = true }).ToList(),
@@ -462,6 +528,9 @@ public sealed class PlainBackupService(Spaces spaces, ServerConfig config, DataP
                         ("$c", c.Id), ("$k", area == PlainBackup.Tasks ? "VTODO" : "VEVENT")) != null)
                     .Select(c => new { id = c.Uri, name = c.Name, folder = false }).ToList(),
                 PlainBackup.Contacts => DmOffice.Pim.PimStore.Collections(db, DmOffice.Pim.PimStore.AddressBook).Select(c => new { id = c.Uri, name = c.Name, folder = false }).ToList(),
+                // [feature:journal]
+                PlainBackup.Journal => DmOffice.Journal.JournalStore.Journals(db).Select(c => new { id = c.Uri, name = c.Name, folder = false }).ToList(),
+                // [/feature:journal]
                 PlainBackup.Notes => db.Scalar("SELECT 1 FROM sqlite_master WHERE name='notes'") == null ? []
                     : DmOffice.Notes.NotesDb.Of(space).AllFolders().Where(f => f.Parent == (string.IsNullOrEmpty(path) ? null : path))
                         .Select(f => new { id = f.SyncId, name = f.Name, folder = true }).ToList(),

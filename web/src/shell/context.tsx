@@ -48,24 +48,33 @@ const useStyles = makeStyles({
 export const collectionColors = ['#0F6CBD', '#13A10E', '#CA5010', '#C239B3', '#E3008C', '#986F0B', '#038387', '#8764B8', '#D13438', '#69797E']
 
 /** Untermenue "Farbe" mit Farbfeldern. */
-export function ColorMenu({ colors = collectionColors, current, onPick, label, square, none }: {
-  colors?: string[]; current?: string | null; onPick: (c: string | null) => void; label?: string; square?: boolean; none?: boolean
+export function ColorMenu({ colors = collectionColors, current, onPick, label, square, none, noneLabel }: {
+  colors?: string[]; current?: string | null; onPick: (c: string | null) => void; label?: string; square?: boolean; none?: boolean; noneLabel?: string
 }) {
-  const s = useStyles()
   return (
     <Menu>
       <MenuTrigger disableButtonEnhancement><MenuItem icon={<Color20Regular />}>{label ?? t('Farbe')}</MenuItem></MenuTrigger>
-      <MenuPopover>
-        <div className={s.swatches}>
-          {colors.map(c => (
-            <button key={c} className={`${s.swatch} ${current?.toUpperCase() === c.toUpperCase() ? s.on : ''}`} style={{ background: c, borderRadius: square ? 6 : undefined }}
-              title={c} aria-label={c} onClick={() => onPick(c)} />
-          ))}
-        </div>
-        {none && <MenuList><MenuItem onClick={() => onPick(null)}>{t('Keine Farbe')}</MenuItem></MenuList>}
-      </MenuPopover>
+      <MenuPopover><ColorSwatches colors={colors} current={current} onPick={onPick} square={square} none={none} noneLabel={noneLabel} /></MenuPopover>
     </Menu>
   )
+}
+
+/** Inhalt eines Farbmenüs (Farbfelder, auf Wunsch „Keine Farbe“) - für ColorMenu und Menüband-Knöpfe mit Farbwahl. */
+export function ColorSwatches({ colors = collectionColors, current, onPick, square, none, noneLabel }: {
+  colors?: string[]; current?: string | null; onPick: (c: string | null) => void; square?: boolean; none?: boolean
+  /** Beschriftung des Eintrags ohne Farbe (sonst „Keine Farbe“) */
+  noneLabel?: string
+}) {
+  const s = useStyles()
+  return <>
+    <div className={s.swatches}>
+      {colors.map(c => (
+        <button key={c} className={`${s.swatch} ${current?.toUpperCase() === c.toUpperCase() ? s.on : ''}`} style={{ background: c, borderRadius: square ? 6 : undefined }}
+          title={c} aria-label={c} onClick={() => onPick(c)} />
+      ))}
+    </div>
+    {none && <MenuList><MenuItem onClick={() => onPick(null)}>{noneLabel ?? t('Keine Farbe')}</MenuItem></MenuList>}
+  </>
 }
 
 export interface Target { id: string | number; label: string; disabled?: boolean; depth?: number }

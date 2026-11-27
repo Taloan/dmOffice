@@ -87,11 +87,40 @@ public class AlbumTests : IClassFixture<ChatFixture>
     }
 
     [Fact]
+    public async Task Entferntes_Mitglied_nimmt_seine_Fotos_mit()
+    {
+        var ben = _fx.As("ben");
+        var anna = _fx.As("anna");
+        await Upload(ben, "AlbRaus", "ben.jpg", Jpeg(SKColors.Red));
+        await Upload(anna, "AlbRaus", "anna.jpg", Jpeg(SKColors.Yellow));
+        var id = (await Json(await ben.PostAsJsonAsync("/api/gallery/albums", new { name = "Ausflug" }))).GetProperty("id").GetInt64();
+        await Json(await ben.PostAsJsonAsync($"/api/gallery/albums/{id}/add", new { paths = new[] { "AlbRaus/ben.jpg" } }));
+        await Json(await ben.PutAsJsonAsync($"/api/gallery/albums/{id}", new { members = new[] { _fx.Id("anna") } }));
+        await Json(await anna.PostAsJsonAsync($"/api/gallery/albums/{id}/add", new { paths = new[] { "AlbRaus/anna.jpg" } }));
+        var annaKey = (await Json(await ben.GetAsync($"/api/gallery/albums/{id}/items"))).GetProperty("items").EnumerateArray()
+            .Single(i => i.GetProperty("name").GetString() == "anna.jpg").GetProperty("key").GetString()!;
+
+        // Ben nimmt Anna heraus: ihr Foto ist weg - in der Liste und als Vorschau
+        await Json(await ben.PutAsJsonAsync($"/api/gallery/albums/{id}", new { members = Array.Empty<string>() }));
+        var names = (await Json(await ben.GetAsync($"/api/gallery/albums/{id}/items"))).GetProperty("items").EnumerateArray().Select(i => i.GetProperty("name").GetString());
+        Assert.Equal(["ben.jpg"], names);
+        Assert.Equal(HttpStatusCode.NotFound, (await ben.GetAsync($"/api/gallery/albums/{id}/thumb?key={Uri.EscapeDataString(annaKey)}")).StatusCode);
+        // Wieder aufgenommen: das alte Foto kommt nicht von selbst zurück
+        await Json(await ben.PutAsJsonAsync($"/api/gallery/albums/{id}", new { members = new[] { _fx.Id("anna") } }));
+        Assert.Single((await Json(await ben.GetAsync($"/api/gallery/albums/{id}/items"))).GetProperty("items").EnumerateArray());
+        await Json(await ben.DeleteAsync($"/api/gallery/albums/{id}"));
+    }
+
+    [Fact]
     public async Task Systemordner_kommen_nicht_ins_Album()
     {
         var ben = _fx.As("ben");
         var db = _fx.Space("ben").Db;
-        var media = DmOffice.Dav.FileStore.ReservedRoot + "/2026/11";
+        // [feature:journal]
+        var media = DmOffice.Journal.JournalMediaStore.Root + "/2026/11";
+        // [feature:journal:else]
+        // var media = DmOffice.Dav.FileStore.ReservedRoot + "/2026/11";
+        // [/feature:journal]
         DmOffice.Dav.FileStore.EnsureDir(db, media);
         DmOffice.Dav.FileStore.Put(db, media + "/tag.jpg", Jpeg(SKColors.Red), "image/jpeg");
         await Upload(ben, "AlbSys", "frei.jpg", Jpeg(SKColors.Yellow));

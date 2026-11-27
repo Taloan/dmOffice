@@ -69,7 +69,6 @@ export function StatsSettings() {
 
   return (
     <>
-      <Text size={600} weight="semibold">{t('Speicher & Statistik')}</Text>
       <Text className={s.muted}>
         {t('Woran der Server gerade im Hintergrund arbeitet (Auslagern, Index, Vorschaubilder, Aufräumen), steht unter')}{' '}
         <Link href="#/settings/activity">{t('Aktivität')}</Link>.

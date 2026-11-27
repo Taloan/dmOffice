@@ -1,16 +1,20 @@
 import {
   Button, Card, Field, Input, Switch, Table, TableBody, TableCell, TableHeader, TableHeaderCell, TableRow, Text,
   makeStyles, tokens, MessageBar, MessageBarBody, Dialog, DialogSurface, DialogBody, DialogTitle, DialogContent, DialogActions, Spinner,
+  MenuItem, MenuDivider,
 } from '@fluentui/react-components'
 import { Copy16Regular, Delete20Regular, Edit20Regular, Key20Regular, Phone20Regular, QrCode20Regular } from '@fluentui/react-icons'
 import QRCode from 'qrcode'
-import { useEffect, useState } from 'react'
-import { api } from '../api'
+import { useEffect, useRef, useState } from 'react'
+import { api, featureOn } from '../api'
 import { useApp } from '../App'
 import { copyText } from '../shell/browser'
 import { useSort } from '../shell/sort'
 import { t, locale, tError } from '../i18n'
-import { askConfirm, askPassword, askText } from '../shell/context'
+import { ContextMenu, askConfirm, askPassword, askText, useContextMenu } from '../shell/context'
+import { useAutoSave } from './autosave' // [feature:savemode]
+import { RibbonActions, RibbonButton } from '../shell/Ribbon'
+import { Section, showTab, usePageTab } from './parts'
 
 const useStyles = makeStyles({
   urls: { display: 'grid', gridTemplateColumns: '160px 1fr auto', gap: '6px 12px', alignItems: 'center', padding: '14px 16px', '@media (max-width: 767px)': { gridTemplateColumns: 'minmax(0, 1fr) auto', padding: '10px', '& > :nth-child(3n+1)': { gridColumn: '1 / -1' } } },
@@ -44,12 +48,17 @@ export function DevicesSettings() {
   const [created, setCreated] = useState<string | null>(null)
   const [pair, setPair] = useState<{ qr: string; uri: string; token: string } | null>(null)
   const [pairing, setPairing] = useState(false)
+  // Rechtsklick auf ein App-Passwort (Kennung ctxall): dieselben Aktionen wie die Knöpfe
+  const menu = useContextMenu<any>()
+  const ctxall = featureOn('ctxall')
   const load = () => api.get('/api/settings/app-passwords').then(setList).catch(fail)
   useEffect(() => { api.get('/api/settings/dav').then(setDav).catch(fail); load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
   // Vom Knopf „QR-Code zum Koppeln zeigen“ (App herunterladen): gleich zum Koppeln
+  const [tab, tabBar] = usePageTab('devices', [['connect', t('Verbinden')], ['phone', t('Handy-App koppeln')], ['passwords', t('App-Passwörter')]])
+  const [, setTabTo] = useState(0)
   useEffect(() => {
     if (!dav || !location.hash.endsWith('/pair')) return
-    document.getElementById('pair-phone')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    showTab('devices', 'phone'); setTabTo(x => x + 1)
     history.replaceState(history.state, '', '#/settings/devices')
   }, [dav])
 
@@ -97,7 +106,8 @@ export function DevicesSettings() {
 
   return (
     <>
-      <Text size={600} weight="semibold">{t('Geräte & Sync')}</Text>
+      {tabBar}
+      {tab === 'connect' && <Section title={t('Adressen')} last>
       <Text>
         {t('dmOffice ist selbst CalDAV-, CardDAV- und WebDAV-Server. Handy, Thunderbird, macOS und notizi verbinden sich direkt – mit dem Anmeldenamen und einem')}
         <b> {t('App-Passwort')}</b> {t('je Gerät, nicht mit dem Login-Passwort.')}
@@ -120,8 +130,10 @@ export function DevicesSettings() {
         <li><b>notizi</b>: {t('Einstellungen → Sync → Verbindung hinzufügen → WebDAV, Adresse „notizi“ von oben, Benutzer und App-Passwort.')}</li>
       </ul>
       {dav && me.files !== false && <NetworkDrive url={dav.webdav} login={dav.login} copy={copy} />}
+      </Section>}
 
-      <Text weight="semibold" style={{ marginTop: 8 }}>{t('Handy-App koppeln')}</Text>
+      {tab === 'phone' && <Section title={t('Handy-App koppeln')} last>
+      <RibbonActions><RibbonButton icon={<QrCode20Regular />} label={t('QR-Code erzeugen')} primary onClick={pairPhone} disabled={!dav || pairing} /></RibbonActions>
       <Card className={s.pairBox} id="pair-phone">
         <Text>
           {t('Die dmOffice-App für Android zeigt Kalender und Aufgaben mit Widgets auf dem Startbildschirm. Zum Koppeln legt dmOffice ein eigenes App-Passwort an und zeigt es als QR-Code – in der App „Mit QR-Code einrichten“ wählen und den Code abfotografieren.')}
@@ -129,7 +141,7 @@ export function DevicesSettings() {
         <Text size={200} className={s.muted}>
           {t('Der Code erscheint nur ein einziges Mal. Das App-Passwort steht danach als „Handy-App“ in der Liste unten und kann dort jederzeit widerrufen werden.')}
         </Text>
-        <div><Button appearance="primary" icon={<QrCode20Regular />} onClick={pairPhone} disabled={!dav || pairing}>{pairing ? <Spinner size="tiny" /> : t('QR-Code erzeugen')}</Button></div>
+        {pairing && <Spinner size="tiny" />}
         {dav?.serverKeyFingerprint && (
           <Text size={200} className={s.muted}>
             {t('Fingerabdruck des Serverschlüssels – die App zeigt ihn beim Koppeln ohne QR-Code und in ihren Einstellungen, er muss genau übereinstimmen:')}
@@ -137,18 +149,19 @@ export function DevicesSettings() {
           </Text>
         )}
       </Card>
+      </Section>}
 
-      <Text weight="semibold" style={{ marginTop: 8 }}>{t('App-Passwörter')}</Text>
+      {tab === 'passwords' && <Section title={t('App-Passwörter')} last>
       <form style={{ display: 'flex', gap: 8, maxWidth: 480 }} onSubmit={e => { e.preventDefault(); create() }}>
         <Input placeholder={t('Name, z. B. Pixel 8 oder Laptop')} value={name} onChange={(_, d) => setName(d.value)} style={{ flex: 1 }} />
         <Button appearance="primary" icon={<Key20Regular />} type="submit">{t('Erstellen')}</Button>
       </form>
       {list.length > 0 && (
-        <Table size="small" style={{ maxWidth: 720 }}>
+        <Table size="small">
           <TableHeader><TableRow><TableHeaderCell {...header('name')}>{t('Gerät')}</TableHeaderCell><TableHeaderCell {...header('created')}>{t('Erstellt')}</TableHeaderCell><TableHeaderCell {...header('lastUsed')}>{t('Zuletzt benutzt')}</TableHeaderCell><TableHeaderCell /></TableRow></TableHeader>
           <TableBody>
             {sorted.map(p => (
-              <TableRow key={p.id}>
+              <TableRow key={p.id} onContextMenu={ctxall ? e => menu.open(e, p) : undefined}>
                 <TableCell>{p.name}{p.scope === 'notizi' && <Text size={200} className={s.muted}> · {t('nur notizi-Ordner')}</Text>}</TableCell>
                 <TableCell>{new Date(p.created).toLocaleDateString(locale)}</TableCell>
                 <TableCell>{p.lastUsed ? new Date(p.lastUsed).toLocaleString(locale) : t('noch nie')}</TableCell>
@@ -161,6 +174,12 @@ export function DevicesSettings() {
           </TableBody>
         </Table>
       )}
+      </Section>}
+      {menu.ctx && <ContextMenu at={menu.ctx.at} onClose={menu.close}>
+        <MenuItem icon={<Edit20Regular />} onClick={() => rename(menu.ctx!.data)}>{t('Umbenennen')}</MenuItem>
+        <MenuDivider />
+        <MenuItem icon={<Delete20Regular />} onClick={() => revoke(menu.ctx!.data)}>{t('Widerrufen')}</MenuItem>
+      </ContextMenu>}
       {pair && (
         <Dialog open onOpenChange={(_, d) => !d.open && setPair(null)}>
           <DialogSurface style={{ maxWidth: 440 }}>
@@ -218,8 +237,12 @@ export function NotesSettings() {
   const [busy, setBusy] = useState(false)
   const [conn, setConn] = useState<{ url: string; login: string; password: string; link: string; qr: string } | null>(null)
 
-  const load = () => api.get('/api/settings/notizi').then(d => {
-    setData(d); setEnabled(d.enabled); setRoot(d.root)
+  // Stand der Felder jetzt: nach dem Speichern nur übernehmen, was nicht inzwischen weitergetippt wurde
+  const cur = useRef({ enabled, root })
+  cur.current = { enabled, root }
+  const load = (sent?: { enabled: boolean; root: string }) => api.get('/api/settings/notizi').then(d => {
+    setData(d)
+    if (!sent || (cur.current.enabled === sent.enabled && cur.current.root === sent.root)) { setEnabled(d.enabled); setRoot(d.root) }
   }).catch(fail)
   useEffect(() => { load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -238,12 +261,25 @@ export function NotesSettings() {
     setBusy(true)
     try {
       // Die Datenbank waehlt dmOffice selbst (die erste, zu der das Passwort passt); gewechselt wird im Notizen-Bereich
+      const sent = { enabled, root }, sentPassword = password
       await api.put('/api/settings/notizi', { enabled, root, dbFolder: data.dbFolder ?? '', e2eePassword: password || undefined })
-      setPassword('')
-      notify(t('Gespeichert'))
-      await load()
+      setPassword(x => x === sentPassword ? '' : x)
+      // [feature:savemode]
+      if (!auto) notify(t('Gespeichert'))
+      // [feature:savemode:else]
+      // notify(t('Gespeichert'))
+      // [/feature:savemode]
+      await load(sent)
+      return true // [feature:savemode]
     } catch (e) { fail(e) } finally { setBusy(false) }
+    return false // [feature:savemode]
   }
+  // [feature:savemode]
+  // Kennung savemode: Schalter sofort, Passwort und Wurzel beim Verlassen des Felds
+  const auto = useAutoSave({ enabled, root, password }, !!data && (enabled !== data.enabled || root !== data.root || password !== ''), save)
+  // [feature:savemode:else]
+  // const auto = false
+  // [/feature:savemode]
 
   if (!data) return null
   const dbs: any[] = data.databases ?? []
@@ -256,7 +292,6 @@ export function NotesSettings() {
   )
   return (
     <>
-      <Text size={600} weight="semibold">{t('Notizen (notizi)')}</Text>
       <Text>
         {t('Mit notizi für Windows lassen sich Notizen verschlüsselt über dmOffice zwischen PC und Browser abgleichen.')}{' '}
         <a href="https://notizi.de" target="_blank" rel="noopener noreferrer">{t('Mehr auf notizi.de')}</a>
@@ -268,7 +303,7 @@ export function NotesSettings() {
       <Text weight="semibold">{t('2. In notizi mit dmOffice verbinden')}</Text>
       <Text>{t('dmOffice legt dafür einen eigenen Zugang an, der nur den Notizen-Ordner sieht.')}</Text>
       {!conn ? (
-        <div><Button appearance="primary" icon={<Key20Regular />} onClick={connect}>{t('notizi verbinden')}</Button></div>
+        <RibbonActions><RibbonButton primary icon={<Key20Regular />} label={t('notizi verbinden')} onClick={connect} /></RibbonActions>
       ) : (
         <Card>
           <div className={s.pairBox}>
@@ -289,7 +324,7 @@ export function NotesSettings() {
       <Text>{t('Dort wird auch ein E2EE-Passwort festgelegt; damit sind die Notizen verschlüsselt, bevor sie dmOffice erreichen. Das E2EE-Passwort wird in Schritt 3 noch einmal gebraucht. Danach in notizi einmal abgleichen.')}</Text>
 
       <Text weight="semibold">{t('3. Hier einschalten')}</Text>
-      <form className={s.form} onSubmit={e => { e.preventDefault(); save() }}>
+      <form className={s.form} onSubmit={e => { e.preventDefault(); if (!auto) save() }}>
         <Switch label={t('Notizen einschalten')} checked={enabled} onChange={(_, d) => setEnabled(d.checked)} />
         <Field label={t('E2EE-Passwort')} hint={data.hasPassword ? t('leer lassen: bleibt') : t('dasselbe wie in notizi')}>
           <Input type="password" value={password} onChange={(_, d) => setPassword(d.value)} autoComplete="new-password" />
@@ -303,7 +338,7 @@ export function NotesSettings() {
             <Input value={root} onChange={(_, d) => setRoot(d.value)} />
           </Field>
         </details>
-        <div><Button appearance="primary" type="submit" disabled={busy}>{busy ? <Spinner size="tiny" /> : t('Speichern')}</Button></div>
+        {!auto && <div><Button appearance="primary" type="submit" disabled={busy}>{busy ? <Spinner size="tiny" /> : t('Speichern')}</Button></div>}
       </form>
       {data.status?.error && <MessageBar intent="error"><MessageBarBody>{tError(data.status.error)}</MessageBarBody></MessageBar>}
       {data.status?.lastRun && !data.status.error && (

@@ -28,6 +28,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\DmOffice.Server\DmOffice.Server.csproj" />
+    <!-- Nur bauen lassen (Reihenfolge), nicht verweisen: PluginHostTests lädt es wie ein echtes Plugin aus einem Ordner -->
+    <ProjectReference Include="..\DmOffice.Tests.Plugin\DmOffice.Tests.Plugin.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
 </Project>

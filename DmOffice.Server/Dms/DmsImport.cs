@@ -12,6 +12,10 @@ public sealed class DmsSettings
     public bool Ai { get; set; }
     /// <summary>Warteschlange angehalten: Quellen nehmen weiter an, verarbeitet wird erst nach dem Fortsetzen.</summary>
     public bool Paused { get; set; }
+    /// <summary>Rolle im Dateinamen (Kennung dmsrolename): „off“, „start“ oder „end“ - gilt für alle Ablageprofile, Ablage und Tresor.</summary>
+    public string RoleInName { get; set; } = "off";
+    /// <summary>Im geschlossenen Tresor noch umzubenennen (Einstellung geändert): beim nächsten Öffnen.</summary>
+    public bool RoleSyncTresor { get; set; }
 }
 
 /// <summary>
@@ -28,6 +32,15 @@ public static class DmsImport
     public const long MaxBytes = 200L * 1024 * 1024;
     private const int MaxTries = 3;
 
+    /// <summary>Weitere Dokumentformate ohne eigene Texterkennung (aeltere und offene Office-Formate).</summary>
+    private static readonly HashSet<string> MoreDocExt = new(StringComparer.OrdinalIgnoreCase)
+        { ".doc", ".xls", ".ppt", ".odt", ".ods", ".odp", ".rtf" };
+
+    /// <summary>Ein Dokument (PDF, Office, Text, Mail, Bild)? Hochladen und „Ins DMS aufnehmen“ nehmen nur solche an - Musik,
+    /// Programme und Archive bleiben draussen. Die Oberflaeche prueft dieselbe Liste vorab (web/src/dms/model.ts).</summary>
+    public static bool IsDocument(string name, string? mime) =>
+        DmOffice.Search.TextExtract.Supported(name, mime) || MoreDocExt.Contains(Path.GetExtension(name));
+
     public static DmsSettings Settings(UserDb db) => db.GetJson<DmsSettings>(SettingsKey);
     public static void SaveSettings(UserDb db, DmsSettings s) => db.SetJson(SettingsKey, s);
 
@@ -36,7 +49,8 @@ public static class DmsImport
     /// <param name="SourceRef">etwa die Kennung der Quelle oder Konto + Message-ID</param>
     /// <param name="FileDate">Datum der Datei bzw. Mail - Dokumentdatum, wenn im Text keines steht</param>
     public sealed record Info(string Source, string? SourceRef = null, string? Sender = null, string? Subject = null, string? Profile = null,
-        DmsAssign.Presets? Presets = null, DateTime? FileDate = null, Given? Given = null, Stream? Archive = null, long Freed = 0);
+        DmsAssign.Presets? Presets = null, DateTime? FileDate = null, Given? Given = null, Stream? Archive = null, long Freed = 0
+        );
 
     /// <summary>
     /// Schon bekannt (Übernahme aus paperless): Text und Archivfassung, Titel, Datum, Vorschlag vom DMS (als „automatisch“, noch
@@ -81,7 +95,7 @@ public static class DmsImport
     {
         var zero = Array.IndexOf(payload, (byte)0);
         var head = JsonSerializer.Deserialize<DropHeader>(payload.AsSpan(0, zero)) ?? throw new InvalidDataException("Kopf fehlt.");
-        var space = SpaceOf?.Invoke(head.UserId) ?? throw new InvalidOperationException("Person nicht gefunden.");
+        var space = SpaceOf?.Invoke(head.UserId) ?? throw new InvalidOperationException("Benutzer nicht gefunden.");
         var store = DmsStore.ForTresor(space.Db, tresor);
         ImportAsync(space, new MemoryStream(payload, zero + 1, payload.Length - zero - 1), head.Name, head.Mime,
             new Info(head.Source, head.SourceRef, head.Sender, head.Subject, head.Profile, head.Presets, head.FileDate), CancellationToken.None, store)
@@ -161,7 +175,8 @@ public static class DmsImport
                       VALUES('queued', $t, $i, $n, $m, $z, $b, $s, $src, $ref, $snd, $p, $pr, $fd)",
                 ("$t", info.Subject ?? ""), ("$i", Dms.Unix()), ("$n", name), ("$m", mime), ("$z", blob.Size), ("$b", blob.Id), ("$s", sha), ("$src", info.Source),
                 ("$ref", info.SourceRef), ("$snd", info.Sender), ("$p", profile), ("$pr", JsonSerializer.Serialize(new Pending(info.Presets, info.Subject, info.FileDate,
-                    given == null ? null : given with { Text = "" }, archiveBlob))),
+                    given == null ? null : given with { Text = "" }, archiveBlob
+                    ))),
                 ("$fd", null));
             id = (long)db.Scalar("SELECT last_insert_rowid()")!;
             UserStorage.Refresh(space.Db);
@@ -196,7 +211,8 @@ public static class DmsImport
     }
 
     /// <summary>Was bis zur Verarbeitung am Dokument hängt.</summary>
-    private sealed record Pending(DmsAssign.Presets? Presets, string? Subject, DateTime? FileDate, Given? Given = null, string? ArchiveBlob = null);
+    private sealed record Pending(DmsAssign.Presets? Presets, string? Subject, DateTime? FileDate, Given? Given = null, string? ArchiveBlob = null
+        );
 
     /// <summary>Wartende Dokumente einer Person verarbeiten (höchstens <paramref name="max"/>).</summary>
     public static async Task<int> ProcessQueueAsync(UserSpace space, DmsHost host, int max, CancellationToken ct, DmsStore? store = null)
@@ -330,10 +346,11 @@ public static class DmsImport
         using (var tx = conn.BeginTransaction())
         {
             UserDb.Exec(conn, @"UPDATE dms_docs SET title = $t, doc_date = $dd, correspondent = $c, doctype = $y, auto_correspondent = $ac, auto_doctype = $ay,
-                by_ai = $ai, ai_suggestion = $as, sender = $snd, amount = CASE WHEN amount_set = 1 THEN amount ELSE COALESCE($am, amount) END
-                WHERE id = $d",
+                by_ai = $ai, ai_suggestion = $as, sender = $snd, amount = CASE WHEN amount_set = 1 THEN amount ELSE COALESCE($am, amount) END"
+                + " WHERE id = $d",
                 ("$t", title), ("$dd", date), ("$c", correspondent), ("$y", doctype), ("$ac", correspondent != null && !decided.FixedCorrespondent ? 1 : 0),
-                ("$ay", doctype != null && !decided.FixedDoctype ? 1 : 0), ("$ai", byAi ? 1 : 0), ("$as", suggestion), ("$snd", sender), ("$am", amount), ("$d", id));
+                ("$ay", doctype != null && !decided.FixedDoctype ? 1 : 0), ("$ai", byAi ? 1 : 0), ("$as", suggestion), ("$snd", sender), ("$am", amount),
+                ("$d", id));
             UserDb.Exec(conn, "DELETE FROM dms_doc_tags WHERE doc = $d", ("$d", id));
             foreach (var t in tags)
                 UserDb.Exec(conn, "INSERT OR IGNORE INTO dms_doc_tags(doc, tag, auto) VALUES($d, $t, $a)", ("$d", id), ("$t", t), ("$a", fixedTags.Contains(t) ? 0 : 1));
@@ -441,8 +458,9 @@ public static class DmsImport
         try
         {
             var m = MimeKit.MimeMessage.Load(new MemoryStream(eml));
-            var subject = string.IsNullOrWhiteSpace(m.Subject) ? null : Dms.CleanText(m.Subject);
-            return (subject, m.Date == default ? null : m.Date.UtcDateTime, m.From.Mailboxes.FirstOrDefault()?.Address);
+            // Unlesbarer Betreff: kein Titel aus der Mail, dann gilt der Dateiname
+            var subject = DmsMailPdf.SubjectOf(m) is { } sj ? Dms.CleanText(sj) : null;
+            return (subject, DmsMailPdf.DateOf(m)?.UtcDateTime, m.From.Mailboxes.FirstOrDefault()?.Address);
         }
         catch (Exception e) when (e is FormatException or IOException) { return null; }
     }
@@ -688,6 +706,41 @@ public static class DmsImport
     }
 
     /// <summary>
+    /// Rolle im Dateinamen angleichen: „[Rolle]“ (jede Rolle) aus dem Namen nehmen und - wenn das Dokument eine Rolle gerade innehat und
+    /// die Einstellung es will - vorn oder hinten wieder anfügen. Nur umbenennen, nie verschieben: gilt auch, wenn das Profil der Angabe
+    /// nicht folgt oder das Dokument von Hand abgelegt ist. Externe Ordner bleiben unberührt.
+    /// </summary>
+    public static string? SyncRoleTag(UserSpace space, IDmsFiles files, long id, DmsStore? store = null)
+    {
+        var db = store ?? space.Db;
+        var doc = Dms.Get(db, id);
+        if (doc.Mount != null || doc.FileId == 0 || doc.State == "queued") return null;
+        var now = files.Find(space, db, doc.FileId);
+        if (now == null) return null;
+        var path = now.Value.Path;
+        var entries = Dms.Entries(space.Db);
+        var roles = entries.Where(e => e.Kind == Dms.Role).Select(e => e.Name).ToList();
+        var name = Path.GetFileNameWithoutExtension(path);
+        var bare = DmsFiling.WithoutRoles(name, roles);
+        var current = doc.Role != null && doc.RoleCurrent ? entries.FirstOrDefault(e => e.Id == doc.Role)?.Name : null;
+        var want = DmsFiling.WithRole(bare.Length == 0 ? name : bare, current, DmsFiling.RoleAtOf(space.Db));
+        if (want == name) return null;
+        var moved = files.Move(space, db, doc.FileId, Storage.StoragePath.Join(Dav.FileStore.Parent(path), want + Path.GetExtension(path)));
+        // War die Datei nach Vorgabe abgelegt, gilt der neue Name weiter als „nach Vorgabe“
+        db.Exec("UPDATE dms_docs SET placed_path = $p WHERE id = $d AND placed_path = $o", ("$p", moved), ("$d", id), ("$o", path));
+        return moved;
+    }
+
+    /// <summary>Alle Dokumente mit Rolle (geltend oder früher) eines Bereichs angleichen - nach dem Ändern der Einstellung.</summary>
+    public static int SyncRoleTags(UserSpace space, IDmsFiles files, DmsStore db)
+    {
+        var n = 0;
+        foreach (var id in db.Query("SELECT id FROM dms_docs WHERE role IS NOT NULL", r => r.GetInt64(0)))
+            try { if (SyncRoleTag(space, files, id, db) != null) n++; } catch (Exception e) when (e is not OutOfMemoryException) { /* beim nächsten Mal */ }
+        return n;
+    }
+
+    /// <summary>
     /// Wohin gehört das Dokument nach seiner Vorgabe (Ordner- und Namensmuster des Ablageprofils)? Gibt den Pfad zurück, wenn er vom
     /// jetzigen abweicht, sonst null. Nicht für Unbestätigte (Inbox), Fixierte, noch nicht Verarbeitete und Dokumente ohne Datei.
     /// Rechnet nur - verschoben wird mit „Nach Vorgabe ablegen“ bzw. automatisch, wenn das Profil „Ablage folgt den Angaben“ hat.
@@ -697,6 +750,10 @@ public static class DmsImport
         if (doc.Inbox || doc.Fixed || doc.State != "done" || string.IsNullOrEmpty(doc.Path) || doc.FileId == 0 && doc.Mount == null) return null;
         var profile = DmsFiling.Find(space, doc.Profile) ?? DmsFiling.Default(space);
         if (doc.Mount != null && (profile.Target != "external" || profile.Mount != doc.Mount)) return null;
+        // [feature:dmstresorplace]
+        // Im Tresor nur nach einem Tresor-Profil - und nur mit dem Schalter
+        if (db.Tresor && (profile.Target != "tresor" || !Features.On(Features.DmsTresorPlace))) return null;
+        // [/feature:dmstresorplace]
         var wanted = DmsFiling.PathFor(profile, DmsFiling.FactsOf(space, doc, SourceName(space, doc.Source, doc, db)), Path.GetExtension(doc.Path), false);
         return DmsFiling.SamePlace(doc.Path, wanted) ? null : wanted;
     }

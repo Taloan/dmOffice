@@ -66,10 +66,13 @@ public static partial class Pukki
     }
 
     /// <summary>Text einer Erinnerung: „Erinnerung: Zähneputzen – heute 10:00“.</summary>
-    internal static string ReminderText(UserSpace space, string title, DateTime startUtc, string? suffix = null)
+    internal static string ReminderText(UserSpace space, string title, DateTime startUtc, string? suffix = null, string? allDay = null)
     {
         var local = TimeZoneInfo.ConvertTimeFromUtc(startUtc, space.Zone);
-        var when = DayWords(DateOnly.FromDateTime(local), DateOnly.FromDateTime(Now(space))) + " " + local.ToString("HH:mm", CultureInfo.InvariantCulture);
+        // Ganztägig (allDay = Datum yyyy-MM-dd): „morgen (ganztägig)“ statt „00:00“
+        var when = allDay != null
+            ? DayWords(DateOnly.ParseExact(allDay[..10], "yyyy-MM-dd", CultureInfo.InvariantCulture), DateOnly.FromDateTime(Now(space))) + L(" (ganztägig)", " (all day)")
+            : DayWords(DateOnly.FromDateTime(local), DateOnly.FromDateTime(Now(space))) + " " + local.ToString("HH:mm", CultureInfo.InvariantCulture);
         return L($"Erinnerung: {title} – {when}", $"Reminder: {title} – {when}") + suffix;
     }
 

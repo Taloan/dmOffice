@@ -1,9 +1,11 @@
 import {
-  Button, Dropdown, Option, Text, Tooltip, makeStyles, tokens, Checkbox, Spinner, Link, Menu, MenuItem, MenuList, MenuPopover, MenuTrigger,
+  Button, Dropdown, Option, Text, Tooltip, makeStyles, tokens, Checkbox, Spinner, Link, Menu, MenuButton, MenuItem, MenuList, MenuPopover, MenuTrigger,
 } from '@fluentui/react-components'
-import { Send20Regular, Attach20Regular, Dismiss20Regular, Save20Regular, Dismiss16Regular, Important20Regular, WindowNew20Regular, ChevronDown20Regular, Link16Regular, Attach16Regular, Cloud20Regular, Desktop20Regular, ImageMultiple20Regular } from '@fluentui/react-icons'
+import { Clock20Regular, Send20Regular, Attach20Regular, Dismiss20Regular, Save20Regular, Dismiss16Regular, Important20Regular, WindowNew20Regular, Link16Regular, Attach16Regular, Cloud20Regular, Desktop20Regular, ImageMultiple20Regular, DocumentBulletList20Regular } from '@fluentui/react-icons'
 import { StoredFilesDialog } from './StoredFilesDialog'
+import { DmsAttachDialog } from './DmsAttachDialog'
 import { PickPhotoDialog } from '../files/PickPhotoDialog'
+import { dropUpload, uploadChunked, uploadUsed } from '../files/chunked'
 import { SendLaterMenu } from './Outbox'
 import { fmtLong } from '../shell/hooks'
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
@@ -15,10 +17,17 @@ import { Account, addrFull, api, defaultAccount, Attachment, fmtSize, Message } 
 import { useApp } from '../App'
 import { usePrefs } from '../prefs'
 import { RichEditor, RichEditorHandle } from '../shell/RichEditor'
+import { featureOn } from '../api'
+import { useSnippetShortcut } from './Snippets' // [feature:mailsnippets]
 import { AddressInput } from './AddressInput'
 import { t } from '../i18n'
 import { askConfirm } from '../shell/context'
 import { PgpSignButton, usePgpSign } from './Pgp'
+import { SignaturePicker, putSignature, resolveSignature, useSignatures, type SignatureChoice } from './Signatures' // [feature:mailsignatures]
+import { SenderPicker, SenderRejectedDialog, senderRejectedOf, type SenderRejected } from './SenderPicker' // [feature:catchalldomains]
+
+/** Anhänge ab dieser Größe gehen in Stücken hoch (wie sendFiles in der Dateiablage). */
+const CHUNKED_FROM = 4 * 1024 * 1024
 
 export interface ComposeInit {
   account: string
@@ -37,6 +46,8 @@ export interface ComposeInit {
   /** Die ganze Mail als .eml anhaengen; Name fuer die Anzeige */
   forwardAsAttachment?: string
   draftUid?: number
+  /** Feste Kennung des Entwurfs (Message-ID): Speichern in einem zweiten Tab ersetzt denselben Entwurf statt einen weiteren anzulegen */
+  draftId?: string
   // Beim Auskoppeln in ein eigenes Fenster: alles, was schon da ist
   files?: File[]
   important?: boolean
@@ -132,8 +143,10 @@ export function replyOf(m: Message, account: Account, all: boolean): ComposeInit
     html: '<div><br></div>' + sig(account) + quote(m, account),
     inReplyTo: m.messageId, references: [...m.references, ...(m.messageId ? [m.messageId] : [])],
     replyFolder: m.folder, replyUid: m.uid,
+    ...(m.replyAccount && m.replyAccount !== account.id ? { account: m.replyAccount } : {}), // [feature:catchalldomains]
   }
 }
+
 
 /** Als Anlage weiterleiten: die Original-Mail haengt als .eml an, der Text bleibt leer. */
 export function forwardAsAttachmentOf(m: Message, account: Account): ComposeInit {
@@ -202,6 +215,7 @@ export const Compose = forwardRef<ComposeHandle, {
   // Auswahl aus Dateien oder Galerie: als Anhang, als Link oder als Bild in den Text
   const [pickStored, setPickStored] = useState<false | AttachAs>(false)
   const [pickGallery, setPickGallery] = useState<false | AttachAs>(false)
+  const [pickDms, setPickDms] = useState(false)
   const linkInput = useRef<HTMLInputElement>(null)
   const [fwd, setFwd] = useState<Attachment[]>(init.forwardAttachments ?? [])
   const [asAttachment, setAsAttachment] = useState(init.forwardAsAttachment)
@@ -209,22 +223,64 @@ export const Compose = forwardRef<ComposeHandle, {
   const [receipt, setReceipt] = useState(init.receipt ?? false)
   const pgp = usePgpSign(account, init.sign)
   const [fromAlias, setFromAlias] = useState(init.fromAlias ?? false)
+  // [feature:catchalldomains]
+  // Absender als Alias (Catchall-Alias oder Alias eines verwalteten Postfachs), gewählt unter „Von“ mit Eintippen und Filtern
+  const [catchFrom, setCatchFrom] = useState<string | undefined>(init.fromAlias && init.alias ? init.alias : undefined)
+  // Mailserver hat den Alias als Absender abgelehnt: Rückfrage; resend: nach dem Wechsel aufs Postfach gleich noch einmal senden
+  const [rejected, setRejected] = useState<SenderRejected | null>(null)
+  const [resend, setResend] = useState(false)
+  // [/feature:catchalldomains]
   // Als Alias nur aus dem Postfach, in dem die Mail ankam
   const aliasSender = init.alias && fromAlias && account === init.account ? init.alias : undefined
+  const showCatchall = init.alias && account === init.account
+  // [feature:catchalldomains]
+  const fromAddr = featureOn('catchalldomains') ? catchFrom : aliasSender
+  // [feature:catchalldomains:else]
+  // const fromAddr = aliasSender
+  // [/feature:catchalldomains]
+  // Bisherige Absenderwahl (Dropdown der Konten, „Als Alias senden“); mit catchalldomains ersetzt durch „Von“ mit Eintippen
+  // [feature:catchalldomains]
+  const oldFrom = !featureOn('catchalldomains')
+  // [feature:catchalldomains:else]
+  // const oldFrom = true
+  // [/feature:catchalldomains]
   const [busy, setBusy] = useState(false)
   const [draftUid, setDraftUid] = useState(init.draftUid)
   // Konto, in dem der Entwurf draftUid gerade liegt
   const [draftAccount, setDraftAccount] = useState(init.draftAccount ?? init.account)
   // Stand fuer die naechste Anfrage, ohne auf das Neuzeichnen zu warten
   const draftRef = useRef({ uid: init.draftUid, account: init.draftAccount ?? init.account })
+  // Kennung des Entwurfs: schon beim ersten Speichern fest, damit auch zwei gleichzeitige Anfragen denselben Entwurf meinen
+  const draftId = useRef(init.draftId || Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join(''))
   const [dirty, setDirty] = useState(init.dirty ?? false)
   const sending = useRef(false)
   useEffect(() => { onDirty?.(dirty) }, [dirty]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => onDirty?.(false), []) // eslint-disable-line react-hooks/exhaustive-deps
   const [dragging, setDragging] = useState(false)
   const editor = useRef<RichEditorHandle>(null)
+  // [feature:mailsnippets]
+  const snippetContext = () => { const a = accounts.find(x => x.id === account); return { to: to[0], me: a?.displayName || a?.name, lang: a?.language ?? undefined } }
+  const snippetPopup = useSnippetShortcut(editor, () => setDirty(true), featureOn('mailsnippets'), snippetContext)
+  // [/feature:mailsnippets]
   const fileInput = useRef<HTMLInputElement>(null)
   const initialHtml = useRef(init.html ? cleanForEditor(init.html) : '<div><br></div>' + sig(accounts.find(a => a.id === init.account) ?? defaultAccount(accounts)!))
+  // [feature:mailsignatures]
+  // Signatur passend zum Absender (Alias vor Domain vor Konto); wechselt mit „Von“, bis von Hand eine gewählt ist.
+  // Ein geöffneter Entwurf behält seine Signatur, bis Absender oder Auswahl wechseln.
+  const sigs = useSignatures()
+  const [sigChoice, setSigChoice] = useState<SignatureChoice>({ kind: 'auto' })
+  const [sigShown, setSigShown] = useState<string | null>(null)
+  const sigStart = useRef(init.draftUid != null || !!init.dirty)
+  useEffect(() => {
+    if (!featureOn('mailsignatures') || !sigs) return
+    const acc = accounts.find(a => a.id === account)
+    const hit = sigChoice.kind === 'sig' ? sigs.find(x => x.id === sigChoice.id) ?? null
+      : sigChoice.kind === 'auto' ? resolveSignature(sigs, account, fromAddr) : null
+    setSigShown(sigChoice.kind === 'none' ? '' : hit?.name ?? (acc?.signature ? null : ''))
+    if (sigStart.current) { sigStart.current = false; return }
+    putSignature(editor.current?.area(), sigChoice.kind === 'none' ? '' : hit?.html ?? acc?.signature ?? '')
+  }, [sigs, account, fromAddr, sigChoice]) // eslint-disable-line react-hooks/exhaustive-deps
+  // [/feature:mailsignatures]
   const rootRef = useRef<HTMLDivElement>(null)
   const inRibbon = !!ribbonSlot
   // Antworten (Empfänger schon gesetzt): Einfügemarke gleich in die erste Textzeile, vor Signatur und Zitat
@@ -247,7 +303,7 @@ export const Compose = forwardRef<ComposeHandle, {
     return () => document.removeEventListener('focusin', on)
   }, [])
 
-  const form = (when?: { sendAt?: string; delaySeconds?: number }) => {
+  const form = async (when?: { sendAt?: string; delaySeconds?: number }) => {
     // replyUid/forwardUid/draftUid gehoeren zum Ursprungskonto. Liegt der Entwurf schon in einem
     // anderen Konto (Absender gewechselt und gespeichert), zaehlt fuer draftUid dieses Konto;
     // die Bezuege auf die Ursprungsmail passen dann nicht mehr und bleiben weg.
@@ -275,13 +331,27 @@ export const Compose = forwardRef<ComposeHandle, {
       forwardFolder: moved ? undefined : init.forwardFolder, forwardUid: moved ? undefined : init.forwardUid,
       forwardAttachments: moved ? [] : fwd.map(a => a.index),
       forwardAsAttachment: !moved && !!asAttachment,
-      draftUid, highPriority: important, readReceipt: receipt, from: aliasSender, sign: pgp.available ? pgp.sign : undefined,
+      draftUid, draftId: draftId.current, highPriority: important, readReceipt: receipt, from: fromAddr, sign: pgp.available ? pgp.sign : undefined,
       sendAt: when?.sendAt, delaySeconds: when?.delaySeconds,
       filePaths: stored.filter(x => !x.link).map(x => x.path), linkPaths: stored.filter(x => x.link).map(x => x.path),
       linkUploads: names.filter((_, i) => linked.includes(files[i])),
     }))
-    files.forEach((file, i) => f.append('files', file, names[i]))
-    return f
+    // Große Anhänge vorab in Stücken (wie in der Dateiablage), nie als ein großer Rumpf
+    const ids: string[] = []
+    try {
+      for (let i = 0; i < files.length; i++) {
+        if (files[i].size > CHUNKED_FROM) ids.push(await uploadChunked(files[i], names[i]))
+        else f.append('files', files[i], names[i])
+      }
+    } catch (e) { ids.forEach(id => dropUpload(id)); throw e }
+    ids.forEach(id => f.append('upload', id))
+    return { body: f, ids }
+  }
+  /** Entwurf oder Mail an den Server; nicht verbrauchte Upload-Sitzungen danach wegräumen. */
+  const post = async (url: string, when?: { sendAt?: string; delaySeconds?: number }) => {
+    const { body, ids } = await form(when)
+    try { const r = await api.form(url, body); ids.forEach(uploadUsed); return r }
+    catch (e) { ids.forEach(id => dropUpload(id)); throw e }
   }
 
   const send = async (at?: Date) => {
@@ -299,26 +369,45 @@ export const Compose = forwardRef<ComposeHandle, {
       if (inFlight.current) await inFlight.current.catch(() => undefined)
       const snapshot: ComposeInit = {
         ...init, account, to, cc, bcc, subject, html: editor.current?.html() ?? '',
-        forwardAttachments: fwd, forwardAsAttachment: asAttachment, files, important, receipt, sign: pgp.choice, draftUid: draftRef.current.uid, draftAccount: draftRef.current.account, dirty: true,
+        forwardAttachments: fwd, forwardAsAttachment: asAttachment, files, important, receipt, sign: pgp.choice, draftUid: draftRef.current.uid, draftAccount: draftRef.current.account, draftId: draftId.current, dirty: true,
+        ...(featureOn('catchalldomains') ? { alias: catchFrom, fromAlias: !!catchFrom } : {}), // [feature:catchalldomains]
       }
       const delay = at ? undefined : Math.max(0, Math.min(30, prefs.sendDelay ?? 10))
-      const r = await api.form(`/api/mail/${account}/send`, form({ sendAt: at?.toISOString(), delaySeconds: delay }))
+      const r = await post(`/api/mail/${account}/send`, { sendAt: at?.toISOString(), delaySeconds: delay })
       if (r?.queued && at) { notify(t('mail|Geplant'), t('Geht raus: {when}', { when: fmtLong(r.sendAt) })); onClose(true); return }
       if (r?.queued) { onClose(true, { id: r.queued, sendAt: r.sendAt, snapshot }); return }
       // Gesendet, aber z. B. die Kopie in "Gesendet" hat nicht geklappt
       if (r?.warning) notify(t('Gesendet – mit Hinweis'), r.warning, 'warning')
       else notify(t('Gesendet'))
       onClose(true)
-    } catch (e) { fail(e) } finally { sending.current = false; setBusy(false) }
+    } catch (e) {
+      // [feature:catchalldomains]
+      const rej = senderRejectedOf(e)
+      if (rej) { setRejected(rej); return }
+      // [/feature:catchalldomains]
+      fail(e)
+    } finally { sending.current = false; setBusy(false) }
   }
+  // [feature:catchalldomains]
+  // „Mit <Postfach> senden“ (always: „Für diese Domain immer so“ - Antworten der Domain künftig aus dem Postfach)
+  const sendAsAccount = async (always: boolean) => {
+    const info = rejected
+    setRejected(null)
+    if (!info) return
+    if (always) try { await api.post('/api/mail/aliases/reply-from', { domain: info.domain, account: info.account }) } catch (e) { fail(e); return }
+    setCatchFrom(undefined); setDirty(true); setResend(true)
+  }
+  useEffect(() => { if (resend && !catchFrom) { setResend(false); send() } }, [resend, catchFrom]) // eslint-disable-line react-hooks/exhaustive-deps
+  // [/feature:catchalldomains]
 
   // Immer nur ein Speichern zugleich: sonst legt jedes Speichern ohne bekannte Entwurfs-UID einen eigenen Entwurf an
   const [saving, setSaving] = useState(false)
   const inFlight = useRef<Promise<void> | null>(null)
   const saveDraft = async () => {
     const target = account
-    const r = await api.form(`/api/mail/${target}/draft`, form())
+    const r = await post(`/api/mail/${target}/draft`)
     draftRef.current = { uid: r.uid ?? undefined, account: target }
+    if (r.draftId) draftId.current = r.draftId
     setDraftUid(r.uid ?? undefined)
     setDraftAccount(target)
     setDirty(false)
@@ -361,7 +450,8 @@ export const Compose = forwardRef<ComposeHandle, {
     },
     snapshot: () => ({
       ...init, account, to, cc, bcc, subject, html: editor.current?.html() ?? '',
-      forwardAttachments: fwd, forwardAsAttachment: asAttachment, files, important, receipt, sign: pgp.choice, draftUid, draftAccount, dirty, fromAlias,
+      forwardAttachments: fwd, forwardAsAttachment: asAttachment, files, important, receipt, sign: pgp.choice, draftUid, draftAccount, draftId: draftId.current, dirty, fromAlias,
+      ...(featureOn('catchalldomains') ? { alias: catchFrom, fromAlias: !!catchFrom } : {}), // [feature:catchalldomains]
     }),
   }))
 
@@ -423,14 +513,8 @@ export const Compose = forwardRef<ComposeHandle, {
       onDrop={e => { if (e.dataTransfer.files.length) { e.preventDefault(); setDragging(false); addFiles(e.dataTransfer.files) } }}
       onKeyDown={e => { if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); send() } }}>
       <div className={s.bar}>
-        <div style={{ display: 'flex' }}>
-          <Button appearance="primary" icon={busy ? <Spinner size="tiny" /> : <Send20Regular />} disabled={busy} onClick={() => send()}
-            style={{ borderTopRightRadius: 0, borderBottomRightRadius: 0 }}>{t('Senden')}</Button>
-          <SendLaterMenu onPick={when => send(when)} trigger={
-            <Button appearance="primary" icon={<ChevronDown20Regular />} disabled={busy} aria-label={t('Später senden')} title={t('Später senden')}
-              style={{ minWidth: 0, borderTopLeftRadius: 0, borderBottomLeftRadius: 0, borderLeft: `1px solid ${tokens.colorNeutralStrokeOnBrand}` }} />
-          } />
-        </div>
+        <Button appearance="primary" icon={busy ? <Spinner size="tiny" /> : <Send20Regular />} disabled={busy} onClick={() => send()}>{t('Senden')}</Button>
+        <SendLaterMenu onPick={when => send(when)} trigger={<MenuButton icon={<Clock20Regular />} disabled={busy}>{t('Später senden')}</MenuButton>} />
         {!inRibbon && <><Menu>
           <MenuTrigger disableButtonEnhancement><Button icon={<Attach20Regular />}>{t('Anfügen')}</Button></MenuTrigger>
           <MenuPopover>
@@ -438,6 +522,7 @@ export const Compose = forwardRef<ComposeHandle, {
               <MenuItem icon={<Desktop20Regular />} onClick={() => fileInput.current?.click()}>{t('Vom Computer')}</MenuItem>
               <MenuItem icon={<ImageMultiple20Regular />} onClick={() => setPickGallery('attach')}>{t('Aus der dmOffice-Galerie')}</MenuItem>
               <MenuItem icon={<Cloud20Regular />} onClick={() => setPickStored('attach')}>{t('Aus den dmOffice-Dateien')}</MenuItem>
+              {featureOn('maildms') && featureOn('dms') && <MenuItem icon={<DocumentBulletList20Regular />} onClick={() => setPickDms(true)}>{t('Aus dem DMS')}</MenuItem>}
             </MenuList>
           </MenuPopover>
         </Menu>
@@ -457,7 +542,21 @@ export const Compose = forwardRef<ComposeHandle, {
         <Button appearance="subtle" icon={<Dismiss20Regular />} onClick={close} aria-label={t('Schließen')} />
       </div>
       <input ref={fileInput} type="file" multiple hidden onChange={e => { addFiles(e.target.files); e.target.value = '' }} />
-      {accounts.length > 1 && (
+      {/* [feature:catchalldomains] */}
+      {featureOn('catchalldomains') && <div className={s.field}>
+        <span className={s.label}>{t('Von')}</span>
+        <SenderPicker accounts={accounts} value={{ account, alias: catchFrom }}
+          onChange={v => { if (v.account !== account) setAccount(v.account); setCatchFrom(v.alias); setDirty(true) }} />
+      </div>}
+      {rejected && <SenderRejectedDialog info={rejected} onAccount={sendAsAccount} onClose={() => setRejected(null)} />}
+      {/* [/feature:catchalldomains] */}
+      {/* [feature:mailsignatures] */}
+      {featureOn('mailsignatures') && sigs && sigs.length > 0 && <div className={s.field}>
+        <span className={s.label}>{t('Signatur')}</span>
+        <SignaturePicker list={sigs} current={sigShown} onPick={c => { setSigChoice(c); setDirty(true) }} />
+      </div>}
+      {/* [/feature:mailsignatures] */}
+      {accounts.length > 1 && oldFrom && (
         <div className={s.field}>
           <span className={s.label}>{t('Von')}</span>
           <Dropdown value={(() => { const a = accounts.find(x => x.id === account); return a ? `${a.displayName || a.name} <${a.email}>` : '' })()}
@@ -466,11 +565,11 @@ export const Compose = forwardRef<ComposeHandle, {
           </Dropdown>
         </div>
       )}
-      {init.alias && account === init.account && (
+      {showCatchall && oldFrom && (
         <div className={s.field}>
           <span className={s.label} />
           <Checkbox checked={fromAlias} onChange={(_, d) => { setFromAlias(!!d.checked); setDirty(true) }}
-            label={t('Als {a} senden', { a: init.alias })} />
+            label={t('Als {a} senden', { a: init.alias ?? '' })} />
         </div>
       )}
       <div className={s.field}>
@@ -509,7 +608,7 @@ export const Compose = forwardRef<ComposeHandle, {
           ))}
           {stored.map(x => (
             <span key={'s' + x.path} className={s.att}>☁ {x.name} <Text size={200}>({fmtSize(x.size)})</Text>
-              {!x.path.startsWith('ext:') && linkToggle(x.link, () => { setStored(l => l.map(y => y.path === x.path ? { ...y, link: !y.link } : y)); setDirty(true) })}
+              {!x.path.startsWith('ext:') && !x.path.startsWith('dms:') && linkToggle(x.link, () => { setStored(l => l.map(y => y.path === x.path ? { ...y, link: !y.link } : y)); setDirty(true) })}
               <Button size="small" appearance="transparent" icon={<Dismiss16Regular />} onClick={() => setStored(l => l.filter(y => y.path !== x.path))} />
             </span>
           ))}
@@ -528,28 +627,41 @@ export const Compose = forwardRef<ComposeHandle, {
         setDirty(true)
       }} />}
       {/* Fotos aus der Galerie: hängt der Server an, auch aus Galerie-Ordnern („ext:“ - die nie als Link, sie liegen nicht in der Ablage) */}
+      {pickDms && <DmsAttachDialog onClose={() => setPickDms(false)} onPick={items => {
+        setPickDms(false)
+        setStored(l => [...l, ...items.filter(i => !l.some(x => x.path === i.path)).map(i => ({ ...i, link: false }))])
+        setDirty(true)
+      }} />}
       {pickGallery && <PickPhotoDialog title={t('Aus der dmOffice-Galerie')} onClose={() => setPickGallery(false)} onPickMany={items => {
         const as = pickGallery
         setPickGallery(false)
         if (as === 'inline') { inlineImages(items, i => gallerySource.thumb(i as FileItem, 1600)); return }
         // Fotos aus Galerie-Ordnern liegen nicht in der Ablage: nie als Link
-        if (as === 'link' && items.some(i => i.path.startsWith('ext:'))) notify(t('Fotos aus Galerie-Ordnern gehen als Anhang mit, ein Link ist für sie nicht möglich.'), undefined, 'warning')
+        if (as === 'link' && items.some(i => i.path.startsWith('ext:'))) notify(t('Fotos aus externen Galerie-Ordnern gehen als Anhang mit, ein Link ist für sie nicht möglich.'), undefined, 'warning')
         setStored(l => [...l, ...items.filter(i => !l.some(x => x.path === i.path)).map(i => ({ path: i.path, name: i.name, size: i.size, link: !i.path.startsWith('ext:') && (as === 'link' || i.size >= LINK_FROM) }))])
         setDirty(true)
       }} />}
       <input ref={linkInput} type="file" multiple hidden onChange={e => { const l = e.target.files; if (l) { const added = Array.from(l); setFiles(f => [...f, ...added]); setLinked(x => [...x, ...added]); setDirty(true) } e.target.value = '' }} />
-      <RichEditor ref={editor} initial={initialHtml.current} onChange={() => setDirty(true)} areaStyle={font} toolbar={!inRibbon}
+      <RichEditor ref={editor} initial={initialHtml.current} onChange={() => {
+        setDirty(true)
+      }} areaStyle={font} toolbar={!inRibbon}
         lang={accounts.find(x => x.id === account)?.language === 'en' ? 'en' : 'de'} />
-      {ribbonSlot && createPortal(<MessageRibbon editor={editor} active={inText}
+      {snippetPopup} {/* [feature:mailsnippets] */}
+      {ribbonSlot && createPortal(<MessageRibbon editor={editor} active={inText} onChange={() => setDirty(true)}
+        {...{ snippetContext }} // [feature:mailsnippets]
+        aiSource={init.replyFolder && init.replyUid ? { account: init.account, folder: init.replyFolder, uid: init.replyUid } : undefined} // [feature:mailaireply]
         onAttach={(from: AttachSource, as: AttachAs) => {
           if (from === 'computer') { if (as === 'inline') editor.current?.pickImage(); else (as === 'link' ? linkInput : fileInput).current?.click() }
           else if (from === 'gallery') setPickGallery(as)
+          else if (from === 'dms') setPickDms(true)
           else setPickStored(as)
         }}
         onSignature={(() => { const a = accounts.find(x => x.id === account); return a?.signature ? () => editor.current?.insertHtml(sig(a)) : undefined })()}
         important={important} onImportant={v => { setImportant(v); setDirty(true) }}
         receipt={receipt} onReceipt={v => { setReceipt(v); setDirty(true) }}
         pgp={pgp.available ? { sign: pgp.sign, onChange: pgp.setSign } : undefined}
+        options={<>
+        </>}
         onSave={() => save()} />, ribbonSlot)}
     </div>
   )

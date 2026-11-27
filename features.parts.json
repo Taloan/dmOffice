@@ -1,0 +1,421 @@
+{
+  "journal": {
+    "files": [
+      "DmOffice.Server/Chat/PukkiJournal.cs",
+      "DmOffice.Server/Journal",
+      "DmOffice.Tests/JournalAiTests.cs",
+      "DmOffice.Tests/JournalDoneTasksTests.cs",
+      "DmOffice.Tests/JournalMediaMoveTests.cs",
+      "DmOffice.Tests/JournalPreviewTests.cs",
+      "DmOffice.Tests/JournalShareTests.cs",
+      "DmOffice.Tests/JournalTests.cs",
+      "DmOffice.Tests/JournalTresorTests.cs",
+      "docs/tagebuch-konzept.md",
+      "web/src/i18n/en/journal.ts",
+      "web/src/journal"
+    ],
+    "names": [
+      "JournalStore",
+      "JournalApi",
+      "JournalView",
+      "TresorJournals"
+    ],
+    "allow": [
+      "DmOffice.Tests/FeaturesTests.cs"
+    ],
+    "with": [
+      "coach",
+      "helpdesk"
+    ]
+  },
+  "mailsnippets": {
+    "files": [
+      "DmOffice.Server/Mail/MailSnippets.cs",
+      "DmOffice.Tests/MailSnippetsTests.cs",
+      "web/src/mail/Snippets.tsx",
+      "web/src/mail/snippets.ts",
+      "web/src/i18n/en/mailsnippets.ts"
+    ],
+    "names": [
+      "MailSnippets",
+      "SnippetMenu",
+      "SnippetManager",
+      "SnippetSettings",
+      "useSnippetShortcut"
+    ]
+  },
+  "savemode": {
+    "files": [
+      "web/src/admin/draft.tsx",
+      "web/src/settings/autosave.tsx",
+      "web/src/i18n/en/savemode.ts"
+    ],
+    "names": [
+      "AdminDraftHost",
+      "AdminDraftProvider",
+      "AdminSaveButtons",
+      "useAdminDraft",
+      "useAdminSave",
+      "useAutoSave",
+      "SavedFrame",
+      "SAVED_EVENT"
+    ]
+  },
+  "photoexport": {
+    "files": [
+      "DmOffice.Server/Gallery/PhotoExport.cs",
+      "DmOffice.Tests/PhotoExportTests.cs",
+      "docs/foto-export-konzept.md",
+      "web/src/files/PhotoExport.tsx",
+      "web/src/i18n/en/photoexport.ts"
+    ],
+    "names": [
+      "PhotoExport",
+      "PhotoExportDialog",
+      "FreeRoom"
+    ]
+  },
+  "mailaccountoff": {
+    "files": [
+      "DmOffice.Server/Mail/MailAccountOff.cs",
+      "DmOffice.Tests/MailAccountOffTests.cs",
+      "web/src/settings/MailAccountActive.tsx",
+      "web/src/i18n/en/mailaccountoff.ts"
+    ],
+    "names": [
+      "MailAccountOff",
+      "MailAccountActive",
+      "offNotes"
+    ]
+  },
+  "galmedium": {
+    "files": [
+      "DmOffice.Server/Gallery/GalleryMedium.cs",
+      "DmOffice.Tests/GalleryMediumTests.cs",
+      "web/src/i18n/en/galmedium.ts"
+    ],
+    "names": [
+      "GalleryMediumJob",
+      "MakeMediumsAsync",
+      "MissingMedium",
+      "PutMedium",
+      "MediumOf"
+    ]
+  },
+  "catchalldomains": {
+    "files": [
+      "DmOffice.Server/Mail/CatchallDomains.cs",
+      "DmOffice.Tests/CatchallDomainsTests.cs",
+      "docs/catchall-domains-konzept.md",
+      "web/src/settings/CatchallDomainsPage.tsx",
+      "web/src/mail/SenderPicker.tsx",
+      "web/src/i18n/en/catchalldomains.ts"
+    ],
+    "names": [
+      "CatchallDomainsPage",
+      "SenderPicker",
+      "SenderRejectedDialog"
+    ]
+  },
+  "mailsignatures": {
+    "files": [
+      "DmOffice.Server/Mail/MailSignatures.cs",
+      "web/src/mail/Signatures.tsx",
+      "web/src/i18n/en/mailsignatures.ts"
+    ],
+    "names": [
+      "MailSignatures",
+      "SignatureSettings",
+      "SignaturePicker",
+      "useSignatures"
+    ]
+  },
+  "mailtocolumn": {
+    "files": [
+      "web/src/i18n/en/mailtocolumn.ts"
+    ],
+    "names": [
+      "ToPill"
+    ]
+  },
+  "mailavatarfilter": {
+    "files": [
+      "web/src/i18n/en/mailavatarfilter.ts"
+    ],
+    "names": []
+  },
+  "mailthreads": {
+    "files": [
+      "web/src/mail/Conversation.tsx",
+      "DmOffice.Tests/MailThreadTests.cs",
+      "web/src/i18n/en/mailthreads.ts"
+    ],
+    "names": [
+      "ConversationPane",
+      "ThreadOf"
+    ]
+  },
+  "mailaireply": {
+    "files": [
+      "DmOffice.Server/Mail/MailAiReply.cs",
+      "web/src/mail/AiReply.tsx",
+      "DmOffice.Tests/MailAiReplyTests.cs",
+      "web/src/i18n/en/mailaireply.ts"
+    ],
+    "names": [
+      "MailAiReply",
+      "useAiReply",
+      "aiReplyModes"
+    ]
+  },
+  "gatekeeper": {
+    "files": [
+      "docs/gatekeeper-konzept.md",
+      "DmOffice.Server/GateKeeper/GateKeeperApi.cs",
+      "DmOffice.Server/GateKeeper/GateKeeperFilter.cs",
+      "DmOffice.Server/GateKeeper/GateKeeperLists.cs",
+      "DmOffice.Server/GateKeeper/GateKeeperProtocol.cs",
+      "DmOffice.Server/GateKeeper/GateKeeperStore.cs",
+      "DmOffice.Server/GateKeeper/GateKeeperTunnel.cs",
+      "DmOffice.Tests/GateKeeperFilterTests.cs",
+      "DmOffice.Tests/GateKeeperTunnelTests.cs",
+      "web/src/gatekeeper/model.ts",
+      "web/src/gatekeeper/GateKeeperSettings.tsx",
+      "web/src/gatekeeper/GateKeeperAdmin.tsx",
+      "web/src/i18n/en/gatekeeper.ts",
+      "apps/mobile/app/src/gatekeeper",
+      "apps/mobile/app/src/nogatekeeper",
+      "apps/mobile/app/src/gatekeeperTest"
+    ],
+    "names": [
+      "GateKeeperApi",
+      "GateKeeperStore",
+      "GateKeeperLists",
+      "GateKeeperStats",
+      "GateKeeperTunnel",
+      "GateKeeperFilter",
+      "GateKeeperProtocol",
+      "GateKeeperDns",
+      "GateKeeperSettings",
+      "GateKeeperAdmin",
+      "GateKeeperBridge",
+      "GateKeeperVpnService",
+      "GkEngine",
+      "TunnelProtocol",
+      "strings_gatekeeper"
+    ]
+  },
+  "proxyconfirm": {
+    "files": [
+      "DmOffice.Server/Core/ProxyConfirm.cs",
+      "DmOffice.Tests/ProxyConfirmTests.cs",
+      "web/src/admin/SecurityProxies.tsx",
+      "web/src/i18n/en/proxyconfirm.ts"
+    ],
+    "names": [
+      "ProxyConfirm",
+      "SecurityProxies"
+    ]
+  },
+  "sftptrust": {
+    "files": [
+      "DmOffice.Tests/SftpTrustTests.cs",
+      "web/src/files/SftpTrust.tsx",
+      "web/src/i18n/en/sftptrust.ts"
+    ],
+    "names": [
+      "SftpHostKeyException",
+      "ProbeHostAsync",
+      "SftpTrustRow",
+      "SftpTrustButton",
+      "ensureSftpTrust"
+    ]
+  },
+  "publicurl": {
+    "files": [
+      "DmOffice.Tests/PublicAddressTests.cs",
+      "web/src/admin/PublicUrlAdmin.tsx",
+      "web/src/i18n/en/publicurl.ts"
+    ],
+    "names": [
+      "PublicUrlAdmin",
+      "PublicUrlBody",
+      "DMOFFICE_PUBLIC_URL"
+    ]
+  },
+  "lenslib": {
+    "files": [
+      "DmOffice.Server/Gallery/LensLibrary.cs",
+      "DmOffice.Server/Gallery/LensOwn.cs",
+      "DmOffice.Tests/LensOwnTests.cs",
+      "web/src/admin/LensAdmin.tsx",
+      "DmOffice.Tests/LensLibraryTests.cs",
+      "photo-engine/engine/lenslib.py",
+      "photo-engine/test/test_lenslib.py",
+      "web/src/settings/LensLibrary.tsx",
+      "web/src/i18n/en/lenslib.ts"
+    ],
+    "names": [
+      "LensLibrary",
+      "LensLibEntry",
+      "LensLibraryTab",
+      "LensProfilePick",
+      "LensOwn",
+      "LensAdmin",
+      "lenslib"
+    ]
+  },
+  "lenscorr": {
+    "files": [
+      "DmOffice.Server/Gallery/LensProfiles.cs",
+      "DmOffice.Server/Gallery/LensApply.cs",
+      "DmOffice.Tests/LensProfilesTests.cs",
+      "photo-engine/engine/lens.py",
+      "photo-engine/test/test_lens.py",
+      "web/src/settings/LensSettings.tsx",
+      "web/src/i18n/en/lenscorr.ts"
+    ],
+    "names": [
+      "LensProfiles",
+      "LensApply",
+      "LensSettings",
+      "LensRule",
+      "LensState",
+      "LensInfo",
+      "LENS_DEF"
+    ]
+  },
+  "adminclean": {
+    "files": [
+      "web/src/admin/AdminPage.tsx",
+      "web/src/admin/UsersAdmin.tsx",
+      "web/src/admin/TargetForm.tsx",
+      "web/src/i18n/en/adminclean.ts"
+    ],
+    "names": [
+      "AdminPageHead",
+      "UsersAdmin",
+      "TargetForm",
+      "useAdminPart"
+    ]
+  },
+  "mailprefetch": {
+    "files": [
+      "DmOffice.Tests/MailPrefetchTests.cs"
+    ],
+    "names": [
+      "InsertPrefetched",
+      "PrefetchLimit",
+      "prefetchArrived"
+    ]
+  },
+  "mailpush": {
+    "files": [
+      "DmOffice.Server/Mail/MailPush.cs",
+      "DmOffice.Tests/MailPushTests.cs",
+      "web/src/mail/mailPush.ts"
+    ],
+    "names": [
+      "MailPush",
+      "PushLive",
+      "QuickEveryPush",
+      "useMailPush"
+    ]
+  },
+  "uploadlimit": {
+    "files": [
+      "DmOffice.Server/Dav/LinkUploadLimit.cs",
+      "DmOffice.Tests/LinkUploadLimitTests.cs",
+      "web/src/i18n/en/uploadlimit.ts"
+    ],
+    "names": [
+      "LinkUploadLimit",
+      "LinkUploadLimitException",
+      "AnnouncedForLink",
+      "LinkUploadMb",
+      "linkUploadMb"
+    ]
+  },
+  "officejwthint": {
+    "files": [
+      "web/src/i18n/en/officejwthint.ts"
+    ],
+    "names": [
+      "officejwthint"
+    ]
+  },
+  "masterkeyreq": {
+    "files": [
+      "DmOffice.Tests/MasterKeyRequiredTests.cs"
+    ],
+    "names": [
+      "StartRefused",
+      "MasterKeyRequired"
+    ]
+  },
+  "cfgseal": {
+    "files": [
+      "DmOffice.Server/Core/ConfigSeal.cs",
+      "DmOffice.Tests/ConfigSealTests.cs"
+    ],
+    "names": [
+      "ConfigSeal",
+      "reseal-config"
+    ]
+  },
+  "diaryrecallthumbs": {
+    "names": [
+      "JournalRecallThumb",
+      "DIARY_RECALL_THUMBS",
+      "dash_s_photos"
+    ]
+  },
+  "gkstats": {
+    "names": [
+      "GkDayCount",
+      "GkEvery",
+      "isBlockedDnsAnswer",
+      "GK_STATS",
+      "STATS_EVERY_MS",
+      "gatekeeper_notify_blocked_today"
+    ]
+  },
+  "galsharedskip": {
+    "files": [
+      "DmOffice.Tests/GallerySharedSkipTests.cs"
+    ],
+    "names": [
+      "GallerySharedSkip",
+      "LocalStamp",
+      "TakenAt"
+    ]
+  },
+  "modplugins": {
+    "files": [
+      "web/src/settings/ModulePlugins.tsx"
+    ],
+    "names": [
+      "ModulePlugins"
+    ]
+  },
+  "navcolors": {
+    "files": [
+      "web/src/shell/navcolors.ts"
+    ],
+    "names": [
+      "navPalette",
+      "navShade",
+      "setNavColor",
+      "navColors",
+      "colorMenu"
+    ]
+  },
+  "rowdblopen": {
+    "files": [
+      "web/src/shell/rowOpen.ts"
+    ],
+    "names": [
+      "dblOpen"
+    ]
+  }
+}

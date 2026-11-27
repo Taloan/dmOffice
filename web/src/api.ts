@@ -28,13 +28,26 @@ async function handle<T>(r: Response): Promise<T> {
 }
 
 /**
- * Was der Server beim ersten Start anlegt, heißt deutsch („Persönlich“, „Kontakte“) - er kennt die Sprache der
+ // [feature:journal]
+ * Was der Server beim ersten Start anlegt, heißt deutsch („Persönlich“, „Kontakte“, „Mein Tagebuch“) - er kennt die Sprache der
+ // [feature:journal:else]
+ // * Was der Server beim ersten Start anlegt, heißt deutsch („Persönlich“, „Kontakte“) - er kennt die Sprache der
+ // [/feature:journal]
  * Oberfläche nicht. Solange der Name unverändert ist, zeigt die Oberfläche ihn übersetzt.
  */
-const DEFAULT_NAMES: Record<string, string> = { personal: 'Persönlich', contacts: 'Kontakte' }
+// [feature:journal]
+const DEFAULT_NAMES: Record<string, string> = { personal: 'Persönlich', contacts: 'Kontakte', tagebuch: 'Mein Tagebuch' }
+// [feature:journal:else]
+// const DEFAULT_NAMES: Record<string, string> = { personal: 'Persönlich', contacts: 'Kontakte' }
+// [/feature:journal]
 function localizeDefaults<T>(url: string, data: T): T {
-  if (lang !== 'en' || !Array.isArray(data) || !/^\/api\/pim\/collections\//.test(url)) return data
-  return data.map(c => c && typeof c.name === 'string' && DEFAULT_NAMES[c.uri] === c.name
+  // [feature:journal]
+  if (lang !== 'en' || !Array.isArray(data) || !/^\/api\/(pim\/collections\/|journal\/journals)/.test(url)) return data
+  return data.map(c => c && typeof c.name === 'string' && (DEFAULT_NAMES[c.uri] === c.name || (c.uri === undefined && c.name === 'Mein Tagebuch'))
+  // [feature:journal:else]
+  // if (lang !== 'en' || !Array.isArray(data) || !/^\/api\/pim\/collections\//.test(url)) return data
+  // return data.map(c => c && typeof c.name === 'string' && DEFAULT_NAMES[c.uri] === c.name
+  // [/feature:journal]
     ? { ...c, name: t(c.name) } : c) as T
 }
 
@@ -44,6 +57,18 @@ function localizeDefaults<T>(url: string, data: T): T {
  */
 let unlockHandler: ((area: string) => Promise<boolean>) | null = null
 export function setUnlockHandler(h: (area: string) => Promise<boolean>) { unlockHandler = h }
+
+/**
+ * Sitzung abgelaufen: Antwortet der Server mit 401 ohne Text, meldet sich die Person im Dialog über der Oberfläche neu an
+ * und die Anfrage läuft danach noch einmal (Handler setzt App.tsx). Anderes Konto: App.tsx lädt neu.
+ */
+let reauthHandler: (() => Promise<boolean>) | null = null
+export function setReauthHandler(h: (() => Promise<boolean>) | null) { reauthHandler = h }
+export async function afterLogin(url: string, r: Response, again: () => Promise<Response>): Promise<Response> {
+  if (r.status !== 401 || !reauthHandler || url.startsWith('/api/auth/')) return r
+  if ((await r.clone().json().catch(() => null))?.error) return r
+  return await reauthHandler() ? again() : r
+}
 
 /** Der Server war nicht erreichbar (Netz weg, Rechner aufgewacht, Server startet neu) - statt „Failed to fetch“ des Browsers. */
 export class OfflineError extends Error {
@@ -63,8 +88,17 @@ async function reach(url: string, init: RequestInit): Promise<Response> {
   }
 }
 
+/** Umschreiben von Adressen vor dem Abruf (etwa das gewählte Buch in Finanzen); Bereiche tragen sich selbst ein. */
+export const urlRewrites: ((url: string) => string)[] = []
+/** Adresse, wie sie abgerufen wird - auch für window.open und Links. */
+export const apiUrl = (url: string) => urlRewrites.reduce((u, f) => f(u), url)
+
 async function send(url: string, init: RequestInit): Promise<Response> {
-  const r = await reach(url, init)
+  url = apiUrl(url)
+  const r = await afterLogin(url, await reach(url, init), () => reach(url, init))
+  if (r.ok && /^(PUT|PATCH)$/.test(init.method ?? '') && featureOn('savemode')) window.dispatchEvent(new Event('dmoffice:saved')) // [feature:savemode]
+  // Termine und Aufgaben geändert: die Erinnerungen der Oberfläche (Notifier) gleich neu laden
+  if (r.ok && /^(POST|PUT|PATCH|DELETE)$/.test(init.method ?? '') && url.startsWith('/api/pim/')) window.dispatchEvent(new Event('dmoffice:pim-saved'))
   if (r.status !== 423 || !unlockHandler) return r
   const area = (await r.clone().json().catch(() => null))?.locked
   if (typeof area === 'string' && await unlockHandler(area)) return reach(url, init)
@@ -79,6 +113,11 @@ export const features = { off: new Set<string>() }
 /** Ist die Funktion (z. B. „vault“, „dms“) in dieser Version freigeschaltet? */
 export const featureOn = (id: string) => !features.off.has(id)
 
+/** Öffentliche Adresse des Servers aus der Verwaltung (kommt mit /api/auth/state, Server: Core/PublicAddress.cs); null: keine. */
+export const server = { publicUrl: null as string | null }
+/** Adresse für Links, die andere öffnen (Freigabelinks, Notfallzugang): die öffentliche Adresse, sonst die im Browser. */
+export const publicOrigin = () => server.publicUrl || location.origin
+
 export const api = {
   get: <T = any>(url: string) => send(url, {}).then(r => handle<T>(r)).then(d => localizeDefaults(url, d)),
   post: <T = any>(url: string, body?: unknown) =>
@@ -87,8 +126,12 @@ export const api = {
       headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
     }).then(r => handle<T>(r)),
-  put: <T = any>(url: string, body?: unknown) =>
-    send(url, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) })
+  /** headers: zusätzliche Kopfzeilen (etwa If-Match für die Versionsprüfung) */
+  put: <T = any>(url: string, body?: unknown, headers?: Record<string, string>) =>
+    send(url, { method: 'PUT', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body ?? {}) })
+      .then(r => handle<T>(r)),
+  patch: <T = any>(url: string, body?: unknown) =>
+    send(url, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) })
       .then(r => handle<T>(r)),
   del: <T = any>(url: string) => send(url, { method: 'DELETE' }).then(r => handle<T>(r)),
   putBlob: <T = any>(url: string, body: Blob) =>
@@ -125,7 +168,9 @@ export interface Addr { name?: string | null; address: string }
 
 export interface Account { id: string; name: string; email: string; displayName: string; signature: string; language?: 'de' | 'en'; trashDays?: number; junkDays?: number; storage?: 'full' | 'slim'; isDefault?: boolean
   /** Posteingang in „Alle Posteingänge“ (Kennung „unifiedpick“) */
-  inUnified?: boolean }
+  inUnified?: boolean
+  /** Verwaltetes Postfach (Kennung „mailserver“): Aliase, als die gesendet werden darf; vom Admin gesperrt */
+  aliases?: string[] | null; locked?: boolean }
 
 /** Standard-Mailkonto (Einstellungen → Konten, Kennung „defaultaccount“), sonst das erste der Liste. */
 export const defaultAccount = <T extends { id?: string; isDefault?: boolean }>(accounts: T[]): T | undefined =>
@@ -153,6 +198,14 @@ export interface MailItem {
   alias?: string | null
   /** open, blocked oder unknown (Adresse der Domain, nicht in der Liste) */
   aliasState?: 'open' | 'blocked' | 'unknown' | null
+  /** Nur bei „Ähnliche Mails“ (Mail/SimilarMail.cs): 1 sehr ähnlich, 2 ähnlich, 3 entfernt ähnlich */
+  similar?: number | null
+  // [feature:mailthreads]
+  /** Als Unterhaltungen: Schlüssel, Zahl der Mails und der ungelesenen (kontoweit, auch Gesendet) */
+  threadKey?: string; threadCount?: number; threadUnread?: number
+  /** Nur in der Liste: aufgeklappte Mail dieser Unterhaltung (Schlüssel) */
+  member?: string
+  // [/feature:mailthreads]
 }
 
 export interface Attachment { index: number; name: string; mime: string; size: number; inline: boolean }
@@ -171,10 +224,17 @@ export interface Message {
   phish?: PhishFinding[] | null
   /** Kopfzeile List-Id (Newsletter, Mailinglisten) */
   listId?: string | null
+  /** Nur Text, kein HTML-Teil (Kennung mailplain) */
+  plain?: boolean
   /** OpenPGP: signiert (mime, inline) oder Schlüssel dabei (key) - Prüfung über /signature (mail/Pgp.tsx) */
   pgp?: 'mime' | 'inline' | 'key' | null
+  /** Tracker-Schutz (Kennung mailtrackers): entfernte Zählpixel, bereinigte Links; fehlt, wenn aus */
+  trackers?: { pixels: number; links: number } | null
   /** An diesen Catchall-Alias gegangen; aliasReply: Antworten darf sie als Absender nehmen */
   alias?: string | null; aliasReply?: boolean; aliasState?: 'open' | 'blocked' | 'unknown' | null
+  /** Antworten von (Kennung catchalldomains): aus diesem Mailkonto statt aus dem der Mail */
+  replyAccount?: string | null // [feature:catchalldomains]
+  /** Helpdesk hat sie in den Kein-Ticket-Ordner gelegt (Kennung hdnoticket): Grund als Code */
 }
 
 /** kind: auth (domain, detail dmarc|spf), link (shown, target), lookalike (domain, like, detail sender|link|mixed),
@@ -199,7 +259,16 @@ export interface Collection { id: number; uri: string; name: string; color: stri
   /** Eigene Sammlung oder mit Bearbeitungsrecht geteilt; false: nur lesbar */
   canWrite?: boolean
   /** Nur gezeigt (Version 2): ansehen in dmOffice, kein Export, keine Kopie */
-  showOnly?: boolean }
+  showOnly?: boolean
+  /** Standard-Erinnerung des Kalenders (calremdefault, nur eigene) */
+  remind?: CalendarRemindDefault | null }
+
+/**
+ * Erinnerung: Minuten vor Beginn; ganztägig vor 9:00 des Tages. at (ganztägig „N Tage vorher um HH:MM“): vor 0:00 des Tages
+ * (360 = Vortag 18:00, negativ = am Tag). list: Aufgabe in dieser Liste (calremtask).
+ */
+export interface RemindRule { minutes: number; list?: number | null; at?: boolean }
+export interface CalendarRemindDefault { reminders: RemindRule[]; rules: { contains: string; reminders: RemindRule[] }[] }
 
 export interface CalEvent {
   id: string; calendar: number; uri: string; etag: string; uid?: string; title: string; location?: string
@@ -212,6 +281,10 @@ export interface CalEvent {
   organizer?: string | null
   /** Essensplan: sync_id der Rezeptnotiz */
   recipe?: string | null
+  /** calremind: eigene Erinnerungen; null = Standard des Kalenders gilt; fehlt, wenn die Kennungen aus sind */
+  reminders?: RemindRule[] | null
+  /** calremshared: nur lesend geteilt oder geteiltes Abo - meine eigenen Erinnerungen; null = die des Besitzers gelten */
+  myReminders?: RemindRule[] | null
 }
 
 export interface Attendee { email: string; name?: string | null; status?: string }

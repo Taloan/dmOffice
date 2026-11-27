@@ -376,6 +376,30 @@ public class NextcloudClientTests : IClassFixture<NextcloudServerFixture>
     }
 
     [Fact]
+    public async Task Vor_dem_Abgleich_verborgen_auch_fuer_Vorschau_und_Kopie()
+    {
+        var c = _fx.Client(_fx.AppPassword);
+        var top = "oben-" + Guid.NewGuid().ToString("N")[..6];
+        await Send(c, "MKCOL", Base + top);
+        await Send(c, "MKCOL", Base + top + "/privat");
+        Assert.True((await PutBytes(c, Base + top + "/privat/foto.png", Png(80, 60))).IsSuccessStatusCode);
+        var foto = await Self(c, top + "/privat/foto.png");
+        var privat = await Self(c, top + "/privat");
+        Assert.Equal(HttpStatusCode.OK, (await c.GetAsync($"/index.php/core/preview?fileId={foto.Id}&x=64&y=64")).StatusCode);
+
+        DavHidden.Set(Space().Db, privat.FileId, true);
+        // Über die Nummer oder den Pfad: kein Vorschaubild aus dem verborgenen Ordner
+        Assert.Equal(HttpStatusCode.NotFound, (await c.GetAsync($"/index.php/core/preview?fileId={foto.Id}&x=64&y=64")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await c.GetAsync("/index.php/core/preview.png?file=" + Uri.EscapeDataString($"/{top}/privat/foto.png") + "&x=64&y=64")).StatusCode);
+        // Den Ordner darüber kopieren holte ihn mit neuen Nummern wieder hervor
+        Assert.Equal(HttpStatusCode.Forbidden, (await Send(c, "COPY", Base + top, null, null, ("Destination", Base + top + "-kopie"))).StatusCode);
+        Assert.NotEqual((HttpStatusCode)207, (await Send(c, "PROPFIND", Base + top + "-kopie/privat", null, "0")).StatusCode);
+        // Verschieben behält die Nummer und damit das Verbergen - bleibt erlaubt
+        Assert.Equal(HttpStatusCode.Created, (await Send(c, "MOVE", Base + top, null, null, ("Destination", Base + top + "-neu"))).StatusCode);
+        DavHidden.Set(Space().Db, privat.FileId, false);
+    }
+
+    [Fact]
     public async Task Vorschau_fuer_den_Explorer_als_JPEG_oder_PNG()
     {
         var c = _fx.Client(_fx.AppPassword);

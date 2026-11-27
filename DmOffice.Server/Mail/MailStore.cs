@@ -1,5 +1,6 @@
 using System.IO.Compression;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using DmOffice.Core;
 using MailKit;
 using Microsoft.Data.Sqlite;
@@ -25,6 +26,18 @@ public sealed record MailRow(long Id, string Account, string Folder, uint Uid, s
     /// <summary>Zustand des Alias: „open“, „blocked“ oder „unknown“ (Adresse der Domain, nicht in der Liste).</summary>
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public string? AliasState { get; init; }
+    /// <summary>Nur bei „Ähnliche Mails“ (SimilarMail.cs): 1 sehr ähnlich, 2 ähnlich, 3 entfernt ähnlich.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public int? Similar { get; init; }
+    // [feature:mailthreads]
+    /// <summary>Nur in der Ansicht „Als Unterhaltungen“: Schlüssel der Unterhaltung, Zahl ihrer Mails und der ungelesenen (kontoweit).</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? ThreadKey { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public int? ThreadCount { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public int? ThreadUnread { get; init; }
+    // [/feature:mailthreads]
 }
 
 /// <summary>
@@ -71,6 +84,11 @@ public static class MailStore
         }
         tx.Commit();
     }
+
+    /// <summary>Anzahl der lokal abgelegten Mails je Ordner (was die Liste zeigt).</summary>
+    public static Dictionary<string, int> LocalCounts(UserDb db, string account) =>
+        db.Query("SELECT folder, COUNT(*) FROM mail WHERE account=$a GROUP BY folder", r => (r.GetString(0), r.GetInt32(1)), ("$a", account))
+            .ToDictionary(x => x.Item1, x => x.Item2);
 
     public static void SetFolderState(UserDb db, string account, string path, long uidValidity, long modSeq, int unread, int total) =>
         db.Exec("UPDATE mail_folders SET uidvalidity=$u, modseq=$m, unread=$un, total=$t, synced=$s WHERE account=$a AND path=$p",
@@ -145,6 +163,11 @@ public static class MailStore
             var cc = Addrs(e?.Cc);
             var flags = s.Flags ?? MessageFlags.None;
             var refs = s.References?.FirstOrDefault() ?? e?.InReplyTo ?? e?.MessageId;
+            // [feature:mailthreads]
+            var threads = Features.On(Features.MailThreads);
+            if (threads) refs = ThreadOf(conn, account, s.References?.FirstOrDefault(), e?.InReplyTo, e?.MessageId, e?.Subject, from?.Address, to.Concat(cc),
+                e?.Date ?? s.InternalDate);
+            // [/feature:mailthreads]
             var date = (e?.Date ?? s.InternalDate ?? DateTimeOffset.UtcNow).ToUnixTimeMilliseconds();
             var id = (long)UserDb.Query(conn, @"INSERT INTO mail(account,folder,uid,message_id,in_reply_to,thread,subject,from_name,from_addr,recipients,date,size,
                     seen,flagged,answered,forwarded,has_att,keywords)
@@ -156,6 +179,11 @@ public static class MailStore
                 ("$seen", flags.HasFlag(MessageFlags.Seen) ? 1 : 0), ("$fl", flags.HasFlag(MessageFlags.Flagged) ? 1 : 0),
                 ("$an", flags.HasFlag(MessageFlags.Answered) ? 1 : 0), ("$fw", s.Keywords?.Contains("$Forwarded") == true ? 1 : 0),
                 ("$att", s.Attachments?.Any() == true ? 1 : 0), ("$kw", KeywordText(s.Keywords))).First();
+            // [feature:mailthreads]
+            // Kam eine Antwort vor dieser Mail an, hängt sie noch an deren Message-ID: in die Unterhaltung dieser Mail holen
+            if (threads && Bare(e?.MessageId) is { } own && refs is { } root && root != own)
+                UserDb.Exec(conn, "UPDATE mail SET thread=$r WHERE account=$a AND thread=$m", ("$r", root), ("$a", account), ("$m", own));
+            // [/feature:mailthreads]
             UserDb.Exec(conn, "DELETE FROM mail_fts WHERE rowid=$id", ("$id", id));
             UserDb.Exec(conn, "INSERT INTO mail_fts(rowid,subject,sender,recipients,body) VALUES($id,$s,$sn,$rc,'')",
                 ("$id", id), ("$s", e?.Subject ?? ""), ("$sn", $"{from?.Name} {from?.Address}"),
@@ -164,21 +192,82 @@ public static class MailStore
         tx.Commit();
     }
 
+    // [feature:mailthreads]
+    /// <summary>Message-ID ohne spitze Klammern und Leerzeichen; leer = null.</summary>
+    internal static string? Bare(string? id) =>
+        string.IsNullOrWhiteSpace(id) ? null : id.Trim().Trim('<', '>').Trim() is { Length: > 0 } b ? b : null;
+
+    private static readonly Regex SubjectPrefix = new(@"^(re|aw|wg|fw|fwd|sv|vs|antw|tr)(\[\d+\])?\s*:\s*", RegexOptions.IgnoreCase);
+    private static readonly Regex ReplyPrefix = new(@"^(re|aw|sv|vs|antw)(\[\d+\])?\s*:", RegexOptions.IgnoreCase);
+
+    /// <summary>Betreff ohne Antwort- und Weiterleitungs-Vorsätze („Re:“, „AW:“, „Fwd:“ …), klein geschrieben.</summary>
+    internal static string CleanSubject(string? subject)
+    {
+        var t = (subject ?? "").Trim();
+        for (var m = SubjectPrefix.Match(t); m.Success; m = SubjectPrefix.Match(t)) t = t[m.Length..];
+        return t.Trim().ToLowerInvariant();
+    }
+
+    /// <summary>Schlüssel der Unterhaltung: erste Referenz (Wurzel), sonst die Unterhaltung der beantworteten Mail, sonst -
+    /// nur bei „Re:“/„AW:“ ganz ohne Kopfzeilen - eine Mail mit gleichem Betreff aus den 30 Tagen davor, die Absender oder
+    /// Empfänger mit dieser teilt; sonst die eigene Message-ID.</summary>
+    internal static string? ThreadOf(SqliteConnection conn, string account, string? firstRef, string? inReplyTo, string? messageId,
+        string? subject, string? from, IEnumerable<Addr> recipients, DateTimeOffset? date)
+    {
+        if (Bare(firstRef) is { } root) return root;
+        if (Bare(inReplyTo) is { } parent)
+        {
+            var t = UserDb.Query(conn, "SELECT thread FROM mail WHERE account=$a AND message_id IN ($m,$b) AND thread IS NOT NULL LIMIT 1",
+                r => r.GetString(0), ("$a", account), ("$m", parent), ("$b", "<" + parent + ">")).FirstOrDefault();
+            return Bare(t) ?? parent;
+        }
+        var own = Bare(messageId);
+        if (!ReplyPrefix.IsMatch((subject ?? "").TrimStart())) return own;
+        var clean = CleanSubject(subject);
+        if (clean.Length < 3) return own;
+        var people = recipients.Select(a => (string?)a.Address).Append(from).OfType<string>().Where(a => a.Length > 0)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var at = (date ?? DateTimeOffset.UtcNow).ToUnixTimeMilliseconds();
+        var like = "%" + clean.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_") + "%";
+        var candidates = UserDb.Query(conn, @"SELECT thread, subject, from_addr, recipients FROM mail
+                WHERE account=$a AND thread IS NOT NULL AND date BETWEEN $from AND $to AND lower(subject) LIKE $like ESCAPE '\'
+                ORDER BY date DESC LIMIT 20",
+            r => (Thread: r.GetString(0), Subject: r.GetString(1), From: r.IsDBNull(2) ? null : r.GetString(2), Rc: r.GetString(3)),
+            ("$a", account), ("$from", at - 30L * 86_400_000), ("$to", at), ("$like", like));
+        foreach (var c in candidates)
+        {
+            if (CleanSubject(c.Subject) != clean) continue;
+            var theirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (c.From != null) theirs.Add(c.From);
+            if (c.Rc.StartsWith('{') && JsonSerializer.Deserialize<Recipients>(c.Rc, Json) is { } rc)
+                foreach (var a in (rc.To ?? new()).Concat(rc.Cc ?? new())) if (a.Address != null) theirs.Add(a.Address);
+            // Gemeinsame Beteiligte: derselbe Betreff allein reicht nicht
+            if (people.Any(theirs.Contains)) return c.Thread;
+        }
+        return own;
+    }
+    // [/feature:mailthreads]
+
     /// <summary>Die vollstaendige Nachricht ablegen, mit Text fuer die Suche.</summary>
     public static void StoreRaw(UserDb db, string account, string folder, uint uid, byte[] raw, MimeMessage message)
     {
         var text = BodyText(message);
         var preview = Preview(text);
         bool hasAtt = message.Attachments.Any();
+        var gz = Compress(raw);
+        Ensure(db);
         using var conn = db.Open();
         var id = UserDb.Query(conn, "SELECT id FROM mail WHERE account=$a AND folder=$f AND uid=$u", r => r.GetInt64(0),
             ("$a", account), ("$f", folder), ("$u", (long)uid)).FirstOrDefault();
         if (id == 0) return;
-        UserDb.Exec(conn, "INSERT INTO mail_raw(id, raw) VALUES($id, $r) ON CONFLICT(id) DO UPDATE SET raw=$r", ("$id", id), ("$r", Compress(raw)));
+        // Eine Transaktion statt vier einzelner Schreibvorgaenge: beim Nachladen vieler Inhalte greift der Sync sonst
+        // fast ohne Pause nach der Sperre, und andere Schreiber (Oberflaeche, DMS) kommen nicht dazwischen
+        using var tx = conn.BeginTransaction();
+        UserDb.Exec(conn, "INSERT INTO mail_raw(id, raw) VALUES($id, $r) ON CONFLICT(id) DO UPDATE SET raw=$r", ("$id", id), ("$r", gz));
         UserDb.Exec(conn, "UPDATE mail SET cached=1, preview=$p, has_att=$h WHERE id=$id", ("$p", preview), ("$h", hasAtt ? 1 : 0), ("$id", id));
         UserDb.Exec(conn, "UPDATE mail_fts SET body=$b WHERE rowid=$id", ("$b", text.Length > 30_000 ? text[..30_000] : text), ("$id", id));
-        Ensure(db);
         UserDb.Exec(conn, "DELETE FROM mail_fetch_failed WHERE account=$a AND folder=$f AND uid=$u", ("$a", account), ("$f", folder), ("$u", (long)uid));
+        tx.Commit();
     }
 
     /// <summary>Nur den Inhalt ablegen (fuer Messungen und Umzug).</summary>
@@ -264,10 +353,17 @@ public static class MailStore
         return (drop.Count, drop.Sum(x => x.Bytes));
     }
 
-    /// <summary>Geoeffnet: der Inhalt zaehlt bei "Schlank" wieder als juengst (bleibt hier).</summary>
-    public static void Opened(UserDb db, string account, string folder, uint uid) =>
-        db.Exec("UPDATE mail SET opened=$t WHERE account=$a AND folder=$f AND uid=$u",
-            ("$t", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()), ("$a", account), ("$f", folder), ("$u", (long)uid));
+    /// <summary>Geoeffnet: der Inhalt zaehlt bei "Schlank" wieder als juengst (bleibt hier).
+    /// Nur ein Hinweis fuer den Aufraeumer: ist die Datenbank gerade gesperrt, scheitert deshalb nicht das Oeffnen der Mail.</summary>
+    public static void Opened(UserDb db, string account, string folder, uint uid)
+    {
+        try
+        {
+            db.Exec("UPDATE mail SET opened=$t WHERE account=$a AND folder=$f AND uid=$u",
+                ("$t", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()), ("$a", account), ("$f", folder), ("$u", (long)uid));
+        }
+        catch (SqliteException ex) when (ex.SqliteErrorCode is 5 or 6) { /* SQLITE_BUSY/LOCKED: beim naechsten Oeffnen */ }
+    }
 
     /// <summary>Mails ohne Inhalt und ohne Vorschau - bei "Schlank" holt der Sync nur die Vorschau.</summary>
     public static List<uint> MissingPreviews(UserDb db, string account, string folder, int limit) =>
@@ -375,6 +471,41 @@ public static class MailStore
         db.Exec("DELETE FROM mail_processed WHERE at < $t", ("$t", (DateTimeOffset.UtcNow - age).ToUnixTimeSeconds()));
     }
 
+    /// <summary>Flags vieler Mails vom Server uebernehmen (voller Abgleich): nur Mails, deren Stand sich hier unterscheidet, in
+    /// Portionen je eine Transaktion, dazwischen eine kurze Pause. Eine Schleife aus Einzel-Updates ohne Pause liess bei
+    /// Zehntausenden Mails andere Schreiber (Oberflaeche, DMS) bis zur Zeitgrenze warten ("database is locked").</summary>
+    public static async Task<int> ApplyFlagsAsync(UserDb db, string account, string folder,
+        IEnumerable<(uint Uid, MessageFlags Flags, IEnumerable<string>? Keywords)> items, CancellationToken ct = default)
+    {
+        var here = db.Query("SELECT uid, seen, flagged, answered, keywords FROM mail WHERE account=$a AND folder=$f",
+                r => (Uid: (uint)r.GetInt64(0), Seen: r.GetInt64(1) != 0, Flagged: r.GetInt64(2) != 0, Answered: r.GetInt64(3) != 0, Keywords: r.GetString(4)),
+                ("$a", account), ("$f", folder))
+            .ToDictionary(x => x.Uid);
+        var todo = new List<(uint Uid, bool Seen, bool Flagged, bool Answered, string? Keywords)>();
+        foreach (var (uid, flags, keywords) in items)
+        {
+            if (!here.TryGetValue(uid, out var h)) continue;
+            var kw = keywords == null ? null : KeywordText(keywords);
+            bool seen = flags.HasFlag(MessageFlags.Seen), flagged = flags.HasFlag(MessageFlags.Flagged), answered = flags.HasFlag(MessageFlags.Answered);
+            if (h.Seen == seen && h.Flagged == flagged && h.Answered == answered && (kw == null || kw == h.Keywords)) continue;
+            todo.Add((uid, seen, flagged, answered, kw));
+        }
+        bool first = true;
+        foreach (var chunk in todo.Chunk(UserDb.WriteChunk))
+        {
+            if (!first) await Task.Delay(UserDb.Breather, ct);
+            first = false;
+            using var conn = db.Open();
+            using var tx = conn.BeginTransaction();
+            foreach (var x in chunk)
+                UserDb.Exec(conn, "UPDATE mail SET seen=$s, flagged=$f, answered=$an, keywords=COALESCE($kw, keywords) WHERE account=$a AND folder=$fo AND uid=$u",
+                    ("$s", x.Seen ? 1 : 0), ("$f", x.Flagged ? 1 : 0), ("$an", x.Answered ? 1 : 0), ("$kw", x.Keywords),
+                    ("$a", account), ("$fo", folder), ("$u", (long)x.Uid));
+            tx.Commit();
+        }
+        return todo.Count;
+    }
+
     public static void SetFlags(UserDb db, string account, string folder, uint uid, MessageFlags flags, IEnumerable<string>? keywords = null)
     {
         db.Exec("UPDATE mail SET seen=$s, flagged=$f, answered=$an, keywords=COALESCE($kw, keywords) WHERE account=$a AND folder=$fo AND uid=$u",
@@ -445,26 +576,33 @@ public static class MailStore
     {
         Ensure(db);
         using var conn = db.Open();
-        using var tx = conn.BeginTransaction();
-        foreach (var uid in uids)
+        // In Portionen: viele auf einmal (Ordner auf dem Server geleert) sperrten die Datenbank sonst lange am Stueck
+        foreach (var chunk in uids.Chunk(UserDb.WriteChunk))
         {
-            UserDb.Exec(conn, "DELETE FROM mail_fts WHERE rowid IN (SELECT id FROM mail WHERE account=$a AND folder=$f AND uid=$u)",
-                ("$a", account), ("$f", folder), ("$u", (long)uid));
-            UserDb.Exec(conn, "DELETE FROM mail WHERE account=$a AND folder=$f AND uid=$u", ("$a", account), ("$f", folder), ("$u", (long)uid));
-            UserDb.Exec(conn, "DELETE FROM mail_fetch_failed WHERE account=$a AND folder=$f AND uid=$u", ("$a", account), ("$f", folder), ("$u", (long)uid));
+            using var tx = conn.BeginTransaction();
+            foreach (var uid in chunk)
+            {
+                UserDb.Exec(conn, "DELETE FROM mail_fts WHERE rowid IN (SELECT id FROM mail WHERE account=$a AND folder=$f AND uid=$u)",
+                    ("$a", account), ("$f", folder), ("$u", (long)uid));
+                UserDb.Exec(conn, "DELETE FROM mail WHERE account=$a AND folder=$f AND uid=$u", ("$a", account), ("$f", folder), ("$u", (long)uid));
+                UserDb.Exec(conn, "DELETE FROM mail_fetch_failed WHERE account=$a AND folder=$f AND uid=$u", ("$a", account), ("$f", folder), ("$u", (long)uid));
+            }
+            tx.Commit();
         }
-        tx.Commit();
         RecountUnread(conn, account, folder);
     }
 
-    private const string RowColumns =
+    internal const string RowColumns =
         "id,account,folder,uid,message_id,subject,from_name,from_addr,recipients,date,size,seen,flagged,answered,forwarded,has_att,preview,spam,cached,keywords,focus";
 
+    /// <summary>Mails nach einer eigenen Bedingung (Spalten der Tabelle mail) (etwa Mails ohne Antwort).</summary>
+    internal static List<MailRow> Rows(UserDb db, string where, params (string, object?)[] args) =>
+        db.Query($"SELECT {RowColumns} FROM mail WHERE {where}", ReadRow, args);
 
     /// <summary>Dieselben Spalten mit Tabellenkuerzel "m." - jede einzeln, nicht per Ersetzen (uid, message_id).</summary>
-    private static readonly string Prefixed = string.Join(",", RowColumns.Split(',').Select(c => "m." + c.Trim()));
+    internal static readonly string Prefixed = string.Join(",", RowColumns.Split(',').Select(c => "m." + c.Trim()));
 
-    private static MailRow ReadRow(SqliteDataReader r)
+    internal static MailRow ReadRow(SqliteDataReader r)
     {
         var json = r.GetString(8);
         // Vorgabe der Spalte ist "[]" - nur ein Objekt enthaelt Empfaenger
@@ -491,7 +629,7 @@ public static class MailStore
 
     /// <summary>Konten, deren Posteingang zu „Alle Posteingänge“ gehört (ohne die abgewählten, Kennung „unifiedpick“).</summary>
     public static List<MailAccount> UnifiedAccounts(UserSettings settings) =>
-        settings.MailAccounts.Where(a => a.InUnified || !Features.On(Features.UnifiedPick)).ToList();
+        settings.ActiveMailAccounts().Where(a => a.InUnified || !Features.On(Features.UnifiedPick)).ToList();
 
     private const string NotDeleted =
         " AND NOT EXISTS (SELECT 1 FROM mail_folders mf WHERE mf.account=mail.account AND mf.path=mail.folder AND mf.special IN ('trash','junk'))";
@@ -502,6 +640,17 @@ public static class MailStore
         foreach (var uid in uids)
             db.Exec("UPDATE mail SET focus=$v WHERE account=$a AND folder=$f AND uid=$u",
                 ("$v", focused ? 1 : 0), ("$a", account), ("$f", folder), ("$u", (long)uid));
+    }
+
+    /// <summary>Prio-Posteingang: viele Mails auf einmal einordnen, in einer Schreibtransaktion.</summary>
+    public static void SetFocus(UserDb db, string account, string folder, IReadOnlyCollection<(uint Uid, bool Focused)> items)
+    {
+        if (items.Count == 0) return;
+        using var w = db.BeginWrite();
+        foreach (var (uid, focused) in items)
+            UserDb.Exec(w.Conn, "UPDATE mail SET focus=$v WHERE account=$a AND folder=$f AND uid=$u",
+                ("$v", focused ? 1 : 0), ("$a", account), ("$f", folder), ("$u", (long)uid));
+        w.Commit();
     }
 
     /// <summary>Ungelesene in Relevant und Sonstige - fuer die Reiter ueber der Liste.</summary>
@@ -529,10 +678,117 @@ public static class MailStore
         "attachment" => $"{p}has_att DESC, {p}date DESC",
         "unread" => $"{p}seen ASC, {p}date DESC",
         "flagged" => $"{p}flagged DESC, {p}date DESC",
+        // [feature:mailtocolumn]
+        // Spalte „An“: Catchall-Alias, sonst der erste Empfänger (mail_alias_hit legt ToSort/ToWhere vorher an)
+        "to" when ToOn => $"{ToKey(p)} COLLATE NOCASE ASC, {p}date DESC",
+        // [/feature:mailtocolumn]
         _ => $"{p}date DESC",
     };
 
+    // [feature:mailtocolumn]
+    /// <summary>Spalte „An“ eingeschaltet: nur dann sortiert und filtert der Server danach.</summary>
+    private static bool ToOn => Features.On(Features.MailToColumn);
+
+    /// <summary>Wert der Spalte „An“ in SQL: Catchall-Alias der Mail, sonst die erste Adresse in An.</summary>
+    private static string ToKey(string p)
+    {
+        // Ohne Kürzel (MailStore.List) die Tabelle nennen - sonst meint message_id in der Unterabfrage die Spalte von h
+        var q = p.Length == 0 ? "mail." : p;
+        return $"COALESCE((SELECT h.alias FROM mail_alias_hit h WHERE h.message_id={q}message_id), json_extract({q}recipients, '$.to[0].address'), '')";
+    }
+
+    /// <summary>Filter „An: Adresse“ - an diese Adresse oder diesen Catchall-Alias gegangen.</summary>
+    private static string ToWhere(string p, string param) =>
+        $"({p}recipients LIKE '%' || {param} || '%' OR {p}message_id IN (SELECT h.message_id FROM mail_alias_hit h WHERE h.alias={param}))";
+
+    /// <summary>Sortieren und Filtern nach „An“ brauchen die Tabelle mail_alias_hit (auch ohne Catchall-Aliase).</summary>
+    private static void ToReady(UserDb db, string? filter, string? sort)
+    {
+        if (ToOn && (sort == "to" || filter?.StartsWith(ToPrefix) == true)) CatchallAliases.Ensure(db);
+    }
+
+    /// <summary>Filter der Spalte „An“: „to:adresse“.</summary>
+    public const string ToPrefix = "to:";
+    // [/feature:mailtocolumn]
+
     public static (int Total, List<MailRow> Items) List(UserDb db, string account, string folder, int page, int size, string? filter, string? sort = null)
+    {
+        var (where, args) = ListWhere(db, account, folder, filter, sort);
+        var total = Convert.ToInt32(db.Scalar($"SELECT COUNT(*) FROM mail WHERE {where}", args));
+        var items = db.Query($"SELECT {RowColumns} FROM mail WHERE {where} ORDER BY {OrderBy(sort)} LIMIT $n OFFSET $o", ReadRow,
+            [.. args, ("$n", size), ("$o", page * size)]);
+        return (total, items);
+    }
+
+    /// <summary>
+    /// Alle Posteingänge: dieselben Zeilen, Anzahl und Ungelesenen wie Query über die Posteingänge, aber je Posteingang über
+    /// den Index (mail_list, mail_unseen) - Query musste dafür alle Mails aller Posteingänge lesen und sortieren.
+    /// Andere Reihenfolgen als nach Datum laufen weiter über Query.
+    /// </summary>
+    public static (int Total, int Unread, List<MailRow> Items) Unified(UserDb db, IReadOnlyList<(string Account, string Folder)> inboxes,
+        int page, int size, string? filter, string? sort)
+    {
+        if (inboxes.Count == 0) return (0, 0, []);
+        if (sort is not (null or "" or "newest" or "oldest"))
+            return Query(db, new MailCriteria { Folders = inboxes.Select(i => i.Account + "|" + i.Folder).ToList() }, page, size, filter, sort);
+        int total = 0, unread = 0;
+        var rows = new List<MailRow>();
+        var take = (page + 1) * size;
+        foreach (var (account, folder) in inboxes)
+        {
+            var (where, args) = ListWhere(db, account, folder, filter, sort);
+            total += Convert.ToInt32(db.Scalar($"SELECT COUNT(*) FROM mail WHERE {where}", args));
+            unread += Convert.ToInt32(db.Scalar($"SELECT COUNT(*) FROM mail WHERE {where} AND seen=0", args));
+            rows.AddRange(db.Query($"SELECT {RowColumns} FROM mail WHERE {where} ORDER BY {OrderBy(sort)} LIMIT $n", ReadRow, [.. args, ("$n", take)]));
+        }
+        var ordered = sort == "oldest" ? rows.OrderBy(r => r.Date).ThenBy(r => r.Id) : rows.OrderByDescending(r => r.Date).ThenByDescending(r => r.Id);
+        return (total, unread, ordered.Skip(page * size).Take(size).ToList());
+    }
+
+    // [feature:mailthreads]
+    /// <summary>Ansicht „Als Unterhaltungen“: je Unterhaltung im Ordner eine Zeile (ihre neueste Mail dort), nach Datum der
+    /// neuesten Mail geordnet. Anzahl und Ungelesene zählen kontoweit (auch Gesendet), ohne Papierkorb und Junk;
+    /// dieselbe Mail in zwei Ordnern zählt einmal.</summary>
+    public static (int Total, List<MailRow> Items) Threads(UserDb db, string account, string folder, int page, int size, string? filter, string? sort = null)
+    {
+        var (where, args) = ListWhere(db, account, folder, filter, sort);
+        const string key = "COALESCE(thread, 'id:' || id)";
+        var total = Convert.ToInt32(db.Scalar($"SELECT COUNT(DISTINCT {key}) FROM mail WHERE {where}", args));
+        // Ohne eigenen Spaltenwert liefert SQLite bei MAX() die übrigen Spalten der Zeile mit dem größten Datum
+        var heads = db.Query($@"SELECT {key} AS k, id, MAX(date) AS d FROM mail WHERE {where} GROUP BY k
+                ORDER BY d {(sort == "oldest" ? "ASC" : "DESC")} LIMIT $n OFFSET $o",
+            r => (Key: r.GetString(0), Id: r.GetInt64(1)), [.. args, ("$n", size), ("$o", page * size)]);
+        if (heads.Count == 0) return (total, new());
+        var rows = db.Query($"SELECT {RowColumns} FROM mail WHERE id IN ({string.Join(",", heads.Select(h => h.Id))})", ReadRow).ToDictionary(r => r.Id);
+        var items = new List<MailRow>();
+        foreach (var (k, id) in heads)
+        {
+            if (!rows.TryGetValue(id, out var row)) continue;
+            var (count, unread) = k.StartsWith("id:") ? (1, row.Seen ? 0 : 1) : db.Query($@"SELECT COUNT(DISTINCT COALESCE(message_id, 'id:' || id)),
+                    COUNT(DISTINCT CASE WHEN seen=0 THEN COALESCE(message_id, 'id:' || id) END)
+                FROM mail WHERE account=$a AND thread=$k AND (folder=$f OR (1{NotDeleted}))", r => (r.GetInt32(0), r.GetInt32(1)),
+                ("$a", account), ("$k", k), ("$f", folder)).First();
+            items.Add(row with { ThreadKey = k, ThreadCount = Math.Max(1, count), ThreadUnread = unread });
+        }
+        return (total, items);
+    }
+
+    /// <summary>Alle Mails einer Unterhaltung im Konto, neueste zuerst - auch eigene Antworten aus „Gesendet“. Papierkorb und
+    /// Junk nur, wenn die Liste gerade diesen Ordner zeigt; dieselbe Mail in mehreren Ordnern einmal (der gezeigte Ordner zuerst).</summary>
+    public static List<MailRow> Conversation(UserDb db, string account, string key, string? folder)
+    {
+        if (key.StartsWith("id:"))
+            return long.TryParse(key[3..], out var id) ? Rows(db, "account=$a AND id=$i", ("$a", account), ("$i", id)) : new();
+        var all = Rows(db, $"account=$a AND thread=$k AND (folder=$f OR (1{NotDeleted})) ORDER BY date DESC, id DESC LIMIT 500",
+            ("$a", account), ("$k", key), ("$f", folder));
+        return all.GroupBy(r => Bare(r.MessageId) ?? "id:" + r.Id)
+            .Select(g => g.OrderByDescending(r => r.Folder == folder).ThenByDescending(r => r.Folder == "INBOX").First())
+            .OrderByDescending(r => r.Date).ThenByDescending(r => r.Id).ToList();
+    }
+    // [/feature:mailthreads]
+
+    /// <summary>Bedingung der Mailliste (Ordner bzw. „Markiert“ samt Filter) und ihre Parameter.</summary>
+    private static (string Where, (string, object?)[] Args) ListWhere(UserDb db, string account, string folder, string? filter, string? sort)
     {
         var scope = folder == FlaggedFolder ? "account=$a AND flagged=1" + NotDeleted : "account=$a AND folder=$f";
         var where = scope + filter switch
@@ -545,13 +801,25 @@ public static class MailStore
             "other" => " AND focus=0",
             // Kategorie: "cat:dm_rechnung"
             var f when f != null && f.StartsWith("cat:") => " AND keywords LIKE $kw",
+            // [feature:mailtocolumn]
+            var f when ToOn && f != null && f.StartsWith(ToPrefix) => " AND " + ToWhere("", "$to"),
+            // [/feature:mailtocolumn]
+            // [feature:mailavatarfilter]
+            var f when f != null && f.StartsWith(FromPrefix) => " AND lower(from_addr)=$from",
+            // [/feature:mailavatarfilter]
             _ => ""
         };
         var kw = filter != null && filter.StartsWith("cat:") ? "% " + filter[4..].ToLowerInvariant() + " %" : null;
-        var total = Convert.ToInt32(db.Scalar($"SELECT COUNT(*) FROM mail WHERE {where}", ("$a", account), ("$f", folder), ("$kw", kw)));
-        var items = db.Query($"SELECT {RowColumns} FROM mail WHERE {where} ORDER BY {OrderBy(sort)} LIMIT $n OFFSET $o", ReadRow,
-            ("$a", account), ("$f", folder), ("$n", size), ("$o", page * size), ("$kw", kw));
-        return (total, items);
+        string? toAddr = null;
+        // [feature:mailtocolumn]
+        ToReady(db, filter, sort);
+        toAddr = ToOn && filter != null && filter.StartsWith(ToPrefix) ? filter[ToPrefix.Length..].Trim().ToLowerInvariant() : null;
+        // [/feature:mailtocolumn]
+        string? fromAddr = null;
+        // [feature:mailavatarfilter]
+        fromAddr = filter != null && filter.StartsWith(FromPrefix) ? filter[FromPrefix.Length..].Trim().ToLowerInvariant() : null;
+        // [/feature:mailavatarfilter]
+        return (where, [("$a", account), ("$f", folder), ("$kw", kw), ("$to", toAddr), ("$from", fromAddr)]);
     }
 
     // ---------------- E-Mail-Nachverfolgung ----------------
@@ -572,10 +840,10 @@ public static class MailStore
     }
 
     /// <summary>Alle gekennzeichneten Mails (ohne Papierkorb, Junk, Entwuerfe) mit Faelligkeit.</summary>
-    public static List<(MailRow Mail, string? Due)> FollowUps(UserDb db, int limit = 500)
+    public static List<(MailRow Mail, string? Due)> FollowUps(UserDb db, int limit = 500, IReadOnlySet<string>? hidden = null)
     {
         Ensure(db);
-        var (_, _, items) = Query(db, new MailCriteria { Flagged = true }, 0, limit);
+        var (_, _, items) = Query(db, new MailCriteria { Flagged = true }, 0, limit, hidden: hidden);
         var dues = db.Query("SELECT account, message_id, due FROM mail_followup WHERE due IS NOT NULL",
             r => (r.GetString(0) + "\n" + r.GetString(1), r.GetString(2))).ToDictionary(x => x.Item1, x => x.Item2);
         return items.Select(m => (m, m.MessageId != null && dues.TryGetValue(m.Account + "\n" + m.MessageId, out var d) ? d : null)).ToList();
@@ -583,9 +851,15 @@ public static class MailStore
 
     public const string SearchPrefix = "sf:";
     public const string CategoryPrefix = "cat:";
+    // [feature:mailavatarfilter]
+    /// <summary>Filter nach Absender (Klick auf Bild oder Namen in der Liste): „from:adresse“.</summary>
+    public const string FromPrefix = "from:";
+    // [/feature:mailavatarfilter]
 
-    /// <summary>Mails nach Kriterien ueber alle Konten - fuer Suchordner und Kategorie-Ordner.</summary>
-    public static (int Total, int Unread, List<MailRow> Items) Query(UserDb db, MailCriteria c, int page, int size, string? filter = null, string? sort = null)
+    /// <summary>Mails nach Kriterien ueber alle Konten - fuer Suchordner und Kategorie-Ordner. Konten in <paramref name="hidden"/>
+    /// (deaktiviert) bleiben aussen vor.</summary>
+    public static (int Total, int Unread, List<MailRow> Items) Query(UserDb db, MailCriteria c, int page, int size, string? filter = null, string? sort = null,
+        IReadOnlySet<string>? hidden = null)
     {
         var where = new List<string>();
         var args = new List<(string, object?)>();
@@ -598,6 +872,7 @@ public static class MailStore
             where.Add("mail_fts MATCH " + P(match));
         }
         if (c.Accounts is { Count: > 0 }) where.Add("m.account IN (" + string.Join(",", c.Accounts.Select(a => P(a))) + ")");
+        if (hidden is { Count: > 0 }) where.Add("m.account NOT IN (" + string.Join(",", hidden.Select(a => P(a))) + ")");
         if (c.Folders is { Count: > 0 })
             where.Add("(" + string.Join(" OR ", c.Folders.Select(f => f.Split('|', 2)).Where(x => x.Length == 2)
                 .Select(x => $"(m.account={P(x[0])} AND m.folder={P(x[1])})")) + ")");
@@ -610,6 +885,22 @@ public static class MailStore
         if (c.Flagged || filter == "flagged") where.Add("m.flagged=1");
         if (c.Attachments || filter == "attachments") where.Add("m.has_att=1");
         if (filter != null && filter.StartsWith(CategoryPrefix)) where.Add("m.keywords LIKE " + P("% " + filter[4..].ToLowerInvariant() + " %"));
+        // [feature:mailavatarfilter]
+        if (filter != null && filter.StartsWith(FromPrefix)) where.Add("lower(m.from_addr)=" + P(filter[FromPrefix.Length..].Trim().ToLowerInvariant()));
+        // [/feature:mailavatarfilter]
+        // [feature:mailtocolumn]
+        ToReady(db, filter, sort);
+        if (ToOn && filter != null && filter.StartsWith(ToPrefix)) where.Add(ToWhere("m.", P(filter[ToPrefix.Length..].Trim().ToLowerInvariant())));
+        // [/feature:mailtocolumn]
+        // [feature:catchalldomains]
+        // Ansicht „Catchall-Aliase“ über mehrere Ordner: an diese Aliase gegangen („x@domain“ oder „@domain“ für alle der Domain)
+        if (c.Aliases is { Count: > 0 })
+        {
+            CatchallAliases.Ensure(db);
+            where.Add("m.message_id IN (SELECT h.message_id FROM mail_alias_hit h WHERE " + string.Join(" OR ", c.Aliases.Select(a =>
+                a.StartsWith('@') ? "h.alias LIKE " + P("%" + a.ToLowerInvariant()) : "h.alias=" + P(a.ToLowerInvariant()))) + ")");
+        }
+        // [/feature:catchalldomains]
         if (!c.IncludeDeleted)
             where.Add("NOT EXISTS (SELECT 1 FROM mail_folders mf WHERE mf.account=m.account AND mf.path=m.folder AND mf.special IN ('trash','junk'))");
         // Entwuerfe gehoeren nicht in Suchordner
@@ -623,6 +914,50 @@ public static class MailStore
         return (total, unread, items);
     }
 
+    /// <summary>Gesamt und ungelesen je Kategorie in einem Durchgang über die Mails - dieselben Zahlen wie
+    /// <see cref="Query"/> mit <c>Categories = { key }</c> (LIKE „% key %“, Groß-/Kleinschreibung nur bei A-Z egal).</summary>
+    public static Dictionary<string, (int Total, int Unread)> CategoryCounts(UserDb db, IReadOnlyList<string> keys, IReadOnlySet<string>? hidden = null)
+    {
+        var result = new Dictionary<string, (int, int)>();
+        var plain = new List<(string Key, string Needle)>();
+        foreach (var k in keys.Distinct())
+            // Platzhalter von LIKE ließen sich nicht einfach nachbilden: solche Schlüssel wie bisher einzeln zählen
+            if (k.Contains('%') || k.Contains('_'))
+            {
+                var (t, u, _) = Query(db, new MailCriteria { Categories = new() { k } }, 0, 0, hidden: hidden);
+                result[k] = (t, u);
+            }
+            else plain.Add((k, " " + AsciiLower(k.ToLowerInvariant()) + " "));
+        if (plain.Count == 0) return result;
+
+        var args = new List<(string, object?)>();
+        var where = "length(m.keywords) > 2";
+        if (hidden is { Count: > 0 })
+        {
+            where += " AND m.account NOT IN (" + string.Join(",", hidden.Select((a, i) => "$h" + i)) + ")";
+            args.AddRange(hidden.Select((a, i) => ("$h" + i, (object?)a)));
+        }
+        where += " AND NOT EXISTS (SELECT 1 FROM mail_folders mf WHERE mf.account=m.account AND mf.path=m.folder AND mf.special IN ('trash','junk','drafts'))";
+        var total = new int[plain.Count];
+        var unread = new int[plain.Count];
+        db.Query($"SELECT m.keywords, m.seen FROM mail m WHERE {where}", r =>
+        {
+            var kw = AsciiLower(r.GetString(0));
+            var unseen = !r.IsDBNull(1) && r.GetInt64(1) == 0;
+            for (var i = 0; i < plain.Count; i++)
+                if (kw.Contains(plain[i].Needle, StringComparison.Ordinal)) { total[i]++; if (unseen) unread[i]++; }
+            return 0;
+        }, args.ToArray());
+        for (var i = 0; i < plain.Count; i++) result[plain[i].Key] = (total[i], unread[i]);
+        return result;
+    }
+
+    private static string AsciiLower(string s)
+    {
+        if (!s.Any(c => c is >= 'A' and <= 'Z')) return s;
+        return string.Create(s.Length, s, (span, src) => { for (var i = 0; i < src.Length; i++) span[i] = src[i] is >= 'A' and <= 'Z' ? (char)(src[i] + 32) : src[i]; });
+    }
+
     /// <summary>Kriterien fuer einen virtuellen Ordner ("sf:&lt;id&gt;" oder "cat:&lt;schlagwort&gt;"), sonst null.</summary>
     public static MailCriteria? Virtual(UserSettings settings, string folder) =>
         folder.StartsWith(SearchPrefix) ? settings.SearchFolders.FirstOrDefault(f => f.Id == folder[SearchPrefix.Length..])?.Criteria ?? new MailCriteria { Accounts = new() { "-" } } // unbekannt: nichts
@@ -633,12 +968,16 @@ public static class MailStore
     /// Woerter werden als Praefix gesucht; "von:" und "betreff:" schraenken die Spalte ein.</summary>
     /// <param name="withDeleted">Auch Papierkorb und Junk.</param>
     /// <param name="relevance">Nach Treffergüte (BM25) statt nach Datum.</param>
+    /// <param name="hidden">Konten, die nicht vorkommen sollen (deaktiviert).</param>
     public static List<MailRow> Search(UserDb db, string query, string? account, string? folder, int limit = 200,
-        bool withDeleted = true, bool relevance = false)
+        bool withDeleted = true, bool relevance = false, IReadOnlySet<string>? hidden = null)
     {
         var match = FtsQuery(query);
         if (match.Length == 0) return new();
         var where = "1=1";
+        // Kennungen sind Hex (Guid "N"); trotzdem nur Buchstaben und Ziffern in die Abfrage
+        if (hidden is { Count: > 0 })
+            where += " AND m.account NOT IN (" + string.Join(",", hidden.Select(a => "'" + new string(a.Where(char.IsLetterOrDigit).ToArray()) + "'")) + ")";
         if (!string.IsNullOrEmpty(account)) where += " AND m.account=$a";
         if (!string.IsNullOrEmpty(folder)) where += " AND m.folder=$f";
         if (!withDeleted)
@@ -726,6 +1065,16 @@ public static class MailStore
         var mid = messageId.Trim().Trim('<', '>');
         return db.Query($"SELECT {RowColumns} FROM mail WHERE account=$a AND (message_id=$m OR message_id=$b) ORDER BY folder='INBOX' DESC, date DESC LIMIT 1",
             ReadRow, ("$a", account), ("$m", mid), ("$b", "<" + mid + ">")).FirstOrDefault();
+    }
+
+    /// <summary>UIDs der Mails dieses Ordners mit einer der Message-IDs (ohne spitze Klammern übergeben; gespeichert mit oder ohne).</summary>
+    public static List<uint> UidsByMessageIds(UserDb db, string account, string folder, IEnumerable<string> messageIds)
+    {
+        var uids = new List<uint>();
+        foreach (var mid in messageIds)
+            uids.AddRange(db.Query("SELECT uid FROM mail WHERE account=$a AND folder=$f AND (message_id=$m OR message_id=$b)", r => (uint)r.GetInt64(0),
+                ("$a", account), ("$f", folder), ("$m", mid), ("$b", "<" + mid + ">")));
+        return uids.Distinct().ToList();
     }
 
     public static MailRow? Row(UserDb db, string account, string folder, uint uid) =>

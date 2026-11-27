@@ -1,10 +1,12 @@
-import { Checkbox, Dropdown, Field, Option, Radio, RadioGroup, Switch, makeStyles, mergeClasses, tokens } from '@fluentui/react-components'
+import { Button, Checkbox, Dropdown, Field, Option, Radio, RadioGroup, Switch, Text, makeStyles, mergeClasses, tokens } from '@fluentui/react-components'
 import { useEffect, useState } from 'react'
-import { api } from '../api'
+import { api, featureOn } from '../api'
 import { useApp } from '../App'
 import { usePrefs } from '../prefs'
 import { t } from '../i18n'
-import { Hint, PageTitle, Section } from './parts'
+import { Hint, Section, SectionTabs } from './parts'
+import { FolderPicker } from '../files/FilesView'
+import { useAttachSettings } from '../mail/AttachSave'
 
 const useStyles = makeStyles({
   field: { maxWidth: '400px' },
@@ -23,7 +25,6 @@ export function MessageListSettings() {
   const { prefs, update } = usePrefs()
   return (
     <>
-      <PageTitle>{t('Nachrichtenliste')}</PageTitle>
       <Section title={t('Abstände')} hint={t('Zeilenhöhe getrennt für Ordnerliste und Nachrichtenliste. Die Schrift des Mailtexts lässt sich im Lesebereich unten rechts zoomen.')}>
         <Field label={t('Ordnerliste')}>
           <RadioGroup value={prefs.folderDensity ?? prefs.density ?? 'normal'} onChange={(_, d) => update({ folderDensity: d.value as any })} layout="horizontal">
@@ -37,8 +38,17 @@ export function MessageListSettings() {
         </Field>
       </Section>
       <Section title={t('Anzeige')} last>
-        <Checkbox label={t('Vorschautext anzeigen')} checked={prefs.showPreview ?? true} onChange={(_, d) => update({ showPreview: !!d.checked })} />
+        {featureOn('mailpreview')
+          ? <Field label={t('Vorschautext in der Nachrichtenliste')}>
+            <RadioGroup layout="horizontal" value={String(prefs.previewLines ?? ((prefs.showPreview ?? true) ? 1 : 0))}
+              onChange={(_, d) => update({ previewLines: Number(d.value) as 0 | 1 | 2, showPreview: d.value !== '0' })}>
+              <Radio value="0" label={t('Aus')} /><Radio value="1" label={t('1 Zeile')} /><Radio value="2" label={t('2 Zeilen')} />
+            </RadioGroup>
+          </Field>
+          : <Checkbox label={t('Vorschautext anzeigen')} checked={prefs.showPreview ?? true} onChange={(_, d) => update({ showPreview: !!d.checked })} />}
         <Checkbox label={t('Absenderbilder anzeigen')} checked={prefs.showAvatars ?? true} onChange={(_, d) => update({ showAvatars: !!d.checked })} />
+        {featureOn('mailsearchhist') && <Checkbox label={t('Suchbegriffe merken')} checked={!prefs.mailSearchHistoryOff}
+          onChange={(_, d) => update(d.checked ? { mailSearchHistoryOff: false } : { mailSearchHistoryOff: true, mailSearchHistory: [] })} />}
         <Hint>{t('Gruppieren nach Unterhaltung folgt.')}</Hint>
       </Section>
     </>
@@ -60,13 +70,13 @@ export function PreviewPaneSettings() {
   useEffect(() => { api.get('/api/settings/').then(setServer).catch(fail) }, [fail])
   const saveServer = async (p: any) => {
     setServer((x: any) => ({ ...x, ...p }))
-    try { await api.put('/api/settings/general', p) } catch (e) { fail(e) }
+    try { await api.put('/api/settings/general', p); window.dispatchEvent(new Event('dmoffice:mailsettings')) } catch (e) { fail(e) }
   }
   const pane = prefs.readingPane ?? 'right'
   const delay = server?.markReadDelay ?? 2
   return (
     <>
-      <PageTitle>{t('Vorschaufenster')}</PageTitle>
+      <SectionTabs page="pane">
       <Section title={t('Layout')} hint={t('Wie möchten Sie Ihr Vorschaufenster gestalten?')}>
         <div className={s.layouts}>
           {([['right', t('Rechts')], ['bottom', t('Unten')], ['off', t('Vollbildansicht')]] as const).map(([k, l]) => (
@@ -95,6 +105,13 @@ export function PreviewPaneSettings() {
           </Field>
         )}
       </Section>
+      {featureOn('mailplain') && <Section title={t('Mails ohne Formatierung')}>
+        <Field label={t('Zeilenlänge')} hint={t('Mails mit eigener Gestaltung behalten ihr Layout.')}>
+        <RadioGroup layout="horizontal" value={String(prefs.plainWidth ?? 110)} onChange={(_, d) => update({ plainWidth: Number(d.value) })}>
+          <Radio value="80" label={t('Schmal')} /><Radio value="110" label={t('Mittel')} /><Radio value="0" label={t('Volle Breite')} />
+        </RadioGroup>
+      </Field>
+      </Section>}
       <Section title={t('Beim Öffnen eines Ordners')} last>
         {server && (
           <RadioGroup value={server.openOnFolder ?? 'last'} onChange={(_, d) => saveServer({ openOnFolder: d.value })}>
@@ -105,6 +122,7 @@ export function PreviewPaneSettings() {
           </RadioGroup>
         )}
       </Section>
+      </SectionTabs>
     </>
   )
 }
@@ -113,7 +131,6 @@ export function FolderPaneSettings() {
   const { prefs, update } = usePrefs()
   return (
     <>
-      <PageTitle>{t('Ordnerbereich')}</PageTitle>
       <Section title={t('Layout')}>
         <Checkbox label={t('Favoriten anzeigen')} checked={prefs.showFavorites ?? true} onChange={(_, d) => update({ showFavorites: !!d.checked })} />
         <Checkbox label={t('Favoriten oben anheften')} checked={prefs.pinFavorites ?? true} onChange={(_, d) => update({ pinFavorites: !!d.checked })} />
@@ -138,7 +155,6 @@ export function ComposeSettings() {
   const font = (prefs.composeFont ?? 'Aptos').split(',')[0].replace(/"/g, '')
   return (
     <>
-      <PageTitle>{t('Verfassen und Antworten')}</PageTitle>
       <Section title={t('Senden')} hint={t('Gesendete Mails warten so lange im Postausgang. Bis dahin lassen sie sich zurückrufen.')}>
         <Field label={t('Zurückrufen möglich für')} style={{ maxWidth: 240 }}>
           <Dropdown value={(prefs.sendDelay ?? 10) === 0 ? t('Aus – sofort senden') : t('{n} Sekunden', { n: prefs.sendDelay ?? 10 })}
@@ -172,6 +188,37 @@ export function ComposeSettings() {
         <Switch label={t('Signaturen pflegen: E-Mail → E-Mail-Konten → Konto bearbeiten')} disabled checked={false} style={{ display: 'none' }} />
         <Hint>{t('Signaturen stehen je Konto unter E-Mail → E-Mail-Konten.')}</Hint>
       </Section>
+    </>
+  )
+}
+
+/** E-Mail → Anhänge (Kennung attsave): wohin der Hauptknopf am Anhang speichert. */
+export function AttachmentSettings() {
+  const { settings, save } = useAttachSettings()
+  const { fail } = useApp()
+  const [picking, setPicking] = useState(false)
+  const set = (p: Parameters<typeof save>[0]) => save(p).catch(fail)
+  const intern = settings.attachSaveTarget === 'ablage'
+  return (
+    <>
+      <Section title={t('Beim Speichern von Anhängen')} hint={t('Gilt für den Hauptknopf an jedem Anhang, in Web und App.')}>
+        <RadioGroup value={settings.attachSaveTarget} onChange={(_, d) => set({ attachSaveTarget: d.value as 'ablage' | 'browser' })}>
+          <Radio value="ablage" label={t('Intern: in meine Ablage speichern')} />
+          <Radio value="browser" label={t('Extern: Download des Browsers')} />
+        </RadioGroup>
+        {intern ? <>
+          <Field label={t('Standardordner')} hint={t('Leer: Beim ersten Speichern wird nach dem Ordner gefragt.')}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <Text>{settings.attachSaveFolder || t('Noch keiner gewählt')}</Text>
+              <Button size="small" onClick={() => setPicking(true)}>{t('Ändern …')}</Button>
+              {settings.attachSaveFolder && <Button size="small" appearance="subtle" onClick={() => set({ attachSaveFolder: null })}>{t('Zurücksetzen')}</Button>}
+            </div>
+          </Field>
+          <Switch label={t('Vor dem Speichern nach dem Ort fragen')} checked={settings.attachSaveAsk} onChange={(_, d) => set({ attachSaveAsk: d.checked })} />
+        </> : <Hint>{t('Ort und Rückfrage bestimmt der Browser (seine Einstellung „Vor dem Download nach dem Speicherort fragen“).')}</Hint>}
+      </Section>
+      {picking && <FolderPicker title={t('Standardordner für Anhänge')} exclude={[]} start={settings.attachSaveFolder ?? ''}
+        onPick={dir => { setPicking(false); set({ attachSaveFolder: dir || null }) }} onClose={() => setPicking(false)} />}
     </>
   )
 }

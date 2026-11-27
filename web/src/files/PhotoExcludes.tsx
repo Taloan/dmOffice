@@ -1,15 +1,22 @@
 import {
   Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Radio, RadioGroup, Text, tokens,
 } from '@fluentui/react-components'
-import { Dismiss16Regular } from '@fluentui/react-icons'
-import { useEffect, useState } from 'react'
-import { api } from '../api'
+import { Add20Regular, Dismiss16Regular } from '@fluentui/react-icons'
+import { lazy, Suspense, useEffect, useState } from 'react'
+import { api, featureOn } from '../api'
 import { useApp } from '../App'
 import { t } from '../i18n'
 
 /** Ordner, deren Bilder die Ansicht Fotos nicht zeigt (Musik-Cover, App-Daten ...) - gilt auch in der App. */
 export const loadPhotoExcludes = () => api.get<string[]>('/api/files/photo-excludes')
 const savePhotoExcludes = (folders: string[]) => api.put<string[]>('/api/files/photo-excludes', { folders })
+const FolderPicker = lazy(() => import('./FilesView').then(m => ({ default: m.FolderPicker })))
+
+/** Ordner dazunehmen (Kennung galexclfolder): Einträge darunter fallen weg, der neue Ordner schließt sie mit ein. */
+const withFolder = (list: string[], folder: string) => {
+  const low = folder.toLowerCase()
+  return featureOn('galexclfolder') ? [...list.filter(x => !x.toLowerCase().startsWith(low + '/')), folder] : [...list, folder]
+}
 
 /**
  * Bild gewaehlt -> Ordner ausschliessen: zur Wahl stehen der Ordner des Bildes und alle darueber, damit man etwa
@@ -23,7 +30,7 @@ export function ExcludeFolderDialog({ path, onClose }: { path: string; onClose: 
   const save = async () => {
     try {
       const list = await loadPhotoExcludes()
-      await savePhotoExcludes([...list, pick])
+      await savePhotoExcludes(withFolder(list, pick))
       notify(t('Aus der Galerie ausgeschlossen'), '/' + pick)
       onClose(true)
     } catch (e) { fail(e) }
@@ -61,16 +68,27 @@ export function PhotoExcludesDialog({ onClose }: { onClose: (changed: boolean) =
   const [list, setList] = useState<string[] | null>(null)
   const [changed, setChanged] = useState(false)
   useEffect(() => { loadPhotoExcludes().then(setList).catch(fail) }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  const [picking, setPicking] = useState(false)
   const remove = async (p: string) => {
     try { setList(await savePhotoExcludes((list ?? []).filter(x => x !== p))); setChanged(true) } catch (e) { fail(e) }
   }
+  const add = async (folder: string) => {
+    setPicking(false)
+    const f = folder.replace(/^\/+|\/+$/g, '')
+    // Nur Ordner der Ablage: Tresor und externe Ordner zeigt die Galerie nicht über diese Liste
+    if (!f || /^(tresor|xmnt):/.test(f)) return
+    try { setList(await savePhotoExcludes(withFolder(list ?? [], f))); setChanged(true) } catch (e) { fail(e) }
+  }
+  const extra = featureOn('galexclfolder')
   return (
-    <Dialog open onOpenChange={(_, d) => !d.open && onClose(changed)}>
+    <>
+    <Dialog open={!picking} onOpenChange={(_, d) => !d.open && onClose(changed)}>
       <DialogSurface style={{ maxWidth: 520 }}>
         <DialogBody>
           <DialogTitle>{t('Aus der Galerie ausgeschlossen')}</DialogTitle>
           <DialogContent style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            {list?.length === 0 && <Text>{t('Noch keine. Rechtsklick auf ein Bild → „Ordner aus der Galerie ausschließen …“.')}</Text>}
+            {list?.length === 0 && <Text>{t(extra ? 'Noch keine. „Ordner hinzufügen …“ oder Rechtsklick auf ein Bild → „Ordner aus der Galerie ausschließen …“.' : 'Noch keine. Rechtsklick auf ein Bild → „Ordner aus der Galerie ausschließen …“.')}</Text>}
+            {extra && !!list?.length && <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>{t('Jeder Ordner gilt mit allen Unterordnern.')}</Text>}
             {list?.map(p => (
               <div key={p} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <Text style={{ flex: 1, wordBreak: 'break-all' }}>/{p}</Text>
@@ -78,9 +96,14 @@ export function PhotoExcludesDialog({ onClose }: { onClose: (changed: boolean) =
               </div>
             ))}
           </DialogContent>
-          <DialogActions><Button appearance="primary" onClick={() => onClose(changed)}>{t('Schließen')}</Button></DialogActions>
+          <DialogActions>
+            {extra && <Button icon={<Add20Regular />} onClick={() => setPicking(true)} style={{ marginRight: 'auto', whiteSpace: 'nowrap', flexShrink: 0 }}>{t('Ordner hinzufügen …')}</Button>}
+            <Button appearance="primary" onClick={() => onClose(changed)}>{t('Schließen')}</Button>
+          </DialogActions>
         </DialogBody>
       </DialogSurface>
     </Dialog>
+    {picking && <Suspense fallback={null}><FolderPicker title={t('Ordner aus der Galerie ausschließen')} exclude={[]} onPick={add} onClose={() => setPicking(false)} /></Suspense>}
+    </>
   )
 }

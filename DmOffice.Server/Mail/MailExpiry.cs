@@ -266,7 +266,7 @@ public static class MailExpiry
     {
         private IMailFolder? _open;
 
-        public bool UidPlus => client.Capabilities.HasFlag(ImapCapabilities.UidPlus);
+        public bool UidPlus => client.Capabilities.Contains(MailKit.Net.Imap.ImapCapability.UidPlus);
 
         private async Task<IMailFolder> OpenAsync(string path, CancellationToken ct)
         {

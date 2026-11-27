@@ -36,6 +36,7 @@ dmOffice läuft als Docker-Container, gedacht für Unraid, geht aber auf jedem D
 
 1. Unter *Apps* nach **dmOffice** suchen und installieren. Ist die App dort noch nicht gelistet, siehe [README](../README.de.md#unraid).
 2. In der Vorlage **DMOFFICE_MASTER_KEY** setzen – eine lange Zufallsfolge, z. B. aus `openssl rand -hex 32`. Diesen Schlüssel gut aufheben (Passwortmanager): **Ohne ihn lassen sich die Daten nicht mehr öffnen.**
+   Ohne diese Variable startet eine neue Installation nicht. <!-- [feature:masterkeyreq] -->
 3. Port wählen und *Apply*.
 
 **Docker Compose**
@@ -398,3 +399,9 @@ Unter *Einstellungen* → *Dateien* nachsehen: Frühere Versionen und der Papier
 
 **Ich habe den Hauptschlüssel verloren.**
 Dann lassen sich die Datenbanken nicht mehr öffnen. Mails liegen weiter auf dem Mailserver; Kalender, Kontakte, Notizen und Dateien nur noch auf den verbundenen Geräten.
+
+<!-- [feature:cfgseal] -->
+**dmOffice startet nicht: „users.json … wurde außerhalb von dmOffice geändert“.**
+dmOffice versiegelt die Benutzerliste (`users.json`) und die Server-Einstellungen (`server.json`) mit einem aus dem Hauptschlüssel abgeleiteten Schlüssel (Datei `config.seal` im Datenverzeichnis) und prüft das Siegel bei jedem Start. Hat etwas anderes als dmOffice eine der Dateien geändert, gelöscht oder ersetzt, hält der Server mit dieser Meldung im Container-Log an. Stammt die Änderung von dir – Datei von Hand bearbeitet, ältere Sicherung zurückgelegt, Rückkehr von einer älteren Version –, den Inhalt prüfen und bei gestopptem Container neu versiegeln:
+`docker run --rm -e DMOFFICE_MASTER_KEY -v <Datenverzeichnis>:/data <Image> reseal-config` (dieselbe Variable und dasselbe Datenverzeichnis wie der Container; auf Unraid im Terminal, Datenverzeichnis `/mnt/user/appdata/dmoffice`). Der Befehl nennt alle Benutzer mit Verwaltungsrecht – steht dort jemand, der nicht dorthin gehört, `users.json` aus einer Sicherung zurückholen und erneut versiegeln. Ohne Siegel (erster Start dieser Version, ältere Sicherung) versiegelt dmOffice die Dateien so, wie sie sind, und schreibt eine Warnung ins Log.
+<!-- [/feature:cfgseal] -->

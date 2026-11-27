@@ -24,7 +24,7 @@ public sealed class AudioShared
     internal AudioShared(string path, byte[] key)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        _connectionString = new SqliteConnectionStringBuilder { DataSource = path, Password = "x'" + Convert.ToHexString(key) + "'", DefaultTimeout = 30 }.ToString();
+        _connectionString = DmOffice.Core.UserDb.ConnectionStringOf(path, key);
         try { Create(); }
         catch (SqliteException)
         {
@@ -87,6 +87,21 @@ public sealed class AudioShared
                 VALUES($m, $p, $s, $ok, $ti, $ar, $aa, $al, $no, $di, $y, $g, $du, $c)",
                 ("$m", mount), ("$p", path), ("$s", stamp), ("$ok", t != null), ("$ti", t?.Title), ("$ar", t?.Artist), ("$aa", t?.AlbumArtist), ("$al", t?.Album),
                 ("$no", t?.No), ("$di", t?.Disc), ("$y", t?.Year), ("$g", t?.Genre), ("$du", t?.Duration), ("$c", coverId));
+        }
+    }
+
+    /// <summary>Einträge unter anderem Ordner und Pfad übernehmen (Audiothek-Ordner neu zugeordnet: dieselben Dateien an anderem Ort).</summary>
+    public void CopyAll(string fromMount, string toMount, IEnumerable<(string From, string To)> pairs)
+    {
+        const string cols = "stamp, ok, title, artist, album_artist, album, track, disc, year, genre, duration, cover";
+        lock (_write)
+        {
+            using var conn = Open();
+            using var tx = conn.BeginTransaction();
+            foreach (var (from, to) in pairs)
+                UserDb.Exec(conn, $"INSERT OR IGNORE INTO track(mount, path, {cols}) SELECT $tm, $tp, {cols} FROM track WHERE mount = $fm AND path = $fp",
+                    ("$tm", toMount), ("$tp", to), ("$fm", fromMount), ("$fp", from));
+            tx.Commit();
         }
     }
 

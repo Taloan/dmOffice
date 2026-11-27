@@ -41,9 +41,9 @@ public class ExternalFoldersTests : IClassFixture<FilesServerFixture>
             {
                 await Task.Delay(100);
                 thumb = _fx.Db.Query("SELECT thumb FROM gallery_ext WHERE source = $s AND path = $p", r => r.IsDBNull(0) ? null : (byte[])r.GetValue(0),
-                    ("$s", src.Id), ("$p", name + "/bild.jpg")).FirstOrDefault();
+                    ("$s", src.Id), ("$p", "RAW/" + name + "/bild.jpg")).FirstOrDefault();
             }
-            // Eintrag mit Vorschau ist da, ohne dass die Galerie den Ordner eingelesen hat
+            // Eintrag mit Vorschau ist da, ohne dass die Galerie den Ordner eingelesen hat (Pfad im externen Ordner, wie beim Einlesen)
             Assert.NotNull(thumb);
             // Verschoben: an der Quelle endgültig weg, nicht im Papierkorb (es liegt ja im Ziel)
             for (var i = 0; i < 50 && DmOffice.Dav.FileStore.Get(_fx.Db, name) != null; i++) await Task.Delay(100);

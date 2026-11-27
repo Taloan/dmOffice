@@ -21,7 +21,11 @@ const EVENT = 'dmoffice:sendtochat'
 
 /** "Im Chat …" aus einem Bereich (Dateiablage, Notizen): oeffnet den Dialog in der Shell. */
 export function sendToChat(refs: ChatRefInput[], text?: string) {
-  // text: vorausgefüllte Nachricht (etwa ein Text) - dann auch ohne Verweise
+  // [feature:journal]
+  // text: vorausgefüllte Nachricht (etwa ein Tagebucheintrag) - dann auch ohne Verweise
+  // [feature:journal:else]
+  // // text: vorausgefüllte Nachricht (etwa ein Text) - dann auch ohne Verweise
+  // [/feature:journal]
   if (refs.length || text) window.dispatchEvent(new CustomEvent<{ refs: ChatRefInput[]; text?: string }>(EVENT, { detail: { refs, text } }))
 }
 
@@ -89,17 +93,18 @@ function SendToChatDialog({ refs, initialText, onClose }: { refs: ChatRefInput[]
 
   const shown = (targets ?? []).filter(x => !filter || x.title.toLowerCase().includes(filter.toLowerCase()))
   const kinds: Record<ChatRefInput['type'], string> = { file: t('Datei'), folder: t('Ordner'), note: t('Notiz'), event: t('Termin'), task: t('Aufgabe'), contact: t('Kontakt'), album: t('Album') }
-  const what = refs.length > 1 ? t('{n} Elemente', { n: refs.length }) : kinds[refs[0].type]
+  // Nur Text (etwa ein Tagebucheintrag ohne Fotos): keine Verweise, dann ohne Art im Titel
+  const what = refs.length > 1 ? t('{n} Elemente', { n: refs.length }) : refs.length ? kinds[refs[0].type] : null
   return (
     <Dialog open onOpenChange={(_, d) => !d.open && onClose()}>
       <DialogSurface className={s.surface}>
         <DialogBody>
-          <DialogTitle>{refs.every(r => r.type === 'album') ? t('Im Chat zeigen: {what}', { what }) : t('Im Chat verschicken: {what}', { what })}</DialogTitle>
+          <DialogTitle>{what == null ? t('Im Chat verschicken') : refs.every(r => r.type === 'album') ? t('Im Chat zeigen: {what}', { what }) : t('Im Chat verschicken: {what}', { what })}</DialogTitle>
           <DialogContent>
-            <Input contentBefore={<Search20Regular />} placeholder={t('Unterhaltung oder Person suchen')} value={filter} onChange={(_, d) => setFilter(d.value)} style={{ width: '100%' }} />
+            <Input contentBefore={<Search20Regular />} placeholder={t('Unterhaltung oder Benutzer suchen')} value={filter} onChange={(_, d) => setFilter(d.value)} style={{ width: '100%' }} />
             <div className={s.list}>
               {targets == null && <Spinner size="small" />}
-              {targets?.length === 0 && <Text className={s.sub}>{t('Keine weiteren Personen auf diesem Server.')}</Text>}
+              {targets?.length === 0 && <Text className={s.sub}>{t('Keine weiteren Benutzer auf diesem Server.')}</Text>}
               {!!targets?.length && shown.length === 0 && <Text className={s.sub}>{t('Keine Treffer.')}</Text>}
               {shown.map(x => (
                 <label key={x.key} className={s.row}>
@@ -111,7 +116,7 @@ function SendToChatDialog({ refs, initialText, onClose }: { refs: ChatRefInput[]
               ))}
             </div>
             {/* Alben gehen nur als Zeigen */}
-            {!refs.every(r => r.type === 'album') && <ModeSwitch value={mode} onChange={setMode} />}
+            {!!refs.length && !refs.every(r => r.type === 'album') && <ModeSwitch value={mode} onChange={setMode} />}
             <Textarea style={{ width: '100%', marginTop: 8 }} resize="vertical" placeholder={t('Nachricht dazu (optional)')} value={text} onChange={(_, d) => setText(d.value)} />
           </DialogContent>
           <DialogActions>

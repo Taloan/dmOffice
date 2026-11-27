@@ -9,7 +9,15 @@ public sealed record EventDto(string Id, long Calendar, string Uri, string Etag,
     string? Status, int? Reminder, bool Busy, List<string> Categories, string? Url, bool CanWrite = true,
     List<AttendeeDto>? Attendees = null, string? Organizer = null,
     /// <summary>Essensplan: sync_id der Rezeptnotiz (X-DM-RECIPE)</summary>
-    string? Recipe = null);
+    string? Recipe = null,
+    /// <summary>Alle relativen VALARMs (intern, für CalendarReminders)</summary>
+    [property: System.Text.Json.Serialization.JsonIgnore] List<RemindRule>? Alarms = null,
+    /// <summary>X-DM-NOREMIND: ausdrücklich keine Erinnerung (intern, für CalendarReminders)</summary>
+    [property: System.Text.Json.Serialization.JsonIgnore] bool NoRemind = false,
+    /// <summary>calremind: eigene Erinnerungen; null = Standard des Kalenders gilt (nur gefüllt, wenn eine Kennung an ist)</summary>
+    List<RemindRule>? Reminders = null,
+    /// <summary>calremshared: eigene Erinnerungen des Benutzers in einem geteilten, für ihn nur lesbaren Kalender; null = keine eigenen</summary>
+    List<RemindRule>? MyReminders = null);
 
 /// <summary>Teilnehmer eines Termins mit seiner Antwort (PARTSTAT): NEEDS-ACTION, ACCEPTED, TENTATIVE, DECLINED.</summary>
 public sealed record AttendeeDto(string Email, string? Name, string Status);
@@ -36,6 +44,10 @@ public sealed class EventInput
     /// <summary>RRULE ohne "RRULE:", z. B. FREQ=WEEKLY;BYDAY=MO. Null: bleibt; "": keine Serie.</summary>
     public string? RRule { get; set; }
     public int? Reminder { get; set; }
+    /// <summary>calremind: alle Erinnerungen (ersetzt Reminder); null = nicht geschickt. Aufgaben-Regeln (List) merkt PimApi.</summary>
+    public List<RemindRule>? Reminders { get; set; }
+    /// <summary>calremdefault: eigene Erinnerungen entfernen, der Standard des Kalenders gilt.</summary>
+    public bool RemindDefault { get; set; }
     public bool Busy { get; set; } = true;
     public List<string>? Categories { get; set; }
     /// <summary>Essensplan: sync_id der Rezeptnotiz. Null: bleibt; "": kein Rezept.</summary>
@@ -99,12 +111,13 @@ public static class CalendarModel
     {
         var zone = space.Zone;
         var result = new List<EventDto>();
+        var budget = new SeriesBudget(SeriesLimit.PerRequest);
         foreach (var obj in PimStore.InRange(space.Db, calendars, "VEVENT", from, to))
         {
             Component cal;
             try { cal = Ics.Parse(obj.Data).First(r => r.Name == "VCALENDAR"); }
             catch { continue; }
-            ObjectEvents(obj, cal, zone, from, to, result);
+            ObjectEvents(obj, cal, zone, from, to, result, budget);
         }
         return result.OrderBy(e => e.Start).ToList();
     }
@@ -119,6 +132,7 @@ public static class CalendarModel
         if (words.Length == 0) return new();
         var zone = space.Zone;
         var hits = new List<EventDto>();
+        var budget = new SeriesBudget(SeriesLimit.PerRequest);
         foreach (var obj in PimStore.InRange(space.Db, calendars, "VEVENT", null, null))
         {
             // Schneller Vorfilter auf dem Rohtext (Zeilen entfaltet), genau geprüft wird an den Feldern
@@ -138,12 +152,12 @@ public static class CalendarModel
                 continue;
             }
             var next = new List<EventDto>();
-            ObjectEvents(obj, cal, zone, now, now.AddYears(5), next);
+            ObjectEvents(obj, cal, zone, now, now.AddYears(5), next, budget);
             var hit = next.Where(e => ParseIso(e.End, out _) > now).OrderBy(e => e.Start).FirstOrDefault();
             if (hit == null)
             {
                 var past = new List<EventDto>();
-                ObjectEvents(obj, cal, zone, now.AddYears(-5), now, past);
+                ObjectEvents(obj, cal, zone, now.AddYears(-5), now, past, budget);
                 hit = past.OrderBy(e => e.Start).LastOrDefault();
             }
             hit ??= Dto(obj, master, zone, null, null, true);
@@ -164,8 +178,19 @@ public static class CalendarModel
         return words.All(w => text.Contains(w, StringComparison.OrdinalIgnoreCase));
     }
 
+    /// <summary>Der Termin eines Objekts (Hauptkomponente, ohne Vorkommen) - für die Erinnerungen, die an ihm gelten.</summary>
+    public static EventDto? MasterOf(DavObject obj, TimeZoneInfo zone)
+    {
+        Component cal;
+        try { cal = Ics.Parse(obj.Data).First(r => r.Name == "VCALENDAR"); }
+        catch { return null; }
+        var events = cal.Of("VEVENT").ToList();
+        var master = events.FirstOrDefault(e => e.Get("RECURRENCE-ID") == null) ?? events.FirstOrDefault();
+        return master == null ? null : Dto(obj, master, zone, null, null, master.Get("RRULE") != null || master.Get("RDATE") != null);
+    }
+
     /// <summary>Vorkommen eines gespeicherten Termins im Zeitraum (Serien ausgerechnet).</summary>
-    private static void ObjectEvents(DavObject obj, Component cal, TimeZoneInfo zone, DateTime from, DateTime to, List<EventDto> result)
+    private static void ObjectEvents(DavObject obj, Component cal, TimeZoneInfo zone, DateTime from, DateTime to, List<EventDto> result, SeriesBudget budget)
     {
         {
             var events = cal.Of("VEVENT").ToList();
@@ -179,15 +204,17 @@ public static class CalendarModel
                 return;
             }
 
-            // Serie: Vorkommen mit Ical.Net ausrechnen, Felder aus dem eigenen Leser
+            // Serie: Vorkommen mit Ical.Net ausrechnen (begrenzt), Felder aus dem eigenen Leser
             try
             {
                 var ical = Ical.Net.Calendar.Load(obj.Data);
-                foreach (var occ in ical.GetOccurrences(from.AddDays(-1), to.AddDays(1)))
+                var occurrences = SeriesLimit.Occurrences(ical, from.AddDays(-1), to.AddDays(1), budget)
+                    ?? throw new InvalidOperationException("Serie nicht ausrechenbar");
+                foreach (var occ in occurrences)
                 {
                     if (occ.Source is not Ical.Net.CalendarComponents.CalendarEvent src) continue;
                     var start = occ.Period.StartTime;
-                    var end = occ.Period.EndTime ?? start.Add(src.Duration);
+                    var end = occ.Period.EffectiveEndTime ?? start.Add(src.EffectiveDuration);
                     var sourceComp = src.RecurrenceId != null
                         ? events.FirstOrDefault(e => Ics.Time(e.Get("RECURRENCE-ID"), zone, out _) is DateTime rid && Math.Abs((rid - src.RecurrenceId.AsUtc).TotalSeconds) < 1) ?? master
                         : master;
@@ -241,7 +268,8 @@ public static class CalendarModel
             Url: e.Text("URL"),
             Attendees: e.All("ATTENDEE").Select(a => new AttendeeDto(Mail.Invites.Mailto(a) ?? "", a.Param("CN"), (a.Param("PARTSTAT") ?? "NEEDS-ACTION").ToUpperInvariant()))
                 .Where(a => a.Email.Length > 0).ToList() is { Count: > 0 } att ? att : null,
-            Organizer: Mail.Invites.Mailto(e.Get("ORGANIZER")), Recipe: e.Text("X-DM-RECIPE"));
+            Organizer: Mail.Invites.Mailto(e.Get("ORGANIZER")), Recipe: e.Text("X-DM-RECIPE"),
+            Alarms: CalendarReminders.Alarms(e, allDay), NoRemind: CalendarReminders.NoRemind(e));
     }
 
     /// <summary>
@@ -289,13 +317,24 @@ public static class CalendarModel
         if (Subscriptions.IsSubscribed(db, collection)) throw new InvalidOperationException("Abonnierter Kalender – nur lesbar.");
     }
 
+    /// <summary>Hoechstlaenge von Titel und Ort - sehr lange Titel machten die Wochenansicht sekundenlang langsam.</summary>
+    public const int MaxTitle = 1000;
+
+    private static void CheckLength(string? title, string? location = null)
+    {
+        if (title?.Length > MaxTitle) throw new ArgumentException($"Der Titel ist zu lang (höchstens {MaxTitle} Zeichen).");
+        if (location?.Length > MaxTitle) throw new ArgumentException($"Der Ort ist zu lang (höchstens {MaxTitle} Zeichen).");
+    }
+
     public static string SaveEvent(UserSpace space, EventInput input)
     {
+        CheckLength(input.Title, input.Location);
         Writable(space.Db, input.Calendar);
         if (input.MoveTo is long mt) Writable(space.Db, mt);
         var db = space.Db;
         var zone = space.Zone;
         var coll = PimStore.Find(db, input.Calendar) ?? throw new KeyNotFoundException("Kalender nicht gefunden.");
+        var hasDefault = Features.On(Features.CalRemDefault) && CalendarReminders.DefaultOf(db, input.MoveTo ?? input.Calendar) != null;
         Component vcal;
         Component target;
         string uri;
@@ -310,7 +349,7 @@ public static class CalendarModel
             target.Set("CREATED", Ics.Stamp());
             target.Set("SEQUENCE", "0");
             vcal.Children.Add(target);
-            Fill(target, input, zone);
+            Fill(target, input, zone, hasDefault);
         }
         else
         {
@@ -331,7 +370,7 @@ public static class CalendarModel
                 target = vcal.Of("VEVENT").FirstOrDefault(e => e.Get("RECURRENCE-ID") is { } p && p.Value == ridProp.Value)
                          ?? NewOverride(vcal, master, ridProp);
                 input.RRule = null;
-                Fill(target, input, zone);
+                Fill(target, input, zone, hasDefault);
                 target.Remove("RRULE");
             }
             else if (recurring && input.Instance != null)
@@ -346,14 +385,14 @@ public static class CalendarModel
                 input.End = Iso(masterStart + shift + length, input.AllDay);
                 target = master;
                 var oldStart = CopyProp(master.Get("DTSTART"));
-                Fill(target, input, zone);
+                Fill(target, input, zone, hasDefault);
                 ShiftExceptions(vcal, master, oldStart, zone);
             }
             else
             {
                 target = master;
                 var oldStart = CopyProp(master.Get("DTSTART"));
-                Fill(target, input, zone);
+                Fill(target, input, zone, hasDefault);
                 if (recurring) ShiftExceptions(vcal, master, oldStart, zone);
             }
             // Einladung eines anderen: SEQUENCE zaehlt nur der Organisator hoch (RFC 5546) - sonst hielte die eigene Kopie
@@ -367,7 +406,7 @@ public static class CalendarModel
         {
             var accounts = space.Settings.MailAccounts;
             // Ohne Mailkonto (Version 2): Organisator mit der internen Adresse - Einladungen an Benutzer dieses dmOffice gehen trotzdem
-            var organizer = accounts.FirstOrDefault(a => a.Id == input.Account) ?? accounts.FirstOrDefault()
+            var organizer = accounts.FirstOrDefault(a => a.Id == input.Account) ?? space.Settings.ActiveMailAccounts().FirstOrDefault()
                 ?? new MailAccount { Email = InternalInvites.InternalAddress(space.User), DisplayName = space.User.DisplayName };
             ApplyAttendees(target, input.Attendees, organizer,
                 accounts.Select(a => a.Email.ToLowerInvariant()).Append(InternalInvites.InternalAddress(space.User)).ToHashSet());
@@ -426,7 +465,7 @@ public static class CalendarModel
         return o;
     }
 
-    private static void Fill(Component e, EventInput input, TimeZoneInfo zone)
+    private static void Fill(Component e, EventInput input, TimeZoneInfo zone, bool hasDefault = false)
     {
         e.SetText("SUMMARY", input.Title);
         e.SetText("LOCATION", input.Location);
@@ -480,6 +519,16 @@ public static class CalendarModel
             if (input.Categories.Count > 0) e.Set("CATEGORIES", string.Join(",", input.Categories.Select(Ics.Escape)));
         }
 
+        // calremind: alle relativen Alarme aus der Liste (Aufgaben-Regeln stehen nicht im Termin)
+        if (Features.On(Features.CalRemind) && (input.Reminders != null || input.RemindDefault))
+        {
+            var rules = input.RemindDefault ? [] : CalendarReminders.Clean(input.Reminders).Where(r => CalendarReminders.Writable(r, input.AllDay)).ToList();
+            CalendarReminders.WriteAlarms(e, rules, input.AllDay, input.Title);
+            // Ausdrücklich keine: nur nötig, wenn sonst der Standard des Kalenders gälte
+            CalendarReminders.SetNoRemind(e, !input.RemindDefault && rules.Count == 0 && input.Reminders != null
+                && hasDefault);
+            return;
+        }
         // Nur den Alarm aendern, den Dto als Erinnerung zeigt - weitere (vom Handy) bleiben
         var existing = ReminderAlarm(e, out var current);
         if (input.Reminder is int min && min >= 0)
@@ -653,9 +702,34 @@ public static class CalendarModel
 
     public static List<TaskDto> Tasks(UserSpace space, IEnumerable<long> lists)
     {
+        var result = new List<TaskDto>();
+        foreach (var list in lists) result.AddRange(CachedTasks(space, list));
+        return result;
+    }
+
+    /// <summary>Gelesene Aufgaben je Liste, solange sich die Liste nicht geändert hat (Sync-Token, Anzahl, höchste Kennung) und
+    /// die Zeitzone dieselbe ist - die Aufgabenliste las sonst bei jedem Aufruf alle Einträge neu.</summary>
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<UserDb, System.Collections.Concurrent.ConcurrentDictionary<long, (string Key, List<TaskDto> List)>> ParsedTasks = new();
+
+    private static List<TaskDto> CachedTasks(UserSpace space, long list)
+    {
+        var db = space.Db;
+        var key = db.Query("SELECT c.synctoken, (SELECT COUNT(*) FROM objects WHERE collection=c.id), (SELECT COALESCE(MAX(id), 0) FROM objects WHERE collection=c.id) FROM collections c WHERE c.id=$c",
+            r => r.GetInt64(0) + "/" + r.GetInt64(1) + "/" + r.GetInt64(2), ("$c", list)).FirstOrDefault();
+        if (key == null) return [];
+        key += "/" + space.Zone.Id;
+        var cache = ParsedTasks.GetValue(db, _ => new());
+        if (cache.TryGetValue(list, out var hit) && hit.Key == key) return hit.List;
+        var parsed = ParseTasks(space, list);
+        cache[list] = (key, parsed);
+        return parsed;
+    }
+
+    private static List<TaskDto> ParseTasks(UserSpace space, long list)
+    {
         var zone = space.Zone;
         var result = new List<TaskDto>();
-        foreach (var obj in PimStore.InRange(space.Db, lists, "VTODO", null, null))
+        foreach (var obj in PimStore.InRange(space.Db, new[] { list }, "VTODO", null, null))
         {
             Component? t;
             try { t = Ics.Parse(obj.Data).First(r => r.Name == "VCALENDAR").Of("VTODO").FirstOrDefault(); }
@@ -690,6 +764,7 @@ public static class CalendarModel
 
     public static string SaveTask(UserSpace space, TaskInput input)
     {
+        CheckLength(input.Title);
         var db = space.Db;
         var zone = space.Zone;
         var coll = PimStore.Find(db, input.List) ?? throw new KeyNotFoundException("Liste nicht gefunden.");
@@ -767,6 +842,7 @@ public static class CalendarModel
             return dest.Id + "/" + uri;
         }
         PimStore.Put(db, coll, uri, data, ifMatch: etag, zone: zone);
+        // Projekte: jede Änderung von außen (Aufgaben, Kalender, Pukki) rechnet den Plan gleich neu, nicht erst beim Öffnen
         return coll.Id + "/" + uri;
     }
 }

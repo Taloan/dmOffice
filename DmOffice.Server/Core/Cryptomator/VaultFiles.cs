@@ -1,5 +1,12 @@
 namespace DmOffice.Core.Cryptomator;
 
+/// <summary>Grenzen für Dateien eines Tresors.</summary>
+public static class VaultFileLimits
+{
+    /// <summary><see cref="IVaultFiles.ReadAll"/> liest nur kleine Verwaltungsdateien (masterkey, vault.cryptomator, dir.c9r, name.c9s).</summary>
+    public const long MaxMetaFile = 1024 * 1024;
+}
+
 /// <summary>Die verschlüsselten Dateien eines Cryptomator-Tresors: wo sie liegen (Ordner auf der Platte, Dateiablage).
 /// Pfade relativ zur Wurzel des Tresors mit „/“.</summary>
 public interface IVaultFiles

@@ -19,6 +19,8 @@ public sealed class AudioSource
     public DateTime? LastScan { get; set; }
     public string? Error { get; set; }
     public int Count { get; set; }
+    /// <summary>Neu zugeordnet: Stand des Abgleichs; gesetzt heißt auch, Änderungszeiten auf ganze Sekunden zu vergleichen.</summary>
+    public RelinkState? Relink { get; set; }
 }
 
 /// <summary>
@@ -31,6 +33,7 @@ public sealed class AudioSource
 public static class AudioFolders
 {
     public const string Key = "audio.sources";
+    private const string NotAudioCheckKey = "audio.notaudio-check";
     public static readonly TimeSpan WatchEvery = TimeSpan.FromMinutes(15);
     /// <summary>Pause nach jedem Stück (Tests: null).</summary>
     public static TimeSpan TagPause { get; set; } = TimeSpan.FromMilliseconds(150);
@@ -83,6 +86,12 @@ public static class AudioFolders
             CREATE TRIGGER IF NOT EXISTS audio_track_ver_del AFTER DELETE ON audio_track BEGIN UPDATE audio_ver SET v = v + 1 WHERE id = 1; END;
             CREATE TRIGGER IF NOT EXISTS audio_track_ver_upd AFTER UPDATE OF size, modified, title, artist, album_artist, album, track, disc, year,
                 genre, duration, cover ON audio_track BEGIN UPDATE audio_ver SET v = v + 1 WHERE id = 1; END;");
+        // Einmalig: früher eingelesene Dateien ohne Dauer noch einmal prüfen lassen - Bild oder Text mit Audio-Endung geht dann raus
+        if (db.Get(NotAudioCheckKey) == null)
+        {
+            db.Exec("UPDATE audio_track SET stage = 0 WHERE stage = 1 AND duration IS NULL");
+            db.Set(NotAudioCheckKey, "1");
+        }
         Ready[db] = true;
     }
 
@@ -115,7 +124,7 @@ public static class AudioFolders
         Ensure(space.Db);
         var ok = Visible(space, config);
         var order = Of(space.Db).Select((s, i) => (s.Id, i)).ToDictionary(x => x.Id, x => x.i);
-        return space.Db.Query(@"SELECT source, path, size, modified, title, artist, album_artist, album, track, disc, year, genre, duration, cover, mount FROM audio_track",
+        return space.Db.Query(@"SELECT source, path, size, modified, title, artist, album_artist, album, track, disc, year, genre, duration, cover, mount FROM audio_track WHERE stage <> 2",
                 r => (Mount: r.GetString(14), T: new Track(r.GetString(0), r.GetString(1), r.GetInt64(2), r.GetInt64(3), S(r, 4), S(r, 5), S(r, 6), S(r, 7), I(r, 8), I(r, 9), I(r, 10),
                     S(r, 11), r.IsDBNull(12) ? null : r.GetDouble(12), S(r, 13))))
             .Where(x => ok.Contains(x.T.Source))
@@ -144,6 +153,8 @@ public static class AudioFolders
     // ---- Einlesen ----
 
     public sealed class SourceGone : Exception;
+    /// <summary>Während des Einlesens neu zugeordnet: aufhören, nichts verwerfen.</summary>
+    public sealed class SourceMoved : Exception;
 
     /// <summary>
     /// Stufe 1: auflisten. Neue und geänderte Dateien kommen sofort in die Liste (Titel aus dem Dateinamen, Album aus dem
@@ -159,6 +170,7 @@ public static class AudioFolders
             var known = db.Query("SELECT path, size, modified FROM audio_track WHERE source = $s", r => (r.GetString(0), r.GetInt64(1), r.GetInt64(2)), ("$s", src.Id))
                 .ToDictionary(x => x.Item1, x => (x.Item2, x.Item3), StringComparer.Ordinal);
             var seen = new HashSet<string>(StringComparer.Ordinal);
+            var added = new List<(string Rel, long Size, long Modified)>();
             var dirs = new Stack<string>();
             var fresh = 0;
             dirs.Push(StoragePath.Clean(src.Path));
@@ -178,15 +190,17 @@ public static class AudioFolders
                     if (seen.Count % 500 == 0) job?.Progress(seen.Count);
                     var modified = new DateTimeOffset(DateTime.SpecifyKind(e.Modified, DateTimeKind.Utc)).ToUnixTimeMilliseconds();
                     var had = known.TryGetValue(rel, out var k);
-                    if (had && k.Item1 == e.Size && k.Item2 == modified) continue;
+                    if (had && k.Item1 == e.Size && FolderRelink.SameTime(k.Item2, modified, src.Relink != null)) continue;
                     changed.Add((rel, e.Size, modified, !had));
                 }
                 if (changed.Count == 0) continue;
-                // Während des Einlesens aus der Audiothek genommen: aufhören
-                if (!Of(db).Any(s => s.Id == src.Id)) throw new SourceGone();
+                // Während des Einlesens aus der Audiothek genommen oder neu zugeordnet: aufhören
+                var cur = Of(db).FirstOrDefault(s => s.Id == src.Id) ?? throw new SourceGone();
+                if (cur.Mount != src.Mount || cur.Path != src.Path) throw new SourceMoved();
                 Write(db, src, changed);
+                added.AddRange(changed.Where(c => c.New).Select(c => (c.Rel, c.Size, c.Modified)));
                 fresh += changed.Count;
-                job?.Progress(seen.Count, null, $"{src.Path}: {fresh:N0} neu gefunden");
+                job?.Progress(seen.Count, null, $"{src.Path}: {DmOffice.Core.Num.N(fresh)} neu gefunden");
             }
             // Was nicht mehr da ist, verschwindet (nur nach einem vollständigen Durchgang)
             if (seen.Count < MaxFiles)
@@ -194,15 +208,76 @@ public static class AudioFolders
                 var gone = known.Keys.Where(p => !seen.Contains(p)).ToList();
                 if (gone.Count > 0)
                 {
+                    var moves = Moves(gone.Select(p => (p, known[p].Item1, known[p].Item2)).ToList(), added);
+                    if (moves.Count > 0) AudioPlaylists.Ensure(db);
                     using var conn = db.Open();
                     using var tx = conn.BeginTransaction();
+                    foreach (var (from, to, sameTime) in moves) Carry(conn, src, from, to, sameTime);
                     foreach (var p in gone) UserDb.Exec(conn, "DELETE FROM audio_track WHERE source = $s AND path = $p", ("$s", src.Id), ("$p", p));
                     tx.Commit();
                     PruneCovers(db);
                 }
             }
-            return seen.Count;
+            // Anzahl ohne die als „kein Audio“ erkannten Dateien - wie in der Titelliste
+            return seen.Count - Convert.ToInt32(db.Scalar("SELECT COUNT(*) FROM audio_track WHERE source = $s AND stage = $n", ("$s", src.Id), ("$n", NotAudioStage)) ?? 0L);
         }
+    }
+
+    /// <summary>
+    /// Umbenannt oder verschoben (in der Dateiablage, im externen Ordner, auch ganze Ordner): verschwundene und neue Datei mit
+    /// gleicher Größe, dazu gleicher Name, gleicher Ordner oder gleiche Änderungszeit. Nur eindeutige Paare - bei mehreren
+    /// gleich großen Kandidaten entscheidet der Name, sonst bleibt es bei „weg“ und „neu“. Die Titel-ID ist der Pfad; ohne das
+    /// verlöre der Titel Playlists und Hörverlauf.
+    /// </summary>
+    internal static List<(string From, string To, bool SameTime)> Moves(List<(string Path, long Size, long Modified)> gone, List<(string Path, long Size, long Modified)> added)
+    {
+        static string Name(string p) => p[(p.LastIndexOf('/') + 1)..];
+        static string Dir(string p) => p.LastIndexOf('/') is var i and > 0 ? p[..i] : "";
+        static bool Related((string Path, long Size, long Modified) a, (string Path, long Size, long Modified) b) =>
+            a.Modified == b.Modified || Name(a.Path) == Name(b.Path) || Dir(a.Path) == Dir(b.Path);
+        var result = new List<(string, string, bool)>();
+        if (gone.Count == 0 || added.Count == 0) return result;
+        var bySize = added.Where(a => a.Size > 0).GroupBy(a => a.Size).ToDictionary(g => g.Key, g => g.ToList());
+        var goneBySize = gone.Where(g => g.Size > 0).GroupBy(g => g.Size).ToDictionary(g => g.Key, g => g.ToList());
+        foreach (var (size, olds) in goneBySize)
+        {
+            if (!bySize.TryGetValue(size, out var news)) continue;
+            if (olds.Count == 1 && news.Count == 1)
+            {
+                if (Related(olds[0], news[0])) result.Add((olds[0].Path, news[0].Path, olds[0].Modified == news[0].Modified));
+                continue;
+            }
+            // Mehrere gleich große: nur über eindeutigen Dateinamen
+            foreach (var o in olds)
+            {
+                var hits = news.Where(n => Name(n.Path) == Name(o.Path)).ToList();
+                if (hits.Count == 1 && olds.Count(x => Name(x.Path) == Name(o.Path)) == 1) result.Add((o.Path, hits[0].Path, o.Modified == hits[0].Modified));
+            }
+        }
+        return result;
+    }
+
+    /// <summary>Titel umgezogen: Angaben, Hörverlauf, Zähler und Playlist-Einträge gehen auf den neuen Pfad über.</summary>
+    private static void Carry(Microsoft.Data.Sqlite.SqliteConnection conn, AudioSource src, string from, string to, bool sameTime)
+    {
+        // Tags und Cover übernehmen; bei geänderter Zeit liest der nächste Schritt die Tags noch einmal.
+        // Titel bzw. Album, die nur aus altem Dateinamen bzw. Ordner stammen, folgen dem neuen Namen.
+        var slash = from.LastIndexOf('/');
+        var oldFolder = slash > 0 ? from[..slash] : "";
+        UserDb.Exec(conn, @"UPDATE audio_track SET (stage, title, artist, album_artist, album, track, disc, year, genre, duration, cover) =
+                (SELECT CASE WHEN $same THEN o.stage ELSE 0 END, CASE WHEN o.title = $stem THEN audio_track.title ELSE o.title END, o.artist, o.album_artist,
+                    CASE WHEN o.album IS $folder THEN audio_track.album ELSE o.album END, o.track, o.disc, o.year, o.genre, o.duration, o.cover
+                 FROM audio_track o WHERE o.source = $s AND o.path = $f)
+            WHERE source = $s AND path = $t AND EXISTS(SELECT 1 FROM audio_track o WHERE o.source = $s AND o.path = $f AND o.stage = 1)",
+            ("$same", sameTime ? 1 : 0), ("$s", src.Id), ("$f", from), ("$t", to),
+            ("$stem", System.IO.Path.GetFileNameWithoutExtension(from[(slash + 1)..])), ("$folder", oldFolder.Length > 0 ? oldFolder[(oldFolder.LastIndexOf('/') + 1)..] : null));
+        UserDb.Exec(conn, "UPDATE audio_play SET path = $t WHERE mount = $m AND path = $f", ("$m", src.Mount), ("$f", from), ("$t", to));
+        UserDb.Exec(conn, "UPDATE audio_playlist_item SET path = $t WHERE mount = $m AND path = $f", ("$m", src.Mount), ("$f", from), ("$t", to));
+        UserDb.Exec(conn, @"INSERT INTO audio_stat(mount, path, plays, skips, last) SELECT mount, $t, plays, skips, last FROM audio_stat WHERE mount = $m AND path = $f
+            ON CONFLICT(mount, path) DO UPDATE SET plays = plays + excluded.plays, skips = skips + excluded.skips,
+                last = CASE WHEN last IS NULL OR excluded.last > last THEN excluded.last ELSE last END",
+            ("$m", src.Mount), ("$f", from), ("$t", to));
+        UserDb.Exec(conn, "DELETE FROM audio_stat WHERE mount = $m AND path = $f", ("$m", src.Mount), ("$f", from));
     }
 
     /// <summary>Neue und geänderte Dateien eines Ordners in einem Rutsch: Stufe 0, neue mit Titel aus dem Dateinamen.</summary>
@@ -215,12 +290,35 @@ public static class AudioFolders
             var slash = rel.LastIndexOf('/');
             var name = rel[(slash + 1)..];
             var folder = slash > 0 ? rel[..slash] : "";
-            UserDb.Exec(conn, @"INSERT INTO audio_track(source, path, mount, size, modified, stage, title, album) VALUES($s, $p, $m, $z, $t, 0, $ti, $al)
-                ON CONFLICT(source, path) DO UPDATE SET size = excluded.size, modified = excluded.modified, stage = 0",
-                ("$s", src.Id), ("$p", rel), ("$m", src.Mount), ("$z", size), ("$t", modified),
+            // Leere Datei: kein Ton, gleich als „kein Audio“ (Stufe 2) - erscheint nicht als Titel
+            UserDb.Exec(conn, @"INSERT INTO audio_track(source, path, mount, size, modified, stage, title, album) VALUES($s, $p, $m, $z, $t, $st, $ti, $al)
+                ON CONFLICT(source, path) DO UPDATE SET size = excluded.size, modified = excluded.modified, stage = excluded.stage",
+                ("$s", src.Id), ("$p", rel), ("$m", src.Mount), ("$z", size), ("$t", modified), ("$st", size == 0 ? NotAudioStage : 0),
                 ("$ti", System.IO.Path.GetFileNameWithoutExtension(name)), ("$al", folder.Length > 0 ? folder[(folder.LastIndexOf('/') + 1)..] : null));
         }
         tx.Commit();
+    }
+
+    /// <summary>Stufe einer Datei, die kein Audio enthält (Bild, Text, leer, nur mit passender Endung): bleibt bekannt, erscheint aber nicht als Titel.</summary>
+    public const int NotAudioStage = 2;
+
+    /// <summary>Datei ist als „kein Audio“ erkannt.</summary>
+    public static bool IsNotAudio(UserDb db, string source, string path)
+    {
+        Ensure(db);
+        return db.Scalar("SELECT 1 FROM audio_track WHERE source = $s AND path = $p AND stage = $n", ("$s", source), ("$p", path), ("$n", NotAudioStage)) != null;
+    }
+
+    /// <summary>
+    /// Kennung am Dateianfang: MP3 (ID3 oder Frame-Sync, auch AAC/ADTS), FLAC, Ogg, MP4/M4A (ftyp). Nur zusammen mit ATL entschieden:
+    /// erst wenn weder Kennung noch lesbare Dauer da sind, gilt die Datei als kein Audio.
+    /// </summary>
+    internal static bool LooksLikeAudio(ReadOnlySpan<byte> h)
+    {
+        if (h.Length < 4) return false;
+        if (h[..3].SequenceEqual("ID3"u8) || h[..4].SequenceEqual("fLaC"u8) || h[..4].SequenceEqual("OggS"u8)) return true;
+        if (h.Length >= 8 && h[4..8].SequenceEqual("ftyp"u8)) return true;
+        return h[0] == 0xFF && (h[1] & 0xE0) == 0xE0;
     }
 
     /// <summary>Wie viele Titel eines Ordners noch auf ihre Tags warten.</summary>
@@ -270,6 +368,16 @@ public static class AudioFolders
                         ("$ti", tags.Title), ("$ar", tags.Artist), ("$aa", tags.AlbumArtist), ("$al", tags.Album), ("$no", tags.No), ("$di", tags.Disc),
                         ("$y", tags.Year), ("$g", tags.Genre), ("$du", tags.Duration), ("$c", cover), ("$s", src.Id), ("$p", rel));
             }
+            void MarkNotAudio(string rel) =>
+                db.Exec("UPDATE audio_track SET stage = $n, cover = NULL WHERE source = $s AND path = $p", ("$n", NotAudioStage), ("$s", src.Id), ("$p", rel));
+            // Nur bei Zweifel (keine Dauer): die ersten Bytes holen. Nicht lesbar (Speicher weg): nicht als „kein Audio“ werten.
+            async Task<bool> NotAudioAsync(string rel, long size)
+            {
+                if (size == 0) return true;
+                try { return !LooksLikeAudio(await driver.ReadRangeAsync(rel, 0, (int)Math.Min(12, size), ct)); }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception) { return false; }
+            }
             while (DateTime.UtcNow < until)
             {
                 var rows = db.Query("SELECT path, size, modified FROM audio_track WHERE source = $s AND stage = 0 LIMIT 200", r => (r.GetString(0), r.GetInt64(1), r.GetInt64(2)), ("$s", src.Id));
@@ -281,6 +389,7 @@ public static class AudioFolders
                     var stamp = AudioShared.Stamp(size, modified);
                     if (shared != null && Shared!.Find(shared, rel, stamp) is { } hit)
                     {
+                        if ((!hit.Ok || hit.Tags?.Duration == null) && await NotAudioAsync(rel, size)) { MarkNotAudio(rel); continue; }
                         Apply(rel, hit.Ok ? hit.Tags : null, hit.Cover != null ? CopyCover(db, hit.Cover) : null);
                         continue;
                     }
@@ -304,6 +413,13 @@ public static class AudioFolders
                     // Datei weg oder kaputt (ATL wirft dann Verschiedenes): bleibt mit dem Namen in der Liste - eine Datei hält den
                     // Durchgang nicht auf; der nächste Durchgang räumt Verschwundenes weg
                     catch (Exception) { }
+                    // Ohne lesbare Dauer: am Dateianfang nachsehen - Bild oder Text mit Audio-Endung wird kein Titel
+                    if (tags?.Duration == null && await NotAudioAsync(rel, size))
+                    {
+                        MarkNotAudio(rel);
+                        if (shared != null) Shared!.Put(shared, rel, stamp, null, null, null);
+                        continue;
+                    }
                     var cover = tags?.Picture is { } pic ? StoreCover(db, pic) : null;
                     if (cover == null)
                     {
@@ -374,6 +490,20 @@ public static class AudioFolders
     private static void PruneCovers(UserDb db) =>
         db.Exec("DELETE FROM audio_cover WHERE id NOT IN (SELECT cover FROM audio_track WHERE cover IS NOT NULL)");
 
+    /// <summary>Einzelne Titel eines Ordners weg (nach dem Abgleich am neuen Ort nicht gefunden).</summary>
+    public static void Remove(UserDb db, string sourceId, IReadOnlyCollection<string> paths)
+    {
+        if (paths.Count == 0) return;
+        Ensure(db);
+        using (var conn = db.Open())
+        using (var tx = conn.BeginTransaction())
+        {
+            foreach (var p in paths) UserDb.Exec(conn, "DELETE FROM audio_track WHERE source = $s AND path = $p", ("$s", sourceId), ("$p", p));
+            tx.Commit();
+        }
+        PruneCovers(db);
+    }
+
     /// <summary>Ordner herausgenommen: seine Titel weg. Der Hörverlauf bleibt (hängt an externem Ordner und Pfad).</summary>
     public static void Forget(UserDb db, string sourceId)
     {
@@ -435,6 +565,18 @@ public sealed class AudioScanJob(Spaces spaces, ServerConfig config, ILogger<Aud
     public static void Request(string userId, string sourceId) { Wanted[userId + "/" + sourceId] = true; Kick.Release(); }
     public static bool IsRunning(string userId, string sourceId) => Running.ContainsKey(userId + "/" + sourceId) || Wanted.ContainsKey(userId + "/" + sourceId);
 
+    /// <summary>Arbeitet gerade etwas an diesem Ordner? Angefordert zählt nicht.</summary>
+    public static bool IsBusy(string userId, string sourceId) => Running.ContainsKey(userId + "/" + sourceId);
+
+    /// <summary>Arbeit an einem Ordner beginnen - nicht, während er neu zugeordnet wird.</summary>
+    private static bool Enter(string userId, string sourceId)
+    {
+        Running[userId + "/" + sourceId] = true;
+        if (!AudioRelink.IsBusy(userId, sourceId)) return true;
+        Running.TryRemove(userId + "/" + sourceId, out _);
+        return false;
+    }
+
     /// <summary>Je Durchgang und Ordner höchstens so lange Tags lesen - so kommen alle Ordner voran. Danach eine Minute Pause.</summary>
     public static TimeSpan TagBudget { get; set; } = TimeSpan.FromMinutes(1);
 
@@ -456,7 +598,7 @@ public sealed class AudioScanJob(Spaces spaces, ServerConfig config, ILogger<Aud
         // Gemeinsamer Bestand nicht mehr freigegebener Server-Ordner
         try { AudioFolders.Shared?.Prune(config.Current.ExternalFolders.Select(f => f.Id)); }
         catch (Exception e) when (e is Microsoft.Data.Sqlite.SqliteException or IOException) { log.LogWarning("Audiothek: Aufräumen des gemeinsamen Bestands: {Error}", e.Message); }
-        foreach (var space in spaces.All())
+        foreach (var space in spaces.Working())
         {
             if (!AudioFolders.Enabled(space.User)) continue;
             foreach (var src in AudioFolders.Of(space.Db))
@@ -464,9 +606,17 @@ public sealed class AudioScanJob(Spaces spaces, ServerConfig config, ILogger<Aud
                 var key = space.User.Id + "/" + src.Id;
                 // Externer Ordner nicht (mehr) sichtbar oder gerade nicht erreichbar: später
                 if (!ExternalFolders.MountsOf(space, config).Any(m => m.Id == src.Mount) || !await ExternalFolders.ReachableAsync(space, config, src.Mount)) continue;
+                // Neu zugeordnet: erst jeden Titel am neuen Ort suchen (was fehlt, geht raus), dann wie gewohnt einlesen
+                if (src.Relink is { Pending: true })
+                {
+                    if (!Enter(space.User.Id, src.Id)) continue;
+                    try { if (await AudioRelink.CheckAsync(space, config, src, log, ct)) Request(space.User.Id, src.Id); }
+                    finally { Running.TryRemove(key, out _); }
+                    continue;
+                }
                 var due = Wanted.ContainsKey(key) || src.LastScan == null || (src.Watch && DateTime.UtcNow - src.LastScan > AudioFolders.WatchEvery);
                 if (!due && AudioFolders.Pending(space.Db, src.Id) == 0) continue;
-                Running[key] = true;
+                if (!Enter(space.User.Id, src.Id)) continue;
                 Wanted.TryRemove(key, out _);
                 using var job = Activity.Start(space.User.Id, Activity.AudioScan, src.Path);
                 try
@@ -496,6 +646,7 @@ public sealed class AudioScanJob(Spaces spaces, ServerConfig config, ILogger<Aud
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (AudioFolders.SourceGone) { AudioFolders.Forget(space.Db, src.Id); }
+                catch (AudioFolders.SourceMoved) { }
                 catch (Exception e) when (e is IOException or UnauthorizedAccessException or KeyNotFoundException or HttpRequestException or ArgumentException)
                 {
                     job.Fail($"{src.Path}: {e.Message}");

@@ -2,9 +2,9 @@ import {
   Button, Combobox, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Field, Input, Menu, MenuDivider, MenuItem, MenuItemRadio,
   MenuList, MenuPopover, MenuTrigger, Option, Select, Spinner, Switch, Text, Tooltip, tokens,
 } from '@fluentui/react-components'
-import { Add20Regular, ChevronDown16Regular, Copy20Regular, Delete20Regular, Dismiss20Regular, ImageMultiple20Regular, People20Regular, Sparkle20Regular } from '@fluentui/react-icons'
+import { Add20Regular, ChevronDown16Regular, Circle20Filled, Copy20Regular, Delete20Regular, Dismiss20Regular, ImageMultiple20Regular, People20Regular, Sparkle20Regular } from '@fluentui/react-icons'
 import { useEffect, useState } from 'react'
-import { api, q } from '../api'
+import { api, publicOrigin, q } from '../api'
 import { useApp } from '../App'
 import { t } from '../i18n'
 import type { Item } from './common'
@@ -15,12 +15,12 @@ import { copyText } from '../shell/browser'
 export const ALB = 'alb:'
 export const isAlb = (i: { path: string }) => i.path.startsWith(ALB)
 const partsOf = (i: { path: string }) => { const r = i.path.slice(ALB.length); const s = r.indexOf('/'); return { id: r.slice(0, s), key: r.slice(s + 1) } }
-export const albumThumb = (i: Item, size = 256) => { const p = partsOf(i); return `/api/gallery/albums/${p.id}/thumb?` + q({ key: p.key, size, v: i.etag }) }
+export const albumThumb = (i: Item, size = 256) => { const p = partsOf(i); return `/api/gallery/albums/${p.id}/thumb?` + q({ key: p.key, size, v: i.etag, quiet: 1 }) }
 export const albumFile = (i: Item, inline?: boolean) => { const p = partsOf(i); return `/api/gallery/albums/${p.id}/file?` + q({ key: p.key, inline: inline || undefined }) }
 export const albumKey = (i: Item) => partsOf(i).key
 
 export interface AlbumInfo {
-  id: number; name: string; kind: 'fixed' | 'smart'; rule?: string | null; owner: string; ownerName?: string | null; mine: boolean
+  id: number; name: string; kind: 'fixed' | 'smart' | 'quick'; rule?: string | null; owner: string; ownerName?: string | null; mine: boolean
   members?: string[] | null; shared: boolean; count: number; cover?: string | null
 }
 
@@ -36,7 +36,13 @@ export const albumsApi = {
   links: (id: number) => api.get<AlbumLink[]>(`/api/gallery/albums/${id}/links`),
   createLink: (id: number, body: { days?: number; password?: string; download: boolean }) => api.post<AlbumLink>(`/api/gallery/albums/${id}/links`, body),
   deleteLink: (id: number, link: string) => api.del(`/api/gallery/albums/${id}/links/${link}`),
+  /** Schnellsammlung (Kennung quickcoll): was drin ist (Kennungen der Galerie) und hinein/heraus wie Taste B in Lightroom */
+  quick: () => api.get<{ id: number; paths: string[] }>('/api/gallery/albums/quick'),
+  toggleQuick: (paths: string[], into?: boolean) => api.post<{ in: boolean; count: number }>('/api/gallery/albums/quick/toggle', { paths, in: into }),
 }
+
+/** Name zum Anzeigen: die Schnellsammlung heißt in jeder Sprache so, wie die Oberfläche sie nennt. */
+export const albumName = (a: AlbumInfo) => a.kind === 'quick' ? t('Schnellsammlung') : a.name
 
 export interface AlbumLink { id: string; token: string; expires: string | null; hasPassword: boolean; download: boolean; created: string; views: number; expired: boolean }
 
@@ -53,7 +59,7 @@ export function AlbumLinksDialog({ album, onClose }: { album: AlbumInfo; onClose
   const [busy, setBusy] = useState(false)
   const load = () => albumsApi.links(album.id).then(setLinks).catch(fail)
   useEffect(() => { load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
-  const urlOf = (l: AlbumLink) => `${location.origin}/a/${l.token}`
+  const urlOf = (l: AlbumLink) => `${publicOrigin()}/a/${l.token}`
   const copy = async (url: string) => notify(await copyText(url) ? t('Link kopiert') : url)
   const create = async () => {
     setBusy(true)
@@ -113,8 +119,10 @@ export function AlbumLinksDialog({ album, onClose }: { album: AlbumInfo; onClose
 
 /** Inhalt eines Albums als Einträge der Galerie, dazu Aufnahmedaten und wem was gehört. */
 export async function loadAlbum(id: number): Promise<{ items: Item[]; meta: Record<string, Meta>; mine: Record<string, boolean> }> {
-  const r = await api.get<{ items: AlbumItem[] }>(`/api/gallery/albums/${id}/items`)
-  const path = (x: AlbumItem) => `${ALB}${id}/${x.key}`
+  const r = await api.get<{ album: { kind: string }; items: AlbumItem[] }>(`/api/gallery/albums/${id}/items`)
+  // Schnellsammlung: nur eigene Fotos - unter ihrer Kennung in der Galerie, damit Markieren, Drehen und Bearbeiten wie dort gehen
+  const own = r.album.kind === 'quick'
+  const path = (x: AlbumItem) => own && x.path ? x.path : `${ALB}${id}/${x.key}`
   return {
     items: r.items.map(x => ({ path: path(x), name: x.name, isDir: false, size: x.size, mime: x.mime, modified: x.modified, etag: x.etag })),
     meta: Object.fromEntries(r.items.filter(x => x.meta).map(x => [path(x), { ...x.meta!, key: path(x) }])),
@@ -123,15 +131,15 @@ export async function loadAlbum(id: number): Promise<{ items: Item[]; meta: Reco
 }
 
 /** Auswahl in der Titelzeile der Galerie: alle Fotos oder ein Album; dazu „Neues Album“ und „Neues Smart-Album“. */
-export function AlbumPicker({ albums, current, onPick, onNew, onNewSmart }: { albums: AlbumInfo[]; current: number | null; onPick: (id: number | null) => void; onNew: () => void; onNewSmart?: () => void }) {
+export function AlbumPicker({ albums, current, onPick, onNew, onNewSmart }: { albums: AlbumInfo[]; current: number | null; onPick: (id: number | null) => void; onNew?: () => void; onNewSmart?: () => void }) {
   const cur = albums.find(a => a.id === current)
-  const icon = (a: AlbumInfo) => a.kind === 'smart' ? <Sparkle20Regular /> : a.shared || !a.mine ? <People20Regular /> : <ImageMultiple20Regular />
+  const icon = (a: AlbumInfo) => a.kind === 'quick' ? <Circle20Filled /> : a.kind === 'smart' ? <Sparkle20Regular /> : a.shared || !a.mine ? <People20Regular /> : <ImageMultiple20Regular />
   return (
     <Menu>
       <MenuTrigger disableButtonEnhancement>
         {/* Langer Name: hinten mit „…“ gekürzt, voll im Tooltip */}
-        <Button size="small" appearance={cur ? 'primary' : 'subtle'} icon={<ChevronDown16Regular />} iconPosition="after" title={cur?.name} style={{ maxWidth: 260, minWidth: 0 }}>
-          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{cur ? cur.name : t('Alle Fotos')}</span>
+        <Button size="small" appearance={cur ? 'primary' : 'subtle'} icon={<ChevronDown16Regular />} iconPosition="after" title={cur && albumName(cur)} style={{ maxWidth: 260, minWidth: 0 }}>
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{cur ? albumName(cur) : t('Alle Fotos')}</span>
         </Button>
       </MenuTrigger>
       <MenuPopover>
@@ -140,11 +148,12 @@ export function AlbumPicker({ albums, current, onPick, onNew, onNewSmart }: { al
           {albums.length > 0 && <MenuDivider />}
           {albums.map(a => (
             <MenuItemRadio key={a.id} name="album" value={String(a.id)} icon={icon(a)} secondaryContent={String(a.count)}>
-              {a.name}{!a.mine && a.ownerName ? ` · ${a.ownerName}` : ''}
+              {albumName(a)}{!a.mine && a.ownerName ? ` · ${a.ownerName}` : ''}
             </MenuItemRadio>
           ))}
-          <MenuDivider />
-          <MenuItem icon={<Add20Regular />} onClick={onNew}>{t('Neues Album …')}</MenuItem>
+          {/* Neues Album steht im Menüband; hier nur, wo es keins gibt */}
+          {(onNew || onNewSmart) && <MenuDivider />}
+          {onNew && <MenuItem icon={<Add20Regular />} onClick={onNew}>{t('Neues Album …')}</MenuItem>}
           {onNewSmart && <MenuItem icon={<Sparkle20Regular />} onClick={onNewSmart}>{t('Neues Smart-Album …')}</MenuItem>}
         </MenuList>
       </MenuPopover>
@@ -197,7 +206,7 @@ export function AlbumShareDialog({ album, onClose }: { album: AlbumInfo; onClose
             </Text>
             {people == null && <Spinner size="small" />}
             {people && <>
-              <Field label={t('Person hinzufügen')}>
+              <Field label={t('Benutzer hinzufügen')}>
                 <Combobox freeform placeholder={t('Name eingeben …')} value={query} selectedOptions={[]}
                   onChange={e => setQuery((e.target as HTMLInputElement).value)}
                   onOptionSelect={(_, d) => { if (d.optionValue) { setChosen(c => [...c, d.optionValue!]); setQuery('') } }}>
@@ -208,7 +217,7 @@ export function AlbumShareDialog({ album, onClose }: { album: AlbumInfo; onClose
               </Field>
               <Text weight="semibold">{t('Zugriff haben')}</Text>
               {chosen.length === 0
-                ? <Text style={{ color: tokens.colorNeutralForeground3 }}>{t('Noch niemand – füge oben eine Person hinzu.')}</Text>
+                ? <Text style={{ color: tokens.colorNeutralForeground3 }}>{t('Noch niemand. Oben kannst du einen Benutzer hinzufügen.')}</Text>
                 : chosen.map(id => (
                   <div key={id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <Text style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{people.find(p => p.id === id)?.displayName ?? id}</Text>

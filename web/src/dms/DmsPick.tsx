@@ -1,14 +1,23 @@
 import { Button, Spinner, Text, makeStyles, mergeClasses, tokens } from '@fluentui/react-components'
-import { Calendar20Regular, DocumentText20Regular, Person20Regular, SelectObject20Regular, Tag20Regular, TextT20Regular } from '@fluentui/react-icons'
+import { Calendar20Regular, Copy20Regular, DocumentText20Regular, Person20Regular, SelectObject20Regular, Tag20Regular, TextT20Regular } from '@fluentui/react-icons'
 import { useRef, useState } from 'react'
-import { api } from '../api'
+import { api, featureOn } from '../api'
 import { useApp } from '../App'
 import { t } from '../i18n'
 import { askConfirm } from '../shell/context'
 import { Doc, Entry, Kind } from './model'
 
-/** Feld, das aus einem Rahmen im Dokument übernommen wird. */
-export type PickField = 'title' | 'docDate' | 'correspondent' | 'doctype' | 'tag'
+/** Feld, das aus einem Rahmen im Dokument übernommen wird; „copy“ kopiert in die Zwischenablage (dmscopy), „f:…“ ist ein eigenes Feld (dmsfields). */
+export type PickField = 'title' | 'docDate' | 'correspondent' | 'doctype' | 'tag' | 'copy' | `f:${string}`
+
+/** Text in die Zwischenablage; ohne sicheren Ursprung (http im Heimnetz) über ein verstecktes Textfeld */
+export async function copyText(text: string) {
+  try { await navigator.clipboard.writeText(text); return true } catch { /* Ausweg unten */ }
+  const area = document.createElement('textarea')
+  area.value = text; area.style.position = 'fixed'; area.style.opacity = '0'
+  document.body.appendChild(area); area.select()
+  try { return document.execCommand('copy') } catch { return false } finally { area.remove() }
+}
 
 const useStyles = makeStyles({
   bar: { display: 'flex', flexDirection: 'column', gap: '4px', width: '240px', flexShrink: 0, position: 'sticky', top: 0, alignSelf: 'flex-start' },
@@ -110,10 +119,12 @@ export function useRegionPick<F extends string>(docId: number, tresor: boolean, 
   return { field, choose, busy, pagesView }
 }
 
-export function usePick({ doc, tresor, entries, onChange, onEntriesChanged, onText }: {
+export function usePick({ doc, tresor, entries, onChange, onEntriesChanged, onText, onField }: {
   doc: Doc; tresor: boolean; entries: Entry[]; onChange: (body: Record<string, unknown>) => Promise<unknown>; onEntriesChanged: () => void
   /** Text ohne passenden Eintrag: ins Feld zum Prüfen und Auswählen geben, statt gleich einen Eintrag anzulegen */
   onText?: (kind: Kind, text: string) => void
+  /** Eigenes Feld (dmsfields): Text übernehmen; false, wenn er nicht passt (Feld bleibt gewählt) */
+  onField?: (id: string, text: string) => Promise<boolean>
 }) {
   const { notify } = useApp()
   const [last, setLast] = useState<{ field: PickField; text: string } | null>(null)
@@ -131,6 +142,18 @@ export function usePick({ doc, tresor, entries, onChange, onEntriesChanged, onTe
   }
 
   const take = async (f: PickField, text: string) => {
+    // In die Zwischenablage: das Werkzeug bleibt gewählt, damit sich gleich der nächste Text kopieren lässt
+    if (f === 'copy') {
+      if (await copyText(text)) notify(t('In die Zwischenablage kopiert: „{text}“', { text: text.length > 80 ? text.slice(0, 80) + ' …' : text }))
+      else notify(t('Kopieren nicht möglich - der Browser lässt es nicht zu.'))
+      setLast({ field: f, text })
+      return false
+    }
+    if (f.startsWith('f:')) {
+      if (!onField || !await onField(f.slice(2), text)) return false
+      setLast({ field: f, text })
+      return true
+    }
     if (f === 'title') await onChange({ title: text })
     else if (f === 'docDate') {
       const day = parseDay(text)
@@ -138,7 +161,7 @@ export function usePick({ doc, tresor, entries, onChange, onEntriesChanged, onTe
       await onChange({ docDate: day })
     }
     else {
-      const kind: Kind = f === 'tag' ? 'tag' : f
+      const kind: Kind = f === 'tag' ? 'tag' : f as Kind
       const id = await entryFor(kind, text)
       if (id) await onChange(kind === 'tag' ? { addTags: [id] } : { [kind]: id })
     }
@@ -178,6 +201,7 @@ export function PickPages({ doc, tresor, pages, src, entries, onChange, onEntrie
     { key: 'correspondent', label: t('Korrespondent'), icon: <Person20Regular />, value: name(doc.correspondent) },
     { key: 'doctype', label: t('Dokumenttyp'), icon: <DocumentText20Regular />, value: name(doc.doctype) },
     { key: 'tag', label: t('Tag hinzufügen'), icon: <Tag20Regular />, value: doc.tags.map(x => name(x.id)).filter(Boolean).join(', ') },
+    ...(featureOn('dmscopy') ? [{ key: 'copy' as const, label: t('In die Zwischenablage'), icon: <Copy20Regular />, value: t('Text kopieren, ohne ihn einzutragen') }] : []),
   ]
   return (
     <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>

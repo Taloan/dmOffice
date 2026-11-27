@@ -27,7 +27,9 @@ const useStyles = makeStyles({
  * Blase nennt Quelle und Monat.
  */
 export function Timeline({ months, total, top, onJump, scroller }: {
-  months: { key: string; first: number; group?: string }[]; total: number; top: number; onJump: (index: number) => void
+  months: { key: string; first: number; group?: string }[]; total: number; top: number
+  /** final: losgelassen (Klick oder Ende des Ziehens) - erst dann lädt die Galerie den Monat vorab und springt ohne Zwischenstand */
+  onJump: (index: number, final: boolean) => void
   /** Scrollbereich der Galerie: der Griff zeigt, wo man darin gerade ist */
   scroller?: React.RefObject<HTMLDivElement | null>
 }) {
@@ -48,6 +50,8 @@ export function Timeline({ months, total, top, onJump, scroller }: {
   const years = useMemo(() => {
     const out: { id: string; year: string; at: number }[] = []
     for (const m of months) {
+      // Noch nicht ausgelesen: keine Jahreszahl (nur ein Punkt und die Blase)
+      if (dateKey(m.key) === 'unread') continue
       const y = dateKey(m.key).slice(0, 4), id = (m.group ?? '') + '|' + y
       if (!out.length || out[out.length - 1].id !== id) out.push({ id, year: y, at: m.first / total })
     }
@@ -59,7 +63,7 @@ export function Timeline({ months, total, top, onJump, scroller }: {
   const monthAt = (frac: number) => { const idx = Math.floor(frac * total); let m = months[0]; for (const x of months) { if (x.first <= idx) m = x; else break } return m }
   const label = (m: { key: string; group?: string }) => {
     const k = dateKey(m.key)
-    const month = new Date(+k.slice(0, 4), +k.slice(5) - 1, 1).toLocaleDateString(locale, { month: 'long', year: 'numeric' })
+    const month = k === 'unread' ? t('Wird noch ausgelesen') : new Date(+k.slice(0, 4), +k.slice(5) - 1, 1).toLocaleDateString(locale, { month: 'long', year: 'numeric' })
     return m.group ? t(m.group) + ' · ' + month : month
   }
   const at = (clientY: number) => { const r = ref.current!.getBoundingClientRect(); return { y: clientY - r.top, frac: Math.min(1, Math.max(0, (clientY - r.top) / r.height)) } }
@@ -67,14 +71,18 @@ export function Timeline({ months, total, top, onJump, scroller }: {
     const p = at(clientY)
     const m = monthAt(p.frac)
     setHover({ y: p.y, m })
-    if (jump) onJump(m.first)
+    // Beim Ziehen nur springen, wenn sich der Monat ändert
+    if (jump && m.first !== last.current) { last.current = m.first; onJump(m.first, false) }
+    return m
   }
+  const last = useRef(-1)
   return (
     <div ref={ref} className={s.bar} style={{ top }}
       onPointerMove={e => move(e.clientY, down.current)}
       onPointerLeave={() => { if (!down.current) setHover(null) }}
-      onPointerDown={e => { down.current = true; e.currentTarget.setPointerCapture(e.pointerId); move(e.clientY, true) }}
-      onPointerUp={() => { down.current = false; setHover(null) }}>
+      onPointerDown={e => { down.current = true; e.currentTarget.setPointerCapture(e.pointerId); last.current = move(e.clientY, false).first }}
+      onPointerUp={e => { if (down.current) onJump(move(e.clientY, false).first, true); down.current = false; setHover(null) }}
+      onPointerCancel={() => { down.current = false; setHover(null) }}>
       {months.map(m => <span key={m.key} className={s.dot} style={{ top: `${(m.first / total) * 100}%` }} />)}
       {years.map(y => <span key={y.id} className={s.year} style={{ top: `${y.at * 100}%` }}>{y.year}</span>)}
       <span className={s.handle} style={{ top: `${pos * 100}%` }} />

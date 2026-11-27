@@ -40,6 +40,20 @@ public static class PhotoEdit
             return Rebuild(jpeg, segments, metaSegments, target, null);
         }
         using var codec = SKCodec.Create(new MemoryStream(jpeg)) ?? throw new ArgumentException("Das Foto ließ sich nicht lesen.");
+        // Bearbeitet wird in voller Größe (mehrere Bildkopien): Pixel begrenzen, höchstens eine Bearbeitung gleichzeitig
+        if ((long)codec.Info.Width * codec.Info.Height > MaxPixels) throw new ArgumentException("Das Foto ist zu groß.");
+        if (!Gate.Wait(TimeSpan.FromSeconds(120))) throw new InvalidOperationException("Der Server ist gerade ausgelastet. Bitte gleich noch einmal versuchen.");
+        try { return Decoded(codec, orientation, rotate, crop, tuned ? adjust : null, metaSegments ?? segments); }
+        finally { Gate.Release(); }
+    }
+
+    /// <summary>Höchste Pixelzahl beim Bearbeiten - Fotos aus 200-MP-Handykameras passen noch.</summary>
+    public const long MaxPixels = 210_000_000;
+    private static readonly SemaphoreSlim Gate = new(1);
+
+    private static byte[] Decoded(SKCodec codec, int orientation, int rotate, Crop? crop, PhotoAdjust.Values? adjust, List<Segment> metaSegments)
+    {
+        var tuned = adjust != null;
         using var raw = SKBitmap.Decode(codec) ?? throw new ArgumentException("Das Foto ließ sich nicht lesen.");
         using var upright = Orient(raw, (SKEncodedOrigin)orientation);
         using var turned = Turn(upright, rotate);
@@ -53,7 +67,7 @@ public static class PhotoEdit
         using var final = tuned ? PhotoAdjust.Apply(cut, adjust!.Clamped()) : null;
         using var img = SKImage.FromBitmap(final ?? cut);
         var encoded = img.Encode(SKEncodedImageFormat.Jpeg, Quality).ToArray();
-        return Rebuild(encoded, Segments(encoded), metaSegments ?? segments, 1, (w, h));
+        return Rebuild(encoded, Segments(encoded), metaSegments, 1, (w, h));
     }
 
     // ---------------- Drehen ----------------

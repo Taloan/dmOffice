@@ -86,6 +86,15 @@ public sealed class MailAccount
     /// <summary>Smart Inbox fuer dieses Konto (Einstellungen → Smart Inbox, „Gilt für“): Relevant/Sonstige, Termine aus Mails,
     /// Kategorien. Heisst aus Zeiten, als es nur den Prio-Posteingang gab, noch so.</summary>
     public bool FocusedInbox { get; set; } = true;
+
+    // [feature:mailaccountoff]
+    /// <summary>Von der Person deaktiviert (Kennung mailaccountoff): kein Abruf, kein Abgleich, kein Senden, nicht im Mailbereich.
+    /// Mails, Ordner, Regeln und Einstellungen bleiben; nach dem Aktivieren holt der Abgleich ab dem gespeicherten Stand nur Neues.</summary>
+    public bool Disabled { get; set; }
+    /// <summary>Deaktiviert und der Schalter ist an.</summary>
+    [System.Text.Json.Serialization.JsonIgnore] public bool Off => Disabled && Features.On(Features.MailAccountOff);
+    // [/feature:mailaccountoff]
+
 }
 
 public sealed class RuleCondition
@@ -99,10 +108,15 @@ public sealed class RuleCondition
 
 public sealed class RuleAction
 {
-    /// <summary>move | copy | markRead | flag | category | delete | forward | trashAfter | destroyAfter | stop</summary>
+    /// <summary>move | copy | markRead | flag | category | delete | forward | redirect | trashAfter | destroyAfter | stop</summary>
     public string Type { get; set; } = "move";
-    /// <summary>Ordner bei move/copy, Adressen bei forward, Tage bei trashAfter/destroyAfter.</summary>
+    /// <summary>Ordner bei move/copy (mit Kennung ruleforward auch „Konto|Ordner“ eines anderen eigenen Kontos),
+    /// Adressen bei forward/redirect, Tage bei trashAfter/destroyAfter.</summary>
     public string Value { get; set; } = "";
+    // [feature:rulecopyread]
+    /// <summary>Bei copy: die Kopie als gelesen ablegen (das Original bleibt, wie es ist).</summary>
+    public bool Read { get; set; }
+    // [/feature:rulecopyread]
 }
 
 public sealed class MailRule
@@ -116,6 +130,30 @@ public sealed class MailRule
     public string Match { get; set; } = "all";
     public List<RuleCondition> Conditions { get; set; } = new();
     public List<RuleAction> Actions { get; set; } = new();
+}
+
+/// <summary>
+/// Ziel einer Weiterleitung oder Umleitung (Kennung ruleforward): dorthin geht erst etwas, wenn der Empfänger es per Link
+/// oder Code bestätigt hat. Token und Code stehen nur als SHA-256 hier.
+/// </summary>
+public sealed class ForwardTarget
+{
+    /// <summary>Adresse in Kleinbuchstaben.</summary>
+    public string Address { get; set; } = "";
+    public bool Confirmed { get; set; }
+    public DateTime? ConfirmedAt { get; set; }
+    /// <summary>Letzte Bestätigungsmail.</summary>
+    public DateTime? SentAt { get; set; }
+    /// <summary>Link und Code gelten bis dahin.</summary>
+    public DateTime? Expires { get; set; }
+    public string? TokenHash { get; set; }
+    public string? CodeHash { get; set; }
+    /// <summary>Falsch eingegebene Codes seit der letzten Bestätigungsmail.</summary>
+    public int CodeTries { get; set; }
+    /// <summary>Versand der Bestätigungsmail gescheitert: warum.</summary>
+    public string? Error { get; set; }
+    /// <summary>Sprache der Bestätigungsseite (die des sendenden Kontos).</summary>
+    public string Language { get; set; } = "de";
 }
 
 /// <summary>Kategorie einer Mail - auf dem Server ein IMAP-Schlagwort (Key), hier Name und Farbe.</summary>
@@ -154,6 +192,11 @@ public sealed class MailCriteria
     public bool Attachments { get; set; }
     /// <summary>Auch Papierkorb und Junk durchsuchen.</summary>
     public bool IncludeDeleted { get; set; }
+    // [feature:catchalldomains]
+    /// <summary>Nur Mails an diese Catchall-Aliase („x@domain“, „@domain“ für alle der Domain) - Ansicht „ca:“, nicht gespeichert.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public List<string>? Aliases { get; set; }
+    // [/feature:catchalldomains]
 }
 
 /// <summary>Gespeicherte Suche, die wie ein Ordner erscheint (virtuell - die Mails bleiben, wo sie sind).</summary>
@@ -188,6 +231,10 @@ public sealed class SpamSettings
     public bool LearnArchive { get; set; } = true;
     /// <summary>Beim gemeinsamen Junk-Wissen mitmachen (JunkPrints) - nur, wenn der Admin es eingeschaltet hat.</summary>
     public bool ShareJunk { get; set; } = true;
+    /// <summary>Kennung junkread: Was der Filter nach Junk verschiebt, gilt dort als gelesen.</summary>
+    public bool JunkMarkRead { get; set; }
+    /// <summary>Kennung junkread: Was aus Junk in einen anderen Ordner kommt (auch „Kein Junk“ in den Posteingang), gilt dort als ungelesen.</summary>
+    public bool JunkRestoreUnread { get; set; }
 }
 
 public sealed class NotiziSettings
@@ -220,21 +267,50 @@ public sealed class UserSettings
     /// Null oder unbekannt: das erste Konto der Liste. Gilt nur mit Features.DefaultAccount.</summary>
     public string? DefaultMailAccount { get; set; }
 
-    /// <summary>Das Standard-Mailkonto: das gewählte (Features.DefaultAccount), sonst das erste. Null ohne Konten.</summary>
-    public MailAccount? DefaultAccount() =>
-        (Features.On(Features.DefaultAccount) ? MailAccounts.FirstOrDefault(a => a.Id == DefaultMailAccount) : null)
-        ?? MailAccounts.FirstOrDefault();
+    /// <summary>Konten, die abgerufen werden und im Mailbereich erscheinen (ohne deaktivierte).</summary>
+    public List<MailAccount> ActiveMailAccounts() =>
+        // [feature:mailaccountoff]
+        MailAccounts.Where(a => !a.Off).ToList();
+        // [feature:mailaccountoff:else]
+        // MailAccounts;
+        // [/feature:mailaccountoff]
 
-    /// <summary>Konten mit dem Standardkonto zuerst, sonst in gespeicherter Reihenfolge.</summary>
+    /// <summary>Kennungen der deaktivierten Konten (leer, wenn keines deaktiviert ist).</summary>
+    public HashSet<string> OffMailAccountIds() =>
+        // [feature:mailaccountoff]
+        MailAccounts.Where(a => a.Off).Select(a => a.Id).ToHashSet();
+        // [feature:mailaccountoff:else]
+        // [];
+        // [/feature:mailaccountoff]
+
+    /// <summary>Das Standard-Mailkonto: das gewählte (Features.DefaultAccount), sonst das erste - jeweils unter den aktiven Konten.
+    /// Null ohne (aktive) Konten.</summary>
+    public MailAccount? DefaultAccount()
+    {
+        var active = ActiveMailAccounts();
+        return (Features.On(Features.DefaultAccount) ? active.FirstOrDefault(a => a.Id == DefaultMailAccount) : null) ?? active.FirstOrDefault();
+    }
+
+    /// <summary>Aktive Konten mit dem Standardkonto zuerst, sonst in gespeicherter Reihenfolge.</summary>
     public IEnumerable<MailAccount> AccountsDefaultFirst()
     {
+        var active = ActiveMailAccounts();
         var d = DefaultAccount();
-        return d == null ? MailAccounts : MailAccounts.Where(a => a == d).Concat(MailAccounts.Where(a => a != d));
+        return d == null ? active : active.Where(a => a == d).Concat(active.Where(a => a != d));
     }
 
     /// <summary>Ist das Konto das Standardkonto? Nur mit Features.DefaultAccount, sonst immer false (Web und App nehmen dann das erste).</summary>
     public bool IsDefault(MailAccount a) => Features.On(Features.DefaultAccount) && DefaultAccount() == a;
     public List<MailRule> Rules { get; set; } = new();
+    /// <summary>Weiterleitungs- und Umleitungsziele mit Bestätigung (Kennung ruleforward). Null: noch nie eingerichtet -
+    /// dann gelten alle Ziele, die schon in Regeln stehen, als bestätigt (ForwardTargets.Ensure).</summary>
+    public List<ForwardTarget>? ForwardTargets { get; set; }
+    /// <summary>Kennung ruleforward: Kontoadressen, die beim ersten Abgleich schon eingetragen waren, und von der Verwaltung
+    /// eingerichtete (kleingeschrieben). Null: noch nicht festgehalten - dann gelten alle Kontoadressen als eigene.</summary>
+    public List<string>? OwnAddresses { get; set; }
+    /// <summary>Kennung ruleforward: Kann der SMTP-Server des Kontos 8BITMIME? (Konto-Id → ja/nein, beim Umleiten oder per Abfrage ermittelt.)
+    /// Ohne 8BITMIME kodiert der Versand 8-Bit-Teile um, die DKIM-Signatur des Absenders passt dann nicht mehr.</summary>
+    public Dictionary<string, bool>? Smtp8BitMime { get; set; }
     /// <summary>Null: noch nie eingerichtet - dann die Vorgaben. Leere Liste: bewusst keine.</summary>
     public List<MailCategory>? Categories { get; set; }
     public SpamSettings Spam { get; set; } = new();
@@ -249,13 +325,26 @@ public sealed class UserSettings
     public string TimeZone { get; set; } = "Europe/Berlin";
     /// <summary>Gelesen markieren nach so vielen Sekunden im Lesebereich; -1: nie automatisch.</summary>
     public int MarkReadDelay { get; set; } = 2;
+    /// <summary>Kennung attsave: Hauptknopf am Mail-Anhang: "ablage" (in die eigene Ablage) oder "browser" (Download des Browsers).</summary>
+    public string AttachSaveTarget { get; set; } = "ablage";
+    /// <summary>Kennung attsave: Standardordner der Ablage für Anhänge (leer: beim ersten Speichern fragen).</summary>
+    public string? AttachSaveFolder { get; set; }
+    /// <summary>Kennung attsave: Vor jedem Speichern in die Ablage nach dem Ordner fragen.</summary>
+    public bool AttachSaveAsk { get; set; }
     /// <summary>Beim Oeffnen eines Mailordners: none | first (neueste) | last (zuletzt gewaehlte, sonst neueste).</summary>
     public string OpenOnFolder { get; set; } = "last";
     /// <summary>Ansicht Fotos (Web und App): Bilder in diesen Ordnern und darunter nicht zeigen (Pfade wie in der Dateiablage).</summary>
     public List<string> PhotoExcludes { get; set; } = new();
+    /// <summary>„Zuletzt verwendet“ geleert: geänderte Dateien erscheinen erst wieder, wenn sie danach geändert werden (Kennung recentclear).</summary>
+    public DateTime? RecentClearedAt { get; set; }
     /// <summary>Galerie: Sterne, Titel, Beschreibung, Stichwörter, Markierung, Farbe in die Fotos schreiben (XMP im JPEG, Sidecar bei RAW).
     /// Aus (Vorgabe): nur in der eigenen Datenbank (Gallery/PhotoMarks.cs), Dateien bleiben unverändert.</summary>
     public bool PhotoWriteXmp { get; set; }
+    // [feature:lenscorr]
+    /// <summary>Objektivkorrektur: neue eigene Fotos (Ablage, Galerie-Ordner), auf die eine Regel passt, bekommen sie beim ersten Einlesen.
+    /// null: noch nicht gewählt, dann gilt die Vorgabe des Servers (Gallery/LensProfiles.cs, AutoNewDefault).</summary>
+    public bool? LensAutoNew { get; set; }
+    // [/feature:lenscorr]
     /// <summary>„In Ablage sichern“: Zielordner, Ordnung darunter, schon Vorhandenes überspringen, Hinweis gesehen (Gallery/GallerySave.cs).</summary>
     public string SaveFolder { get; set; } = "Uploads";
     public string SaveOrder { get; set; } = "source-month";

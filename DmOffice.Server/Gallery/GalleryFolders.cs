@@ -26,6 +26,9 @@ public sealed class GallerySource
     public DateTime? LastScan { get; set; }
     public string? Error { get; set; }
     public int Count { get; set; }
+    /// <summary>Neu zugeordnet (anderer externer Ordner oder Pfad): Stand des Abgleichs. Gesetzt heißt auch: Änderungszeiten auf ganze
+    /// Sekunden vergleichen.</summary>
+    public RelinkState? Relink { get; set; }
 }
 
 /// <summary>
@@ -33,13 +36,13 @@ public sealed class GallerySource
 /// Größe, Änderungszeit, Aufnahmedaten, kleines Vorschaubild - und erscheinen in der Galerie. Die Originale bleiben, wo sie
 /// sind; nichts wird in die eigene Ablage kopiert. Index je Benutzer in der Tabelle gallery_ext.
 /// </summary>
-public static class GalleryFolders
+public static partial class GalleryFolders
 {
     public const string Key = "gallery.sources";
     /// <summary>Überwachte Ordner so oft neu einlesen.</summary>
     public static readonly TimeSpan WatchEvery = TimeSpan.FromMinutes(15);
     private const int MaxFiles = 200_000;
-    private const long MaxImageBytes = 150L * 1024 * 1024;
+    private const long MaxImageBytes = 250L * 1024 * 1024;
     /// <summary>
     /// Große Vorschauen aus Originalen höchstens zwei zugleich (wie <see cref="Thumbs"/> für die eigene Ablage): jede liest das
     /// ganze Original (RAW bis 50 MB) und rechnet ein Bild mit bis zu 40 MP herunter. Ohne Grenze liefen nach einer Unterbrechung
@@ -90,7 +93,10 @@ public static class GalleryFolders
         var scope = ProxyScope(space, config, src);
         var n = 0;
         foreach (var p in space.Db.Query("SELECT path FROM gallery_ext WHERE source = $s", r => r.GetString(0), ("$s", src.Id)))
+        {
             if (Proxies.SizeOf(scope.A, scope.B, p) > 0) { Proxies.Remove(scope.A, scope.B, p); n++; }
+            if (Medium?.SizeOf(scope.A, scope.B, p) > 0) { Medium.Remove(scope.A, scope.B, p); n++; } // [feature:galmedium]
+        }
         return n;
     }
 
@@ -101,10 +107,10 @@ public static class GalleryFolders
     }
 
     /// <summary>Eine Datei eines Server-Ordners gibt es nicht mehr: Bildangaben, Vorschaubild und große Vorschau für alle weg.</summary>
-    private static void ForgetShared(string mount, string path)
+    internal static void ForgetShared(string mount, string path)
     {
         Shared?.Remove(mount, path);
-        Proxies?.Remove(GalleryProxies.SharedScope, mount, path);
+        DropLarge(GalleryProxies.SharedScope, mount, path);
         ExternalFolders.Thumbs?.Remove(GalleryProxies.SharedScope, mount, path);
     }
 
@@ -118,6 +124,14 @@ public static class GalleryFolders
         if (Shared != null) foreach (var m in Shared.Mounts().Where(m => !freed.Contains(m))) Shared.RemoveMount(m);
         if (Proxies != null) foreach (var m in Proxies.SharedMounts().Where(m => !freed.Contains(m))) Proxies.RemoveShared(m);
         if (ExternalFolders.Thumbs != null) foreach (var m in ExternalFolders.Thumbs.SharedMounts().Where(m => !freed.Contains(m))) ExternalFolders.Thumbs.RemoveShared(m);
+        PruneMedium(freed); // [feature:galmedium]
+    }
+
+    /// <summary>Große (und mittlere) Vorschau eines Fotos weg: Datei gelöscht oder geändert.</summary>
+    internal static void DropLarge(string a, string b, string path)
+    {
+        Proxies?.Remove(a, b, path);
+        Medium?.Remove(a, b, path); // [feature:galmedium]
     }
 
     /// <summary>Server-Ordner (vom Admin freigegeben): für alle dieselben Dateien - Vorschauen und Bildangaben gemeinsam.</summary>
@@ -127,26 +141,37 @@ public static class GalleryFolders
     private static string? SharedOf(ServerConfig config, GallerySource src) => Shared != null && SharedMount(config, src.Mount) ? src.Mount : null;
 
     /// <summary>Wo die großen Vorschauen eines Galerie-Ordners liegen: gemeinsam je Server-Ordner oder je Benutzer und Ordner.</summary>
-    private static (string A, string B) ProxyScope(UserSpace space, ServerConfig config, GallerySource src) =>
+    internal static (string A, string B) ProxyScope(UserSpace space, ServerConfig config, GallerySource src) =>
         SharedMount(config, src.Mount) ? (GalleryProxies.SharedScope, src.Mount) : (space.User.Id, src.Id);
 
     /// <summary>Leerer Wert in gallery_ext.thumb: das Vorschaubild liegt im gemeinsamen Speicher.</summary>
-    private static readonly byte[] InShared = [];
+    internal static readonly byte[] InShared = [];
 
     /// <summary>Stand der Vorschaubilder im Index: steigt er, werden RAW-Fotos neu eingelesen (2: Drehung wie in der Dateiablage).</summary>
     private const int ThumbsVersion = 2;
-    private const string ThumbsKey = "gallery.thumbs";
+    private const string ThumbsKey = "gallery.thumbs", TiffKey = "gallery.thumbs.tiff";
 
     /// <summary>RAW-Vorschaubilder aus älterem Stand verwerfen; true, wenn danach neu eingelesen werden muss.</summary>
     public static bool Upgrade(UserDb db)
     {
-        if (int.TryParse(db.Get(ThumbsKey), out var v) && v >= ThumbsVersion) return false;
+        // TIFF ohne Vorschaubild (vor der Kennung tiffpreview eingelesen): einmal neu einlesen, sobald die Kennung gilt
+        var tiffs = false;
+        if (Features.On(Features.TiffPreview) && db.Get(TiffKey) != "1")
+        {
+            Ensure(db);
+            var list = db.Query("SELECT source, path FROM gallery_ext WHERE thumb IS NULL", r => (r.GetString(0), r.GetString(1))).Where(x => Thumbs.IsTiff(x.Item2)).ToList();
+            foreach (var (s, p) in list)
+                db.Exec("UPDATE gallery_ext SET size = -1, big = NULL WHERE source = $s AND path = $p", ("$s", s), ("$p", p));
+            db.Set(TiffKey, "1");
+            tiffs = list.Count > 0;
+        }
+        if (int.TryParse(db.Get(ThumbsKey), out var v) && v >= ThumbsVersion) return tiffs;
         Ensure(db);
         var raws = db.Query("SELECT source, path FROM gallery_ext", r => (r.GetString(0), r.GetString(1))).Where(x => Thumbs.IsRaw(x.Item2)).ToList();
         foreach (var (s, p) in raws)
             db.Exec("UPDATE gallery_ext SET size = -1, thumb = NULL, big = NULL WHERE source = $s AND path = $p", ("$s", s), ("$p", p));
         db.Set(ThumbsKey, ThumbsVersion.ToString());
-        return raws.Count > 0;
+        return raws.Count > 0 || tiffs;
     }
     public static void Save(UserDb db, List<GallerySource> list) => db.SetJson(Key, list);
 
@@ -223,6 +248,8 @@ public static class GalleryFolders
         // der Zeile, description dahinter - ohne Index liest jede Abfrage bei zehntausenden Fotos über alle Bilddaten hinweg
         db.Exec(@"CREATE INDEX IF NOT EXISTS gallery_ext_list ON gallery_ext(source, path, size, modified, mime, taken, camera, lens, focal, aperture,
             exposure, iso, width, height, duration, rating, title, keywords, description, label, pick)");
+        // Fotos eines Tages (Tagebuch) über die Aufnahmezeit statt über alle Zeilen
+        db.Exec("CREATE INDEX IF NOT EXISTS gallery_ext_taken ON gallery_ext(taken)");
         // Änderungszähler für den ETag der Liste: jede Änderung an dem, was die Liste zeigt, zählt hoch (Vorschaubilder nicht)
         db.Exec("CREATE TABLE IF NOT EXISTS gallery_ext_ver(id INTEGER PRIMARY KEY CHECK(id = 1), v INTEGER NOT NULL)");
         db.Exec("INSERT OR IGNORE INTO gallery_ext_ver(id, v) VALUES(1, 0)");
@@ -264,6 +291,7 @@ public static class GalleryFolders
         var mounts = ExternalFolders.MountsOf(space, config).Select(m => m.Id).ToHashSet();
         var ok = string.Join(",", Of(space.Db).Where(s => mounts.Contains(s.Mount)).Select(s => s.Id).OrderBy(x => x, StringComparer.Ordinal));
         var sums = "f2-" + Convert.ToInt64(space.Db.Scalar("SELECT v FROM gallery_ext_ver WHERE id = 1") ?? 0L);
+        sums += LensProfiles.ListTag;   // [feature:lenscorr]
         var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(sums + "|" + ok)))[..20].ToLowerInvariant();
         return ("\"" + hash + "\"", ok);
     }
@@ -280,6 +308,19 @@ public static class GalleryFolders
         var pending = space.Db.Query("SELECT source, path FROM gallery_ext INDEXED BY gallery_ext_stage WHERE stage < 2", r => r.GetString(0) + "/" + r.GetString(1)).ToHashSet(StringComparer.Ordinal);
         return space.Db.Query(EntrySql, EntryFrom)
             .Where(e => ok.Contains(e.Source)).Select(e => pending.Contains(e.Source + "/" + e.Path) ? e with { Pending = true } : e).ToList();
+    }
+
+    /// <summary>Fotos und Videos der Galerie-Ordner mit Aufnahmezeit in [from, to) (ms, UTC) - über den Index, ohne alle Zeilen zu lesen.</summary>
+    public static List<Entry> Taken(UserSpace space, ServerConfig config, long from, long to)
+    {
+        Ensure(space.Db);
+        var mounts = ExternalFolders.MountsOf(space, config).Select(m => m.Id).ToHashSet();
+        var ok = Of(space.Db).Where(s => mounts.Contains(s.Mount)).Select(s => s.Id).ToHashSet();
+        if (ok.Count == 0) return [];
+        PhotoMarks.Ensure(space.Db);
+        return space.Db.Query(EntrySql.Replace("INDEXED BY gallery_ext_list", "INDEXED BY gallery_ext_taken") + " WHERE e.taken >= $a AND e.taken < $b", EntryFrom,
+                ("$a", from), ("$b", to))
+            .Where(e => ok.Contains(e.Source)).ToList();
     }
 
     /// <summary>Einträge mit Ort; Angaben nur in der Datenbank (PhotoMarks) gehen vor denen aus der Datei.</summary>
@@ -336,11 +377,11 @@ public static class GalleryFolders
                     if (e.IsDir) { dirs.Push(rel); continue; }
                     if (KindOf(e.Name) is not { } kind) continue;
                     // Während des Einlesens aus der Galerie genommen: aufhören (sonst liest er weiter, und der neue Ordner wartet)
-                    if (seen.Count % 50 == 0 && !Of(db).Any(s => s.Id == src.Id)) throw new SourceGone();
+                    if (seen.Count % 50 == 0) { StillThere(db, src); JobControl.Check(space.User.Id, Activity.GalleryScan); }
                     seen.Add(rel);
                     if (seen.Count % 200 == 0) job?.Progress(seen.Count);
-                    if (!await SyncAsync(db, driver, src.Id, dir, rel, e, sidecars, sidecarNames, known.TryGetValue(rel, out var k) ? k : null, ct)) continue;
-                    job?.Progress(seen.Count, null, $"{dir}: {++fresh:N0} neu gefunden");
+                    if (!await SyncAsync(db, driver, src.Id, dir, rel, e, sidecars, sidecarNames, known.TryGetValue(rel, out var k) ? k : null, src.Relink != null, SharedOf(config, src), ProxyScope(space, config, src), ct)) continue;
+                    job?.Progress(seen.Count, null, $"{dir}: {DmOffice.Core.Num.N(++fresh)} neu gefunden");
                 }
             }
             // Kein einziger Eintrag, aber Bestand da: der Speicher antwortet nicht richtig (ausgehängte Freigabe zeigt einen leeren
@@ -354,7 +395,7 @@ public static class GalleryFolders
                 foreach (var gone in known.Keys.Where(p => !seen.Contains(p) && !DmOffice.Dav.PhotoWork.IsPending(src.Id, p)))
                 {
                     db.Exec("DELETE FROM gallery_ext WHERE source = $s AND path = $p", ("$s", src.Id), ("$p", gone));
-                    if (!SharedMount(config, src.Mount)) Proxies?.Remove(space.User.Id, src.Id, gone);
+                    if (!SharedMount(config, src.Mount)) DropLarge(space.User.Id, src.Id, gone);
                     // Gemeinsamer Bestand: nur weg, wenn die Datei wirklich nicht mehr da ist (nachgefragt - ein kurzer Aussetzer
                     // des Speichers soll ihn nicht leeren); die Freigabe-Auswahl des Admins gilt für alle gleich
                     else if (await driver.StatAsync(gone, ct) == null) ForgetShared(src.Mount, gone);
@@ -370,12 +411,25 @@ public static class GalleryFolders
 
     /// <summary>Einen Eintrag mit dem Stand im Ordner abgleichen; true, wenn etwas neu war (Datei oder Sidecar-Datei).</summary>
     private static async Task<bool> SyncAsync(UserDb db, IStorageDriver driver, string source, string dir, string rel, DriverEntry e, Dictionary<string, DriverEntry> sidecars,
-        Dictionary<string, string> sidecarNames, (long Size, long Modified, long Sidecar)? known, CancellationToken ct)
+        Dictionary<string, string> sidecarNames, (long Size, long Modified, long Sidecar)? known, bool coarse, string? shared, (string A, string B) scope, CancellationToken ct)
     {
         var modified = new DateTimeOffset(DateTime.SpecifyKind(e.Modified, DateTimeKind.Utc)).ToUnixTimeMilliseconds();
         var sc = Sidecar.For(e.Name, sidecarNames) is { } scName ? sidecars[Sidecar.Key(scName)] : null;
         var stamp = sc == null ? 0 : SidecarStamp(sc);
-        var same = known is { } k && k.Size == e.Size && k.Modified == modified;
+        // Neu zugeordnet: auf ganze Sekunden - sonst gälte beim Wechsel zwischen CIFS (Bruchteile) und SFTP (Sekunden) jede Datei als geändert
+        var same = known is { } k && k.Size == e.Size && FolderRelink.SameTime(k.Modified, modified, coarse);
+        // Gleiche Datei, aber die gemerkte Zeit hat noch die Bruchteile vom früheren Ort: auf die Zeit der Auflistung bringen, ohne neu zu
+        // lesen - sonst hat dieselbe Datei bei zwei Personen zwei Stände, und im gemeinsamen Bestand (ein Stand je Datei) verdrängt
+        // jedes Lesen der einen die Vorschaubilder der anderen
+        if (same && known!.Value.Modified != modified)
+        {
+            db.Exec("UPDATE gallery_ext SET modified = $m WHERE source = $s AND path = $p", ("$m", modified), ("$s", source), ("$p", rel));
+            var (from, to) = (GalleryProxies.Stamp(e.Size, known.Value.Modified), GalleryProxies.Stamp(e.Size, modified));
+            if (shared != null) Shared!.Restamp(shared, rel, from, to);
+            // Große und mittlere Vorschau ebenso - sonst gälten sie als veraltet und würden neu erzeugt
+            Proxies?.Restamp(scope.A, scope.B, rel, from, to);
+            Medium?.Restamp(scope.A, scope.B, rel, from, to); // [feature:galmedium]
+        }
         if (same && known!.Value.Sidecar == stamp) return false;
         // Foto neu oder geändert, oder Sidecar weg bzw. abgeschaltet: als Platzhalter (Stufe 0) - die Angaben kommen wieder aus dem Foto
         if (!same || sc == null) Placeholder(db, source, rel, e.Size, modified, !same);
@@ -433,24 +487,56 @@ public static class GalleryFolders
     public static async Task<int> HeadsAsync(UserSpace space, ServerConfig config, GallerySource src, DateTime until, Activity.Job? job, CancellationToken ct)
     {
         var db = space.Db;
-        var done = 0;
+        int done = 0, seen = 0;
         var (driver, _) = ExternalFolders.Open(space, config, src.Mount);
-        using (driver)
+        try
+        {
             while (DateTime.UtcNow < until)
             {
                 var later = RetryLater(src.Id);
                 var rows = db.Query($"SELECT path, size, thumb IS NOT NULL, modified FROM gallery_ext INDEXED BY gallery_ext_stage_new WHERE source = $s AND stage = 0 ORDER BY modified DESC LIMIT {200 + later.Count}",
                     r => (r.GetString(0), r.GetInt64(1), r.GetBoolean(2), r.GetInt64(3)), ("$s", src.Id)).Where(x => !later.Contains(x.Item1)).ToList();
                 if (rows.Count == 0) break;
-                foreach (var (rel, size, hasThumb, modified) in rows)
+                await EachAsync(rows, Math.Min(Math.Max(1, Readers), driver.Parallel), async row =>
                 {
-                    ct.ThrowIfCancellationRequested();
-                    if (done % 50 == 0 && !Of(db).Any(s => s.Id == src.Id)) throw new SourceGone();
-                    if (!await ReadHeadOfAsync(space, config, driver, src, rel, size, modified, hasThumb, null, ct)) { TryLater(src.Id, rel); continue; }
-                    job?.Progress(++done, null, $"{src.Path}: Bildangaben {done:N0}");
+                    var (rel, size, hasThumb, modified) = row;
+                    if (Interlocked.Increment(ref seen) % 50 == 1) StillThere(db, src);
+                    await JobControl.CheckAsync(space.User.Id, Activity.GalleryScan, ct);
+                    if (!await ReadHeadOfAsync(space, config, driver, src, rel, size, modified, hasThumb, null, ct)) { TryLater(src.Id, rel); return; }
+                    var n = Interlocked.Increment(ref done);
+                    job?.Progress(n, null, $"{src.Path}: Bildangaben {DmOffice.Core.Num.N(n)}");
+                }, ct);
+            }
+        }
+        finally { driver.Dispose(); }
+        return done;
+    }
+
+    /// <summary>So viele Dateien eines Galerie-Ordners liest das Einlesen höchstens gleichzeitig (Kopf und ganze Datei) - nur, wo der Treiber das verträgt (SFTP, im Rahmen seiner Verbindungen).</summary>
+    public static int Readers { get; set; } = 2;
+
+    /// <summary>
+    /// Zeilen auf bis zu <paramref name="readers"/> Leser verteilen, alle über denselben Treiber (dessen Verbindungsgrenze gilt): jeder nimmt
+    /// sich die nächste, bis keine mehr da ist. Scheitert einer (Ordner entfernt, Abbruch), hören alle auf.
+    /// </summary>
+    private static async Task EachAsync<T>(IReadOnlyList<T> rows, int readers, Func<T, Task> work, CancellationToken ct)
+    {
+        var queue = new ConcurrentQueue<T>(rows);
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        await Task.WhenAll(Enumerable.Range(0, Math.Max(1, Math.Min(readers, rows.Count))).Select(async _ =>
+        {
+            try
+            {
+                while (queue.TryDequeue(out var row))
+                {
+                    stop.Token.ThrowIfCancellationRequested();
+                    await work(row);
                 }
             }
-        return done;
+            // Ein anderer Leser ist gescheitert: dessen Fehler zählt
+            catch (OperationCanceledException) when (stop.IsCancellationRequested && !ct.IsCancellationRequested) { }
+            catch { stop.Cancel(); throw; }
+        }));
     }
 
     /// <summary>
@@ -487,9 +573,19 @@ public static class GalleryFolders
                 whole = head.Length >= size;
                 if (!hasThumb && (raw || whole))
                     try { thumb = raw ? Thumbs.FromRaw(head, Thumbs.Small) : Thumbs.FromBytes(head, Thumbs.Small); } catch (Exception e) when (e is not OperationCanceledException) { }
+                // Mittlere Vorschau gleich aus dem Kopf (RAW: eingebettetes JPEG; kleine Datei: ganz gelesen; TIFF nicht - braucht die Engine)
+                if ((raw || whole && !Thumbs.IsTiff(rel)) && MediumWanted(src)) PutMedium(ProxyScope(space, config, src), rel, fileStamp, head, head, raw, head: !whole); // [feature:galmedium]
                 // Großes JPEG mit eingebetteter Vorschau (MPF): nur diesen Ausschnitt holen statt der ganzen Datei
                 if (!hasThumb && thumb == null && !raw && !whole && Thumbs.MpfPreview(head) is { } mp && mp.Offset + mp.Length <= size)
-                    try { thumb = Thumbs.FromPreview(await driver.ReadRangeAsync(rel, mp.Offset, mp.Length, ct), head, Thumbs.Small); }
+                    try
+                    {
+                        var preview = await driver.ReadRangeAsync(rel, mp.Offset, mp.Length, ct);
+                        thumb = Thumbs.FromPreview(preview, head, Thumbs.Small);
+                        // [feature:galmedium]
+                        // Eingebettete Vorschau (meist 1920 px) reicht für die mittlere - das ganze JPEG muss dafür nicht über die Freigabe
+                        if (MediumWanted(src)) PutMediumPreview(ProxyScope(space, config, src), rel, fileStamp, preview, head);
+                        // [/feature:galmedium]
+                    }
                     catch (Exception e) when (e is IOException or HttpRequestException or KeyNotFoundException or UnauthorizedAccessException) { }
                 // Ohne Vorschaubild (JPEG ganz lesen) oder ohne Bildangaben (stehen weiter hinten): Stufe 3
                 if (!hasThumb && thumb == null || meta == null && !whole) stage = 1;
@@ -534,39 +630,46 @@ public static class GalleryFolders
         var done = 0;
         var shared = SharedOf(config, src);
         var scope = ProxyScope(space, config, src);
+        var seen = 0;
         var (driver, _) = ExternalFolders.Open(space, config, src.Mount);
-        using (driver)
+        try
+        {
             while (DateTime.UtcNow < until)
             {
                 var later = RetryLater(src.Id);
                 var rows = db.Query($"SELECT path, size, modified, taken IS NULL AND camera IS NULL AND width IS NULL, thumb IS NOT NULL FROM gallery_ext INDEXED BY gallery_ext_stage_new WHERE source = $s AND stage = 1 ORDER BY modified DESC LIMIT {100 + later.Count}",
                     r => (r.GetString(0), r.GetInt64(1), r.GetInt64(2), r.GetBoolean(3), r.GetBoolean(4)), ("$s", src.Id)).Where(x => !later.Contains(x.Item1)).ToList();
                 if (rows.Count == 0) break;
-                foreach (var (rel, size, modified, noMeta, hasThumb) in rows)
+                await EachAsync(rows, Math.Min(Math.Max(1, Readers), driver.Parallel), async row =>
                 {
-                    ct.ThrowIfCancellationRequested();
-                    if (done % 25 == 0 && !Of(db).Any(s => s.Id == src.Id)) throw new SourceGone();
+                    var (rel, size, modified, noMeta, hasThumb) = row;
+                    if (Interlocked.Increment(ref seen) % 25 == 1) StillThere(db, src);
+                    await JobControl.CheckAsync(space.User.Id, Activity.GalleryScan, ct);
                     var fileStamp = GalleryProxies.Stamp(size, modified);
                     if (shared != null && Shared!.Find(shared, rel, fileStamp) is { Stage: >= 2 } hit && Usable(rel, hit))
                     {
                         if (hit.Meta != null) SaveMeta(db, src.Id, rel, hit.Meta, hit.HasThumb ? InShared : null, 2);
                         else db.Exec("UPDATE gallery_ext SET thumb = COALESCE($t, thumb), stage = 2 WHERE source = $s AND path = $p", ("$t", hit.HasThumb ? InShared : null), ("$s", src.Id), ("$p", rel));
-                        job?.Progress(++done, null, $"{src.Path}: Vorschaubilder {done:N0}");
-                        continue;
+                        var k = Interlocked.Increment(ref done);
+                        job?.Progress(k, null, $"{src.Path}: Vorschaubilder {DmOffice.Core.Num.N(k)}");
+                        return;
                     }
                     byte[] bytes;
                     try { bytes = await ReadAllAsync(driver, rel, ct); }
                     catch (OperationCanceledException) { throw; }
-                    catch (Exception e) when (e is IOException or UnauthorizedAccessException or KeyNotFoundException or HttpRequestException) { if (!await GoneAsync(space, config, driver, src, rel, ct)) TryLater(src.Id, rel); continue; }
+                    catch (Exception e) when (e is IOException or UnauthorizedAccessException or KeyNotFoundException or HttpRequestException) { if (!await GoneAsync(space, config, driver, src, rel, ct)) TryLater(src.Id, rel); return; }
                     var raw = Thumbs.IsRaw(rel);
                     FileMeta.Row? meta = null;
                     byte[]? thumb = null;
                     // Gemeinsam: alles aus der Datei, damit es für alle reicht
                     if (noMeta || shared != null) try { meta = FileMeta.Read(rel, new MemoryStream(bytes), space.Zone); } catch (Exception e) when (e is not OperationCanceledException) { }
-                    if (!hasThumb || shared != null) try { thumb = raw ? Thumbs.FromRaw(bytes, Thumbs.Small) : Thumbs.FromBytes(bytes, Thumbs.Small); } catch (Exception e) when (e is not OperationCanceledException) { }
+                    // TIFF (Kennung tiffpreview): über die Photo-Engine als JPEG, daraus Vorschau und große Vorschau
+                    var img = Thumbs.IsTiff(rel) ? await Thumbs.TiffJpegAsync(bytes, ct) ?? [] : bytes;
+                    if (!hasThumb || shared != null) try { thumb = raw ? Thumbs.FromRaw(bytes, Thumbs.Small) : Thumbs.FromBytes(img, Thumbs.Small); } catch (Exception e) when (e is not OperationCanceledException) { }
                     if (src.Proxies && Proxies != null)
-                        try { if ((raw ? Thumbs.FromRaw(bytes, GalleryProxies.Size) : Thumbs.FromBytes(bytes, GalleryProxies.Size)) is { } big) Proxies.Put(scope.A, scope.B, rel, fileStamp, big); }
+                        try { if ((raw ? Thumbs.FromRaw(bytes, GalleryProxies.Size) : Thumbs.FromBytes(img, GalleryProxies.Size)) is { } big) Proxies.Put(scope.A, scope.B, rel, fileStamp, big); }
                         catch (Exception e) when (e is not OperationCanceledException) { }
+                    else if (MediumWanted(src)) PutMedium(scope, rel, fileStamp, bytes, img, raw); // [feature:galmedium]
                     if (shared != null)
                     {
                         Shared!.Put(shared, rel, fileStamp, 2, meta, thumb);
@@ -575,15 +678,23 @@ public static class GalleryFolders
                     // Fertig, auch wenn sich nichts lesen ließ (kaputte Datei) - sonst käme sie jedes Mal wieder
                     if (meta != null) SaveMeta(db, src.Id, rel, meta, thumb, 2);
                     else db.Exec("UPDATE gallery_ext SET thumb = COALESCE($t, thumb), stage = 2 WHERE source = $s AND path = $p", ("$t", thumb), ("$s", src.Id), ("$p", rel));
-                    job?.Progress(++done, null, $"{src.Path}: Vorschaubilder {done:N0}");
-                }
+                    var n = Interlocked.Increment(ref done);
+                    job?.Progress(n, null, $"{src.Path}: Vorschaubilder {DmOffice.Core.Num.N(n)}");
+                }, ct);
             }
+        }
+        finally { driver.Dispose(); }
         return done;
     }
 
     /// <summary>Bildangaben eintragen - Titel, Stichwörter und Bewertung aus einer Sidecar-Datei bleiben (sie gehen vor).</summary>
     private static void SaveMeta(UserDb db, string source, string rel, FileMeta.Row? meta, byte[]? thumb, int stage)
     {
+        // [feature:lenscorr]
+        // Neues Foto (noch ohne Aufnahmedaten) mit passender Regel: Objektivkorrektur gleich eintragen
+        var lensNew = LensApply.Wanted(db, meta) && db.Scalar("SELECT 1 FROM gallery_ext WHERE source = $s AND path = $p AND camera IS NULL AND lens IS NULL AND taken IS NULL",
+            ("$s", source), ("$p", rel)) != null;
+        // [/feature:lenscorr]
         db.Exec(@"UPDATE gallery_ext SET taken = $t, camera = $c, lens = $l, focal = $f, aperture = $a, exposure = $x, iso = $i, width = $w, height = $h, duration = $d,
                   rating = CASE WHEN sidecar <> 0 THEN rating ELSE $r END, title = CASE WHEN sidecar <> 0 THEN title ELSE $ti END,
                   keywords = CASE WHEN sidecar <> 0 THEN keywords ELSE $k END, label = CASE WHEN sidecar <> 0 THEN label ELSE $lb END,
@@ -599,6 +710,7 @@ public static class GalleryFolders
         // Ort aus dem Foto merken - nur einen vorhandenen: Angaben aus dem gemeinsamen Bestand kommen ohne Ort, „ohne Ort“ stellt erst das
         // Verorten selbst fest (liest dafür den Kopf der Datei)
         if (meta?.Lat != null && Gps(db, source, rel) is var g && (!g.Known || g.Lat != meta.Lat || g.Lon != meta.Lon)) SetGps(db, source, rel, meta.Lat, meta.Lon);
+        if (lensNew) LensApply.ImportedExt(db, source, rel);   // [feature:lenscorr]
     }
 
     /// <summary>Titel, Beschreibung, Bewertung und Stichwörter nach dem Schreiben ins JPEG eintragen (null = bleibt, leer bzw. 0 = entfernt).</summary>
@@ -661,7 +773,7 @@ public static class GalleryFolders
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or HttpRequestException or KeyNotFoundException) { return false; }
         space.Db.Exec("DELETE FROM gallery_ext WHERE source = $s AND path = $p", ("$s", src.Id), ("$p", rel));
-        if (!SharedMount(config, src.Mount)) Proxies?.Remove(space.User.Id, src.Id, rel);
+        if (!SharedMount(config, src.Mount)) DropLarge(space.User.Id, src.Id, rel);
         else ForgetShared(src.Mount, rel);
         return true;
     }
@@ -740,7 +852,7 @@ public static class GalleryFolders
     private static void DropProxy(UserSpace space, ServerConfig config, GallerySource src, string rel)
     {
         var scope = ProxyScope(space, config, src);
-        Proxies?.Remove(scope.A, scope.B, rel);
+        DropLarge(scope.A, scope.B, rel);
     }
 
     /// <summary>
@@ -776,7 +888,7 @@ public static class GalleryFolders
                 else
                 {
                     var sidecars = SidecarsIn(src, entries);
-                    await SyncAsync(db, driver, src.Id, dir, rel, e, sidecars, sidecars.ToDictionary(x => x.Key, x => x.Value.Name), (before.Entry.Size, before.Entry.Modified, before.Sidecar), limit.Token);
+                    await SyncAsync(db, driver, src.Id, dir, rel, e, sidecars, sidecars.ToDictionary(x => x.Key, x => x.Value.Name), (before.Entry.Size, before.Entry.Modified, before.Sidecar), src.Relink != null, SharedOf(config, src), ProxyScope(space, config, src), limit.Token);
                     if (StateOf(db, src.Id, rel) is { } now)
                     {
                         if (now.Entry.Size != before.Entry.Size || now.Entry.Modified != before.Entry.Modified) DropProxy(space, config, src, rel);
@@ -834,7 +946,7 @@ public static class GalleryFolders
                         {
                             var name = r.Rel[(r.Rel.LastIndexOf('/') + 1)..];
                             if (entries.FirstOrDefault(x => !x.IsDir && x.Name == name) is not { } e) continue;
-                            await SyncAsync(db, driver, src.Id, byDir.Key, r.Rel, e, sidecars, sidecarNames, (r.Before.Entry.Size, r.Before.Entry.Modified, r.Before.Sidecar), limit.Token);
+                            await SyncAsync(db, driver, src.Id, byDir.Key, r.Rel, e, sidecars, sidecarNames, (r.Before.Entry.Size, r.Before.Entry.Modified, r.Before.Sidecar), src.Relink != null, SharedOf(config, src), ProxyScope(space, config, src), limit.Token);
                             if (StateOf(db, src.Id, r.Rel) is { } now && (now.Entry.Size != r.Before.Entry.Size || now.Entry.Modified != r.Before.Entry.Modified)) DropProxy(space, config, src, r.Rel);
                         }
                     }
@@ -952,7 +1064,7 @@ public static class GalleryFolders
                         foreach (var n in doomed) await driver.DeleteAsync(StoragePath.Join(dir, n), ct);
                         names.RemoveAll(doomed.Contains);
                         space.Db.Exec("DELETE FROM gallery_ext WHERE source = $s AND path = $p", ("$s", src.Id), ("$p", path));
-                        if (SharedMount(config, src.Mount)) ForgetShared(src.Mount, path); else Proxies?.Remove(space.User.Id, src.Id, path);
+                        if (SharedMount(config, src.Mount)) ForgetShared(src.Mount, path); else DropLarge(space.User.Id, src.Id, path);
                         ExternalFolders.Changed(space, src.Mount, path);
                     }
                 }
@@ -985,6 +1097,10 @@ public static class GalleryFolders
             return await PhotoEdits.ThumbAsync(space.User.Id, PhotoEdits.KeyOfExt(id), edit, row0.Item1.ToString("x") + "-" + row0.Item2.ToString("x"), size, Thumbs.IsRaw(p0),
                 () => ThumbAsync(space, config, id, Thumbs.Large, ct, original: true), () => PhotoWork.GetAsync(space, config, "ext:" + id, ct), null, ct);
         }
+        // [feature:editfull]
+        // „Volle Auflösung“ gibt es nur für bearbeitete Fotos, sonst die große Vorschau
+        if (size == PhotoEdits.Full) size = Thumbs.Large;
+        // [/feature:editfull]
         var (src, path) = Resolve(space, config, id);
         Ensure(space.Db);
         var row = space.Db.Query("SELECT size, modified, thumb FROM gallery_ext WHERE source = $s AND path = $p",
@@ -1003,6 +1119,8 @@ public static class GalleryFolders
         if (scope.A == GalleryProxies.SharedScope && Proxies?.Get(space.User.Id, src.Id, path, stamp) is { } old1) return old1;
         var old = space.Db.Query("SELECT big FROM gallery_ext WHERE source = $s AND path = $p", r => r.IsDBNull(0) ? null : (byte[])r.GetValue(0), ("$s", src.Id), ("$p", path)).FirstOrDefault();
         if (old != null) return old;
+        // Mittlere Vorschau (1280 px): gleich zeigen statt das Original über die Freigabe zu holen - nicht für Editor und Gesichter (original)
+        if (!original && MediumOf(scope, path, stamp) is { } medium) return medium; // [feature:galmedium]
         return await MakeProxyAsync(space, config, src, path, stamp, ct);
     }
 
@@ -1024,6 +1142,7 @@ public static class GalleryFolders
             var big = Proxies?.Get(scope.A, scope.B, path, stamp)
                 ?? (scope.A == GalleryProxies.SharedScope ? Proxies?.Get(space.User.Id, src.Id, path, stamp) : null)
                 ?? space.Db.Query("SELECT big FROM gallery_ext WHERE source = $s AND path = $p", r => r.IsDBNull(0) ? null : (byte[])r.GetValue(0), ("$s", src.Id), ("$p", path)).FirstOrDefault()
+                ?? MediumOf(scope, path, stamp) // [feature:galmedium]
                 ?? await MakeProxyAsync(space, config, src, path, stamp, ct);
             if (big != null) small = Thumbs.FromBytes(big, Thumbs.Small);
         }
@@ -1041,6 +1160,9 @@ public static class GalleryFolders
     /// Fertige große Vorschau (2048 px, sonst die ältere mit 1600 px aus dem Index) eines Fotos aus einem Galerie-Ordner, nur wenn schon
     /// vorhanden - mit ihrer Kantenlänge, samt Aufnahmezeit und Ort
     /// aus dem Index (die Vorschau hat keine Bildangaben). Null: keine Vorschau da, kein Bild oder bearbeitet (dann das Original).
+    // [feature:journal]
+    /// So muss etwa das Tagebuch nicht jedes Original über die Freigabe holen, nur um es wieder kleinzurechnen.
+    // [/feature:journal]
     /// </summary>
     public static (byte[] Image, int Size, DateTime? Taken, double? Lat, double? Lon)? ReadyLarge(UserSpace space, ServerConfig config, string id)
     {
@@ -1060,6 +1182,7 @@ public static class GalleryFolders
             big = space.Db.Query("SELECT big FROM gallery_ext WHERE source = $s AND path = $p", r => r.IsDBNull(0) ? null : (byte[])r.GetValue(0), ("$s", src.Id), ("$p", path)).FirstOrDefault();
             size = Thumbs.LegacyLarge;
         }
+        if (big == null && MediumOf(scope, path, stamp) is { } medium) (big, size) = (medium, MediumSize); // [feature:galmedium]
         if (big == null) return null;
         var gps = space.Db.Query("SELECT lat, lon FROM gallery_ext_gps WHERE source = $s AND path = $p",
             r => (Lat: r.IsDBNull(0) ? (double?)null : r.GetDouble(0), Lon: r.IsDBNull(1) ? (double?)null : r.GetDouble(1)), ("$s", src.Id), ("$p", path)).FirstOrDefault();
@@ -1079,6 +1202,7 @@ public static class GalleryFolders
             if (Proxies?.Get(scope.A, scope.B, path, stamp) is { } ready) return ready;
             driver = open ?? ExternalFolders.Open(space, config, src.Mount).Driver;
             var bytes = await ReadAllAsync(driver, path, ct);
+            if (Thumbs.IsTiff(path)) bytes = await Thumbs.TiffJpegAsync(bytes, ct) ?? [];
             var big = Thumbs.IsRaw(path) ? Thumbs.FromRaw(bytes, GalleryProxies.Size) : Thumbs.FromBytes(bytes, GalleryProxies.Size);
             if (big == null) return null;
             if (Proxies != null) Proxies.Put(scope.A, scope.B, path, stamp, big);
@@ -1121,7 +1245,7 @@ public static class GalleryFolders
             foreach (var (path, stamp, _) in missing)
             {
                 ct.ThrowIfCancellationRequested();
-                if (done % 25 == 0 && Of(space.Db).FirstOrDefault(s => s.Id == src.Id) is not { Proxies: true }) break;
+                if (done % 25 == 0 && (Of(space.Db).FirstOrDefault(s => s.Id == src.Id) is not { Proxies: true } cur || cur.Mount != src.Mount || cur.Path != src.Path)) break;
                 try { if (await MakeProxyAsync(space, config, src, path, stamp, ct, driver) != null) made++; }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception e) when (e is IOException or UnauthorizedAccessException or KeyNotFoundException or HttpRequestException or ArgumentException or InvalidOperationException) { }
@@ -1154,7 +1278,7 @@ public static class GalleryFolders
                 ("$s", src.Id), ("$to", to), ("$z", size), ("$m", stamp), ("$w", w), ("$h", h));
             // Überschrieben: die große Vorschau verwerfen - sie wird beim nächsten Öffnen aus dem neuen Foto gemacht
             var scope = ProxyScope(space, config, src);
-            Proxies?.Remove(scope.A, scope.B, to);
+            DropLarge(scope.A, scope.B, to);
         }
         if (Thumbs.FromBytes(image, Thumbs.Small) is not { } small) return;
         // Gemeinsamer Bestand: mit den Bildangaben aus dem Ergebnis (wer den Ordner auch eingebunden hat, übernimmt sie von hier)
@@ -1193,11 +1317,14 @@ public static class GalleryFolders
         var raw = Thumbs.IsRaw(rel);
         var meta = MetaOf(space, rel, bytes);
         byte[]? thumb = null;
-        try { thumb = raw ? Thumbs.FromRaw(bytes, Thumbs.Small) : Thumbs.FromBytes(bytes, Thumbs.Small); } catch (Exception e) when (e is not OperationCanceledException) { }
+        // TIFF: über die Photo-Engine (hier synchron, selten: nur beim Ablegen in einen Galerie-Ordner)
+        var img = Thumbs.IsTiff(rel) ? Thumbs.TiffJpegAsync(bytes, CancellationToken.None).GetAwaiter().GetResult() ?? [] : bytes;
+        try { thumb = raw ? Thumbs.FromRaw(bytes, Thumbs.Small) : Thumbs.FromBytes(img, Thumbs.Small); } catch (Exception e) when (e is not OperationCanceledException) { }
         var fileStamp = GalleryProxies.Stamp(size, stamp);
         if (src.Proxies && Proxies != null)
-            try { if ((raw ? Thumbs.FromRaw(bytes, GalleryProxies.Size) : Thumbs.FromBytes(bytes, GalleryProxies.Size)) is { } big) { var sc = ProxyScope(space, config, src); Proxies.Put(sc.A, sc.B, rel, fileStamp, big); } }
+            try { if ((raw ? Thumbs.FromRaw(bytes, GalleryProxies.Size) : Thumbs.FromBytes(img, GalleryProxies.Size)) is { } big) { var sc = ProxyScope(space, config, src); Proxies.Put(sc.A, sc.B, rel, fileStamp, big); } }
             catch (Exception e) when (e is not OperationCanceledException) { }
+        else if (MediumWanted(src)) PutMedium(ProxyScope(space, config, src), rel, fileStamp, bytes, img, raw); // [feature:galmedium]
         if (SharedOf(config, src) is { } shared)
         {
             Shared!.Put(shared, rel, fileStamp, 2, meta, thumb);
@@ -1230,8 +1357,14 @@ public static class GalleryFolders
         if (KindOf(path) != "video" || Thumbs.FromBytes(image, Thumbs.Small) is not { } small) return;
         if (SharedOf(config, src) is { } m && space.Db.Query("SELECT size, modified FROM gallery_ext WHERE source = $s AND path = $p", r => (r.GetInt64(0), r.GetInt64(1)), ("$s", src.Id), ("$p", path)).FirstOrDefault() is { Item1: > 0 } row)
         {
-            Shared!.SetThumb(m, path, GalleryProxies.Stamp(row.Item1, row.Item2), small);
-            small = InShared;
+            // Gemeinsam nur, solange dort noch keines liegt: ein Mitbenutzer ersetzt das Vorschaubild nicht für alle,
+            // sein eigenes gilt dann nur für ihn
+            var stamp = GalleryProxies.Stamp(row.Item1, row.Item2);
+            if (Shared!.Thumb(m, path, stamp) is not { Length: > 0 })
+            {
+                Shared.SetThumb(m, path, stamp, small);
+                small = InShared;
+            }
         }
         space.Db.Exec("UPDATE gallery_ext SET thumb = $t WHERE source = $s AND path = $p", ("$t", small), ("$s", src.Id), ("$p", path));
     }
@@ -1271,6 +1404,126 @@ public static class GalleryFolders
     /// jeder schon gelesenen Datei; in gallery_ext bleibt danach nur der Verweis (leeres Vorschaubild). Angaben aus
     /// Sidecar-Dateien gehen nicht mit (sie gelten je Benutzer). Gibt zurück, ob noch etwas offen ist.
     /// </summary>
+    /// <summary>Ergebnis von <see cref="CheckShared"/>: Einträge des Galerie-Ordners und wie sie zum gemeinsamen Bestand passen.</summary>
+    public sealed record SharedCheck(int Rows, int OwnThumbs, int Exact, int OtherStamp, int Missing, int Offered);
+
+    /// <summary>
+    /// Galerie-Ordner auf einem Server-Ordner gegen den gemeinsamen Bestand prüfen und eigene Vorschaubilder anbieten, die dort fehlen
+    /// (nur Datenbank, kein Zugriff auf die Freigabe). Anlass: nach dem Neuzuordnen von einem eigenen Ordner auf einen Server-Ordner
+    /// blieben die kleinen Vorschaubilder nur beim Benutzer - eine zweite Person las den ganzen Ordner neu. Null: kein Server-Ordner.
+    /// </summary>
+    public static SharedCheck? CheckShared(UserSpace space, ServerConfig config, GallerySource src, bool offer)
+    {
+        if (SharedOf(config, src) is not { } mount) return null;
+        Ensure(space.Db);
+        var index = Shared!.Index(mount);
+        int rows = 0, own = 0, exact = 0, other = 0, missing = 0, offered = 0;
+        foreach (var x in space.Db.Query(@"SELECT path, size, modified, stage, sidecar, taken, camera, lens, focal, aperture, exposure, iso, width, height, duration, rating, title, keywords, label, thumb, pick
+                FROM gallery_ext WHERE source = $s",
+            r => (Path: r.GetString(0), Stamp: GalleryProxies.Stamp(r.GetInt64(1), r.GetInt64(2)), Stage: r.GetInt32(3), Sidecar: r.GetInt64(4) != 0,
+                Meta: new FileMeta.Row(r.GetString(0), N<long>(r, 5), S(r, 6), S(r, 7), N<double>(r, 8), N<double>(r, 9), N<double>(r, 10), N<int>(r, 11), null, null,
+                    N<int>(r, 12), N<int>(r, 13), N<double>(r, 14), N<int>(r, 15), S(r, 16), S(r, 17), S(r, 18), Pick: N<int>(r, 20)),
+                Thumb: r.IsDBNull(19) ? null : (byte[])r.GetValue(19)), ("$s", src.Id)))
+        {
+            rows++;
+            var mine = x.Thumb is { Length: > 0 };
+            if (mine) own++;
+            if (index.TryGetValue(x.Path, out var hit))
+            {
+                if (hit.Stamp != x.Stamp) other++;
+                else if (hit.Thumb) exact++;
+                else if (mine && offer && x.Stage >= 1 && Shared.Offer(mount, x.Path, x.Stamp, x.Stage, null, x.Thumb!)) { offered++; exact++; }
+                else missing++;
+                continue;
+            }
+            // Fehlt im Bestand: eigenes Vorschaubild samt Bildangaben anbieten (Sidecar-Angaben gehören dem Benutzer, nicht der Datei)
+            if (mine && offer && x.Stage >= 1 && !(Thumbs.IsRaw(x.Path) && x.Meta.Taken == null))
+            {
+                var meta = x.Sidecar ? x.Meta with { Rating = null, Title = null, Keywords = null, Label = null, Pick = null } : x.Meta;
+                if (Shared.Offer(mount, x.Path, x.Stamp, x.Stage, meta, x.Thumb!)) { offered++; exact++; continue; }
+            }
+            missing++;
+        }
+        return new SharedCheck(rows, own, exact, other, missing, offered);
+    }
+
+    /// <summary>
+    /// Aus dem gemeinsamen Bestand nehmen, was dort schon gelesen ist - vor allem Lesen, nur Datenbank. Zwei Schritte:
+    /// <list type="number">
+    /// <item>Stand angleichen: dieselbe Datei (gleiche Größe, gleiche Sekunde), aber einmal mit und einmal ohne Sekundenbruchteile gemerkt
+    /// (CIFS liefert Bruchteile, SFTP ganze Sekunden; nach dem Neuzuordnen bleibt die alte Zeit stehen). Die ganze Sekunde gilt: steht sie
+    /// in der eigenen Zeile, wird der Bestand umgestellt, sonst die eigene Zeile. Ohne das hat dieselbe Datei bei zwei Personen zwei
+    /// Stände, die zweite liest alles neu, und jedes Lesen verdrängt die Vorschaubilder der ersten aus dem Bestand.</item>
+    /// <item>Offene Einträge (Stufe 0 und 1), die der Bestand zum gleichen Stand kennt, sofort übernehmen - sonst warten sie hinter
+    /// den Dateien, die wirklich gelesen werden müssen.</item>
+    /// </list>
+    /// Dazu: Verweist eine Zeile auf ein Vorschaubild im Bestand, das dort fehlt, wird die Datei neu gelesen (Stufe 0).
+    /// Gibt zurück, wie viele Stände angeglichen, wie viele Einträge übernommen und wie viele zum Neulesen vorgemerkt wurden.
+    /// </summary>
+    public static (int Aligned, int Taken, int Lost) TakeShared(UserSpace space, ServerConfig config, GallerySource src)
+    {
+        if (SharedOf(config, src) is not { } mount) return (0, 0, 0);
+        var db = space.Db;
+        Ensure(db);
+        // [feature:galsharedskip]
+        // Der Galerie-Scan kommt jede Minute vorbei; der ganze Bestand eines großen Ordners kostet dabei jedes Mal Sekunden Rechenzeit.
+        // Hat sich weder der Bestand noch die eigene Liste geändert, ist nichts zu tun (spätestens nach sechs Stunden trotzdem einmal)
+        var takeKey = space.User.Id + "/" + src.Id;
+        if (Features.On(Features.GallerySharedSkip) && TakenAt.TryGetValue(takeKey, out var last)
+            && last.Shared == Shared!.Changes && last.Local == LocalStamp(db, src.Id) && DateTime.UtcNow - last.At < TimeSpan.FromHours(6))
+            return (0, 0, 0);
+        // [/feature:galsharedskip]
+        var index = Shared!.Index(mount);
+        int aligned = 0, taken = 0, lost = 0;
+        foreach (var x in db.Query("SELECT path, size, modified, stage, thumb IS NOT NULL AND length(thumb) = 0 FROM gallery_ext WHERE source = $s",
+            r => (Path: r.GetString(0), Size: r.GetInt64(1), Modified: r.GetInt64(2), Stage: r.GetInt32(3), Ref: r.GetBoolean(4)), ("$s", src.Id)).ToList())
+        {
+            if (!index.TryGetValue(x.Path, out var hit))
+            {
+                if (x.Ref) { Lost(db, src.Id, x.Path); lost++; }
+                continue;
+            }
+            var stamp = GalleryProxies.Stamp(x.Size, x.Modified);
+            if (hit.Stamp != stamp)
+            {
+                // Zeit des Bestands bei gleicher Größe zurückrechnen (Stand = Größe ^ Zeit << 1)
+                var theirs = (hit.Stamp ^ x.Size) >> 1;
+                if (theirs == x.Modified || theirs < 0 || x.Modified < 0 || theirs / 1000 != x.Modified / 1000 || GalleryProxies.Stamp(x.Size, theirs) != hit.Stamp) continue;
+                if (x.Modified % 1000 == 0) Shared.Restamp(mount, x.Path, hit.Stamp, stamp);
+                else if (theirs % 1000 == 0)
+                {
+                    db.Exec("UPDATE gallery_ext SET modified = $m WHERE source = $s AND path = $p", ("$m", theirs), ("$s", src.Id), ("$p", x.Path));
+                    stamp = hit.Stamp;
+                }
+                else continue;
+                aligned++;
+            }
+            // Die Zeile verweist auf ein Vorschaubild im Bestand, dort ist zum gleichen Stand keins (mehr): neu holen statt leerer Kachel.
+            // Bei wirklich anderem Stand nicht - sonst läsen zwei Personen mit verschiedenem Stand dieselbe Datei abwechselnd neu
+            if (x.Ref && !hit.Thumb) { Lost(db, src.Id, x.Path); lost++; continue; }
+            if (x.Stage >= 2 || hit.Stage <= x.Stage || Shared.Find(mount, x.Path, stamp) is not { } found || !Usable(x.Path, found) || found.Stage <= x.Stage) continue;
+            SaveMeta(db, src.Id, x.Path, found.Meta, found.HasThumb ? InShared : null, found.Stage >= 2 ? 2 : 1);
+            taken++;
+        }
+        if (Features.On(Features.GallerySharedSkip)) TakenAt[takeKey] = (Shared.Changes, LocalStamp(db, src.Id), DateTime.UtcNow); // [feature:galsharedskip]
+        return (aligned, taken, lost);
+    }
+
+    // [feature:galsharedskip]
+    private static readonly ConcurrentDictionary<string, (long Shared, string Local, DateTime At)> TakenAt = new();
+
+    /// <summary>Stand der eigenen Liste eines Galerie-Ordners, nur aus dem Index (source, stage, modified) - ohne Zeilen und Vorschaubilder zu lesen.</summary>
+    private static string LocalStamp(UserDb db, string source) =>
+        db.Query("SELECT count(*), coalesce(max(rowid), 0), coalesce(sum(stage), 0), total(modified) FROM gallery_ext INDEXED BY gallery_ext_stage_new WHERE source = $s",
+            r => $"{r.GetInt64(0)}/{r.GetInt64(1)}/{r.GetInt64(2)}/{r.GetDouble(3)}", ("$s", source)).FirstOrDefault() ?? "";
+    // [/feature:galsharedskip]
+
+    private static void Lost(UserDb db, string source, string path) =>
+        db.Exec("UPDATE gallery_ext SET thumb = NULL, stage = 0 WHERE source = $s AND path = $p", ("$s", source), ("$p", path));
+
+    /// <summary>Schlüssel: Prüfung samt Angebot für diesen Galerie-Ordner gemacht (beim Neuzuordnen zurückgesetzt).</summary>
+    public static string CheckedKey(string sourceId) => "gallery.sharedcheck." + sourceId;
+
     public static bool SeedShared(UserSpace space, ServerConfig config, GallerySource src, int max = 2000)
     {
         if (SharedOf(config, src) is not { } mount) return false;
@@ -1291,8 +1544,10 @@ public static class GalleryFolders
             if (x.Size <= 0 || Thumbs.IsRaw(x.Path) && x.Meta.Taken == null) continue;
             // Sidecar-Angaben gehören dem Benutzer, nicht der Datei
             var meta = x.Sidecar ? x.Meta with { Rating = null, Title = null, Keywords = null, Label = null, Pick = null } : x.Meta;
-            Shared!.Put(mount, x.Path, GalleryProxies.Stamp(x.Size, x.Modified), x.Stage, meta, x.Thumb);
-            if (x.Thumb is { Length: > 0 }) db.Exec("UPDATE gallery_ext SET thumb = $t WHERE source = $s AND path = $p", ("$t", InShared), ("$s", src.Id), ("$p", x.Path));
+            // Nur ergänzen, nie überschreiben: was jemand anderes zu dieser Datei schon gelesen hat (auch zu einem neueren Stand), bleibt.
+            // Die eigene Zeile verweist nur dann auf den Bestand, wenn das eigene Vorschaubild dort wirklich angekommen ist
+            if (Shared!.Offer(mount, x.Path, GalleryProxies.Stamp(x.Size, x.Modified), x.Stage, meta, x.Thumb is { Length: > 0 } ? x.Thumb : null) && x.Thumb is { Length: > 0 })
+                db.Exec("UPDATE gallery_ext SET thumb = $t WHERE source = $s AND path = $p", ("$t", InShared), ("$s", src.Id), ("$p", x.Path));
         }
         db.Set(key, rows[^1].Path);
         return true;
@@ -1300,6 +1555,16 @@ public static class GalleryFolders
 
     /// <summary>Der Galerie-Ordner wurde während des Einlesens entfernt.</summary>
     public sealed class SourceGone : Exception;
+
+    /// <summary>Der Galerie-Ordner wurde während des Einlesens neu zugeordnet: aufhören, nichts verwerfen.</summary>
+    public sealed class SourceMoved : Exception;
+
+    /// <summary>Gibt es den Ordner noch, und zeigt er noch auf denselben Ort?</summary>
+    internal static void StillThere(UserDb db, GallerySource src)
+    {
+        var cur = Of(db).FirstOrDefault(s => s.Id == src.Id) ?? throw new SourceGone();
+        if (cur.Mount != src.Mount || cur.Path != src.Path) throw new SourceMoved();
+    }
 
     /// <summary>Einträge von Ordnern, die es nicht mehr gibt (etwa während des Einlesens entfernt), aus dem Index nehmen.</summary>
     public static int Prune(UserDb db)
@@ -1316,8 +1581,10 @@ public static class GalleryFolders
         Ensure(db);
         db.Exec("DELETE FROM gallery_ext WHERE source = $s", ("$s", sourceId));
         db.Set("gallery.seed." + sourceId, null);
+        db.Set(CheckedKey(sourceId), null);
         // Je Benutzer abgelegte Vorschauen weg; gemeinsame eines Server-Ordners bleiben (andere brauchen sie vielleicht)
         if (user != null) Proxies?.RemoveSource(user, sourceId);
+        if (user != null) Medium?.RemoveSource(user, sourceId); // [feature:galmedium]
     }
 }
 
@@ -1349,7 +1616,7 @@ public sealed class GalleryProxyJob(Spaces spaces, ServerConfig config, ILogger<
         foreach (var space in spaces.All())
             foreach (var src in GalleryFolders.Of(space.Db).Where(s => s.Proxies && s.LastScan != null))
             {
-                if (GalleryScanJob.IsRunning(space.User.Id, src.Id)) continue;
+                if (GalleryScanJob.IsRunning(space.User.Id, src.Id) || GalleryRelink.IsBusy(space.User.Id, src.Id)) continue;
                 using var job = Activity.Start(space.User.Id, Activity.GalleryProxies, src.Path);
                 try
                 {
@@ -1376,6 +1643,20 @@ public sealed class GalleryScanJob(Spaces spaces, ServerConfig config, ILogger<G
     public static void Request(string userId, string sourceId) { Wanted[userId + "/" + sourceId] = true; Kick.Release(); }
     public static bool IsRunning(string userId, string sourceId) => Running.ContainsKey(userId + "/" + sourceId) || Wanted.ContainsKey(userId + "/" + sourceId);
 
+    /// <summary>Arbeitet gerade etwas an diesem Ordner (Einlesen, Vorschaubilder, Abgleich)? Angefordert zählt nicht.</summary>
+    public static bool IsBusy(string userId, string sourceId) => Running.ContainsKey(userId + "/" + sourceId);
+
+    /// <summary>Arbeit an einem Ordner beginnen - nicht, während er neu zugeordnet wird (erst eintragen, dann nachsehen: so sieht
+    /// mindestens eine Seite die andere).</summary>
+    private static bool Enter(string key)
+    {
+        Running[key] = true;
+        var slash = key.IndexOf('/');
+        if (!GalleryRelink.IsBusy(key[..slash], key[(slash + 1)..])) return true;
+        Running.TryRemove(key, out _);
+        return false;
+    }
+
     /// <summary>Woran das Einlesen gerade arbeitet (Person, Ordner, Schritt) - für die Aktivität: wer wartet, sieht, worauf.</summary>
     public static (string User, string Path, string Step)? Current { get; private set; }
     internal static void Doing(string user, string path, string step) => Current = (user, path, step);
@@ -1398,6 +1679,8 @@ public sealed class GalleryScanJob(Spaces spaces, ServerConfig config, ILogger<G
     }
 
     /// <summary>Stufen 2 und 3 für die offenen Einträge eines Ordners, mit Fortschritt (fertig von allen) in der Aktivität.</summary>
+    private static readonly System.Globalization.CultureInfo De = System.Globalization.CultureInfo.GetCultureInfo("de-DE");
+
     private async Task StagesAsync(UserSpace space, GallerySource src, string key, CancellationToken ct)
     {
         // Bestand eines Server-Ordners in den gemeinsamen Speicher (in Portionen, dann gleich weiter)
@@ -1408,18 +1691,28 @@ public sealed class GalleryScanJob(Spaces spaces, ServerConfig config, ILogger<G
         catch (Exception e) when (e is Microsoft.Data.Sqlite.SqliteException or IOException) { log.LogWarning("Galerie-Ordner: Prüfung des gemeinsamen Speichers: {Error}", e.Message); }
         var (total, listed, noThumb) = GalleryFolders.Stages(space.Db, src.Id);
         if (listed + noThumb == 0) { Drained(space, src); return; }
-        Running[key] = true;
+        if (!Enter(key)) return;
         Doing(space.User.Id, src.Path, "Vorschauen");
         using var job = Activity.Start(space.User.Id, Activity.GalleryScan, src.Path, total);
         try
         {
-            job.Progress(total - listed - noThumb, total, $"{src.Path}: {listed + noThumb:N0} offen");
-            if (listed > 0) await GalleryFolders.HeadsAsync(space, config, src, DateTime.UtcNow + StageBudget, null, ct);
-            var s = GalleryFolders.Stages(space.Db, src.Id);
-            job.Progress(s.Total - s.Listed - s.NoThumb, s.Total, $"{src.Path}: {s.Listed + s.NoThumb:N0} offen");
-            if (s.NoThumb > 0) await GalleryFolders.FullAsync(space, config, src, DateTime.UtcNow + StageBudget, null, ct);
-            s = GalleryFolders.Stages(space.Db, src.Id);
-            job.Progress(s.Total - s.Listed - s.NoThumb, s.Total, s.Listed + s.NoThumb > 0 ? $"{src.Path}: {s.Listed + s.NoThumb:N0} offen" : src.Path);
+            // Stand in der Aktivität: beim Lesen alle paar Sekunden nachzählen - eine Etappe dauert Minuten, sonst stünde so lange dieselbe Zahl da
+            (int Total, int Listed, int NoThumb) Show()
+            {
+                var st = GalleryFolders.Stages(space.Db, src.Id);
+                job.Progress(st.Total - st.Listed - st.NoThumb, st.Total, st.Listed + st.NoThumb > 0 ? $"{src.Path}: {(st.Listed + st.NoThumb).ToString("N0", De)} offen" : src.Path);
+                return st;
+            }
+            async Task Shown(Task work)
+            {
+                while (await Task.WhenAny(work, Task.Delay(TimeSpan.FromSeconds(5), ct)) != work) Show();
+                await work;
+            }
+            Show();
+            if (listed > 0) await Shown(GalleryFolders.HeadsAsync(space, config, src, DateTime.UtcNow + StageBudget, null, ct));
+            var s = Show();
+            if (s.NoThumb > 0) await Shown(GalleryFolders.FullAsync(space, config, src, DateTime.UtcNow + StageBudget, null, ct));
+            s = Show();
             var waiting = GalleryFolders.RetryLater(src.Id).Count;
             if (waiting > 0) log.LogWarning("Galerie-Ordner {Source}: {Count} Dateien ließen sich gerade nicht lesen, nächster Versuch später", src.Id, waiting);
             // Noch offen: gleich weitermachen statt eine Minute zu warten
@@ -1427,6 +1720,7 @@ public sealed class GalleryScanJob(Spaces spaces, ServerConfig config, ILogger<G
             else Drained(space, src);
         }
         catch (GalleryFolders.SourceGone) { GalleryFolders.Forget(space.Db, src.Id, space.User.Id); }
+        catch (GalleryFolders.SourceMoved) { }
         catch (OperationCanceledException) { throw; }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or KeyNotFoundException or HttpRequestException or ArgumentException)
         {
@@ -1437,6 +1731,8 @@ public sealed class GalleryScanJob(Spaces spaces, ServerConfig config, ILogger<G
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
+        // Nach „Fortsetzen“ (jobcontrol) gleich weitermachen statt bis zu einer Minute zu warten
+        JobControl.Resumed += (_, kind) => { if (kind == Activity.GalleryScan) Kick.Release(); };
         try { await Task.Delay(TimeSpan.FromSeconds(40), ct); } catch (OperationCanceledException) { return; }
         while (!ct.IsCancellationRequested)
         {
@@ -1458,17 +1754,46 @@ public sealed class GalleryScanJob(Spaces spaces, ServerConfig config, ILogger<G
         // Angeforderte Ordner (Knopf „Jetzt neu einlesen“, gerade übertragene Fotos) zuerst - sonst warteten sie, bis alle anderen
         // Ordner aller Personen ihre offenen Vorschauen abgearbeitet haben (große Archive brauchen dafür Stunden)
         var all = spaces.All().ToList();
+        // Gemeinsamer Bestand der Server-Ordner zuerst: schon vorhandene Vorschaubilder und Bildangaben aller Personen einbringen - auch
+        // bei Ordnern, die nicht überwacht werden (nur Datenbank, kein Zugriff auf die Freigabe). Sonst läse eine zweite Person denselben
+        // Ordner komplett neu, obwohl eine andere die Vorschaubilder längst hat
+        foreach (var space in all)
+            foreach (var src in GalleryFolders.Of(space.Db))
+                try
+                {
+                    while (GalleryFolders.SeedShared(space, config, src) && !ct.IsCancellationRequested) { }
+                    if (GalleryFolders.TakeShared(space, config, src) is var got && got.Aligned + got.Taken + got.Lost > 0)
+                        log.LogInformation("Gemeinsamer Bestand {Mount}: {User}/{Source} {Aligned} Stände angeglichen, {Taken} Einträge übernommen, {Lost} Vorschaubilder fehlen im Bestand und werden neu geholt", src.Mount, space.User.Login, src.Id, got.Aligned, got.Taken, got.Lost);
+                    // Einmal je Galerie-Ordner (wieder nach dem Neuzuordnen): prüfen und fehlende eigene Vorschaubilder anbieten - ins
+                    // Protokoll nur Anzahlen, damit sich sehen lässt, ob eine zweite Person aus dem Bestand bekommt oder selbst lesen muss
+                    if (space.Db.Get(GalleryFolders.CheckedKey(src.Id)) != "1" && GalleryFolders.CheckShared(space, config, src, offer: false) is { } before)
+                    {
+                        log.LogInformation("Gemeinsamer Bestand {Mount}: {User}/{Source} {Rows} Einträge, {Own} eigene Vorschaubilder, {Exact} im Bestand passend, {Other} im Bestand mit anderem Stand, {Missing} fehlen",
+                            src.Mount, space.User.Login, src.Id, before.Rows, before.OwnThumbs, before.Exact, before.OtherStamp, before.Missing);
+                        if (before.Missing > 0 && GalleryFolders.CheckShared(space, config, src, offer: true) is { Offered: > 0 } after)
+                            log.LogInformation("Gemeinsamer Bestand {Mount}: {User}/{Source} {Offered} eigene Vorschaubilder übernommen, {Missing} fehlen noch",
+                                src.Mount, space.User.Login, src.Id, after.Offered, after.Missing);
+                        space.Db.Set(GalleryFolders.CheckedKey(src.Id), "1");
+                    }
+                }
+                catch (Exception e) when (e is Microsoft.Data.Sqlite.SqliteException or IOException) { log.LogWarning("Galerie-Ordner: Übernahme in den gemeinsamen Speicher: {Error}", e.Message); }
         foreach (var space in all.OrderByDescending(sp => Wanted.Keys.Any(k => k.StartsWith(sp.User.Id + "/", StringComparison.Ordinal))))
         {
             // Ordner, die es nicht mehr gibt: Galerie, Audiothek, Importprofile, DMS und Klartext-Sicherung abschalten
             try { if (MountDetach.Orphans(space, config) is var off and > 0) log.LogInformation("Externe Ordner: {Count} Verwendungen entfernter Ordner abgeschaltet", off); }
             catch (Exception e) when (e is Microsoft.Data.Sqlite.SqliteException or IOException) { log.LogWarning("Externe Ordner: Abschalten entfernter Ordner: {Error}", e.Message); }
             var list = GalleryFolders.Of(space.Db);
+            // Angehalten oder übersprungen (jobcontrol): nichts lesen; „Jetzt neu einlesen“ hebt nur das Überspringen auf
+            var user = space.User.Id;
+            if (Wanted.Keys.Any(k => k.StartsWith(user + "/", StringComparison.Ordinal))) JobControl.ClearSkip(user, Activity.GalleryScan);
+            if (JobControl.Blocked(user, Activity.GalleryScan)) continue;
+            using var control = JobControl.Run(user, Activity.GalleryScan);
             var upgraded = list.Count > 0 && GalleryFolders.Upgrade(space.Db);
             GalleryFolders.Prune(space.Db);
             var visible = ExternalFolders.MountsOf(space, config).Select(m => m.Id).ToHashSet();
             foreach (var src in list.OrderByDescending(x => Wanted.ContainsKey(space.User.Id + "/" + x.Id)))
             {
+                try {
                 var key = space.User.Id + "/" + src.Id;
                 // Externer Ordner nicht (mehr) eingebunden oder nicht sichtbar: nichts einlesen (wie die Audiothek)
                 if (!visible.Contains(src.Mount)) continue;
@@ -1477,7 +1802,24 @@ public sealed class GalleryScanJob(Spaces spaces, ServerConfig config, ILogger<G
                 // abgeschalteter Speicher (etwa ein ausgeschaltetes NAS) weiter angefragt. Nach dem Einlesen aber einmal zu Ende lesen
                 // (Draining: Bildangaben und Vorschaubilder aller aufgelisteten Dateien) - früher blieb es nach der ersten Etappe stehen,
                 // und die Fotos standen bis zum nächsten Knopfdruck unter ihrem Dateidatum in der Zeitleiste
+                // Ruht, hat aber noch Offenes (eingelesen, bevor es das Zu-Ende-Lesen gab, oder dabei unterbrochen): weiterlesen - solange
+                // die Galerie von aufgelisteten, noch nicht ausgelesenen Dateien weiß, arbeitet sie die ab, auch ohne Überwachen
+                if (!src.Watch && !wanted && !src.Draining && src.LastScan != null && src.Error == null
+                    && GalleryFolders.Stages(space.Db, src.Id) is var open && open.Listed + open.NoThumb > GalleryFolders.RetryLater(src.Id).Count)
+                {
+                    src.Draining = true;
+                    var cfg = GalleryFolders.Of(space.Db);
+                    if (cfg.FirstOrDefault(x => x.Id == src.Id) is { } cur0) { cur0.Draining = true; GalleryFolders.Save(space.Db, cfg); }
+                }
                 if (!src.Watch && !wanted && !src.Draining && src.LastScan != null) continue;
+                // Neu zugeordnet: erst jeden Eintrag am neuen Ort suchen (was fehlt, geht raus), dann wie gewohnt einlesen
+                if (src.Relink is { Pending: true })
+                {
+                    if (!await ExternalFolders.ReachableAsync(space, config, src.Mount) || !Enter(key)) continue;
+                    try { if (await GalleryRelink.CheckAsync(space, config, src, log, ct)) Request(space.User.Id, src.Id); }
+                    finally { Running.TryRemove(key, out _); }
+                    continue;
+                }
                 // Gerade nicht erreichbar: später, ohne Fehler (wie die Audiothek)
                 if (!wanted && !await ExternalFolders.ReachableAsync(space, config, src.Mount)) continue;
                 var due = upgraded || wanted || src.LastScan == null || (src.Watch && DateTime.UtcNow - src.LastScan > GalleryFolders.WatchEvery);
@@ -1487,7 +1829,7 @@ public sealed class GalleryScanJob(Spaces spaces, ServerConfig config, ILogger<G
                     if (src.Watch || src.Draining) await StagesAsync(space, src, key, ct);
                     continue;
                 }
-                Running[key] = true;
+                if (!Enter(key)) continue;
                 if (Wanted.TryRemove(key, out _)) GalleryFolders.RetryNow(src.Id);
                 Doing(space.User.Id, src.Path, "Einlesen");
                 using var job = Activity.Start(space.User.Id, Activity.GalleryScan, src.Path);
@@ -1505,6 +1847,12 @@ public sealed class GalleryScanJob(Spaces spaces, ServerConfig config, ILogger<G
                     // Entfernt: was dieser Durchgang schon eingetragen hat, wieder weg - und gleich mit dem nächsten Ordner weiter
                     Running.TryRemove(key, out _);
                     GalleryFolders.Forget(space.Db, src.Id, space.User.Id);
+                    continue;
+                }
+                catch (GalleryFolders.SourceMoved)
+                {
+                    // Neu zugeordnet: nichts zurückschreiben, der nächste Durchgang gleicht ab
+                    Running.TryRemove(key, out _);
                     continue;
                 }
                 catch (Exception e) when (e is IOException or UnauthorizedAccessException or KeyNotFoundException or HttpRequestException or ArgumentException)
@@ -1526,6 +1874,8 @@ public sealed class GalleryScanJob(Spaces spaces, ServerConfig config, ILogger<G
                 // Dann Bildangaben und Vorschaubilder, danach die großen Vorschauen für Neues
                 await StagesAsync(space, src, key, ct);
                 if (src.Proxies) GalleryProxyJob.Request();
+                } // Angehalten, übersprungen oder abgebrochen (jobcontrol): der Durchgang für diese Person endet hier
+                catch (JobControl.Stopped) { break; }
             }
         }
     }

@@ -24,6 +24,9 @@ public class GalleryProxyDeleteTests : IClassFixture<ChatFixture>
         var config = services.GetRequiredService<ServerConfig>();
         var root = Directory.CreateTempSubdirectory("dmpx").FullName;
         var before = config.Current.ExternalFolders;
+        // Mit mittleren Vorschauen liefert das Öffnen die mittlere statt eine große zu erzeugen (GalleryMediumTests)
+        var featuresBefore = Features.InReleaseOff.ToList(); // [feature:galmedium]
+        Features.Set(featuresBefore.Append(Features.GalleryMedium)); // [feature:galmedium]
         try
         {
             using (var bmp = new SKBitmap(3000, 2000))
@@ -56,6 +59,7 @@ public class GalleryProxyDeleteTests : IClassFixture<ChatFixture>
         }
         finally
         {
+            Features.Set(featuresBefore); // [feature:galmedium]
             config.Update(s => s.ExternalFolders = before);
             Directory.Delete(root, recursive: true);
         }

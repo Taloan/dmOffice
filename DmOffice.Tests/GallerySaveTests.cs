@@ -29,6 +29,10 @@ public class GallerySaveTests : IClassFixture<ChatFixture>
         Assert.Equal("Uploads/Sony/RAW/PRI/2026/11/09", GallerySave.TargetDir("Uploads", GallerySave.Structure, "Sony", "RAW/PRI/2026/11/09/x.jpg", t));
         Assert.Equal("Uploads/Sony", GallerySave.TargetDir("Uploads", GallerySave.Structure, "Sony", "x.jpg", t));
         Assert.Equal("Uploads/Sony/2026/11", GallerySave.TargetDir("", GallerySave.SourceMonth, "Sony", "x.jpg", t));
+        // „..“ und Leerzeichen fallen weg statt zu „Galerie“ zu werden
+        Assert.Equal("etc/2026/11", GallerySave.TargetDir("../../../etc", GallerySave.Month, "Sony", "x.jpg", t));
+        Assert.Equal("Uploads/2026/11", GallerySave.TargetDir(" ", GallerySave.Month, "Sony", "x.jpg", t));
+        Assert.Equal("Uploads/2026/11", GallerySave.TargetDir("../..", GallerySave.Month, "Sony", "x.jpg", t));
     }
 
     [Fact]

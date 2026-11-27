@@ -1,12 +1,13 @@
 import {
-  Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Dropdown, Field, Input, Option, Switch,
-  Textarea, makeStyles, mergeClasses, tokens,
+  Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Dropdown, Field, Input, Option, Switch, Tab, TabList,
+  Text, Textarea, makeStyles, mergeClasses, tokens,
 } from '@fluentui/react-components'
 import { Mail20Regular } from '@fluentui/react-icons'
 import { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { FluentProvider } from '@fluentui/react-components'
-import { Account, api, Attendee, Collection, defaultAccount } from '../api'
+import { Account, api, Attendee, Collection, defaultAccount, featureOn, RemindRule } from '../api'
+import { defaultText, ReminderList, RemindHints, remindText } from './ReminderEditor'
 import { AddressInput } from '../mail/AddressInput'
 import { useApp } from '../App'
 import { activeTheme, storedTheme } from '../theme'
@@ -15,6 +16,7 @@ import { NaturalDate, parseNaturalDate } from '../shell/naturalDate'
 import { DateHint } from '../shell/DateHint'
 import { artName, artOf, arts, suggestArt, withArt } from './arts'
 import { askConfirm } from '../shell/context'
+import { FilterSelect } from '../shell/FilterSelect'
 
 export interface EventDraft {
   calendar?: number
@@ -29,6 +31,10 @@ export interface EventDraft {
   allDay: boolean
   rRule: string
   reminder: number | null
+  /** calremind: alle Erinnerungen; null = Standard des Kalenders; undefined = Kennung aus (nur reminder) */
+  reminders?: RemindRule[] | null
+  /** calremshared: meine eigenen Erinnerungen in einem fremden, nur lesbaren Kalender; null = die des Besitzers */
+  myReminders?: RemindRule[] | null
   busy: boolean
   recurring?: boolean
   instance?: string
@@ -105,7 +111,11 @@ const reminders = [
  *  von Hand eingetragen auch mit voller Adresse davor. Gruppe 1: wie geschrieben, Gruppe 2: der Sprung in dmOffice. */
 const MAIL_LINE = /^[ \t]*Mail:[ \t]*(\S*?(#\/mail\/open\/\S+))[ \t]*$/m
 
-export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; calendars: Collection[]; onClose: (changed: boolean) => void }) {
+export function EventDialog({ draft, calendars, taskLists = [], onClose }: {
+  draft: EventDraft; calendars: Collection[]; onClose: (changed: boolean) => void
+  /** Eigene Aufgabenlisten für „Aufgabe anlegen“ (calremtask) */
+  taskLists?: Collection[]
+}) {
   const s = useStyles()
   const { fail, notify, me, undoable } = useApp()
   const [d, setD] = useState<EventDraft>(draft)
@@ -126,6 +136,19 @@ export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; 
   const sharedRO = home?.canWrite === false && !!draft.uri
   const readOnly = (!!home?.subscription && !!draft.uri) || sharedRO
   const set = (p: Partial<EventDraft>) => setD(x => ({ ...x, ...p }))
+  // Mehrere Erinnerungen (calremind); Standard des Kalenders (calremdefault) gilt, solange der Termin keine eigenen hat
+  const remindOn = featureOn('calremind')
+  const calDefault = featureOn('calremdefault') ? home?.remind ?? null : null
+  // Fremder, nur lesbarer Kalender (calremshared): eigene Erinnerungen nur für mich, die des Besitzers bleiben
+  const personal = remindOn && readOnly && !!home?.owner && featureOn('calremshared')
+  const [rems, setRems] = useState<RemindRule[]>(() => (personal ? draft.myReminders : null) ?? draft.reminders ?? (draft.reminder != null ? [{ minutes: draft.reminder, at: draft.allDay }] : []))
+  const [useDefault, setUseDefault] = useState(() => personal ? draft.myReminders == null : !!calDefault && draft.reminders === null)
+  // Abo-Termin: nur die Erinnerungen lassen sich ändern (sie ersetzen die des Anbieters, der Termin bleibt)
+  const remindOnly = personal || (remindOn && readOnly && !sharedRO && !!home?.subscription)
+  const ownerText = draft.reminders != null ? (draft.reminders.length ? draft.reminders.map(r => remindText(r, draft.allDay)).join(', ') : t('Keine'))
+    : calDefault ? defaultText(calDefault, draft.title, draft.allDay) : t('Keine')
+  // Aufgaben aus Erinnerungen legt nur der Besitzer an (in seiner Liste): in geteilten Kalendern keine Auswahl
+  const ownLists = (home?.owner ? [] : taskLists).filter(l => l.id > 0 && !l.subscription)
   // Termine aus Mails (E-Mail-Ankündigungen) tragen „Mail: #/mail/open/…“ in der Beschreibung: als Knopf oben zeigen, im Text ausblenden
   const mailLine = MAIL_LINE.exec(d.description ?? '')
   const mailLink = mailLine?.[2] ?? d.description?.match(/#\/mail\/open\/\S+/)?.[0] ?? null
@@ -137,6 +160,10 @@ export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; 
   // Neuer Termin: Datum aus dem Titel ("Zahnarzt morgen 15 Uhr") - laufend uebernehmen, mit x verwerfen
   const [nl, setNl] = useState<NaturalDate | null>(null)
   const [nlOff, setNlOff] = useState(false)
+  // Reiter statt eines langen Formulars (Kennung dialogtabs): Termin · Teilnehmer · Mehr
+  const tabs = featureOn('dialogtabs')
+  const [tab, setTab] = useState<'main' | 'people' | 'more' | 'remind'>('main')
+  const shows = (x: typeof tab) => !tabs || tab === x
   const [orig] = useState({ start: draft.start, end: draft.end, allDay: draft.allDay })
   useEffect(() => {
     if (artTouched || draft.uri || d.title.trim().length < 3) return
@@ -145,7 +172,8 @@ export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; 
   }, [d.title, artTouched]) // eslint-disable-line react-hooks/exhaustive-deps
   const typeTitle = (title: string) => {
     if (d.uri || nlOff) { set({ title }); return }
-    const nd = parseNaturalDate(title)
+    // Uhrzeit ohne Tagesangabe gilt am gewählten Tag (angeklickter Tag), nicht heute
+    const nd = parseNaturalDate(title, new Date(), orig.start)
     setNl(nd)
     if (!nd) { set({ title, ...orig }); return }
     if (nd.hasTime) {
@@ -159,7 +187,16 @@ export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; 
   const options = repeatOptions(d.start)
   const custom = d.rRule && !options.some(o => o.value === d.rRule)
 
+  const saveRemind = async () => {
+    setBusy(true)
+    try {
+      await api.post('/api/pim/events/remind', { items: [{ calendar: draft.calendar, uri: d.uri }], reminders: useDefault ? null : rems, default: useDefault })
+      onClose(true)
+    } catch (e) { fail(e) } finally { setBusy(false) }
+  }
+
   const save = async () => {
+    if (remindOnly) { saveRemind(); return }
     let scope: 'series' | 'instance' = 'series'
     if (d.recurring && d.uri) {
       const r = await askScope(t('Termin speichern'))
@@ -178,7 +215,12 @@ export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; 
       const r = await api.post('/api/pim/events', {
         calendar: draft.calendar ?? d.calendar, uri: d.uri, etag: d.etag, title: nl && !nlOff && !d.uri ? nl.title : d.title, location: d.location, description: d.description,
         start: iso(d.start), end: d.allDay ? iso(endDay, true) : iso(d.end), allDay: d.allDay,
-        rRule: scope === 'instance' ? null : custom ? null : d.rRule, reminder: d.reminder, busy: d.busy,
+        rRule: scope === 'instance' ? null : custom ? null : d.rRule, busy: d.busy,
+        // Mit calremind die ganze Liste (das alte Feld bleibt für ältere Server lesbar: die erste Benachrichtigung davor)
+        ...(remindOn ? {
+          reminders: useDefault ? null : rems, remindDefault: useDefault,
+          reminder: useDefault ? null : rems.find(r => r.list == null && r.minutes >= 0)?.minutes ?? null,
+        } : { reminder: d.reminder }),
         // Kategorien nur, wenn sich die Art geändert hat (null: unverändert)
         categories: art !== (artOf(draft.categories)?.key ?? null) ? withArt(draft.categories, art) : null,
         scope, instance: d.instance, moveTo: moveTo !== draft.calendar ? moveTo : undefined,
@@ -235,8 +277,8 @@ export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; 
   const calLabel = (c => c?.owner ? t('{name} (von {owner})', { name: c.name, owner: c.owner }) : c?.name ?? '')(calendars.find(c => c.id === moveTo))
 
   // Etwas eingegeben: Klick daneben, Esc oder Zurück fragen nach, statt alles zu verwerfen
-  const [initial] = useState(() => JSON.stringify({ d: draft, people, art, moveTo: draft.calendar }))
-  const dirty = !readOnly && JSON.stringify({ d, people, art, moveTo }) !== initial
+  const [initial] = useState(() => JSON.stringify({ d: draft, people, art, moveTo: draft.calendar, rems, useDefault }))
+  const dirty = (!readOnly || remindOnly) && JSON.stringify({ d, people, art, moveTo, rems, useDefault }) !== initial
   const askClose = async () => {
     if (!dirty || await askConfirm('', t('Eingaben verwerfen?'), t('Verwerfen'))) onClose(false)
   }
@@ -265,21 +307,30 @@ export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; 
           <DialogTitle action={mailLink ? <Button appearance="primary" icon={<Mail20Regular />} onClick={() => { onClose(false); location.hash = mailLink }}>{t('Mail öffnen')}</Button> : undefined}>
             {d.uri ? t('Termin') : t('Neuer Termin')}
           </DialogTitle>
-          <DialogContent>
+          <DialogContent style={tabs ? { minHeight: 380 } : undefined}>
+            {tabs && <TabList selectedValue={tab} onTabSelect={(_, v) => setTab(v.value as typeof tab)} style={{ marginBottom: 8 }}>
+              <Tab value="main">{t('Termin')}</Tab>
+              {(!(foreign || readOnly) || hadPeople) && <Tab value="people">{people.length ? `${t('Teilnehmer')} (${people.length})` : t('Teilnehmer')}</Tab>}
+              <Tab value="more">{t('Mehr')}</Tab>
+              {remindOn && <Tab value="remind">{useDefault || !rems.length ? t('Erinnerung') : `${t('Erinnerung')} (${rems.length})`}</Tab>}
+            </TabList>}
+            {remindOnly && <Text size={200} block style={{ color: 'var(--colorNeutralForeground3)', marginBottom: 8 }}>{personal ? t('Nur lesbar – nur deine eigenen Erinnerungen lassen sich ändern.') : t('Abonniert – nur die Erinnerungen lassen sich ändern.')}</Text>}
             <form className={s.grid} onSubmit={e => { e.preventDefault(); if (!endBefore) save() }}>
+              {shows('main') && <>
               <Field label={t('Titel')} className={s.full}>
                 <Input value={d.title} onChange={(_, v) => typeTitle(v.value)} autoFocus placeholder={d.uri ? undefined : t('z. B. „Zahnarzt morgen 15 Uhr“')} />
                 {nl && !nlOff && !d.uri && <DateHint nd={nl} onIgnore={() => { setNlOff(true); set({ ...orig }) }} />}
               </Field>
               <Field label={t('Ort')} className={s.full}><Input value={d.location ?? ''} onChange={(_, v) => set({ location: v.value })} /></Field>
-              <Field label={t('Art')}>
+              </>}
+              {shows('more') && <Field label={t('Art')}>
                 <Dropdown disabled={readOnly} value={(() => { const a = arts.find(x => x.key === art); return a ? a.icon + ' ' + artName(a) : t('Ohne Art') })()} selectedOptions={[art ?? '']}
                   onOptionSelect={(_, v) => { setArtTouched(true); setArt(v.optionValue || null) }}>
                   <Option value="" text={t('Ohne Art')}>{t('Ohne Art')}</Option>
                   {arts.map(a => <Option key={a.key} value={a.key} text={a.icon + ' ' + artName(a)}>{a.icon + ' ' + artName(a)}</Option>)}
                 </Dropdown>
-              </Field>
-              {foreign || readOnly ? (hadPeople && (
+              </Field>}
+              {!shows('people') ? null : foreign || readOnly ? (hadPeople && (
                 <Field label={t('Teilnehmer')} className={s.full}>
                   <div className={s.people}>
                     {draft.organizer && <span>{t('Organisator: {who}', { who: draft.organizer })}</span>}
@@ -315,6 +366,7 @@ export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; 
                     label={d.uri ? t('Teilnehmer über die Änderung informieren') : t('Einladung per Mail senden')} />
                 </>}
               </>}
+              {shows('main') && <>
               <Field label={t('Beginn')}>
                 <Input type={d.allDay ? 'date' : 'datetime-local'} value={d.allDay ? localDate(d.start) : localDateTime(d.start)} onChange={(_, v) => setStart(v.value)} />
               </Field>
@@ -322,6 +374,8 @@ export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; 
                 <Input type={d.allDay ? 'date' : 'datetime-local'} value={d.allDay ? localDate(endShown) : localDateTime(d.end)} onChange={(_, v) => setEnd(v.value)} />
               </Field>
               <Switch label={t('Ganztägig')} checked={d.allDay} onChange={(_, v) => set({ allDay: v.checked, ...(v.checked ? {} : { end: new Date(d.start.getTime() + 3600000) }) })} />
+              </>}
+              {shows('more') && <>
               <Switch label={t('Für andere als beschäftigt anzeigen')} checked={d.busy} onChange={(_, v) => set({ busy: v.checked })} />
               <Field label={t('Wiederholen')}>
                 <Dropdown value={custom ? t('Eigene Regel (bleibt)') : options.find(o => o.value === d.rRule)?.label ?? ''} selectedOptions={[d.rRule]}
@@ -330,32 +384,46 @@ export function EventDialog({ draft, calendars, onClose }: { draft: EventDraft; 
                   {options.map(o => <Option key={o.value} value={o.value}>{o.label}</Option>)}
                 </Dropdown>
               </Field>
-              <Field label={t('Erinnerung')}>
+              {!remindOn && <Field label={t('Erinnerung')}>
                 <Dropdown value={reminders.find(r => r.value === (d.reminder == null ? '' : String(d.reminder)))?.label ?? (d.reminder === 1 ? t('1 Minute vorher') : t('{n} Minuten vorher', { n: d.reminder ?? 0 }))}
                   selectedOptions={[d.reminder == null ? '' : String(d.reminder)]}
                   onOptionSelect={(_, v) => set({ reminder: v.optionValue ? Number(v.optionValue) : null })}>
                   {reminders.map(r => <Option key={r.value} value={r.value}>{r.label}</Option>)}
                 </Dropdown>
-              </Field>
-              <Field label={t('Kalender')} className={s.full}>
+              </Field>}
+              </>}
+              {remindOn && (!tabs || tab === 'remind') && <Field label={t('Erinnerungen')} className={s.full}
+                hint={personal ? t('Gelten nur für dich; der Termin selbst bleibt unverändert.') : remindOnly ? t('Ersetzen die Erinnerungen des Anbieters; der Termin selbst bleibt unverändert.') : undefined}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {personal && <Switch checked={useDefault} onChange={(_, v) => setUseDefault(v.checked)}
+                    label={t('Wie beim Besitzer: {what}', { what: ownerText })} />}
+                  {calDefault && !personal && <Switch checked={useDefault} disabled={readOnly && !remindOnly} onChange={(_, v) => setUseDefault(v.checked)}
+                    label={t('Standard des Kalenders: {what}', { what: defaultText(calDefault, d.title, d.allDay, ownLists) })} />}
+                  {useDefault && calDefault && !personal && d.allDay && <RemindHints lists={[calDefault.reminders, ...calDefault.rules.map(r => r.reminders)]} allDay />}
+                  {!useDefault && <ReminderList value={rems} onChange={setRems} allDay={d.allDay} taskLists={ownLists} disabled={readOnly && !remindOnly} />}
+                </div>
+              </Field>}
+              {shows('main') && <Field label={t('Kalender')} className={s.full}>
+                {featureOn('filterpick') ? <FilterSelect value={String(moveTo)} style={{ minWidth: 0, maxWidth: '100%' }} onChange={v => setMoveTo(Number(v))}
+                  items={calendars.filter(c => c.canWrite !== false || c.id === moveTo).map(c => ({ id: String(c.id), label: c.owner ? t('{name} (von {owner})', { name: c.name, owner: c.owner }) : c.name }))} /> :
                 <Dropdown value={calLabel} selectedOptions={[String(moveTo)]} title={calLabel} style={{ minWidth: 0, maxWidth: '100%' }}
                   button={{ children: <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{calLabel}</span> }}
                   onOptionSelect={(_, v) => setMoveTo(Number(v.optionValue))}>
                   {calendars.filter(c => c.canWrite !== false || c.id === moveTo).map(c => <Option key={c.id} value={String(c.id)}>{c.owner ? t('{name} (von {owner})', { name: c.name, owner: c.owner }) : c.name}</Option>)}
-                </Dropdown>
-              </Field>
-              <Field label={t('Beschreibung')} className={s.full}>
+                </Dropdown>}
+              </Field>}
+              {shows('more') && <Field label={t('Beschreibung')} className={s.full}>
                 <Textarea value={shownDescription} onChange={(_, v) => setDescription(v.value)} rows={5} resize="vertical" />
-              </Field>
+              </Field>}
               <button type="submit" hidden />
             </form>
           </DialogContent>
           <DialogActions>
-            {readOnly && <span style={{ marginRight: 'auto', color: 'var(--colorNeutralForeground3)' }}>{sharedRO ? t('Der Besitzer hat diesen Kalender nur zum Lesen mit dir geteilt.') : t('Aus einem abonnierten Kalender – nur lesbar.')}</span>}
+            {readOnly && !remindOnly && <span style={{ marginRight: 'auto', color: 'var(--colorNeutralForeground3)' }}>{sharedRO ? t('Der Besitzer hat diesen Kalender nur zum Lesen mit dir geteilt.') : t('Aus einem abonnierten Kalender – nur lesbar.')}</span>}
             {d.uri && !readOnly && <Button onClick={remove} style={{ marginRight: 'auto' }}>{t('Löschen')}</Button>}
-            <Button onClick={() => onClose(false)}>{readOnly ? t('Schließen') : t('Abbrechen')}</Button>
+            <Button onClick={() => onClose(false)}>{readOnly && !remindOnly ? t('Schließen') : t('Abbrechen')}</Button>
             {/* disabledFocusable: der Fokus bleibt im Dialog, Esc wirkt auch nach einem gescheiterten Speichern */}
-            {!readOnly && <Button appearance="primary" onClick={() => { if (!busy && !endBefore) save() }} disabledFocusable={busy || endBefore}>{t('Speichern')}</Button>}
+            {(!readOnly || remindOnly) && <Button appearance="primary" onClick={() => { if (!busy && !endBefore) save() }} disabledFocusable={busy || endBefore}>{t('Speichern')}</Button>}
           </DialogActions>
         </DialogBody>
       </DialogSurface>

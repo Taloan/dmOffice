@@ -97,7 +97,7 @@ public static class Archives
         bool encrypted = false;
         void Add(SharpCompress.Common.IEntry e)
         {
-            if (entries.Count + bad >= MaxEntries) throw new ArchiveException($"Das Archiv hat mehr als {MaxEntries:N0} Einträge – das ist zu viel zum Öffnen.");
+            if (entries.Count + bad >= MaxEntries) throw new ArchiveException($"Das Archiv hat mehr als {DmOffice.Core.Num.N(MaxEntries)} Einträge – das ist zu viel zum Öffnen.");
             if (e.IsEncrypted) encrypted = true;
             if (e.LinkTarget != null) { bad++; return; }   // Verknüpfungen (TAR): nie folgen
             var p = CleanPath(e.Key);

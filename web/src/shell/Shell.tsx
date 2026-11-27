@@ -1,26 +1,41 @@
 import {
-  Button, Menu, MenuDivider, MenuItem, MenuItemRadio, MenuList, MenuPopover, MenuTrigger, Spinner, Text, Tooltip,
+  Button,
+  Menu, MenuDivider, MenuItem, MenuItemRadio, MenuList, MenuPopover, MenuTrigger, Spinner, Text, Tooltip,
   makeStyles, mergeClasses, tokens, CounterBadge,
 } from '@fluentui/react-components'
 import {
-  bundleIcon, Grid24Filled, Grid24Regular, Mail24Filled, Mail24Regular, CalendarLtr24Filled, CalendarLtr24Regular, People24Filled, People24Regular,
+  bundleIcon,
+  Grid24Filled, Grid24Regular, Mail24Filled, Mail24Regular, CalendarLtr24Filled, CalendarLtr24Regular, People24Filled, People24Regular,
   TaskListSquareLtr24Filled, TaskListSquareLtr24Regular, Note24Filled, Note24Regular, Folder24Filled, Folder24Regular, Image24Filled, Image24Regular,
+  BookOpen24Filled, BookOpen24Regular, // [feature:journal]
   Settings24Regular, Settings24Filled, ShieldPersonRegular, ShieldPersonFilled, SignOut20Regular, LockClosed20Regular, WeatherMoon20Regular,
-  ArrowSync20Regular, CloudOff20Regular, MoreHorizontal24Regular, Chat24Filled, Chat24Regular, MusicNote224Filled, MusicNote224Regular, DocumentBulletList24Filled, DocumentBulletList24Regular,
+  LineHorizontal120Regular, Delete20Regular,
+  ArrowSync20Regular, CloudOff20Regular, PuzzlePiece24Filled, PuzzlePiece24Regular, MoreHorizontal24Regular, Chat24Filled, Chat24Regular, MusicNote224Filled, MusicNote224Regular, DocumentBulletList24Filled, DocumentBulletList24Regular,
 } from '@fluentui/react-icons'
 import { Component, lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { ZoneHint } from './ZoneHint'
+import { adjustInbox, pendingNow, type Shown, usePendingVersion } from '../mail/pending'
+import { shownInbox, statusSeen, usePreloadVersion } from '../mail/preload'
+import { loadPlugins, pluginViews } from '../plugins/registry'
 import { e2eForget } from '../e2e'
+import { forgetLocalData } from '../localData'
 import { api, demoMode, featureOn, setUnlockHandler } from '../api'
 import { useApp } from '../App'
 import { t, tError } from '../i18n'
 import { brandLogo, storedTheme, storeTheme, ThemeChoice } from '../theme'
 import { REACHABLE_RECHECK, usePoll, useReachable, useVersion } from './hooks'
+import { useMailPush } from '../mail/mailPush' // [feature:mailpush]
 import { StorageInfo } from './StorageInfo'
+import { EmergencyBadge } from './EmergencyBadge'
 import { HelpMenu } from './Help'
 import { copyText } from './browser'
 import { Notifier } from './Notifier'
 import { Bookmarks } from './Bookmarks'
+import { ContextMenu, useContextMenu } from './context'
+import { ColorMenu } from './context' // [feature:navcolors]
+import { navPalette, navShade, setNavColor } from './navcolors' // [feature:navcolors]
+import { useIsDark } from '../theme' // [feature:navcolors]
+import { fitRail, fullOrder, insertSep, isSep, moveEntry, railLayout, removeSep } from './railsep'
 import { ActivityButton } from './Activity'
 import { useIsMobile } from './mobile'
 import { installDialogBehaviour } from './dialogs'
@@ -50,6 +65,9 @@ const CalendarView = lazy(load(() => import('../calendar/CalendarView')))
 const ContactsView = lazy(load(() => import('../contacts/ContactsView')))
 const TasksView = lazy(load(() => import('../tasks/TasksView')))
 const NotesView = lazy(load(() => import('../notes/NotesView')))
+// [feature:journal]
+const JournalView = lazy(load(() => import('../journal/JournalView')))
+// [/feature:journal]
 const FilesView = lazy(load(() => import('../files/FilesView')))
 const AudioView = lazy(load(() => import('../audio/AudioView')))
 const DmsView = lazy(load(() => import('../dms/DmsView')))
@@ -79,14 +97,18 @@ const CalIcon = bundleIcon(CalendarLtr24Filled, CalendarLtr24Regular)
 const PeopleIcon = bundleIcon(People24Filled, People24Regular)
 const TaskIcon = bundleIcon(TaskListSquareLtr24Filled, TaskListSquareLtr24Regular)
 const NoteIcon = bundleIcon(Note24Filled, Note24Regular)
+// [feature:journal]
+const JournalIcon = bundleIcon(BookOpen24Filled, BookOpen24Regular)
+// [/feature:journal]
 const FilesIcon = bundleIcon(Folder24Filled, Folder24Regular)
 const GalleryIcon = bundleIcon(Image24Filled, Image24Regular)
 const AudioIcon = bundleIcon(MusicNote224Filled, MusicNote224Regular)
 const DmsIcon = bundleIcon(DocumentBulletList24Filled, DocumentBulletList24Regular)
 const SettingsIcon = bundleIcon(Settings24Filled, Settings24Regular)
 const AdminIcon = bundleIcon(ShieldPersonFilled, ShieldPersonRegular)
+const PluginIcon = bundleIcon(PuzzlePiece24Filled, PuzzlePiece24Regular)
 
-export type Module = 'dashboard' | 'mail' | 'chat' | 'calendar' | 'contacts' | 'tasks' | 'notes' | 'gallery' | 'audio' | 'dms' | 'files' | 'settings' | 'admin'
+export type Module = 'dashboard' | 'mail' | 'chat' | 'calendar' | 'contacts' | 'tasks' | 'notes' | 'journal' | 'coach' | 'gallery' | 'audio' | 'dms' | 'files' | 'settings' | 'admin'
 
 const modules: { key: Module; label: string; icon: any }[] = [
   { key: 'dashboard', label: t('Übersicht'), icon: DashboardIcon },
@@ -96,11 +118,27 @@ const modules: { key: Module; label: string; icon: any }[] = [
   { key: 'contacts', label: t('Kontakte'), icon: PeopleIcon },
   { key: 'tasks', label: t('Aufgaben'), icon: TaskIcon },
   { key: 'notes', label: t('Notizen'), icon: NoteIcon },
+  // [feature:journal]
+  { key: 'journal', label: t('Tagebuch'), icon: JournalIcon },
+  // [/feature:journal]
   { key: 'gallery', label: t('Galerie'), icon: GalleryIcon },
   { key: 'audio', label: t('Audiothek'), icon: AudioIcon },
   { key: 'dms', label: 'DMS', icon: DmsIcon },
   { key: 'files', label: t('Dateien'), icon: FilesIcon },
 ]
+
+/** W1: Bereiche der Plugins kommen nach dem Laden hinten an die Liste (Kennung = Adresse #/id); gleichnamige Kernbereiche gehen vor. */
+const pluginComponents = new Map<string, React.ComponentType>()
+function addPluginAreas(): boolean {
+  let added = false
+  for (const v of pluginViews()) {
+    if (modules.some(m => m.key === v.id) || ['settings', 'admin'].includes(v.id)) continue
+    modules.push({ key: v.id as Module, label: v.label, icon: v.icon ?? PluginIcon })
+    pluginComponents.set(v.id, v.component)
+    added = true
+  }
+  return added
+}
 
 const useStyles = makeStyles({
   root: { display: 'flex', flexDirection: 'column', height: '100%', backgroundColor: tokens.colorNeutralBackground3 },
@@ -131,6 +169,11 @@ const useStyles = makeStyles({
     '::before': { content: '""', position: 'absolute', left: '-6px', top: '12px', bottom: '12px', width: '3px', borderRadius: '2px', backgroundColor: tokens.colorBrandBackground },
   },
   badge: { position: 'absolute', top: '2px', right: '0px', pointerEvents: 'none' },
+  // Trenner in der Leiste (railsep): dünne Linie wie über den Lesezeichen; die Hülle ist zum Greifen und Rechtsklicken etwas höher
+  sep: { width: '44px', padding: '3px 0', display: 'flex', justifyContent: 'center', alignItems: 'center', flexShrink: 0, cursor: 'grab' },
+  sepLine: { width: '28px', height: '1px', backgroundColor: tokens.colorNeutralStroke2 },
+  sepMobile: { width: '9px', height: '42px', padding: '0 4px', cursor: 'default' },
+  sepLineMobile: { width: '1px', height: '28px' },
   main: {
     flex: 1, minWidth: 0, display: 'flex', backgroundColor: tokens.colorNeutralBackground1, borderTopLeftRadius: tokens.borderRadiusXLarge,
     overflow: 'hidden', boxShadow: tokens.shadow4,
@@ -155,7 +198,9 @@ const useStyles = makeStyles({
 })
 
 /** Release-Liste und Hauptschalter der Verwaltung: Bereiche, die nicht freigeschaltet oder ausgeschaltet sein können. */
-const moduleFeature: Partial<Record<Module, string>> = { tasks: 'tasks', notes: 'notes', gallery: 'gallery', audio: 'audio', dms: 'dms' }
+const moduleFeature: Partial<Record<Module, string>> = { tasks: 'tasks', notes: 'notes', gallery: 'gallery', audio: 'audio', dms: 'dms',
+  journal: 'journal', // [feature:journal]
+}
 const moduleOn = (m: Module) => !moduleFeature[m] || featureOn(moduleFeature[m]!)
 
 /** Gehört die Adresse zu diesem Bereich? Sonst taugt sie nicht als seine letzte Adresse. */
@@ -181,17 +226,39 @@ function NotAvailable({ text }: { text: string }) {
 export function Shell() {
   const s = useStyles()
   const { prefs, update: updatePrefs } = usePrefs()
-  // Leiste links umsortieren: mit gedrückter Umschalt- oder Strg-Taste ziehen
-  const [dragMod, setDragMod] = useState<Module | null>(null)
-  const [dropAt, setDropAt] = useState<Module | null>(null)
+  // Leiste links umsortieren: mit gedrückter Umschalt- oder Strg-Taste ziehen (Trenner, Kennung railsep: ohne Taste)
+  const [dragMod, setDragMod] = useState<string | null>(null)
+  const [dropAt, setDropAt] = useState<string | null>(null)
+  // Rechtsklick in der Leiste (Kennung railsep): auf einen Bereich, einen Trenner oder freie Fläche; „color“: Symbol ohne Trenner-Einträge
+  const railMenu = useContextMenu<{ kind: 'mod' | 'sep' | 'end' | 'color'; key?: string }>()
+  // [feature:navcolors]
+  // Farben der Symbole in der Leiste (Kennung navcolors, ab 2.2): je Bereich aus der Akzent-Palette, unabhängig von der Akzentfarbe
+  const colorsOn = featureOn('navcolors')
+  const dark = useIsDark()
+  const navTint = (k: string): string | undefined => { const c = colorsOn ? prefs.navColors?.[k] : undefined; return c ? navShade(c, dark) : undefined }
+  // [feature:navcolors:else]
+  // const colorsOn = false
+  // const navTint = (_k: string): string | undefined => undefined
+  // [/feature:navcolors]
+  // Plugins (Kennung plugins): nach dem Laden die Leiste neu aufbauen; danach gilt eine gemerkte Adresse eines Plugin-Bereichs
+  const [pluginTick, setPluginTick] = useState(0)
+  useEffect(() => {
+    const on = () => { if (addPluginAreas()) { setPluginTick(n => n + 1); const m = currentModule(); setModule(m); setVisited(v => v.includes(m) ? v : [...v, m]) } }
+    window.addEventListener('dmoffice:plugins', on)
+    loadPlugins().then(on)
+    return () => window.removeEventListener('dmoffice:plugins', on)
+  }, [])
   const ordered = useMemo(() => {
     const order = prefs.moduleOrder ?? []
     const at = (k: string) => { const i = order.indexOf(k); return i < 0 ? order.length + modules.findIndex(m => m.key === k) : i }
     return [...modules].sort((a, b) => at(a.key) - at(b.key))
-  }, [prefs.moduleOrder])
-  const moveModule = (from: Module, to: Module) => {
+  }, [prefs.moduleOrder, pluginTick]) // eslint-disable-line react-hooks/exhaustive-deps
+  const moveModule = (from: string, to: string | null) => {
     if (from === to) return
-    const keys = ordered.map(m => m.key).filter(k => k !== from)
+    // Trenner (railsep): die ganze gespeicherte Reihenfolge samt Trennern umstellen; ohne Ziel ans Ende
+    if (sepOn) { updatePrefs({ moduleOrder: moveEntry(fullOrder(prefs.moduleOrder, ordered.map(m => m.key)), from, to) }); return }
+    if (to == null) return
+    const keys: string[] = ordered.map(m => m.key).filter(k => k !== from)
     keys.splice(keys.indexOf(to), 0, from)
     updatePrefs({ moduleOrder: keys })
   }
@@ -208,10 +275,11 @@ export function Shell() {
     setRailFade(f => f.l === l && f.r === r ? f : { l, r })
   }
   const [railSlots, setRailSlots] = useState(99)
+  const [railPx, setRailPx] = useState(99 * 48) // dasselbe in px, für Trenner (railsep)
   useEffect(() => {
     const el = railTop.current
     if (!el || mobile) return
-    const measure = () => setRailSlots(Math.max(1, Math.floor((el.clientHeight + 4) / 48)))
+    const measure = () => { setRailSlots(Math.max(1, Math.floor((el.clientHeight + 4) / 48))); setRailPx(el.clientHeight + 4) }
     measure()
     const ro = new ResizeObserver(measure)
     ro.observe(el)
@@ -220,7 +288,14 @@ export function Shell() {
   const { me, notify } = useApp()
   const [module, setModule] = useState<Module>(currentModule())
   const [theme, setTheme] = useState<ThemeChoice>(storedTheme())
-  const status = usePoll(() => api.get('/api/mail/status'), 20000, 'dmoffice:mailstatus')
+  // _at: Beginn der Anfrage - Änderungen, die danach noch unterwegs sind, zählt das Seitenmenü selbst dazu (mail/pending.ts)
+  const status = usePoll(() => { const at = pendingNow(); return api.get('/api/mail/status').then(r => ({ ...r, _at: at })) }, 20000, 'dmoffice:mailstatus')
+  usePendingVersion()
+  // Neue Mails erst zählen, wenn ihre Liste vorgeladen ist (mail/preload.ts); das Vorladen startet hier, auch ohne offenen Mailbereich
+  const preloadVersion = usePreloadVersion()
+  useEffect(() => { statusSeen(status) }, [status])
+  useMailPush() // [feature:mailpush]
+  const shownUnread = useRef<Record<string, Shown>>({})
   const chatStatus = useChatStatus()
   // DMS: Summe der Inboxen (Dateiablage und offener Tresor); DMS meldet Änderungen über das Ereignis
   useEffect(() => {
@@ -288,7 +363,18 @@ export function Shell() {
     return () => clearTimeout(id)
   }, [module])
   const go = (m: Module) => { const last = lastHash.current[m]; location.hash = m !== module && last && hashBelongs(last, m) ? last : '#/' + m }
-  const mailUnread = status ? Object.values<any>(status.accounts).reduce((n, a) => n + (a.unread || 0), 0) : 0
+  const mailUnread = status ? Object.entries<any>(status.accounts).reduce((n, [id, a]) => {
+    const u = adjustInbox(id, a.unread || 0, status._at, shownUnread.current[id])
+    shownUnread.current[id] = u
+    return n + (shownInbox(id, u.value) ?? 0)
+  }, 0) : 0
+  // Benachrichtigung über neue Mail ebenso erst nach dem Vorladen; Konten ohne vorgeladenen Posteingang fehlen noch
+  const notifyStatus = useMemo(() => !status?.accounts ? status : {
+    ...status, accounts: Object.fromEntries(Object.entries<any>(status.accounts).flatMap(([id, a]) => {
+      const u = shownInbox(id, a.unread || 0)
+      return u == null ? [] : [[id, { ...a, unread: u }]]
+    })),
+  }, [status, preloadVersion])
   const unread = mailUnread + (chatStatus?.unread ?? 0)
   const syncing = status ? Object.values<any>(status.accounts).some(a => a.running) : false
   const reachable = useReachable()
@@ -319,19 +405,39 @@ export function Shell() {
     e2eForget()
     const r = await api.post<{ redirect?: string | null }>('/api/auth/logout').catch(() => null)
     // Reste des Benutzers auf einem geteilten Rechner entfernen: Einstellungen, zuletzt geoeffnete Ordner usw.
-    try {
-      for (const store of [localStorage, sessionStorage])
-        for (const k of Object.keys(store)) if (k.startsWith('dmoffice.')) store.removeItem(k)
-    } catch { /* privat */ }
+    forgetLocalData()
     // Über OIDC angemeldet: auch beim Anbieter abmelden, der leitet danach zur Anmeldeseite zurück
     if (r?.redirect) { location.href = r.redirect; return }
     location.hash = ''
     location.reload()
   }
 
+  // Bereiche in der Leiste links
+  const railModules = ordered.filter(m => ((m.key !== 'files' && m.key !== 'gallery' && m.key !== 'dms') || me.files !== false) && (m.key !== 'mail' || hasMail) && (m.key !== 'audio' || !!me.audio) && moduleOn(m.key))
+  const modByKey = new Map<string, (typeof modules)[number]>(railModules.map(m => [m.key, m]))
+  const navCount = (k: string) => k === 'mail' ? mailUnread : k === 'chat' ? (chatStatus?.unread ?? 0) : k === 'dms' ? dmsInbox : 0
+  const sepOn = featureOn('railsep')
+  const railEntries = sepOn ? railLayout(prefs.moduleOrder, railModules.map(m => m.key)) : railModules.map(m => m.key)
+  // ---- Trenner in der Leiste (Kennung railsep): einfügen, löschen; gespeichert in moduleOrder
+  const railOrder = () => fullOrder(prefs.moduleOrder, ordered.map(m => m.key))
+  const addSep = (after: string | null) => updatePrefs({ moduleOrder: insertSep(railOrder(), after) })
+  const dropSep = (id: string) => updatePrefs({ moduleOrder: removeSep(railOrder(), id) })
+  const sepAfter = (k: string) => { const i = railEntries.indexOf(k); return i >= 0 && typeof railEntries[i + 1] === 'string' && isSep(railEntries[i + 1] as string) }
+  const sepEl = (id: string) => (
+    <div key={id} className={mergeClasses(s.sep, mobile && s.sepMobile)} draggable={!mobile} role="separator"
+      style={{ boxShadow: dropAt === id && dragMod && dragMod !== id ? `0 -3px 0 ${tokens.colorBrandStroke1}` : undefined }}
+      onContextMenu={ev => railMenu.open(ev, { kind: 'sep', key: id })}
+      onDragStart={ev => { setDragMod(id); ev.dataTransfer.effectAllowed = 'move'; ev.dataTransfer.setData('application/x-dmoffice-module', id) }}
+      onDragOver={ev => { if (dragMod) { ev.preventDefault(); setDropAt(id) } }}
+      onDrop={ev => { ev.preventDefault(); if (dragMod) moveModule(dragMod, id); setDragMod(null); setDropAt(null) }}
+      onDragEnd={() => { setDragMod(null); setDropAt(null) }}>
+      <div className={mergeClasses(s.sepLine, mobile && s.sepLineMobile)} />
+    </div>
+  )
+
   return (
     <div className={s.root}>
-      <Notifier status={status} />
+      <Notifier status={notifyStatus} />
       <ChatNotifier status={chatStatus} active={module === 'chat'} />
       <SendToChatHost />
       <header className={mergeClasses(s.top, 'dm-titlebar')}>
@@ -347,6 +453,7 @@ export function Shell() {
           )}
         </div>
         <div className={s.spacer} />
+        <EmergencyBadge onLogout={logout} />
         {/* Demo: das Schild mittig in der Kopfzeile läge über der Speicheranzeige */}
         {!demoMode.on && <StorageInfo mobile={mobile} />}
         <Tooltip content={!reachable ? t('Server nicht erreichbar') : syncing ? t('Wird synchronisiert …') : t('Jetzt synchronisieren')} relationship="label">
@@ -394,34 +501,56 @@ export function Shell() {
         {/* Audiothek: laufender Titel - auf dem Handy über der Leiste mit den Bereichen */}
         {mobile && me.audio && <PlayerBar mobile />}
         <nav ref={railNav} className={mergeClasses(s.rail, mobile && s.railMobile)} onScroll={mobile ? railEdges : undefined}
+          // Trenner (railsep): Rechtsklick auf freie Fläche; was ein Eintrag (Bereich, Trenner, Lesezeichen) schon behandelt hat, nicht
+          onContextMenu={sepOn ? (ev => { if (!ev.defaultPrevented) railMenu.open(ev, { kind: 'end' }) }) : undefined}
           style={mobile && (railFade.l || railFade.r) ? (m => ({ maskImage: m, WebkitMaskImage: m }))(
             `linear-gradient(to right, ${railFade.l ? 'transparent 0, #000 32px' : '#000 0'}, ${railFade.r ? '#000 calc(100% - 32px), transparent 100%' : '#000 100%'})`) : undefined}>
           {/* Bereiche: auf dem PC nur so viele, wie Platz haben - Verwaltung und Einstellungen bleiben unten stehen */}
           {(() => {
-            const list = ordered.filter(m => ((m.key !== 'files' && m.key !== 'gallery' && m.key !== 'dms') || me.files !== false) && (m.key !== 'mail' || hasMail) && (m.key !== 'audio' || !!me.audio) && moduleOn(m.key))
-            const overflow = !mobile && list.length > railSlots
-            const visible = overflow ? list.slice(0, railSlots - 1) : list
-            const rest = overflow ? list.slice(railSlots - 1) : []
-            const count = (k: string) => k === 'mail' ? mailUnread : k === 'chat' ? (chatStatus?.unread ?? 0) : k === 'dms' ? dmsInbox : 0
-            const restCount = rest.reduce((n, m) => n + count(m.key), 0)
-            const restActive = rest.some(m => m.key === module)
-            const buttons = visible.map(m => (
-            <Tooltip key={m.key} content={m.label} relationship="label" positioning={mobile ? 'above' : 'after'}>
-              {/* Zaehler neben dem Knopf, nicht darin - sonst wird der Knopf breiter als die Leiste */}
-              <div style={{ position: 'relative', boxShadow: dropAt === m.key && dragMod && dragMod !== m.key ? `0 -3px 0 ${tokens.colorBrandStroke1}` : undefined }}
-                draggable={!mobile}
-                onDragStart={e => { if (!(e.shiftKey || e.ctrlKey)) { e.preventDefault(); return } setDragMod(m.key); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('application/x-dmoffice-module', m.key) }}
-                onDragOver={e => { if (dragMod) { e.preventDefault(); setDropAt(m.key) } }}
-                onDrop={e => { e.preventDefault(); if (dragMod) moveModule(dragMod, m.key); setDragMod(null); setDropAt(null) }}
-                onDragEnd={() => { setDragMod(null); setDropAt(null) }}>
-                <Button appearance="subtle" className={mergeClasses(s.railButton, mobile && s.railButtonMobile, module === m.key && s.railActive, module === m.key && mobile && s.railActiveMobile, s.tinted)}
+            const toKeys = (e: string) => [e]
+            // Mit Gruppen zählen die Einträge der Leiste (ein Eintrag je Gruppe), sonst die Bereiche
+            const entries = railEntries
+            // Trenner (railsep) brauchen weniger Höhe als ein Bereich: nach Pixeln aufteilen
+            const fit = sepOn && !mobile ? fitRail(entries as string[], railPx) : null
+            const overflow = fit ? fit.rest.length > 0 : !mobile && entries.length > railSlots
+            const visible = fit ? fit.visible : overflow ? entries.slice(0, railSlots - 1) : entries
+            const rest = fit ? fit.rest : overflow ? entries.slice(railSlots - 1) : []
+            const count = navCount
+            const restKeys = rest.flatMap(toKeys)
+            const restCount = restKeys.reduce((n, k) => n + count(k), 0)
+            const restActive = restKeys.includes(module)
+            const railBtn = (m: (typeof modules)[number]) => (
+              <>
+                <Button appearance="subtle" className={mergeClasses(s.railButton, mobile && s.railButtonMobile, module === m.key && s.railActive, module === m.key && mobile && s.railActiveMobile, s.tinted)} style={{ color: navTint(m.key) }}
                   icon={<m.icon />} onClick={() => go(m.key)} aria-current={module === m.key ? 'page' : undefined} aria-label={m.label} />
                 {m.key === 'mail' && mailUnread > 0 && <CounterBadge className={s.badge} count={mailUnread} size="small" overflowCount={999} />}
                 {m.key === 'chat' && (chatStatus?.unread ?? 0) > 0 && <CounterBadge className={s.badge} count={chatStatus!.unread} size="small" overflowCount={999} />}
                 {m.key === 'dms' && dmsInbox > 0 && <CounterBadge className={s.badge} count={dmsInbox} size="small" overflowCount={999} />}
-              </div>
+              </>
+            )
+            const buttons = visible.map(e => {
+              if (sepOn && isSep(e)) return sepEl(e)
+              const m = modByKey.get(e)!
+              const wrap = null
+              return (
+            <Tooltip key={m.key} content={m.label} relationship="label" positioning={mobile ? 'above' : 'after'}>
+              {/* Zaehler neben dem Knopf, nicht darin - sonst wird der Knopf breiter als die Leiste */}
+              {wrap ?? <div style={{ position: 'relative', boxShadow: dropAt === m.key && dragMod && dragMod !== m.key ? `0 -3px 0 ${tokens.colorBrandStroke1}` : undefined }}
+                    draggable={!mobile}
+                    onDragStart={ev => { if (!(ev.shiftKey || ev.ctrlKey)) { ev.preventDefault(); return } setDragMod(m.key); ev.dataTransfer.effectAllowed = 'move'; ev.dataTransfer.setData('application/x-dmoffice-module', m.key) }}
+                    onContextMenu={sepOn || colorsOn ? (ev => railMenu.open(ev, { kind: sepOn ? 'mod' : 'color', key: m.key })) : undefined}
+                    onDragOver={ev => { if (dragMod) { ev.preventDefault(); setDropAt(m.key) } }}
+                    onDrop={ev => { ev.preventDefault(); if (dragMod) moveModule(dragMod, m.key); setDragMod(null); setDropAt(null) }}
+                    onDragEnd={() => { setDragMod(null); setDropAt(null) }}>{railBtn(m)}</div>}
             </Tooltip>
-          ))
+              )
+            })
+            const restItem = (k: string) => {
+              const m = modByKey.get(k)!
+              return <MenuItem key={k} icon={<span style={{ display: 'inline-flex', color: navTint(k) }}><m.icon /></span>} onClick={() => go(m.key)} secondaryContent={count(k) > 0 ? String(count(k)) : undefined}
+                style={k === module ? { fontWeight: 600 } : undefined}>{m.label}</MenuItem>
+            }
+            const restEntry = restItem
             const more = rest.length > 0 && (
               <Menu positioning="after-bottom">
                 <MenuTrigger disableButtonEnhancement>
@@ -435,28 +564,48 @@ export function Shell() {
                 </MenuTrigger>
                 <MenuPopover>
                   <MenuList>
-                    {rest.map(m => (
-                      <MenuItem key={m.key} icon={<m.icon />} onClick={() => go(m.key)} secondaryContent={count(m.key) > 0 ? String(count(m.key)) : undefined}
-                        style={m.key === module ? { fontWeight: 600 } : undefined}>{m.label}</MenuItem>
-                    ))}
+                    {rest.map(e => typeof e === 'string' && isSep(e) ? <MenuDivider key={e} /> : restEntry(e))}
                   </MenuList>
                 </MenuPopover>
               </Menu>
             )
             if (mobile) return buttons
             // Handy: Lesezeichen und Verwaltung passen nicht in die Leiste unten - Verwaltung steht im Kontomenue
-            return <div ref={railTop} className={s.railTop}>{buttons}{more}{!overflow && <Bookmarks />}</div>
+            return <div ref={railTop} className={s.railTop}
+              // Trenner (railsep): auf freie Fläche gezogen = ans Ende
+              onDragOver={sepOn ? (ev => { if (dragMod && !ev.defaultPrevented) { ev.preventDefault(); setDropAt(null) } }) : undefined}
+              onDrop={sepOn ? (ev => { if (dragMod && !ev.defaultPrevented) { ev.preventDefault(); moveModule(dragMod, null); setDragMod(null) } }) : undefined}>
+              {buttons}{more}{!overflow && <Bookmarks />}</div>
           })()}
           {me.isAdmin && !mobile && (
             <Tooltip content={t('Verwaltung')} relationship="label" positioning="after">
-              <Button appearance="subtle" className={mergeClasses(s.railButton, module === 'admin' && s.railActive, s.tinted)} icon={<AdminIcon />} onClick={() => go('admin')} aria-label={t('Verwaltung')} aria-current={module === 'admin' ? 'page' : undefined} />
+              <Button appearance="subtle" className={mergeClasses(s.railButton, module === 'admin' && s.railActive, s.tinted)} style={{ color: navTint('admin') }}
+                onContextMenu={colorsOn ? (ev => railMenu.open(ev, { kind: 'color', key: 'admin' })) : undefined} icon={<AdminIcon />} onClick={() => go('admin')} aria-label={t('Verwaltung')} aria-current={module === 'admin' ? 'page' : undefined} />
             </Tooltip>
           )}
           <Tooltip content={t('Einstellungen')} relationship="label" positioning={mobile ? 'above' : 'after'}>
-            <Button appearance="subtle" className={mergeClasses(s.railButton, mobile && s.railButtonMobile, module === 'settings' && s.railActive, module === 'settings' && mobile && s.railActiveMobile, s.tinted)} icon={<SettingsIcon />} onClick={() => go('settings')} aria-label={t('Einstellungen')} aria-current={module === 'settings' ? 'page' : undefined} />
+            <Button appearance="subtle" className={mergeClasses(s.railButton, mobile && s.railButtonMobile, module === 'settings' && s.railActive, module === 'settings' && mobile && s.railActiveMobile, s.tinted)} style={{ color: navTint('settings') }}
+              onContextMenu={colorsOn ? (ev => railMenu.open(ev, { kind: 'color', key: 'settings' })) : undefined} icon={<SettingsIcon />} onClick={() => go('settings')} aria-label={t('Einstellungen')} aria-current={module === 'settings' ? 'page' : undefined} />
           </Tooltip>
           {!mobile && <div style={{ height: 8 }} />}
         </nav>
+        {/* Trenner in der Leiste (railsep) */}
+        {(sepOn || colorsOn) && railMenu.ctx && <ContextMenu at={railMenu.ctx.at} onClose={railMenu.close}>
+          {/* [feature:navcolors] */}
+          {/* Farbe des Symbols (navcolors): „Standard“ = Akzentfarbe */}
+          {colorsOn && (railMenu.ctx.data.kind === 'mod' || railMenu.ctx.data.kind === 'color') && (k => (
+            <ColorMenu colors={navPalette()} current={prefs.navColors?.[k]} none noneLabel={t('Standard')}
+              onPick={c => { updatePrefs({ navColors: setNavColor(prefs.navColors, k, c) }); railMenu.close() }} />
+          ))(railMenu.ctx.data.key!)}
+          {/* [/feature:navcolors] */}
+          {railMenu.ctx.data.kind === 'sep'
+            ? <MenuItem icon={<Delete20Regular />} onClick={() => dropSep(railMenu.ctx!.data.key!)}>{t('Trenner löschen')}</MenuItem>
+            : railMenu.ctx.data.kind === 'mod'
+              ? <MenuItem icon={<LineHorizontal120Regular />} disabled={sepAfter(railMenu.ctx.data.key!)} onClick={() => addSep(railMenu.ctx!.data.key!)}>{t('Trenner darunter einfügen')}</MenuItem>
+              : railMenu.ctx.data.kind === 'end'
+                ? <MenuItem icon={<LineHorizontal120Regular />} onClick={() => addSep(null)}>{t('Trenner einfügen')}</MenuItem>
+                : null}
+        </ContextMenu>}
         <ZoneHint />
         <main className={mergeClasses(s.main, mobile && s.mainMobile)}>
           <h1 className={s.pageName}>{module === 'settings' ? t('Einstellungen') : module === 'admin' ? t('Verwaltung') : modules.find(m => m.key === module)?.label}</h1>
@@ -469,12 +618,16 @@ export function Shell() {
             ['contacts', () => <ContactsView />],
             ['tasks', () => moduleOn('tasks') && <TasksView />],
             ['notes', () => moduleOn('notes') && <NotesView />],
+            // [feature:journal]
+            ['journal', () => moduleOn('journal') && <JournalView />],
+            // [/feature:journal]
             ['gallery', () => me.files === false ? <NotAvailable text={t('Die Dateiablage ist für dein Konto nicht aktiviert.')} /> : moduleOn('gallery') && <FilesView key="gallery" gallery />],
             ['files', () => me.files === false ? <NotAvailable text={t('Die Dateiablage ist für dein Konto nicht aktiviert.')} /> : <FilesView key="files" />],
             ['audio', () => me.audio ? <AudioView /> : <NotAvailable text={t('Die Audiothek ist für dein Konto nicht aktiviert.')} />],
             ['dms', () => me.files === false ? <NotAvailable text={t('Die Dateiablage ist für dein Konto nicht aktiviert.')} /> : moduleOn('dms') && <DmsView />],
             ['settings', () => <SettingsView />],
             ['admin', () => me.isAdmin ? <AdminView /> : <NotAvailable text={t('Die Verwaltung ist nur für Admins.')} />],
+            ...[...pluginComponents].map(([id, View]) => [id, () => <View />]),
           ] as [Module, () => React.ReactNode][]).filter(([k]) => visited.includes(k)).map(([k, render]) => (
             <div key={k} style={{ display: module === k ? 'contents' : 'none' }}>
               <Boundary resetKey={module}>

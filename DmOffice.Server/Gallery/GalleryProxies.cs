@@ -91,6 +91,42 @@ public sealed class GalleryProxies
         try { File.Delete(FileOf(user, source, path)); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
     }
 
+    /// <summary>
+    /// Vorschau unter anderem Ort ablegen (Galerie-Ordner neu zugeordnet): verschieben oder - wenn andere die alte noch brauchen
+    /// (gemeinsamer Bereich) - kopieren. Der Stand in der Datei bleibt. False, wenn es keine gab. <paramref name="keep"/>: eine
+    /// Vorschau, die am Ziel schon liegt, bleibt (gemeinsamer Bereich).
+    /// </summary>
+    public bool Relocate(string fromUser, string fromSource, string fromPath, string toUser, string toSource, string toPath, bool move, bool keep = false)
+    {
+        var f = FileOf(fromUser, fromSource, fromPath);
+        var t = FileOf(toUser, toSource, toPath);
+        if (!File.Exists(f)) return false;
+        if (f == t) return true;
+        try
+        {
+            if (keep && File.Exists(t))
+            {
+                if (move) File.Delete(f);
+                return true;
+            }
+            Directory.CreateDirectory(Path.GetDirectoryName(t)!);
+            if (move) File.Move(f, t, overwrite: true); else File.Copy(f, t, overwrite: true);
+            return true;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return false; }
+    }
+
+    /// <summary>
+    /// Gleiche Datei, nur der Stand ist ein anderer (neu zugeordnet, Zeit ohne Sekundenbruchteile): Vorschau unter dem neuen Stand
+    /// behalten. Der Stand ist Teil der Verschlüsselung, darum neu ablegen statt nur den Kopf zu ändern.
+    /// </summary>
+    public void Restamp(string user, string source, string path, long from, long to)
+    {
+        if (from == to || Get(user, source, path, from) is not { } webp) return;
+        try { Put(user, source, path, to, webp); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+    }
+
     /// <summary>Galerie-Ordner entfernt oder Vorschauen abgeschaltet: alle seine Vorschauen weg.</summary>
     public void RemoveSource(string user, string source)
     {

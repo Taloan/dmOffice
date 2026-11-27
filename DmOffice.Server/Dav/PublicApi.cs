@@ -49,8 +49,9 @@ public static class PublicApi
         var root = FileStore.ProtectedRoot(space.Db);
         var entry = FileStore.ById(space.Db, link.FileId);
         if (entry == null || FileStore.InRoot(entry.Path, root) || FileStore.IsSystem(space.Db, entry.Path)) return (null, Gone("Diesen Link gibt es nicht (mehr)."));
+        // Vor dem Passwort nichts über den Inhalt (Name, Größe, Art, Besitzer): nur, dass ein Passwort nötig ist
         if (needPassword && link.HasPassword && !Unlocked(http, space.Db, link))
-            return (null, Results.Json(new { error = "Passwort nötig.", needsPassword = true, name = entry.Name }, statusCode: 401));
+            return (null, Results.Json(new { error = "Passwort nötig.", needsPassword = true }, statusCode: 401));
         return (new Access(space, link, entry, root), null);
     }
 
@@ -125,16 +126,15 @@ public static class PublicApi
             var (a, error) = Resolve(http, token, needPassword: false);
             if (a == null) return error!;
             var key = "link:" + a.Link.Id;
-            if (Auth.Blocked(key) || Auth.Blocked(Ip(http))) return Gone("Zu viele Versuche. Bitte später noch einmal.", 429);
+            if (Auth.LinkBlocked(key, Ip(http))) return Gone("Zu viele Versuche. Bitte später noch einmal.", 429);
             var ok = await Passwords.VerifyLimitedAsync(body.Password ?? "", Links.PasswordHash(a.Db, a.Link.Id), http.RequestAborted);
             if (ok == null) return Gone("Der Server ist gerade ausgelastet. Bitte gleich noch einmal versuchen.", 503);
             if (ok == false)
             {
-                Auth.Failed(key);
-                Auth.Failed(Ip(http));
+                Auth.LinkFailed(key, Ip(http));
                 return Gone("Falsches Passwort.", 403);
             }
-            Auth.Succeeded(key);
+            Auth.LinkSucceeded(key, Ip(http));
             var until = DateTime.UtcNow.AddDays(1);
             http.Response.Cookies.Append(CookieName(a.Link), Protector(http).Protect($"{a.Link.Id}|{until.Ticks}|{Stamp(a.Db, a.Link)}"), new CookieOptions
             {
@@ -193,13 +193,22 @@ public static class PublicApi
             var (a, dir, error) = UploadTarget(http, token, path);
             if (a == null) return error!;
             var names = new List<string>();
+            var limit = LinkUploadLimit.Limit(http.RequestServices.GetRequiredService<ServerConfig>()); // [feature:uploadlimit]
             await foreach (var file in MultipartUpload.Files(request, ct))
             {
                 if (FileStore.Normalize(file.FileName).Length == 0) continue;
                 // Grenzen gegen einen anonymen Link-Gast: nicht beliebig viele Dateien in einer Anfrage
                 if (names.Count >= 1000) return Gone("Zu viele Dateien in einer Anfrage.", 400);
-                try { names.Add(await StoreNew(a, dir!, file.FileName, file.Body, ct)); }
+                // [feature:uploadlimit]
+                // Obergrenze je Link: jedes gelesene Stück zählt, zusammen mit parallelen Anfragen und laufenden Uploads in Stücken
+                using var held = LinkUploadLimit.Reserve(a.Db, a.Space.User.Id, a.Link.Id, limit, countAnnounced: true);
+                try { names.Add(await StoreNew(a, dir!, file.FileName, held.Wrap(file.Body), ct)); held.Commit(); }
                 catch (QuotaExceededException) { return Gone("Der Speicher des Empfängers ist voll.", 507); }
+                catch (LinkUploadLimitException) { return LinkUploadLimit.Refused(); }
+                // [feature:uploadlimit:else]
+                // try { names.Add(await StoreNew(a, dir!, file.FileName, file.Body, ct)); }
+                // catch (QuotaExceededException) { return Gone("Der Speicher des Empfängers ist voll.", 507); }
+                // [/feature:uploadlimit]
             }
             // Im Einwurf-Modus ("drop") bleibt der Ordnerinhalt verborgen - auch die (umbenannten) Namen nicht zurueckgeben,
             // sonst liesse sich ueber "X (2).pdf" erkennen, was schon im Ordner liegt.
@@ -211,7 +220,13 @@ public static class PublicApi
         api.MapPost("/uploads", (string token, UploadBody body, HttpContext http) =>
         {
             var (a, _, error) = UploadTarget(http, token, null);
-            return a == null ? error! : FilesApi.StartSession(a.Db, body.Name, body.Size, null, a.Link.Id);
+            // [feature:uploadlimit]
+            if (a == null) return error!;
+            return LinkUploadLimit.Start(a.Db, a.Space.User.Id, a.Link.Id, LinkUploadLimit.Limit(http.RequestServices.GetRequiredService<ServerConfig>()), body.Size,
+                () => FilesApi.StartSession(a.Db, body.Name, body.Size, null, a.Link.Id));
+            // [feature:uploadlimit:else]
+            // return a == null ? error! : FilesApi.StartSession(a.Db, body.Name, body.Size, null, a.Link.Id);
+            // [/feature:uploadlimit]
         });
         api.MapGet("/uploads/{id}", (string token, string id, HttpContext http) =>
         {
@@ -229,8 +244,20 @@ public static class PublicApi
             if (a == null) return error!;
             var session = FilesApi.RequireComplete(a.Db, id, a.Link.Id);
             string name;
-            try { await using (var body = FilesApi.OpenSession(a.Db, session)) name = await StoreNew(a, dir!, session.Name, body, ct); }
+            // [feature:uploadlimit]
+            // Abschließen zählt die ganze Datei gegen die Obergrenze des Links (auch eine liegen gebliebene, später fortgesetzte Sitzung)
+            try
+            {
+                using var held = LinkUploadLimit.Reserve(a.Db, a.Space.User.Id, a.Link.Id, LinkUploadLimit.Limit(http.RequestServices.GetRequiredService<ServerConfig>()), session.Size);
+                await using (var body = FilesApi.OpenSession(a.Db, session)) name = await StoreNew(a, dir!, session.Name, body, ct);
+                held.Commit();
+            }
             catch (QuotaExceededException) { return Gone("Der Speicher des Empfängers ist voll.", 507); }
+            catch (LinkUploadLimitException) { FilesApi.DropSession(a.Db, session); return LinkUploadLimit.Refused(); }
+            // [feature:uploadlimit:else]
+            // try { await using (var body = FilesApi.OpenSession(a.Db, session)) name = await StoreNew(a, dir!, session.Name, body, ct); }
+            // catch (QuotaExceededException) { return Gone("Der Speicher des Empfängers ist voll.", 507); }
+            // [/feature:uploadlimit]
             FilesApi.DropSession(a.Db, session);
             // Im Einwurf-Modus bleibt der Ordnerinhalt verborgen - auch der (umbenannte) Name
             return Results.Ok(a.Link.Mode == "drop" ? new { files = (string[]?)null, count = 1 } : new { files = (string[]?)[name], count = 1 });

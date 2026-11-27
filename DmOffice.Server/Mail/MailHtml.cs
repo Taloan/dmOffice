@@ -12,13 +12,17 @@ namespace DmOffice.Mail;
 /// </summary>
 public static partial class MailHtml
 {
-    public sealed record Result(string Html, bool HasRemoteImages);
+    /// <param name="Trackers">Entfernte Zählpixel (nur mit Tracker-Schutz, sonst 0).</param>
+    /// <param name="CleanedLinks">Links, aus denen Angaben zur Nachverfolgung entfernt wurden.</param>
+    public sealed record Result(string Html, bool HasRemoteImages, int Trackers = 0, int CleanedLinks = 0);
 
     /// <param name="junk">Junk: auch eingebettete Bilder (cid:, data:) sperren und Links nicht anklickbar machen -
     /// wie in Outlook ohne Ausnahme; freigegeben wird erst, wenn die Mail als "Kein Junk" im Posteingang liegt.</param>
-    public static Result Sanitize(string html, bool allowRemote, Func<string, string?> cidUrl, bool junk = false)
+    /// <param name="trackers">Tracker-Schutz (<see cref="MailTrackers"/>): Zählpixel entfernen, Links bereinigen.</param>
+    public static Result Sanitize(string html, bool allowRemote, Func<string, string?> cidUrl, bool junk = false, bool trackers = false)
     {
         bool lockAll = junk;
+        int pixels = 0, links = 0;
         if (junk) allowRemote = false;
         bool remote = false;
         var sanitizer = new HtmlSanitizer();
@@ -56,10 +60,29 @@ public static partial class MailHtml
 
         // cid: vor dem Bereinigen auf die eigene Adresse umschreiben - die
         // Bereinigung kennt das Schema nicht und wuerde die Bilder entfernen.
+        // Die so erzeugten Adressen sind die einzigen eigenen, die ein Bild laden darf.
+        var own = new HashSet<string>(StringComparer.Ordinal);
         html = CidRx().Replace(html, m =>
         {
             var url = cidUrl(m.Groups[2].Value);
-            return url == null ? m.Value : m.Groups[1].Value + url;
+            if (url == null) return m.Value;
+            own.Add(url);
+            return m.Groups[1].Value + url.Replace("&", "&amp;");
+        });
+
+        // Adresse in url(...) eines Stils: eingebettet bleibt, aus dem Netz nur wenn erlaubt, alles andere
+        // (eigene Server-Adressen, fremde Schemata) lädt nichts.
+        string Css(string css) => CssUrlRx().Replace(css, m =>
+        {
+            var target = m.Groups[1].Success ? m.Groups[1].Value : m.Groups[2].Success ? m.Groups[2].Value : m.Groups[3].Value;
+            switch (Kind(target, own))
+            {
+                case Source.Embedded: return m.Value;
+                case Source.Remote:
+                    remote = true;
+                    return allowRemote ? m.Value : "none";
+                default: return "none";
+            }
         });
 
         sanitizer.PostProcessNode += (_, e) =>
@@ -72,6 +95,11 @@ public static partial class MailHtml
                 // data:-Links sind nur fuer Bilder da - als Link koennten sie eine fremde Seite aufmachen
                 if (el.GetAttribute("href") is { } target && target.TrimStart().StartsWith("data:", StringComparison.OrdinalIgnoreCase))
                     el.RemoveAttribute("href");
+                if (trackers && el.GetAttribute("href") is { Length: > 0 } link && MailTrackers.CleanLink(link) is { } cleaned)
+                {
+                    el.SetAttribute("href", cleaned);
+                    links++;
+                }
                 // Junk: Ziel nur als Hinweis zeigen, nicht klickbar
                 if (lockAll && el.GetAttribute("href") is { Length: > 0 } href)
                 {
@@ -95,9 +123,24 @@ public static partial class MailHtml
                     el.RemoveAttribute("srcset");
                     el.SetAttribute("alt", "[Bild gesperrt]");
                 }
-                else if (src.StartsWith("http:", StringComparison.OrdinalIgnoreCase) ||
-                    src.StartsWith("https:", StringComparison.OrdinalIgnoreCase) || src.StartsWith("//") || src.StartsWith("\\\\") || src.StartsWith("/\\") || src.StartsWith("\\/"))
+                else if (Kind(src, own) == Source.Other)
                 {
+                    // Eigene Server-Adressen (relativ) und fremde Schemata: kein Bild - sonst ruft die Mail
+                    // Adressen dieses Servers mit der Anmeldung des Lesers auf
+                    el.RemoveAttribute("src");
+                }
+                else if (Kind(src, own) == Source.Remote)
+                {
+                    // Zählpixel: fällt ganz weg, auch wenn entfernte Bilder erlaubt sind (zählt nicht als Bild zum Nachladen)
+                    if (trackers && MailTrackers.IsPixel(el, src))
+                    {
+                        pixels++;
+                        el.RemoveAttribute("src");
+                        el.RemoveAttribute("srcset");
+                        el.SetAttribute("alt", "");
+                        el.SetAttribute("style", "display:none");
+                        return;
+                    }
                     remote = true;
                     if (!allowRemote)
                     {
@@ -107,26 +150,39 @@ public static partial class MailHtml
                     }
                 }
             }
-            if (!allowRemote && el.GetAttribute("style") is { } style && RemoteUrlRx().IsMatch(style))
+            // Bildauswahl je Auflösung: lässt sich nicht einzeln prüfen
+            el.RemoveAttribute("srcset");
+            if (el.GetAttribute("style") is { } style)
             {
-                remote = true;
-                el.SetAttribute("style", RemoteUrlRx().Replace(style, "none"));
+                var cleaned = Css(style);
+                if (cleaned != style) el.SetAttribute("style", cleaned);
             }
-            if (!allowRemote && el.GetAttribute("background") is { Length: > 0 })
+            if (el.GetAttribute("background") is { Length: > 0 } background)
             {
-                remote = true;
-                el.RemoveAttribute("background");
+                var kind = Kind(background, own);
+                if (kind == Source.Remote) remote = true;
+                if (kind == Source.Other || (kind == Source.Remote && !allowRemote)) el.RemoveAttribute("background");
             }
         };
 
         var clean = sanitizer.Sanitize(html);
-        if (!allowRemote && RemoteUrlRx().IsMatch(clean))
-        {
-            // url(...) in <style>-Bloecken
-            remote = true;
-            clean = RemoteUrlRx().Replace(clean, "none");
-        }
-        return new Result(clean, remote);
+        // url(...) in <style>-Bloecken
+        clean = StyleBlockRx().Replace(clean, m => m.Groups[1].Value + Css(m.Groups[2].Value) + m.Groups[3].Value);
+        return new Result(clean, remote, pixels, links);
+    }
+
+    private enum Source { Embedded, Remote, Other }
+
+    /// <summary>Woher ein Bild käme: eingebettet (data:, Teil der Mail), aus dem Netz, oder anders (relativ = dieser Server, fremdes Schema).</summary>
+    private static Source Kind(string? url, HashSet<string> own)
+    {
+        var s = NormalizeUrl(url);
+        if (s.Length == 0 || own.Contains(s) || s.StartsWith("data:", StringComparison.OrdinalIgnoreCase)) return Source.Embedded;
+        // Der Browser liest \ wie / ; "https:/host" und "https:host" führen ebenfalls ins Netz
+        var n = s.Replace('\\', '/');
+        if (n.StartsWith("http:", StringComparison.OrdinalIgnoreCase) || n.StartsWith("https:", StringComparison.OrdinalIgnoreCase) || n.StartsWith("//"))
+            return Source.Remote;
+        return Source.Other;
     }
 
     /// <summary>URL wie im Browser vor dem Auswerten: Tab, CR, LF entfernt, Steuer- und Leerzeichen an den Rändern abgeschnitten.</summary>
@@ -164,8 +220,11 @@ public static partial class MailHtml
     [GeneratedRegex("(src\\s*=\\s*[\"']?)cid:([^\"'\\s>]+)", RegexOptions.IgnoreCase)]
     private static partial Regex CidRx();
 
-    [GeneratedRegex("url\\(\\s*['\"]?(https?:)?//[^)]*\\)", RegexOptions.IgnoreCase)]
-    private static partial Regex RemoteUrlRx();
+    [GeneratedRegex("url\\(\\s*(?:\"([^\"]*)\"|'([^']*)'|([^)]*?))\\s*\\)", RegexOptions.IgnoreCase)]
+    private static partial Regex CssUrlRx();
+
+    [GeneratedRegex("(<style\\b[^>]*>)(.*?)(</style>)", RegexOptions.IgnoreCase | RegexOptions.Singleline)]
+    private static partial Regex StyleBlockRx();
 
     [GeneratedRegex("\\n{3,}")]
     private static partial Regex MultiBlankRx();

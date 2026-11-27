@@ -22,7 +22,7 @@ public sealed class DbRescue(DataPaths paths, UserStore users, Spaces spaces, Se
     {
         if (name.StartsWith("user:", StringComparison.Ordinal))
         {
-            var user = users.ById(name[5..]) ?? throw new KeyNotFoundException("Diese Person gibt es nicht.");
+            var user = users.ById(name[5..]) ?? throw new KeyNotFoundException("Diesen Benutzer gibt es nicht.");
             var path = paths.UserDb(user.Id);
             return (path, UserDb.ConnectionStringOf(path, users.DbKey(user)), user);
         }
@@ -33,12 +33,12 @@ public sealed class DbRescue(DataPaths paths, UserStore users, Spaces spaces, Se
             "push" => services.GetRequiredService<WebPush>().ConnectionString,
             _ => throw new KeyNotFoundException("Diese Datenbank gibt es nicht."),
         };
-        return (new SqliteConnectionStringBuilder(cs).DataSource, cs, null);
+        return (UserDb.PathOf(cs), cs, null);
     }
 
     private static string WithFile(string connectionString, string file, bool readOnly = false)
     {
-        var b = new SqliteConnectionStringBuilder(connectionString) { DataSource = file, Pooling = false };
+        var b = new SqliteConnectionStringBuilder(UserDb.WithFile(connectionString, file)) { Pooling = false };
         if (readOnly) b.Mode = SqliteOpenMode.ReadOnly;
         return b.ToString();
     }
@@ -61,8 +61,8 @@ public sealed class DbRescue(DataPaths paths, UserStore users, Spaces spaces, Se
             health.RunNow();
             log.LogWarning("Datenbank {Name} repariert: {Tables} Tabellen, {Incomplete} unvollständig, {Rows} Zeilen; beschädigte Datei: {Kept}", name, tables, incomplete, rows, kept);
             return new(true, incomplete == 0
-                ? $"Repariert: {tables} Tabellen und {rows:N0} Einträge übernommen. Die beschädigte Datei liegt als {Path.GetFileName(kept)} daneben."
-                : $"Repariert, aber {incomplete} von {tables} Tabellen ließen sich nicht ganz lesen; {rows:N0} Einträge übernommen. Fehlt etwas Wichtiges, die Datenbank aus der Sicherung ersetzen. Die beschädigte Datei liegt als {Path.GetFileName(kept)} daneben.",
+                ? $"Repariert: {tables} Tabellen und {DmOffice.Core.Num.N(rows)} Einträge übernommen. Die beschädigte Datei liegt als {Path.GetFileName(kept)} daneben."
+                : $"Repariert, aber {incomplete} von {tables} Tabellen ließen sich nicht ganz lesen; {DmOffice.Core.Num.N(rows)} Einträge übernommen. Fehlt etwas Wichtiges, die Datenbank aus der Sicherung ersetzen. Die beschädigte Datei liegt als {Path.GetFileName(kept)} daneben.",
                 tables, incomplete, rows);
         }
         catch (Exception e) when (e is SqliteException or IOException or KeyNotFoundException or UnauthorizedAccessException)
@@ -228,6 +228,8 @@ public sealed class DbRescue(DataPaths paths, UserStore users, Spaces spaces, Se
         if (user != null) spaces.Forget(user.Id);
         SqliteConnection.ClearAllPools();
         var kept = path + ".beschaedigt-" + DateTime.Now.ToString("yyyyMMdd-HHmmss");
+        // zwei Eingriffe in derselben Sekunde: die erste Kopie bleibt
+        for (var n = 2; File.Exists(kept); n++) kept = path + ".beschaedigt-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + n;
         File.Move(path, kept);
         foreach (var x in new[] { "-wal", "-shm" })
             if (File.Exists(path + x)) File.Move(path + x, kept + x);

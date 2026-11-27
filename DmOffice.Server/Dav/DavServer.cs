@@ -68,11 +68,16 @@ public static partial class DavServer
 
     public const string SharedPrefix = "shared-";
 
-    /// Nur gezeigte (Version 2) fehlen: Abgleich auf ein Geraet waere eine Kopie. Reservierte Sammlungen (PimStore.IsReserved) ebenso.
+    // [feature:journal]
+    /// Nur gezeigte (Version 2) fehlen: Abgleich auf ein Geraet waere eine Kopie. Geteilte Tagebuecher ebenso: Mitglieder gehen
+    /// ueber /api/journal, das private Eintraege und fremde Medien aussen vor laesst.
+    // [feature:journal:else]
+    // /// Nur gezeigte (Version 2) fehlen: Abgleich auf ein Geraet waere eine Kopie. Reservierte Sammlungen (PimStore.IsReserved) ebenso.
+    // [/feature:journal]
     /// <summary>Die geteilten Kalender dieses Benutzers in der Form, wie sein Programm sie sieht.</summary>
     private static IEnumerable<(Collection Coll, Shared Sh)> SharedCalendars(HttpContext http, UserSpace space) =>
         SharedLists.For(http.RequestServices.GetRequiredService<ShareStore>(), http.RequestServices.GetRequiredService<Spaces>(), space.User.Id)
-            .Where(x => !x.Share.IsShowOnly(space.User.Id) && !DmOffice.Pim.PimStore.IsReserved(x.Coll))
+            .Where(x => !x.Share.IsShowOnly(space.User.Id) && !PimStore.IsReserved(x.Coll))
             .Select(x => (Present(x.Coll, x.Share, x.Owner), new Shared(x.Share, x.Owner, x.Share.ReadOnly.Contains(space.User.Id))));
 
     private static Collection Present(Collection c, Share share, UserSpace owner) =>
@@ -86,14 +91,14 @@ public static partial class DavServer
         UserSpace owner;
         try { owner = http.RequestServices.GetRequiredService<Spaces>().Get(share.Owner); } catch { return (null, null); }
         var c = PimStore.Find(owner.Db, share.Collection);
-        return c == null || DmOffice.Pim.PimStore.IsReserved(c) ? (null, null) : (Present(c, share, owner), new Shared(share, owner, share.ReadOnly.Contains(space.User.Id)));
+        return c == null || PimStore.IsReserved(c) ? (null, null) : (Present(c, share, owner), new Shared(share, owner, share.ReadOnly.Contains(space.User.Id)));
     }
 
     /// <summary>Unter welcher Adresse die Anfrage kam: /dav, /remote.php/dav oder /remote.php/webdav.</summary>
     private enum Flavor { Dav, RemoteDav, RemoteWebdav }
 
-    private static bool HiddenForNextcloud(UserSpace space, string path) =>
-        FileStore.InRoot(path, space.Settings.Notizi.Root) || FileStore.InRoot(path, DmOffice.Dav.FileStore.ReservedRoot) || VaultHidden(space, path)
+    internal static bool HiddenForNextcloud(UserSpace space, string path) =>
+        FileStore.InRoot(path, space.Settings.Notizi.Root) || FileStore.InRoot(path, FileStore.ReservedRoot) || VaultHidden(space, path)
         || DavHidden.Covers(space.Db, path);
 
     /// <summary>System-Tresor: über WebDAV und Nextcloud nur, wenn die Person ihn bereitstellt (Einstellungen → Tresor).</summary>
@@ -102,12 +107,20 @@ public static partial class DavServer
     /// <summary>Abgleichordner von notizi fuer diesen Zugang ausblenden? Fuer Nextcloud-Clients immer; ueber /dav,
     /// sobald es einen eigenen notizi-Zugang gibt, fuer alle anderen App-Passwoerter.</summary>
     private static bool HiddenFor(HttpContext http, UserSpace space, string path, bool nextcloud) =>
-        // Reservierter Systemordner: für jeden WebDAV-Zugang unsichtbar
-        FileStore.InRoot(path, DmOffice.Dav.FileStore.ReservedRoot) || VaultHidden(space, path)
+        // Systemordner des Tagebuchs: für jeden WebDAV-Zugang unsichtbar
+        FileStore.InRoot(path, FileStore.ReservedRoot) || VaultHidden(space, path)
         // von der Person ausgeblendete Ordner (Kontextmenü der Dateiablage): für jeden WebDAV-Zugang
         || DavHidden.Covers(space.Db, path)
         || FileStore.InRoot(path, space.Settings.Notizi.Root)
         // jeder Zugang ausser dem notizi-Zugang selbst (auch App-Passwoerter mit Bereich "dav" aus dem Login-Flow)
+        && (nextcloud || (Scope(http) != AppPasswords.ScopeNotizi && AppPasswords.HasNotiziScope(space.Db)));
+
+    /// <summary>Liegt unter dem Pfad etwas, das dieser Zugang nicht sieht (Gegenstück zu <see cref="HiddenFor"/> für ganze Ordner)?</summary>
+    private static bool HidesInside(HttpContext http, UserSpace space, string path, bool nextcloud) =>
+        FileStore.Contains(path, FileStore.ReservedRoot)
+        || (FileStore.Contains(path, FileStore.SystemVault) && !Tresor.DavEnabled(space.User.Id))
+        || DavHidden.Within(space.Db, path)
+        || FileStore.Contains(path, space.Settings.Notizi.Root)
         && (nextcloud || (Scope(http) != AppPasswords.ScopeNotizi && AppPasswords.HasNotiziScope(space.Db)));
 
     private static string? Scope(HttpContext http) => http.User.FindFirst(Auth.ScopeClaim)?.Value;
@@ -326,6 +339,7 @@ public static partial class DavServer
         }
         catch (InvalidOperationException) { http.Response.StatusCode = 405; }
         catch (System.Xml.XmlException) { http.Response.StatusCode = 400; }
+        catch (DmOffice.Core.ReadLimit.TooLargeException) { http.Response.StatusCode = 413; }
     }
 
     /// <summary>
@@ -348,9 +362,27 @@ public static partial class DavServer
     /// <summary>Was ein Programm erfragt: alle Eigenschaften, nur ihre Namen, oder eine Liste.</summary>
     private sealed record PropRequest(bool All, bool NamesOnly, List<XName> Names);
 
+    /// <summary>PROPFIND, PROPPATCH, REPORT: XML-Anfragen sind klein - mehr wird nicht gelesen (sonst 413).</summary>
+    private const long MaxXmlBody = 4L * 1024 * 1024;
+
+    /// <summary>Termin, Aufgabe oder Kontakt (PUT): ein Eintrag samt eingebettetem Foto oder Anhang - mehr wird nicht gelesen (sonst 413).</summary>
+    internal const long MaxPimObject = 20L * 1024 * 1024;
+    /// <summary>Datei im Abgleichordner von notizi im Tresor (PUT): liegt ganz in der Tresor-Datenbank, darum begrenzt (sonst 413).</summary>
+    internal const long MaxNotiziFile = 64L * 1024 * 1024;
+
+    /// <summary>Inhalt einer Anfrage ganz in den Speicher, höchstens <paramref name="max"/> Bytes - auch wenn das Programm keine
+    /// oder eine falsche Länge nennt.</summary>
+    internal static async Task<byte[]> BodyBytes(HttpContext http, long max)
+    {
+        if (http.Request.ContentLength > max) throw new DmOffice.Core.ReadLimit.TooLargeException();
+        return await DmOffice.Core.ReadLimit.ReadAllAsync(http.Request.Body, max, http.RequestAborted, http.Request.ContentLength ?? 0);
+    }
+
     private static async Task<XDocument?> Body(HttpContext http)
     {
-        using var reader = new StreamReader(http.Request.Body, Encoding.UTF8);
+        if (http.Request.ContentLength > MaxXmlBody) throw new DmOffice.Core.ReadLimit.TooLargeException();
+        var raw = await DmOffice.Core.ReadLimit.ReadAllAsync(http.Request.Body, MaxXmlBody, http.RequestAborted);
+        using var reader = new StreamReader(new MemoryStream(raw), Encoding.UTF8);
         var text = await reader.ReadToEndAsync();
         if (string.IsNullOrWhiteSpace(text)) return null;
         return XDocument.Parse(text);
@@ -684,9 +716,8 @@ public static partial class DavServer
             }
             case "PUT":
             {
-                using var ms = new MemoryStream();
-                await http.Request.Body.CopyToAsync(ms, http.RequestAborted);
-                var (etag, created) = DmOffice.Notes.TresorNotizi.Put(space, rel, ms.ToArray(), Header(http, "If-Match"), Header(http, "If-None-Match"));
+                var body = await BodyBytes(http, MaxNotiziFile);
+                var (etag, created) = DmOffice.Notes.TresorNotizi.Put(space, rel, body, Header(http, "If-Match"), Header(http, "If-None-Match"));
                 http.Response.Headers.ETag = etag;
                 http.Response.Headers["OC-ETag"] = etag;
                 http.Response.StatusCode = created ? 201 : 204;
@@ -1033,16 +1064,16 @@ public static partial class DavServer
             case Kind.CalendarObject:
             case Kind.BookObject:
             {
-                using var ms = new MemoryStream();
-                await http.Request.Body.CopyToAsync(ms);
+                var body = await BodyBytes(http, MaxPimObject);
                 var db = DbOf(space, t);
                 var old = PimStore.Object(db, t.Coll!.Id, t.Name!);
                 bool existed = old != null;
-                var data = Encoding.UTF8.GetString(ms.ToArray()).TrimStart('﻿');
+                var data = Encoding.UTF8.GetString(body).TrimStart('﻿');
                 var etag = PimStore.Put(db, t.Coll, t.Name!, data, ifMatch, ifNoneMatch, space.Zone);
                 // Einkaufsliste aus der App (oder einem anderen CalDAV-Programm): neue Artikel in die Vorschlaege der Liste,
                 // bei geteilten Listen in die des Besitzers - so wie beim Eintragen im Web
                 if (t.Kind == Kind.CalendarObject) Lists.LearnFromIcs(db, t.Coll.Id, old?.Data, data);
+                // Projekte: Vorgang über CalDAV geändert - neu rechnen
                 http.Response.Headers.ETag = etag;
                 http.Response.StatusCode = existed ? 204 : 201;
                 return;
@@ -1187,6 +1218,9 @@ public static partial class DavServer
             bool sameArea = from.Db == to.Db && from.Mount?.Share.Id == to.Mount?.Share.Id;
             bool asCopy = copy || (from.Shared && !sameArea);
             if (!asCopy) from.Changeable();
+            // Kopie eines Ordners, in dem ein ausgeblendeter liegt: die Kopie darin hätte neue Dateinummern und wäre
+            // für diesen Zugang sichtbar - samt Inhalt, den die Person vor dem Abgleich verbirgt
+            if (asCopy && !from.Shared && HidesInside(http, space, from.Path, Segments(http).Item1 != Flavor.Dav)) { http.Response.StatusCode = 403; return; }
             // Verschieben eines Ordners, in dem der notizi-Abgleichordner liegt, nimmt ihn mit (wie FilesApi.LocTree)
             if (!asCopy && FileStore.Contains(from.Path, FileStore.ProtectedRoot(from.Db))) { http.Response.StatusCode = 403; return; }
             bool created;

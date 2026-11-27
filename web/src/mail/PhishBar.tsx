@@ -47,7 +47,7 @@ export function phishWarns(found: PhishFinding[]) {
 }
 
 /** Warnbalken ueber dem Inhalt der Mail. Nur ein Hinweis - die Mail wird weder verschoben noch gesperrt. */
-export function PhishBar({ found, className, onJunk }: { found: PhishFinding[]; className?: string; onJunk?: () => void }) {
+export function PhishBar({ found, className, onJunk, onSafe }: { found: PhishFinding[]; className?: string; onJunk?: () => void; onSafe?: () => void }) {
   const s = useStyles()
   if (found.length === 0) return null
   const warn = phishWarns(found)
@@ -58,7 +58,10 @@ export function PhishBar({ found, className, onJunk }: { found: PhishFinding[]; 
         <ul className={s.list}>{found.map((f, i) => <li key={i}>{phishText(f)}</li>)}</ul>
         <div className={s.advice}>{t('Im Zweifel keinen Link anklicken und keine Zugangsdaten eingeben. Die Website besser selbst im Browser aufrufen.')}</div>
       </MessageBarBody>
-      {onJunk && <MessageBarActions><Button size="small" onClick={onJunk}>{t('Junk')}</Button></MessageBarActions>}
+      {(onJunk || onSafe) && <MessageBarActions>
+        {onSafe && <Button size="small" onClick={onSafe}>{t('Kein Betrug')}</Button>}
+        {onJunk && <Button size="small" onClick={onJunk}>{t('Junk')}</Button>}
+      </MessageBarActions>}
     </MessageBar>
   )
 }

@@ -1,6 +1,8 @@
-import { Button, Checkbox, Input, Link, MessageBar, MessageBarBody, MessageBarTitle, ProgressBar, Switch, Text, tokens } from '@fluentui/react-components'
+import { Button, Input, Link, MessageBar, MessageBarBody, MessageBarTitle, ProgressBar, Switch, Text, tokens } from '@fluentui/react-components'
 import { useEffect, useState } from 'react'
 import { api, featureOn, fmtSize } from '../api'
+import { isSftp } from '../files/SftpFields' // [feature:sftptrust]
+import { ensureSftpTrust } from '../files/SftpTrust' // [feature:sftptrust]
 import { FormerTargets } from './FormerTargets'
 import { useApp } from '../App'
 import { locale, t } from '../i18n'
@@ -8,6 +10,16 @@ import { AdminHeading } from './AdminHeading'
 import { BOX_COLORS } from './StorageDiagrams'
 import { Target, TargetFields, TargetValues, valuesOf } from './TargetFields'
 import { askConfirm } from '../shell/context'
+import { useAdminSave } from './draft' // [feature:savemode]
+import { useRef } from 'react' // [feature:savemode]
+// [feature:adminclean]
+import { useAdminPart, useShows } from './AdminPage'
+import { TargetForm } from './TargetForm'
+import { RibbonActions, RibbonButton } from '../shell/Ribbon'
+import { ArrowSync20Regular, Checkmark20Regular, Delete20Regular, Dismiss20Regular } from '@fluentui/react-icons'
+// [feature:adminclean:else]
+// import { Checkbox } from '@fluentui/react-components'
+// [/feature:adminclean]
 
 interface Restore { running: boolean; finished: string | null; missing: number; restored: number; notThere: number; failed: number; error: string | null }
 interface Cache { usage?: Usage; cap?: number; usedRemote?: number; toRemove?: number; full?: boolean; bytes: number; fetched: number; streamed: number; both: number; bothBytes: number; remote: number; remoteBytes: number; fixedBytes: number; pendingCount: number; pendingBytes: number; waiting?: number; thumbBytes?: number; busy?: BusyPart[] | null }
@@ -54,9 +66,9 @@ function SizeField({ gb, onChange, disabled, label }: { gb: number; onChange: (g
 /** Belegung als drei Knöpfe nebeneinander: Minimal, Optimal, Maximal */
 function UsagePick({ value, onChange }: { value: Usage; onChange: (u: Usage) => void }) {
   return (
-    <div role="radiogroup" aria-label={t('Belegung')} style={{ display: 'flex', width: 'fit-content', border: `1px solid ${tokens.colorNeutralStroke1}`, borderRadius: 4, overflow: 'hidden' }}>
+    <div role="radiogroup" aria-label={t('Belegung')} style={{ display: 'flex', width: 'fit-content', maxWidth: '100%', border: `1px solid ${tokens.colorNeutralStroke1}`, borderRadius: 4, overflow: 'hidden' }}>
       {USAGES.map((u, i) => <button key={u} type="button" role="radio" aria-checked={value === u} onClick={() => onChange(u)}
-        style={{ border: 'none', borderLeft: i ? `1px solid ${tokens.colorNeutralStroke2}` : 'none', padding: '6px 12px', cursor: 'pointer', fontSize: 13,
+        style={{ border: 'none', borderLeft: i ? `1px solid ${tokens.colorNeutralStroke2}` : 'none', padding: '6px 9px', cursor: 'pointer', fontSize: 13, flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           background: value === u ? tokens.colorBrandBackground2 : 'transparent', color: value === u ? tokens.colorBrandForeground2 : tokens.colorNeutralForeground1, fontWeight: value === u ? 600 : 400 }}>{usageName(u)}</button>)}
     </div>
   )
@@ -90,8 +102,9 @@ function Facts({ rows }: { rows: FactRow[] }) {
   )
 }
 
-/** Eine Spalte: Überschrift, Balken, Einstellungen, Tabelle, Fußzeile - die Zeilen teilen sich beide Spalten (subgrid) */
-const column: React.CSSProperties = { display: 'grid', gridRow: 'span 5', gridTemplateRows: 'subgrid', rowGap: 10, padding: '14px 16px', borderRadius: 10,
+/** Eine Spalte: Überschrift, Balken (nur mit Storage Extender), Einstellungen, Tabelle, Fußzeile - die Zeilen teilen sich beide Spalten (subgrid) */
+// Spaltenbreite fest an der Karte: sonst dehnt ein breiter Inhalt (Auswahl Belegung) die Spalte über den Innenabstand hinaus
+const column: React.CSSProperties = { display: 'grid', gridRow: 'span 5', gridTemplateRows: 'subgrid', gridTemplateColumns: 'minmax(0, 1fr)', rowGap: 10, padding: '14px 16px', borderRadius: 10,
   border: `1px solid ${tokens.colorNeutralStroke2}`, background: tokens.colorNeutralBackground1 }
 const fieldLabel: React.CSSProperties = { display: 'flex', alignItems: 'center', minHeight: 32, marginBottom: 2 }
 const COLORS = { files: BOX_COLORS.used, clear: BOX_COLORS.clean, thumbs: BOX_COLORS.foreign }
@@ -113,6 +126,14 @@ export function StorageAdmin({ onOpen }: { onOpen: (page: string) => void }) {
   const [f, setF] = useState<TargetValues>(valuesOf({}))
   const [target, setTarget] = useState<Target>('s3')
   const [busy, setBusy] = useState(false)
+  // [feature:adminclean]
+  // Kennung adminclean: Reiter Übersicht (Hauptschalter oben, Karten), Ziel, Belegung; Aktionen im Menüband
+  const shows = useShows()
+  const tabbed = useAdminPart().part != null
+  // [feature:adminclean:else]
+  // const shows = (..._: string[]) => true
+  // const tabbed = false
+  // [/feature:adminclean]
   // Regler: zeigen die Auswirkung sofort, wirksam erst mit „Übernehmen“ - sonst bereinigte dmOffice schon beim Ausprobieren
   const [freeGb, setFreeGb] = useState(50)
   const [limited, setLimited] = useState(false)
@@ -139,21 +160,49 @@ export function StorageAdmin({ onOpen }: { onOpen: (page: string) => void }) {
     const h = setInterval(() => api.get<StorageState>('/api/admin/storage').then(s => setSt(o => (o ? { ...o, status: s.status, volume: s.volume, targetSpace: s.targetSpace, atTargetBytes: s.atTargetBytes, notHome: s.notHome } : s))).catch(() => {}), 5000)
     return () => clearInterval(h)
   }, [st?.mirror, st?.status.restore?.running])
+  // [feature:savemode]
+  // Kennung savemode: Regler und Schalter „Storage Extender verwenden“ gelten mit „Speichern“ im Menüband
+  const [mirrorDraft, setMirrorDraft] = useState<boolean | null>(null)
+  const later = useRef<{ dirty: boolean; save: () => Promise<boolean>; discard: () => void }>({ dirty: false, save: async () => true, discard: () => {} })
+  const drafting = useAdminSave({
+    get dirty() { return later.current.dirty || (mirrorDraft !== null && mirrorDraft !== st?.mirror) },
+    save: () => later.current.save(),
+    discard: () => { later.current.discard(); setMirrorDraft(null) },
+  })
+  // [feature:savemode:else]
+  // const drafting = false
+  // const mirrorDraft = null as boolean | null
+  // const setMirrorDraft = (_: boolean | null) => {}
+  // [/feature:savemode]
   if (!st) return null
   const save = async (mirror: boolean, secretKey?: string | null) => {
     try {
+      // [feature:sftptrust]
+      if (target === 'webdav' && isSftp(f.webDavUrl) && !await ensureSftpTrust({ url: f.webDavUrl }, { admin: true })) return false
+      // [/feature:sftptrust]
       take(await api.put<StorageState>('/api/admin/storage', { mirror, ...f, target, secretKey: secretKey !== undefined ? secretKey : f.secretKey || null, webDavPassword: f.webDavPassword || null }))
       notify(t('Gespeichert'))
+      return true // [feature:savemode]
     } catch (e) { fail(e) }
+    return false // [feature:savemode]
   }
   const test = async () => {
     setBusy(true)
     // Erst die Eingaben speichern, dann genau die prüfen
-    try { take(await api.put<StorageState>('/api/admin/storage', { mirror: st.mirror, ...f, target, secretKey: f.secretKey || null, webDavPassword: f.webDavPassword || null })); await api.post('/api/admin/storage/test'); setTested(true) } catch (e) { setTested(false); fail(e) } finally { setBusy(false) }
+    try {
+      // [feature:sftptrust]
+      if (target === 'webdav' && isSftp(f.webDavUrl) && !await ensureSftpTrust({ url: f.webDavUrl }, { admin: true })) return
+      // [/feature:sftptrust]
+      take(await api.put<StorageState>('/api/admin/storage', { mirror: st.mirror, ...f, target, secretKey: f.secretKey || null, webDavPassword: f.webDavPassword || null })); await api.post('/api/admin/storage/test'); setTested(true) } catch (e) { setTested(false); fail(e) } finally { setBusy(false) }
   }
   const apply = async () => {
     try { take(await api.put<StorageState>('/api/admin/storage/mode', { limited, targetGb: limitGb, minFreeGb: freeGb, ...(ext ? { usage, sizeLimited, sizeGb } : {}) })); notify(t('Gespeichert')) } catch (e) { fail(e) }
   }
+  // [feature:savemode]
+  const applyOk = async () => {
+    try { take(await api.put<StorageState>('/api/admin/storage/mode', { limited, targetGb: limitGb, minFreeGb: freeGb, ...(ext ? { usage, sizeLimited, sizeGb } : {}) })); return true } catch (e) { fail(e); return false }
+  }
+  // [/feature:savemode]
   const reset = () => { setFreeGb(st.minFreeGb); setLimited(st.limited); setLimitGb(st.cacheTargetGb); setUsage(st.usage ?? 'max'); setSizeLimited(st.sizeGb != null); setSizeGb(st.sizeGb ?? 1024) }
   const set = (k: keyof TargetValues, value: string) => { setTested(false); setF(x => ({ ...x, [k]: value })) }
   const ready = tested || st.mirror
@@ -173,6 +222,19 @@ export function StorageAdmin({ onOpen }: { onOpen: (page: string) => void }) {
   // sind Begrenzer und sperren nur Kästchen. Rot ist, was sich bereinigen lässt - bei geänderten Reglern als Vorschau.
   const dirty = freeGb !== st.minFreeGb || limited !== st.limited || (limited && limitGb !== st.cacheTargetGb)
     || (ext && (usage !== (st.usage ?? 'max') || sizeLimited !== (st.sizeGb != null) || (sizeLimited && sizeGb !== st.sizeGb)))
+  // [feature:savemode]
+  later.current = {
+    dirty,
+    save: async () => {
+      if (dirty && !(await applyOk())) return false
+      if (mirrorDraft !== null && mirrorDraft !== st.mirror && !(await save(mirrorDraft))) return false
+      if (!dirty && mirrorDraft === null) return true
+      if (dirty && mirrorDraft === null) notify(t('Gespeichert'))
+      setMirrorDraft(null); return true
+    },
+    discard: reset,
+  }
+  // [/feature:savemode]
   const vol = st.volume
   const cache = s.cache
   const used = cache?.bytes ?? 0
@@ -207,9 +269,27 @@ export function StorageAdmin({ onOpen }: { onOpen: (page: string) => void }) {
   const extFiles = cache ? cache.bothBytes + cache.remoteBytes : 0
   const extThumbs = Math.max(0, usedRemote - extFiles - (cache?.toRemove ?? 0))
 
+  // Hinweis zum Backup und der Schalter in einem Kasten - eingeschaltet grün; alte Verwaltung ganz am Ende, neue oben in der Übersicht
+  const mainBox = (
+      <MessageBar intent={st.mirror ? 'success' : 'warning'} layout="multiline" style={{ marginTop: tabbed ? 0 : 16 }}><MessageBarBody>
+        <div>
+          {t('Für ein eventuelles Backup des Storage Extenders ist der Administrator verantwortlich.')}
+          {' '}{withLink(t('Die Dateien der internen Dateiablage können über das interne {link} gesichert werden.'), t('Files-Backup'), () => onOpen('backup'))}
+        </div>
+        {!ready && <Text size={200} block style={{ ...muted, marginTop: 6 }}>{t('Erst das Ziel speichern und testen.')}</Text>}
+        <div style={{ marginTop: 8 }}>
+          {/* Gesperrt, solange Dateien nur im Storage Extender liegen: bleibt sichtbar eingeschaltet, ein Klick nennt den Grund */}
+          <Switch checked={mirrorDraft ?? st.mirror} disabled={!st.configured || !ready} style={st.mirror && away > 0 ? { cursor: 'not-allowed' } : undefined}
+            onChange={(_, d) => { if (st.mirror && away > 0) notify(t('Storage Extender bleibt aktiviert'), t('Einige Dateien liegen nur im Storage Extender. Er lässt sich erst ausschalten, wenn alle Dateien auch im lokalen Speicherpool liegen. Bei genügend Speicherplatz lädt dmOffice sie automatisch nach.'), 'warning'); else if (drafting) setMirrorDraft(d.checked); else save(d.checked) }}
+            label={t('Storage Extender verwenden')} />
+        </div>
+      </MessageBarBody></MessageBar>
+  )
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 640 }}>
-      <FormerTargets purposes={['storage']} />
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: tabbed ? undefined : 640 }}>
+      {shows('target') && <FormerTargets purposes={['storage']} />}
+      {tabbed && shows('overview') && mainBox}
+      {shows('overview') && <>
       <MessageBar intent="info" layout="multiline" icon={null}><MessageBarBody>
         <MessageBarTitle>{t('Storage Extender – Mehr Platz für Dateien')}</MessageBarTitle>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 6 }}>
@@ -222,24 +302,35 @@ export function StorageAdmin({ onOpen }: { onOpen: (page: string) => void }) {
             </>}
         </div>
       </MessageBarBody></MessageBar>
-      <AdminHeading>{t('Ziel')}</AdminHeading>
-      <TargetFields target={target} onTarget={x => { setTested(false); setTarget(x) }} v={f} onChange={set} hasSecret={st.hasSecret} hasWebDavPassword={st.hasWebDavPassword} kindLocked={away > 0} />
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+      </>}
+      {shows('target') && <>
+      {!tabbed && <AdminHeading>{t('Ziel')}</AdminHeading>}
+      {/* [feature:adminclean] */}
+      {tabbed && <TargetForm target={target} onTarget={x => { setTested(false); setTarget(x) }} v={f} onChange={set} hasSecret={st.hasSecret} hasWebDavPassword={st.hasWebDavPassword} kindLocked={away > 0} onTest={test} busy={busy} tested={tested} />}
+      {tabbed && target === 's3' && st.hasSecret && <RibbonActions><RibbonButton icon={<Delete20Regular />} disabled={away > 0} label={t('Schlüssel löschen')} onClick={() => save(false, '')} /></RibbonActions>}
+      {/* [/feature:adminclean] */}
+      {!tabbed && <TargetFields target={target} onTarget={x => { setTested(false); setTarget(x) }} v={f} onChange={set} hasSecret={st.hasSecret} hasWebDavPassword={st.hasWebDavPassword} kindLocked={away > 0} />}
+      {!tabbed && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
         <Button appearance="primary" disabled={busy} onClick={test}>{busy ? t('Prüfe …') : t('Speichern und testen')}</Button>
         {target === 's3' && st.hasSecret && <Button appearance="subtle" disabled={away > 0} onClick={() => save(false, '')}>{t('Schlüssel löschen')}</Button>}
-      </div>
-      {tested && <MessageBar intent="success"><MessageBarBody>{t('Verbindung geprüft: dmOffice kann dort schreiben, lesen und löschen.')}</MessageBarBody></MessageBar>}
+      </div>}
+      {!tabbed && tested && <MessageBar intent="success"><MessageBarBody>{t('Verbindung geprüft: dmOffice kann dort schreiben, lesen und löschen.')}</MessageBarBody></MessageBar>}
       {away > 0 && <Text size={200} style={muted}>{t('Art und Schlüssel lassen sich nicht ändern, solange Dateien nur im Storage Extender vollständig liegen. Beim Speichern neuer Verbindungsdaten prüft dmOffice, ob dort alle diese Dateien vorhanden sind. Fehlen Dateien, werden die neuen Verbindungsdaten nicht übernommen.')}</Text>}
-
-      <AdminHeading>{t('Speicherplatz')}</AdminHeading>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', columnGap: 12, rowGap: 0 }}>
+      </>}
+      {shows('overview') && <>
+      {!tabbed && <AdminHeading>{t('Speicherplatz')}</AdminHeading>}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12 }}>
         {/* Lokaler Speicherpool */}
-        <div style={column}>
+        <div style={{ ...column, gridRow: cache ? 'span 5' : 'span 4' }}>
           <Text weight="semibold" size={400}>{t('Lokaler Speicherpool')}</Text>
           {cache ? <Bar label={t('{used} von {limit} belegt', { used: fmtSize(used), limit: fmtSize(limit) })} whole={limit}
-            parts={[{ bytes: used - clean, color: COLORS.files }, { bytes: clean, color: COLORS.clear }]} /> : <span />}
+            parts={[{ bytes: used - clean, color: COLORS.files }, { bytes: clean, color: COLORS.clear }]} /> : null}
           <div>
-            <div style={fieldLabel}><Checkbox checked={limited} onChange={(_, d) => setLimited(!!d.checked)} label={t('Höchstens nutzen')} /></div>
+            {/* [feature:adminclean] */}
+            <div style={fieldLabel}><Switch checked={limited} onChange={(_, d) => setLimited(d.checked)} label={t('Höchstens nutzen')} /></div>
+            {/* [feature:adminclean:else] */}
+            {/* <div style={fieldLabel}><Checkbox checked={limited} onChange={(_, d) => setLimited(!!d.checked)} label={t('Höchstens nutzen')} /></div> */}
+            {/* [/feature:adminclean] */}
             <SizeField gb={limitGb} onChange={setLimitGb} disabled={!limited} label={t('Höchstens nutzen')} />
             <div style={{ ...fieldLabel, marginTop: 8 }}><Text>{t('Immer frei lassen')}</Text></div>
             <SizeField gb={freeGb} onChange={setFreeGb} label={t('Immer frei lassen')} />
@@ -259,14 +350,21 @@ export function StorageAdmin({ onOpen }: { onOpen: (page: string) => void }) {
             {cache && (cache.waiting ?? 0) > 0 ? ' · ' + t('Noch nicht verarbeitet: {size} (wird erst danach geräumt)', { size: fmtSize(cache.waiting ?? 0) }) : ''}</Text>
         </div>
         {/* Storage Extender */}
-        <div style={column}>
-          <Text weight="semibold" size={400}>{t('Storage Extender')}</Text>
+        <div style={{ ...column, gridRow: cache ? 'span 5' : 'span 4' }}>
+          {/* Zustand in der Überschriftenzeile: ohne Balken haben beide Karten eine Zeile weniger */}
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', flexWrap: 'wrap', columnGap: 8 }}>
+            <Text weight="semibold" size={400}>{t('Storage Extender')}</Text>
+            {!cache && <Text size={200} style={muted}>{st.mirror ? t('Erster Abgleich startet gleich …') : t('Nicht eingeschaltet')}</Text>}
+          </div>
           {cache ? <Bar label={capKnown ? t('{used} von {limit} belegt', { used: fmtSize(usedRemote), limit: fmtSize(cap ?? 0) }) : t('{used} belegt', { used: fmtSize(usedRemote) })}
-            whole={capKnown ? cap ?? 0 : usedRemote} parts={[{ bytes: extFiles, color: COLORS.files }, { bytes: extThumbs, color: COLORS.thumbs }, { bytes: toRemove, color: COLORS.clear }]} />
-            : <Text size={200} style={muted}>{st.mirror ? t('Erster Abgleich startet gleich …') : t('Nicht eingeschaltet')}</Text>}
+            whole={capKnown ? cap ?? 0 : usedRemote} parts={[{ bytes: extFiles, color: COLORS.files }, { bytes: extThumbs, color: COLORS.thumbs }, { bytes: toRemove, color: COLORS.clear }]} /> : null}
           <div>
             {ext && <>
-              <div style={fieldLabel}><Checkbox checked={sizeLimited} onChange={(_, d) => setSizeLimited(!!d.checked)} label={t('Höchstens nutzen')} /></div>
+              {/* [feature:adminclean] */}
+              <div style={fieldLabel}><Switch checked={sizeLimited} onChange={(_, d) => setSizeLimited(d.checked)} label={t('Höchstens nutzen')} /></div>
+              {/* [feature:adminclean:else] */}
+              {/* <div style={fieldLabel}><Checkbox checked={sizeLimited} onChange={(_, d) => setSizeLimited(!!d.checked)} label={t('Höchstens nutzen')} /></div> */}
+              {/* [/feature:adminclean] */}
               <SizeField gb={sizeGb} onChange={setSizeGb} disabled={!sizeLimited} label={t('Höchstens nutzen')} />
               <div style={{ ...fieldLabel, marginTop: 8 }}><Text>{t('Belegung')}</Text></div>
               <UsagePick value={usage} onChange={setUsage} />
@@ -298,11 +396,18 @@ export function StorageAdmin({ onOpen }: { onOpen: (page: string) => void }) {
             {cache && <Text size={200} block style={muted}>{allCount === 1 ? t('1 Datei') : t('{n} Dateien', { n: allCount.toLocaleString(locale) })}</Text>}</div>
           <div><Text size={200} block style={muted}>{t('Verfügbar')}</Text><Text size={500} weight="semibold" block>{!cache ? '–' : capKnown ? fmtSize(Math.max(0, limit + (cap ?? 0) - allBytes)) : t('unbegrenzt')}</Text></div>
         </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        {/* [feature:adminclean] */}
+        {tabbed && !drafting && <RibbonActions>
+          <RibbonButton icon={<Checkmark20Regular />} primary disabled={!dirty} label={t('Übernehmen')} onClick={apply} />
+          <RibbonButton icon={<Dismiss20Regular />} disabled={!dirty} label={t('Zurücksetzen')} onClick={reset} />
+        </RibbonActions>}
+        {tabbed && !drafting && dirty && <Text size={200} style={muted}>{t('Noch nicht übernommen')}</Text>}
+        {/* [/feature:adminclean] */}
+        {!tabbed && !drafting && <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <Button appearance="primary" disabled={!dirty} onClick={apply}>{t('Übernehmen')}</Button>
           <Button disabled={!dirty} onClick={reset}>{t('Zurücksetzen')}</Button>
           {dirty && <Text size={200} style={muted}>{t('Noch nicht übernommen')}</Text>}
-        </div>
+        </div>}
       </div>
       {vol && st.mirror && (s.running && (clean > 0 || pendingBytes > 0)
         ? <MessageBar intent="info" layout="multiline"><MessageBarBody>{t('dmOffice überträgt und räumt gerade.')}</MessageBarBody></MessageBar>
@@ -310,6 +415,8 @@ export function StorageAdmin({ onOpen }: { onOpen: (page: string) => void }) {
         : used > limit ? <MessageBar intent="info" layout="multiline"><MessageBarBody>{t('Noch nicht verarbeitete Dateien überschreiten die Grenze um {size}. dmOffice räumt sie, sobald sie verarbeitet sind.', { size: fmtSize(used - limit) })}</MessageBarBody></MessageBar>
         : comesBack ? <MessageBar intent="success" layout="multiline"><MessageBarBody>{t('Mit diesen Werten passen alle Dateien in den lokalen Speicherpool. dmOffice lädt die fehlenden Dateien automatisch nach.')}</MessageBarBody></MessageBar>
         : null)}
+      </>}
+      {shows('usage') && <>
       {s.lowSpace && <MessageBar intent="warning"><MessageBarBody>{t('Auf dem lokalen Speichervolumen ist nur noch der frei zu lassende Speicherplatz verfügbar, es sind {free} frei. Neue Dateien werden abgelehnt, solange sich der lokale Speicherpool nicht weiter bereinigen lässt.', { free: fmtSize(vol?.free ?? 0) })}</MessageBarBody></MessageBar>}
 
       {/* Stand des Abgleichs */}
@@ -332,27 +439,18 @@ export function StorageAdmin({ onOpen }: { onOpen: (page: string) => void }) {
         {s.restore?.error && <MessageBar intent="warning"><MessageBarBody>{s.restore.error}</MessageBarBody></MessageBar>}
       </>}
 
-      {s.otherServer && <MessageBar intent="warning" layout="multiline"><MessageBarBody>{t('Am selben Ort speichert noch ein anderer dmOffice-Server (zuletzt {when}). Solange löscht dmOffice dort nichts. Jeder Server braucht einen eigenen Ordner.', { when: new Date(s.otherServer).toLocaleString() })}<div style={{ marginTop: 6 }}><Button size="small" onClick={forgetOther}>{t('Das war dieser Server vor einem Umzug')}</Button></div></MessageBarBody></MessageBar>}
+      {s.otherServer && <MessageBar intent="warning" layout="multiline"><MessageBarBody>{t('Am selben Ort speichert noch ein anderer dmOffice-Server (zuletzt {when}). Solange löscht dmOffice dort nichts. Jeder Server braucht einen eigenen Ordner.', { when: new Date(s.otherServer).toLocaleString() })}{!tabbed && <div style={{ marginTop: 6 }}><Button size="small" onClick={forgetOther}>{t('Das war dieser Server vor einem Umzug')}</Button></div>}</MessageBarBody></MessageBar>}
+      {/* [feature:adminclean] */}
+      {tabbed && s.otherServer && <RibbonActions><RibbonButton icon={<ArrowSync20Regular />} label={t('Das war dieser Server vor einem Umzug')} onClick={forgetOther} /></RibbonActions>}
+      {/* [/feature:adminclean] */}
       {st.rescued && st.rescued.rescued > 0 && <MessageBar intent="info" layout="multiline"><MessageBarBody>{t('Nach der Wiederherstellung wurden {n} Dateien ohne Namen gerettet, die nach dem Core-Backup hochgeladen worden waren. Sie liegen im Ordner „Nach Wiederherstellung gefunden“.', { n: st.rescued.rescued })}</MessageBarBody></MessageBar>}
 
-      {/* Ganz am Ende: Hinweis zum Backup und der Schalter in einem Kasten - eingeschaltet grün */}
-      <MessageBar intent={st.mirror ? 'success' : 'warning'} layout="multiline" style={{ marginTop: 16 }}><MessageBarBody>
-        <div>
-          {t('Für ein eventuelles Backup des Storage Extenders ist der Administrator verantwortlich.')}
-          {' '}{withLink(t('Die Dateien der internen Dateiablage können über das interne {link} gesichert werden.'), t('Files-Backup'), () => onOpen('backup'))}
-        </div>
-        {!ready && <Text size={200} block style={{ ...muted, marginTop: 6 }}>{t('Erst das Ziel speichern und testen.')}</Text>}
-        <div style={{ marginTop: 8 }}>
-          {/* Gesperrt, solange Dateien nur im Storage Extender liegen: bleibt sichtbar eingeschaltet, ein Klick nennt den Grund */}
-          <Switch checked={st.mirror} disabled={!st.configured || !ready} style={st.mirror && away > 0 ? { cursor: 'not-allowed' } : undefined}
-            onChange={(_, d) => { if (st.mirror && away > 0) notify(t('Storage Extender bleibt aktiviert'), t('Einige Dateien liegen nur im Storage Extender. Er lässt sich erst ausschalten, wenn alle Dateien auch im lokalen Speicherpool liegen. Bei genügend Speicherplatz lädt dmOffice sie automatisch nach.'), 'warning'); else save(d.checked) }}
-            label={t('Storage Extender verwenden')} />
-        </div>
-      </MessageBarBody></MessageBar>
+      {!tabbed && mainBox}
       {st.mirror && away > 0 && vol && <Text size={200} style={muted}>{t('Zum Ausschalten werden {need} im lokalen Speicherpool gebraucht, verfügbar sind {usable}.', { need: fmtSize(used + onlyThere), usable: fmtSize(limit) })}</Text>}
       {st.mirror && <Text size={200} style={muted}>{away > 0
         ? t('Einige Dateien liegen nur im Storage Extender. Er lässt sich erst ausschalten, wenn alle Dateien auch im lokalen Speicherpool liegen. Bei genügend Speicherplatz lädt dmOffice sie automatisch nach.')
         : t('Alle Dateien liegen auch im lokalen Speicherpool.')}</Text>}
+      </>}
     </div>
   )
 }

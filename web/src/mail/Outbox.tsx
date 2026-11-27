@@ -9,6 +9,7 @@ import { Account, api } from '../api'
 import { useApp } from '../App'
 import { fmtLong } from '../shell/hooks'
 import { t } from '../i18n'
+import { tError } from '../i18n' // [feature:mailaccountoff]
 import { snoozeOptions } from './SnoozeMenu'
 import { askConfirm } from '../shell/context'
 
@@ -82,7 +83,14 @@ export function OutboxView({ accounts, version, onChanged }: { accounts: Account
   const act = async (fn: () => Promise<unknown>, done?: string) => {
     try { await fn(); if (done) notify(done); load(); onChanged() } catch (e) { fail(e); load() }
   }
-  const email = (id: string) => accounts.find(a => a.id === id)?.email ?? id
+  // [feature:mailaccountoff]
+  // Mails deaktivierter Konten warten hier: deren Adresse steht nicht in den Konten des Mailbereichs
+  const [all, setAll] = useState<Account[]>([])
+  useEffect(() => { api.get<Account[]>('/api/mail/accounts?all=true').then(setAll).catch(() => {}) }, [version])
+  const email = (id: string) => (accounts.find(a => a.id === id) ?? all.find(a => a.id === id))?.email ?? id
+  // [feature:mailaccountoff:else]
+  // const email = (id: string) => accounts.find(a => a.id === id)?.email ?? id
+  // [/feature:mailaccountoff]
   if (!rows) return <div className={s.root}><Spinner /></div>
   return (
     <div className={s.root}>
@@ -99,6 +107,9 @@ export function OutboxView({ accounts, version, onChanged }: { accounts: Account
                 : r.state === 'sending' ? t('Wird gerade gesendet …')
                 : t('Geht raus: {when}', { when: fmtLong(r.sendAt) })}
             </Text>
+            {/* [feature:mailaccountoff] */}
+            {r.state === 'queued' && r.error && <Text size={200} className={s.sub}>{tError(r.error)}</Text>}
+            {/* [/feature:mailaccountoff] */}
           </div>
           {r.state !== 'sending' && <>
             <Button size="small" icon={<Send20Regular />} onClick={() => act(() => api.post(`/api/mail/queue/${r.id}/time`, {}))}>{t('Jetzt senden')}</Button>

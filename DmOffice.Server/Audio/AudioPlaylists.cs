@@ -84,7 +84,7 @@ public static class AudioPlaylists
 
     private static void Write(UserDb db, string id, List<(string Mount, string Path)> items)
     {
-        if (items.Count > MaxItems) throw new ArgumentException($"Eine Playlist hat höchstens {MaxItems:N0} Titel.");
+        if (items.Count > MaxItems) throw new ArgumentException($"Eine Playlist hat höchstens {DmOffice.Core.Num.N(MaxItems)} Titel.");
         using var conn = db.Open();
         using var tx = conn.BeginTransaction();
         UserDb.Exec(conn, "DELETE FROM audio_playlist_item WHERE playlist = $p", ("$p", id));

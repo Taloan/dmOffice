@@ -43,8 +43,31 @@ public static class DmsMailPdf
         return pdfs.Count == 0 ? main : DmsArchive.Unite([main, .. pdfs], ct) ?? main;
     }
 
+    /// <summary>
+    /// Betreff zum Anzeigen: null, wenn keiner da ist oder er sich nicht entschlüsseln lässt (kaputtes Base64 im Encoded-Word ergibt
+    /// sonst Ersatzzeichen wie „��n“).
+    /// </summary>
+    public static string? SubjectOf(MimeMessage m)
+    {
+        var s = m.Subject;
+        return string.IsNullOrWhiteSpace(s) || s.Contains('\uFFFD') ? null : s;
+    }
+
+    /// <summary>Betreff so, wie er in der Mail steht (Kopfzeile ohne Entschlüsseln); null ohne Betreff.</summary>
+    public static string? RawSubject(MimeMessage m)
+    {
+        var h = m.Headers.FirstOrDefault(x => x.Id == HeaderId.Subject);
+        if (h == null) return null;
+        var raw = System.Text.Encoding.Latin1.GetString(h.RawValue).Replace("\r", "").Replace("\n", "").Trim();
+        return raw.Length == 0 ? null : raw;
+    }
+
+    /// <summary>Datum der Mail; null, wenn die Kopfzeile fehlt oder sich nicht lesen lässt (MimeKit liefert dann 1. Januar 0001).</summary>
+    public static DateTimeOffset? DateOf(MimeMessage m) => m.Date == DateTimeOffset.MinValue ? null : m.Date;
+
     private static byte[] Render(MimeMessage m, string body, List<string> attachmentNames)
     {
+        var subject = SubjectOf(m) ?? RawSubject(m);
         var (regular, bold) = Fonts.Value;
         using var fBody = new SKFont(regular, Body);
         using var fHead = new SKFont(regular, Head);
@@ -55,7 +78,7 @@ public static class DmsMailPdf
         using var rule = new SKPaint { Color = new SKColor(0xBB, 0xBB, 0xBB), StrokeWidth = 0.7f };
 
         using var output = new MemoryStream();
-        var meta = new SKDocumentPdfMetadata { Title = m.Subject ?? "", Author = m.From.ToString(), Creator = "dmOffice DMS", Producer = "dmOffice",
+        var meta = new SKDocumentPdfMetadata { Title = subject ?? "", Author = m.From.ToString(), Creator = "dmOffice DMS", Producer = "dmOffice",
             Creation = DateTime.Now, Modified = DateTime.Now, PdfA = true };
         using (var doc = SKDocument.CreatePdf(output, meta))
         {
@@ -81,7 +104,7 @@ public static class DmsMailPdf
                 }
             }
             NewPage();
-            Text(string.IsNullOrWhiteSpace(m.Subject) ? "(ohne Betreff)" : m.Subject, fTitle, ink);
+            Text(string.IsNullOrWhiteSpace(subject) ? "(ohne Betreff)" : subject, fTitle, ink);
             y += 6;
             void Field(string label, string value)
             {
@@ -101,7 +124,7 @@ public static class DmsMailPdf
             Field("Von", m.From.ToString());
             Field("An", m.To.ToString());
             Field("Cc", m.Cc.ToString());
-            Field("Datum", m.Date.ToLocalTime().ToString("dddd, d. MMMM yyyy HH:mm", CultureInfo.GetCultureInfo("de-DE")));
+            if (DateOf(m) is { } date) Field("Datum", date.ToLocalTime().ToString("dddd, d. MMMM yyyy HH:mm", CultureInfo.GetCultureInfo("de-DE")));
             if (attachmentNames.Count > 0) Field("Anhänge", string.Join(", ", attachmentNames));
             y += 6;
             Ensure(10);

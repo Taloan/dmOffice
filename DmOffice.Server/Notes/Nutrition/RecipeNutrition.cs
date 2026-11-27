@@ -67,6 +67,9 @@ public static class RecipeNutrition
         ["staudensellerie"] = "G220100", ["stangensellerie"] = "G220100", ["bleichsellerie"] = "G220100", ["selleriestangen"] = "G220100",
     };
 
+    /// <summary>BLS-Code der Grundzutat zu einem Namen („Salz“, „Milch“, „Spaghetti“), sonst null.</summary>
+    public static string? BasicCode(string name) => Basics.GetValueOrDefault(Bls.Fold(name).Trim());
+
     /// <summary>Bestes Lebensmittel zu einem Namen: Grundzutat, sonst BLS (nur, was wirklich passt - „Kümmel“ ist keine „Kümmelwurst“).</summary>
     public static Food? Match(string name)
     {
@@ -79,23 +82,26 @@ public static class RecipeNutrition
     }
 
     /// <summary>Menge in Gramm (bzw. ml) zu einem zerlegten Posten und einem Lebensmittel; null, wenn sie sich nicht bestimmen lässt.</summary>
-    public static (double? Grams, string? Portion) Amount(FoodText.Item item, Food? food)
+    public static (double? Grams, string? Portion) Amount(FoodText.Item item, Food? food) => Amount(item, food?.Portions, food?.Liquid ?? false);
+
+    /// <summary>Wie oben, mit den Portionen und der Art (flüssig) eines beliebigen Lebensmittels; Portions null: keins zugeordnet.</summary>
+    public static (double? Grams, string? Portion) Amount(FoodText.Item item, IReadOnlyList<Portion>? portions, bool liquid)
     {
         if (item.Grams is double g) return (g, Fmt(item.Amount, item.Unit));
         if (item.Ml is double ml) return (ml, Fmt(item.Amount, item.Unit));
-        if (food == null) return (null, null);
+        if (portions == null) return (null, null);
         var count = item.Amount ?? 1;
         // EL/TL ohne Gramm: übliche Mengen
-        if (item.Unit is "EL") return (count * (food.Portions.FirstOrDefault(p => p.Label.Contains("EL"))?.Grams ?? 15), Fmt(item.Amount, item.Unit));
-        if (item.Unit is "TL") return (count * (food.Portions.FirstOrDefault(p => p.Label.Contains("TL"))?.Grams ?? 5), Fmt(item.Amount, item.Unit));
-        if (item.Vague) return (food.Liquid ? 10 : 2, item.Unit ?? "etwas");
+        if (item.Unit is "EL") return (count * (portions.FirstOrDefault(p => p.Label.Contains("EL"))?.Grams ?? 15), Fmt(item.Amount, item.Unit));
+        if (item.Unit is "TL") return (count * (portions.FirstOrDefault(p => p.Label.Contains("TL"))?.Grams ?? 5), Fmt(item.Amount, item.Unit));
+        if (item.Vague) return (liquid ? 10 : 2, item.Unit ?? "etwas");
         // Kleine Küchenmengen
         var small = (item.Unit ?? "").ToLowerInvariant() switch { "prise" or "prisen" => 0.5, "msp" or "messerspitze" => 0.3, "zehe" or "zehen" => 4, "bund" => 30, "spritzer" => 2, _ => 0 };
         if (small > 0) return (Math.Round(count * small, 1), Fmt(item.Amount, item.Unit));
         // Stück, Scheibe, Portion …: die passende Portion des Lebensmittels, sonst die erste genannte
         var unit = (item.Unit ?? "").ToLowerInvariant();
-        var portion = food.Portions.FirstOrDefault(p => unit.Length > 0 && p.Label.Contains(unit, StringComparison.OrdinalIgnoreCase))
-            ?? food.Portions.FirstOrDefault(p => p.Grams != 100) ?? food.Portions.FirstOrDefault();
+        var portion = portions.FirstOrDefault(p => unit.Length > 0 && p.Label.Contains(unit, StringComparison.OrdinalIgnoreCase))
+            ?? portions.FirstOrDefault(p => p.Grams != 100) ?? portions.FirstOrDefault();
         return portion == null ? (null, null) : (Math.Round(count * portion.Grams, 1), count == 1 ? portion.Label : $"{count:0.##} × {portion.Label}");
     }
 

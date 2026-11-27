@@ -8,12 +8,60 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace DmOffice.Tests;
 
-/// <summary>Formate, in die dmOffice nicht schreibt (PNG …): Angaben nur in dmOffice, kein Fehler.</summary>
+/// <summary>Markierung P/X/U mit „Angaben in die Fotos schreiben“: als xmpDM:pick in die Datei (Kennung pickxmp).</summary>
 [Collection("server")]
-public class GalleryPngInfoTests : IClassFixture<ChatFixture>
+public class GalleryPickXmpTests : IClassFixture<ChatFixture>
 {
     private readonly ChatFixture _fx;
-    public GalleryPngInfoTests(ChatFixture fx) { _fx = fx; GalleryList.Grace = TimeSpan.Zero; }
+    public GalleryPickXmpTests(ChatFixture fx) { _fx = fx; GalleryList.Grace = TimeSpan.Zero; }
+
+    [Fact]
+    public async Task Markierung_kommt_in_die_Datei_und_geht_vor_alter_eigener()
+    {
+        var config = _fx.Factory.Services.GetRequiredService<ServerConfig>();
+        var dora = _fx.Space("dora");
+        var writeBefore = dora.Settings.PhotoWriteXmp;
+        var root = Directory.CreateTempSubdirectory("dmpick").FullName;
+        var before = config.Current.ExternalFolders;
+        try
+        {
+            File.WriteAllBytes(Path.Combine(root, "foto.jpg"), XmpForeignLayoutTests.JpegWithXmp(XmpForeignLayoutTests.PacketRot4));
+            config.Update(s => s.ExternalFolders = [new ExternalFolderDef { Id = "pick01", Name = "Pick", Path = root }]);
+            var c = _fx.As("dora");
+            foreach (var old in GalleryFolders.Of(dora.Db)) await c.DeleteAsync("/api/gallery/sources/" + old.Id);
+            Assert.Equal(HttpStatusCode.OK, (await c.PostAsJsonAsync("/api/gallery/sources", new { mount = "pick01", path = "" })).StatusCode);
+            var job = new GalleryScanJob(_fx.Factory.Services.GetRequiredService<Spaces>(), config, Microsoft.Extensions.Logging.Abstractions.NullLogger<GalleryScanJob>.Instance);
+            await job.RunOnceAsync(CancellationToken.None);
+            var src = GalleryFolders.Of(dora.Db).Single();
+            var id = $"ext:{src.Id}/foto.jpg";
+
+            // Vorher (Schreiben aus): X nur in dmOffice
+            dora.UpdateSettings(s => s.PhotoWriteXmp = false);
+            await Post(c, new { items = new[] { id }, pick = -1 });
+            Assert.Equal(-1, await PickOf(c, id));
+
+            // Schreiben an: P kommt in die Datei, die alte eigene X geht nicht mehr vor
+            dora.UpdateSettings(s => s.PhotoWriteXmp = true);
+            await Post(c, new { items = new[] { id }, pick = 1 });
+            string Text() => System.Text.Encoding.UTF8.GetString(File.ReadAllBytes(Path.Combine(root, "foto.jpg")));
+            for (var i = 0; i < 100 && !Text().Contains("pick=\"1\""); i++) await Task.Delay(100);
+            Assert.Contains("pick=\"1\"", Text());
+            Assert.Equal(1, await PickOf(c, id));
+
+            // U: Eintrag in der Datei weg
+            await Post(c, new { items = new[] { id }, pick = 0 });
+            for (var i = 0; i < 100 && Text().Contains("pick=\"1\""); i++) await Task.Delay(100);
+            Assert.DoesNotContain("pick=\"1\"", Text());
+            Assert.Null(await PickOf(c, id));
+            await c.DeleteAsync("/api/gallery/sources/" + src.Id);
+        }
+        finally
+        {
+            dora.UpdateSettings(s => s.PhotoWriteXmp = writeBefore);
+            config.Update(s => s.ExternalFolders = before);
+            try { Directory.Delete(root, true); } catch (IOException) { }
+        }
+    }
 
     [Fact]
     public async Task PNG_mit_Schreiben_an_Markierung_und_Sterne_nur_in_dmOffice_ohne_Fehler()

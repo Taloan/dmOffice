@@ -1,6 +1,6 @@
 import { sendToChat } from '../chat/SendToChat'
 import {
-  Button, Checkbox, Dropdown, Field, Input, Option, Text, Textarea, makeStyles, mergeClasses, tokens, Link, Switch,
+  Button, Checkbox, Dropdown, Field, Input, Option, SearchBox, Text, Textarea, makeStyles, mergeClasses, tokens, Link, Switch,
   Menu, MenuItem, MenuList, MenuPopover, MenuTrigger, MenuItemRadio, MenuDivider,
   Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle,
 } from '@fluentui/react-components'
@@ -12,8 +12,9 @@ import {
   People16Regular, People20Regular, PersonDelete20Regular, Flag20Regular as MailFlagIcon, Note20Regular, ArrowImport20Regular,
   ArrowUp20Regular, ArrowDown20Regular, ReOrderDotsVertical20Regular,
   MoreHorizontal16Regular, Open20Regular, Edit20Regular, Rename20Regular, ArrowExport20Regular,
-  Chat20Regular,
+  Chat20Regular, ClipboardPaste20Regular, Copy20Regular, Cut20Regular,
 } from '@fluentui/react-icons'
+import { copyText, saveUrl } from '../shell/browser'
 import { ColorMenu, ContextMenu, TargetMenu, askConfirm, askText, isTyping, useContextMenu, useMultiSelect } from '../shell/context'
 import { pressable, useNavStyles } from '../shell/nav'
 import { Cloud16Regular, Cloud20Regular, Person16Regular, Person20Regular } from '@fluentui/react-icons'
@@ -24,7 +25,7 @@ import { SidePane, useBackClose } from '../shell/mobile'
 import { usePrefs } from '../prefs'
 import { ShoppingList, ListMeta, doneMode, sectionWords } from './ShoppingList'
 import { composeItem, itemOf } from './shopParse'
-import { api, Collection, Task } from '../api'
+import { api, Collection, featureOn, Task } from '../api'
 import { useApp } from '../App'
 import { CollectionDialog, removeCollection } from '../calendar/CollectionDialog'
 import { ShareDialog } from '../calendar/ShareDialog'
@@ -34,6 +35,7 @@ import { NotiziTasks, useNotiziTasks } from './NotiziTasks'
 import { parseNaturalDate } from '../shell/naturalDate'
 import { DateHint, taskDue } from '../shell/DateHint'
 import { usePaneWidth } from '../shell/Splitter'
+import { FilterSelect } from '../shell/FilterSelect'
 
 const useStyles = makeStyles({
   outer: { display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 },
@@ -75,10 +77,20 @@ const dueDay = (due: string) => {
   return isNaN(d.getTime()) ? due.slice(0, 10) : `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
 }
 
+/** Zwischenablage für Aufgaben (Kennung taskclip): Strg+C/X in der Liste, Strg+V in einer anderen Liste; ausgeschnitten wird verschoben. */
+let taskClip: { tasks: Task[]; cut: boolean } | null = null
+
 export default function TasksView() {
   const s = useStyles()
   const detailW = usePaneWidth('tasks.detail', 340, 260, 720)
-  const { fail, me, notify } = useApp()
+  const { fail, me, notify, undoable } = useApp()
+  // Kennung taskclip: Kopieren/Ausschneiden/Einfügen, Suche über alle Listen, Löschen mit „Rückgängig“
+  const clipOn = featureOn('taskclip')
+  const [clip, setClipState] = useState(taskClip)
+  const setClip = (c: typeof taskClip) => { taskClip = c; setClipState(c) }
+  const [search, setSearch] = useState('')
+  const query = clipOn ? search.trim().toLowerCase() : ''
+  const searching = !!query
   // Zugewiesen an (Version 2): Namen aller Benutzer fuer die Zeilen
   const [names, setNames] = useState<Record<string, string>>({})
   useEffect(() => {
@@ -174,8 +186,17 @@ export default function TasksView() {
   const noteTasks = useNotiziTasks()
   // Systemlisten (gekennzeichnete Mails, Kaestchen aus Notizen) haben keine Eingabezeile
   const system = view === 'mail' || view === 'notizi'
+  // Beim Suchen: Treffer aus allen Listen als normale Aufgabenliste
+  const sysView = system && !searching
+  const effType = searching ? 'tasks' : listType
   const [ignoreDate, setIgnoreDate] = useState(false)
   useEffect(() => { loadLists(); load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  // Zurück in die Aufgaben (anderer Tab, anderes Gerät, Projektplan): neu laden wie Kalender und Projekte
+  useEffect(() => {
+    const on = () => { if (!document.hidden) load() }
+    document.addEventListener('visibilitychange', on)
+    return () => document.removeEventListener('visibilitychange', on)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
   // Geteilte Listen aendern auch andere - solange sichtbar alle 20 Sekunden nachladen
   const anyShared = lists.some(l => l.owner || l.sharedWith?.length)
   useEffect(() => {
@@ -187,7 +208,9 @@ export default function TasksView() {
   const shown = useMemo(() => {
     const now = today()
     let list = tasks
-    if (view === 'today') list = list.filter(x => x.due && dueDay(x.due) <= now)
+    const hit = (x: Task) => [x.title, x.description, x.item, x.section, x.categories?.join(' ')].some(v => !!v && v.toLowerCase().includes(query))
+    if (query) list = list.filter(hit)
+    else if (view === 'today') list = list.filter(x => x.due && dueDay(x.due) <= now)
     else if (view === 'important') list = list.filter(x => x.priority > 0 && x.priority <= 4)
     else if (view === 'mine') list = list.filter(x => x.assignee === me.id)
     else if (view === 'planned') list = list.filter(x => x.due)
@@ -198,13 +221,13 @@ export default function TasksView() {
       : sort === 'title' ? (a, b) => a.title.localeCompare(b.title, locale, { sensitivity: 'base' })
       : sort === 'importance' ? (a, b) => imp(a) - imp(b) || byDue(a, b)
       : byDue)
-  }, [tasks, view, sort])
+  }, [tasks, view, sort, query])
   const open = shown.filter(x => !x.completed)
   const done = shown.filter(x => x.completed)
 
   // ---------------- Auswahl, Kontextmenue, Tastatur, Ziehen ----------------
   const nv = useNavStyles()
-  const order = useMemo(() => (listType === 'tasks' ? [...open, ...(showDone ? done : [])] : shown).map(x => x.id), [open, done, shown, showDone, listType]) // eslint-disable-line react-hooks/exhaustive-deps
+  const order = useMemo(() => (effType === 'tasks' ? [...open, ...(showDone ? done : [])] : shown).map(x => x.id), [open, done, shown, showDone, effType]) // eslint-disable-line react-hooks/exhaustive-deps
   const ms = useMultiSelect<string>(order)
   useEffect(() => { ms.clear() }, [view]) // eslint-disable-line react-hooks/exhaustive-deps
   const picked = tasks.filter(x => ms.selected.includes(x.id))
@@ -269,8 +292,16 @@ export default function TasksView() {
     if (id != null) mainRef.current?.querySelector(`[data-task="${CSS.escape(String(id))}"]`)?.scrollIntoView({ block: 'nearest' })
   }, [ms.selected]) // eslint-disable-line react-hooks/exhaustive-deps
   const onListKey = async (e: React.KeyboardEvent) => {
-    if (isTyping(e) || system) return
+    if (isTyping(e) || sysView) return
     const k = e.key
+    // Strg+C/X/V (taskclip): nur hier in der Liste und nicht, wenn Text markiert ist
+    if (clipOn && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && ['c', 'x', 'v'].includes(k.toLowerCase())) {
+      if (window.getSelection()?.toString()) return
+      if (k.toLowerCase() === 'v') { if (clip) { e.preventDefault(); pasteInto(pasteTarget) } return }
+      if (!picked.length) return
+      e.preventDefault(); toClip(picked, k.toLowerCase() === 'x')
+      return
+    }
     if (k === 'Delete') { e.preventDefault(); removeMany(picked) }
     else if (k === 'Escape') { if (await select(null)) ms.clear() }
     else if (e.ctrlKey && k.toLowerCase() === 'a') { e.preventDefault(); ms.all() }
@@ -306,6 +337,7 @@ export default function TasksView() {
     if (x.kind === 'side') return <MenuItem icon={<TaskListAdd20Regular />} onClick={() => setListDialog('new')}>{t('Neue Liste')}</MenuItem>
     if (x.kind === 'main') return <>
       {!system && <MenuItem icon={<TaskListAdd20Regular />} onClick={newTask}>{listType === 'tasks' ? t('Neue Aufgabe') : t('list|Neuer Eintrag')}</MenuItem>}
+      {clipOn && clip && !sysView && pasteTarget != null && <MenuItem icon={<ClipboardPaste20Regular />} secondaryContent="Strg+V" onClick={() => pasteInto(pasteTarget)}>{t('Einfügen')}</MenuItem>}
       {!system && order.length > 0 && <MenuItem icon={<CheckboxChecked20Regular />} onClick={ms.all}>{t('Alle auswählen')}</MenuItem>}
       <MenuItem icon={showDone ? <EyeOff20Regular /> : <Eye20Regular />} onClick={() => setShowDone(v => !v)}>{showDone ? t('Erledigte ausblenden') : t('Erledigte zeigen')}</MenuItem>
     </>
@@ -314,6 +346,7 @@ export default function TasksView() {
       return <>
         <MenuItem icon={<Open20Regular />} onClick={() => setView(l.id)}>{t('Öffnen')}</MenuItem>
         <MenuItem icon={<TaskListAdd20Regular />} onClick={() => { setView(l.id); setTimeout(() => addInput.current?.focus(), 50) }}>{l.listType === 'tasks' || !l.listType ? t('Neue Aufgabe') : t('list|Neuer Eintrag')}</MenuItem>
+        {clipOn && clip && canWriteList(l.id) && <MenuItem icon={<ClipboardPaste20Regular />} onClick={() => pasteInto(l.id)}>{t('Hier einfügen')}</MenuItem>}
         <MenuDivider />
         {!l.owner && <>
           <MenuItem icon={<Edit20Regular />} onClick={() => setListDialog(l)}>{t('Bearbeiten …')}</MenuItem>
@@ -332,7 +365,7 @@ export default function TasksView() {
           </MenuPopover>
         </Menu>}
         {!l.owner && <MenuItem icon={<People20Regular />} onClick={() => setShareDialog(l)}>{t('Teilen …')}</MenuItem>}
-        {!l.owner && <MenuItem icon={<ArrowExport20Regular />} onClick={() => window.open(`/api/pim/export/${l.id}`)}>{t('Exportieren (.ics)')}</MenuItem>}
+        {!l.owner && <MenuItem icon={<ArrowExport20Regular />} onClick={() => saveUrl(`/api/pim/export/${l.id}`)}>{t('Exportieren (.ics)')}</MenuItem>}
         <MenuDivider />
         {l.owner
           ? <MenuItem icon={<PersonDelete20Regular />} onClick={() => leave(l)}>{t('Nicht mehr anzeigen')}</MenuItem>
@@ -370,6 +403,8 @@ export default function TasksView() {
         </MenuPopover>
       </Menu>
       <MenuDivider />
+      {clipOn && <MenuItem icon={<Cut20Regular />} secondaryContent="Strg+X" disabled={!sel.some(y => canWriteList(y.list))} onClick={() => toClip(sel, true)}>{t('Ausschneiden')}</MenuItem>}
+      {clipOn && <MenuItem icon={<Copy20Regular />} secondaryContent="Strg+C" onClick={() => toClip(sel, false)}>{t('Kopieren')}</MenuItem>}
       <TargetMenu kind="move" targets={lists.filter(l => !(lists1.size === 1 && lists1.has(l.id))).map(l => ({ id: l.id, label: l.owner ? `${l.name} · ${l.owner}` : l.name }))}
         onPick={id => patchMany(sel.filter(y => y.list !== id), () => ({ moveTo: Number(id) }))} />
       {sel.some(y => !shownList(y.list)) && <TargetMenu kind="copy" targets={lists.map(l => ({ id: l.id, label: l.owner ? `${l.name} · ${l.owner}` : l.name }))}
@@ -406,17 +441,77 @@ export default function TasksView() {
     try { for (const x of list) await api.post('/api/pim/tasks', body({ ...x, list: target, uri: undefined, etag: undefined })) } catch (e) { fail(e) }
     await load()
   }
+  // ---------------- Zwischenablage (taskclip) ----------------
+  const canWriteList = (id: number) => { const l = lists.find(x => x.id === id); return !!l && l.canWrite !== false && !l.showOnly }
+  // Einfügen in die gezeigte Liste; in Mein Tag, Wichtig, Alle … in die erste beschreibbare (wie „Aufgabe hinzufügen“)
+  const pasteTarget = typeof view === 'number' ? view : lists.find(l => l.canWrite !== false && !l.showOnly)?.id
+  const toClip = (list: Task[], cut: boolean) => {
+    const ok = list.filter(x => !shownList(x.list) && (!cut || canWriteList(x.list)))
+    if (!ok.length) return
+    setClip({ tasks: ok, cut })
+    // Auch als Text in die Zwischenablage des Systems (zum Einfügen in andere Programme)
+    copyText(ok.map(x => x.title).join('\n')).catch(() => { })
+    notify(cut ? t('Ausgeschnitten. Mit Strg+V in einer anderen Liste einfügen.') : t('Kopiert. Mit Strg+V in einer anderen Liste einfügen.'))
+  }
+  const pasteInto = async (target: number | undefined) => {
+    const c = clip
+    if (!c || target == null || !canWriteList(target)) return
+    // Mit dem aktuellen Stand (etag) der Aufgaben, falls sie inzwischen geändert wurden
+    const fresh = c.tasks.map(x => tasks.find(y => y.id === x.id) ?? x)
+    if (c.cut) {
+      setClip(null)
+      const move = fresh.filter(x => tasks.some(y => y.id === x.id) && x.list !== target)
+      if (move.length) await patchMany(move, () => ({ moveTo: target }))
+    } else await copyMany(fresh, target)
+    if (target !== view) notify(t('In „{name}“ eingefügt', { name: lists.find(l => l.id === target)?.name ?? '' }))
+  }
+  // Löschen (taskclip): eine Aufgabe ohne Rückfrage, mehrere mit; danach „Rückgängig“ wie bei Terminen und Kontakten
+  const removeUndo = async (list: Task[]) => {
+    if (list.length > 1 && !await askConfirm('', t('{n} Aufgaben löschen? Es gibt dafür keinen Papierkorb, nur direkt danach „Rückgängig“.', { n: list.length }), t('Löschen'))) return
+    const gone: { x: Task; data: string }[] = []
+    try {
+      for (const x of list) {
+        const r = await api.del(`/api/pim/tasks/${x.list}/${encodeURIComponent(x.uri)}`) as { undo?: string } | undefined
+        if (r?.undo) gone.push({ x, data: r.undo })
+      }
+    } catch (e) { fail(e) }
+    setSelected(null); ms.clear(); load()
+    if (gone.length) undoable(gone.length === 1 ? t('Aufgabe gelöscht') : t('{n} Aufgaben gelöscht', { n: gone.length }), async () => {
+      for (const { x, data } of gone) await api.post(`/api/pim/tasks/${x.list}/${encodeURIComponent(x.uri)}/restore`, { data })
+      load()
+    })
+  }
   const removeMany = async (list: Task[]) => {
     if (!list.length) return
+    if (clipOn) { await removeUndo(list); return }
     if (!await askConfirm('', list.length === 1 ? t('Aufgabe löschen?') : t('{n} Aufgaben löschen?', { n: list.length }), t('Löschen'))) return
     try { for (const x of list) await api.del(`/api/pim/tasks/${x.list}/${encodeURIComponent(x.uri)}`) } catch (e) { fail(e) }
     setSelected(null); ms.clear(); load()
   }
 
-  // Anlegen nur einmal, solange die Anfrage läuft (zweimal schnell Enter)
-  const adding = useRef(false)
-  const add = async () => {
-    if (!title.trim() || adding.current) return
+  // Schnelleingabe: jede Eingabe kommt in eine Warteschlange und wird genau eine Aufgabe, nacheinander gespeichert.
+  // Das Feld ist sofort wieder frei; scheitert eine, kommt ihr Text zurück, die übrigen bleiben für den nächsten Versuch.
+  const queue = useRef<{ task: Partial<Task> & { list: number; title: string }; typed: string }[]>([])
+  const draining = useRef(false)
+  const drain = async () => {
+    if (draining.current) return
+    draining.current = true
+    try {
+      while (queue.current.length) {
+        const next = queue.current[0]
+        try { await api.post('/api/pim/tasks', body(next.task)) } catch (e) {
+          queue.current.shift()
+          fail(e)
+          setTitle(x => x || next.typed)
+          break
+        }
+        queue.current.shift()
+      }
+    } finally { draining.current = false }
+    await load()
+  }
+  const add = () => {
+    if (!title.trim()) return
     const list = typeof view === 'number' ? view : lists.find(l => l.canWrite !== false && !l.showOnly)?.id
     if (!list) {
       notify(t('Es gibt noch keine Aufgabenliste. Lege zuerst eine an.'), undefined, 'warning')
@@ -426,14 +521,11 @@ export default function TasksView() {
     // Datum aus dem Text ("morgen Nachmittag") - ausser es wurde weggeklickt
     const nd = ignoreDate ? null : parseNaturalDate(title)
     const when = nd ? taskDue(nd) : { due: view === 'today' ? today() : null, dueAllDay: true }
-    // Feld sofort leeren: was während des Speicherns schon weitergetippt wird, bleibt stehen; schlägt es fehl, kommt der Text zurück
     const typed = title
     setTitle('')
     setIgnoreDate(false)
-    adding.current = true
-    try {
-      if (!await save({ list, title: nd?.title ?? typed.trim(), ...when, priority: view === 'important' ? 1 : 0 })) setTitle(x => x || typed)
-    } finally { adding.current = false }
+    queue.current.push({ task: { list, title: nd?.title ?? typed.trim(), ...when, priority: view === 'important' ? 1 : 0 }, typed })
+    drain()
   }
 
   const toggle = (task: Task) => {
@@ -442,6 +534,7 @@ export default function TasksView() {
   }
   const star = (task: Task) => save({ ...task, priority: task.priority > 0 && task.priority <= 4 ? 0 : 1 })
   const remove = async (task: Task) => {
+    if (clipOn) { await removeUndo([task]); return }
     try { await api.del(`/api/pim/tasks/${task.list}/${encodeURIComponent(task.uri)}`); setSelected(null); load() } catch (e) { fail(e) }
   }
 
@@ -465,7 +558,8 @@ export default function TasksView() {
         <div className={s.title}>
           <div className={task.completed ? s.done : undefined}>{task.title}</div>
           {task.due && <div className={mergeClasses(s.due, late && s.late)}><CalendarLtr16Regular />{new Date(task.due).toLocaleDateString(locale, { weekday: 'short', day: '2-digit', month: '2-digit' })}
-            {typeof view !== 'number' && <> · {lists.find(l => l.id === task.list)?.name}</>}</div>}
+            {(typeof view !== 'number' || searching) && <> · {lists.find(l => l.id === task.list)?.name}</>}</div>}
+          {!task.due && searching && <div className={s.due}>{lists.find(l => l.id === task.list)?.name}</div>}
           {task.assignee && <div className={s.due}><Person16Regular />{task.assignee === me.id ? t('Mir zugewiesen') : names[task.assignee] ?? '…'}</div>}
         </div>
         <Button appearance="transparent" icon={task.priority > 0 && task.priority <= 4 ? <Star20Filled color={tokens.colorPaletteYellowForeground1} /> : <Star20Regular />}
@@ -544,7 +638,7 @@ export default function TasksView() {
           <RibbonButton icon={<PanelLeft20Regular />} label={t('Ordnerbereich')} pressed={sidePane} onClick={toggleSide} />
         </>} />
       <div className={s.root}>
-      <SidePane as="aside" className={mergeClasses(s.side, nv.pane)} open={sidePane} onClose={closeSide} width={{ key: 'tasks.side', def: 230 }}>
+      <SidePane as="aside" className={mergeClasses(s.side, nv.pane)} open={sidePane} onClose={closeSide} width={{ key: 'tasks.side', def: 240 }}>
         <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }} onContextMenu={e => cm.open(e, { kind: 'side' })}>
         {nav('today', <WeatherSunny20Regular />, t('Mein Tag'), count(x => !!x.due && dueDay(x.due) <= today()))}
         {nav('important', <Important20Regular />, t('Wichtig'), count(x => x.priority > 0 && x.priority <= 4))}
@@ -580,11 +674,23 @@ export default function TasksView() {
       <div className={s.main} ref={mainRef} tabIndex={0} aria-label={t('Aufgaben')} onKeyDown={onListKey}
         onClick={e => { if (e.target === e.currentTarget) ms.clear() }}
         onContextMenu={e => { if (!(e.target as HTMLElement).closest('input, textarea, a')) cm.open(e, { kind: 'main' }) }}>
-        <Text size={700} weight="semibold">{viewTitle}</Text>
-        {view === 'today' && <Text style={{ color: tokens.colorNeutralForeground3 }}>{new Date().toLocaleDateString(locale, { weekday: 'long', day: 'numeric', month: 'long' })}</Text>}
-        {view === 'mail' && <MailFollowUps list={followUps.list} reload={followUps.load} />}
-        {view === 'notizi' && <NotiziTasks list={noteTasks.list} reload={noteTasks.load} showDone={showDone} setShowDone={setShowDone} />}
-        {curList && listType !== 'tasks' && meta && (
+        {!clipOn ? <Text size={700} weight="semibold">{viewTitle}</Text> : (
+          // Suche über alle Listen (taskclip): immer an derselben Stelle, Esc leert, Pfeil nach unten geht in die Liste
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            {/* Ohne minWidth 0: Ist die Zeile zu schmal (Handy), rückt das Suchfeld in die nächste Zeile statt über die Überschrift */}
+            <Text size={700} weight="semibold" style={{ flex: '1 1 auto', overflowWrap: 'break-word', maxWidth: '100%' }}>{searching ? t('Suchergebnisse') : viewTitle}</Text>
+            <SearchBox placeholder={t('Aufgaben durchsuchen')} aria-label={t('Aufgaben durchsuchen')} value={search} onChange={(_, d) => setSearch(d.value)} style={{ width: 260, maxWidth: '100%' }}
+              onKeyDown={e => {
+                if (e.key === 'Escape') { e.stopPropagation(); setSearch(''); mainRef.current?.focus() }
+                else if (e.key === 'ArrowDown' && order.length) { e.preventDefault(); mainRef.current?.focus(); ms.step(1, false) }
+              }} />
+          </div>
+        )}
+        {view === 'today' && !searching && <Text style={{ color: tokens.colorNeutralForeground3 }}>{new Date().toLocaleDateString(locale, { weekday: 'long', day: 'numeric', month: 'long' })}</Text>}
+        {view === 'mail' && !searching && <MailFollowUps list={followUps.list} reload={followUps.load} />}
+        {view === 'notizi' && !searching && <NotiziTasks list={noteTasks.list} reload={noteTasks.load} showDone={showDone} setShowDone={setShowDone} />}
+        {searching && shown.length === 0 && <Text style={{ color: tokens.colorNeutralForeground3 }}>{t('Keine Aufgaben zu „{q}“.', { q: search.trim() })}</Text>}
+        {curList && listType !== 'tasks' && meta && !searching && (
           <ShoppingList listId={curList.id} meta={meta} tasks={shown} showHidden={showDone} selectedId={selected?.id} inputRef={addInput} color={curList.color}
             onAdd={async x => { await save({ list: curList.id, ...x }); loadMeta() }}
             onToggle={toggle} onEdit={x => { select(x) }} onContext={rowMenu} onDragStart={dragRow}
@@ -601,8 +707,8 @@ export default function TasksView() {
           {!ignoreDate && parsed && <DateHint nd={parsed} onIgnore={() => setIgnoreDate(true)} />}
           <Button appearance="primary" type="submit" disabled={!title.trim()}>{t('Hinzufügen')}</Button>
         </form>}
-        {!system && listType === 'tasks' && open.map(row)}
-        {!system && listType === 'tasks' && done.length > 0 && (
+        {!sysView && effType === 'tasks' && open.map(row)}
+        {!sysView && effType === 'tasks' && done.length > 0 && (
           <>
             <Button appearance="subtle" className={s.doneHead} icon={showDone ? <ChevronDown20Regular /> : <ChevronRight20Regular />}
               onClick={() => setShowDone(v => !v)} aria-expanded={showDone}>{t('Erledigt {n}', { n: done.length })}</Button>
@@ -674,17 +780,20 @@ function TaskDetail({ task, lists, sections, check, me, onSave, onClose, onDelet
         </Dropdown>
       </Field>}
       {!typed && (people.length > 1 || cur.assignee) && <Field label={t('Zugewiesen an')}>
+        {featureOn('filterpick') ? <FilterSelect value={cur.assignee ?? ''} none={t('Niemandem')} unknown="…" onChange={v => set({ assignee: v })}
+          items={people.map(p => ({ id: p.id, label: p.id === me ? t('Mir') : p.displayName }))} /> :
         <Dropdown value={cur.assignee ? (cur.assignee === me ? t('Mir') : people.find(p => p.id === cur.assignee)?.displayName ?? '…') : t('Niemandem')}
           selectedOptions={[cur.assignee ?? '']} onOptionSelect={(_, d) => set({ assignee: d.optionValue || '' })}>
           <Option value="">{t('Niemandem')}</Option>
           {people.map(p => <Option key={p.id} value={p.id}>{p.id === me ? t('Mir') : p.displayName}</Option>)}
-        </Dropdown>
+        </Dropdown>}
       </Field>}
       <Switch label={t('Erledigt')} checked={cur.completed} onChange={(_, d) => set({ completed: d.checked })} />
       <Field label={t('Liste')}>
+        {featureOn('filterpick') ? <FilterSelect value={String(moveTo)} onChange={v => setMoveTo(Number(v))} items={lists.map(l => ({ id: String(l.id), label: l.name }))} /> :
         <Dropdown value={lists.find(l => l.id === moveTo)?.name ?? ''} selectedOptions={[String(moveTo)]} onOptionSelect={(_, d) => setMoveTo(Number(d.optionValue))}>
           {lists.map(l => <Option key={l.id} value={String(l.id)}>{l.name}</Option>)}
-        </Dropdown>
+        </Dropdown>}
       </Field>
       <Field label={t('Notiz')}><Textarea value={cur.description ?? ''} onChange={(_, d) => set({ description: d.value })} rows={8} resize="vertical" /></Field>
       <div style={{ display: 'flex', gap: 8 }}>

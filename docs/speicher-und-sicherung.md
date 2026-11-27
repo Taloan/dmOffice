@@ -6,7 +6,11 @@ dmOffice 2.0 keeps a second copy of the data in two parts:
 | What | Where | How often |
 |---|---|---|
 | File contents | **Storage Extender** | continuously |
-| Databases (mail, calendars, contacts, tasks, notes, chat, file names and folders, users, settings) | **Core backup** | e.g. daily |
+<!-- [feature:journal] -->
+| Databases (mail, calendars, contacts, tasks, notes, journal, chat, file names and folders, users, settings) | **Core backup** | e.g. daily |
+<!-- [feature:journal:else] -->
+<!-- | Databases (mail, calendars, contacts, tasks, notes, chat, file names and folders, users, settings) | **Core backup** | e.g. daily | -->
+<!-- [/feature:journal] -->
 | External folders | – | not backed up, back them up yourself ([External folders](externe-ordner.md)) |
 | Master key | – | not backed up anywhere, keep it yourself |
 
@@ -155,14 +159,22 @@ computer, sync the target there.
   “Datensicherung”), **Test connection**, areas and folders, time. It can only be
   switched on after confirming that the data will be readable at the target.
 - **Contents:** files byte for byte as originals in their folders, calendars and tasks as `.ics`, contacts as `.vcf`, notes
-  as `.md`, DMS as a list (`.csv`, `.json`), albums as `.json`. Every area and single
+  <!-- [feature:journal] -->
+  and journal as `.md`, DMS as a list (`.csv`, `.json`), Coach as `.csv`, albums as `.json`. Every area and single
+  <!-- [feature:journal:else] -->
+  <!-- as `.md`, DMS as a list (`.csv`, `.json`), albums as `.json`. Every area and single -->
+  <!-- [/feature:journal] -->
   folders can be excluded. Not included: e-mail (stays with the mail provider), external folders, chat. A vault in
   Cryptomator format in the file storage goes to the target encrypted along with the files.
 - **Schedule:** daily at the chosen time and with **Export now**; only changes are transferred. For several people the data
   export runs one after another. Status, last run and last error are shown in the settings; if the data export fails several times in a
   row, Pukki sends a message.
 - **Write-only:** dmOffice never reads anything back from the target.
-- **Folder names:** in the interface language of the first run (German: `Dateien` …, English: `Files` …), fixed after that.
+<!-- [feature:journal] -->
+- **Folder names:** in the interface language of the first run (German: `Dateien`, `Tagebuch` …, English: `Files`, `Journal` …), fixed after that. Journal media are stored per year under `Media/` next to the entries.
+<!-- [feature:journal:else] -->
+<!-- - **Folder names:** in the interface language of the first run (German: `Dateien` …, English: `Files` …), fixed after that. -->
+<!-- [/feature:journal] -->
 - **`.trash`:** deleted items – and, if chosen, older versions of changed files – go to the hidden folder `.trash` at the
   target with the same folder structure and are removed after the retention period (7, 30, 90 days or never).
 - A `LIESMICH.txt` at the target explains the structure and which programs to use.

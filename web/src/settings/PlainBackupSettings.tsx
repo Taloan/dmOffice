@@ -4,14 +4,19 @@ import {
   Button, Checkbox, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Field, Input, MessageBar, MessageBarBody,
   ProgressBar, Select, Spinner, Switch, Text, makeStyles, tokens,
 } from '@fluentui/react-components'
-import { ChevronDown16Regular, ChevronRight16Regular } from '@fluentui/react-icons'
+import { ArrowUndo20Regular, ChevronDown16Regular, ChevronRight16Regular, Play20Regular, PlugConnected20Regular, Save20Regular, Stop20Regular } from '@fluentui/react-icons'
 import { useCallback, useEffect, useState } from 'react'
-import { api, fmtSize } from '../api'
+import { api, fmtSize, featureOn } from '../api'
 import { useApp } from '../App'
-import { locale, t } from '../i18n'
-import { Hint, PageTitle, Section } from './parts'
+import { lang, locale, t } from '../i18n'
+import { plugins } from '../plugins/registry'
+import { SchedulePicker } from './SchedulePicker'
+import { Hint, Section, SectionTabs } from './parts'
+import { RibbonActions, RibbonButton } from '../shell/Ribbon'
 import { BrowseDialog } from '../files/ImportProfiles'
 import { askPassword } from '../shell/context'
+import { useAutoSave } from './autosave' // [feature:savemode]
+import { useRef } from 'react' // [feature:savemode]
 
 const useStyles = makeStyles({
   page: { display: 'flex', flexDirection: 'column', gap: '20px' },
@@ -26,10 +31,13 @@ const useStyles = makeStyles({
   node: { display: 'flex', alignItems: 'center', gap: '2px' },
 })
 
-type Area = 'files' | 'gallery' | 'calendar' | 'tasks' | 'contacts' | 'notes' | 'dms'
+// Bereiche von Plugins: „p:<Kennung>“ (W5)
+type Area = 'files' | 'gallery' | 'calendar' | 'tasks' | 'contacts' | 'notes' | 'dms' | `p:${string}`
+  | 'journal' // [feature:journal]
 
 interface Settings {
   enabled: boolean; mount: string | null; folder: string; time: string; trashDays: number; versions: boolean
+  scheduleKind?: 'every' | 'cron' | null; everyCount?: number; everyUnit?: 'h' | 'd' | 'w'; weekday?: number; cron?: string | null
   areas: Area[]; skip: string[]
 }
 interface State {
@@ -38,7 +46,7 @@ interface State {
 }
 interface Progress { started: string; done: number; total: number; bytes: number; current: string | null }
 interface View {
-  allowed: boolean; available: Area[]; settings: Settings; mounts: { id: string; name: string; kind: string; account?: string | null }[]; oneDrive: boolean; webDav: boolean; confirmed: boolean; ready: boolean; state: State
+  allowed: boolean; available: Area[]; pluginAreas?: { key: Area; label: { de: string; en: string } }[]; settings: Settings; mounts: { id: string; name: string; kind: string; account?: string | null }[]; oneDrive: boolean; webDav: boolean; confirmed: boolean; ready: boolean; state: State
   next: string | null; running: Progress | null; queued: boolean
 }
 interface Choice { id: string; name: string; folder: boolean }
@@ -51,8 +59,13 @@ const AREAS: { key: Area; label: () => string; hint: () => string; pick?: boolea
   { key: 'contacts', label: () => t('Kontakte'), hint: () => t('eine .vcf-Datei je Adressbuch'), pick: true },
   { key: 'notes', label: () => t('Notizen'), hint: () => t('eine .md-Datei je Notiz, Bilder und Anhänge daneben'), pick: true },
   { key: 'dms', label: () => 'DMS', hint: () => t('Liste der Dokumente mit Titel, Datum, Korrespondent, Typ und Tags') },
+  // [feature:journal]
+  { key: 'journal', label: () => t('Tagebuch'), hint: () => t('eine .md-Datei je Eintrag'), pick: true },
+  // [/feature:journal]
 ]
 const TRASH = [7, 30, 90, 0]
+/** Erklärung zu einem Bereich aus einem Plugin (exportHints seines Web-Teils), sonst leer. */
+const pluginExportHint = (key: string) => plugins().map(p => p.module.exportHints?.[key.slice(2)]).find(Boolean) ?? ''
 const when = (iso: string) => new Date(iso).toLocaleString(locale, { dateStyle: 'short', timeStyle: 'short' })
 
 export function PlainBackupSettings() {
@@ -81,8 +94,21 @@ export function PlainBackupSettings() {
     const timer = setInterval(() => load(false), 3000)
     return () => clearInterval(timer)
   }, [active, load])
+  // [feature:savemode]
+  // Kennung savemode: speichert von selbst (Felder beim Verlassen); neues Ziel weiter erst nach Bestätigung mit Passwort
+  const later = useRef<() => Promise<boolean>>(async () => true)
+  // Eingeschaltet mit neuem, noch nicht bestätigtem Ziel: erst nach dem Häkchen (sonst lehnt der Server ab)
+  const waiting = !!view && !!f && dirty && f.enabled && !confirm
+    && !(view.confirmed && f.mount === view.settings.mount && f.folder.replace(/^\/+|\/+$/g, '') === view.settings.folder)
+  const auto = useAutoSave({ f, confirm }, dirty && !waiting, () => later.current())
+  // Stand des Formulars jetzt (für „inzwischen weitergetippt?“ nach dem Speichern)
+  const fNow = useRef(f)
+  fNow.current = f
+  // [feature:savemode:else]
+  // const auto = false
+  // [/feature:savemode]
 
-  if (!view || !f) return <><PageTitle>{t('Datenexport')}</PageTitle><Spinner size="small" /></>
+  if (!view || !f) return <Spinner size="small" />
   const change = (patch: Partial<Settings>) => { setF({ ...f, ...patch }); setDirty(true) }
   // Neues Ziel: erneut bestätigen
   const sameTarget = f.mount === view.settings.mount && f.folder.replace(/^\/+|\/+$/g, '') === view.settings.folder
@@ -93,7 +119,11 @@ export function PlainBackupSettings() {
     let accountPassword: string | undefined, code: string | undefined
     if (confirm && needsConfirm) {
       const c = await askPassword(t('Ziel des Datenexports bestätigen'), !!me?.twoFactor)
-      if (!c) return
+      // [feature:savemode]
+      if (!c) return false
+      // [feature:savemode:else]
+      // if (!c) return
+      // [/feature:savemode]
       accountPassword = c.password
       code = c.code
     }
@@ -102,11 +132,24 @@ export function PlainBackupSettings() {
       const v = await api.put<View>('/api/plainbackup', {
         enabled: f.enabled, target: 'external', mount: f.mount, folder: f.folder, time: f.time, trashDays: f.trashDays, versions: f.versions,
         areas: f.areas, skip: f.skip, confirm, accountPassword, code,
+        ...(featureOn('exportcron') ? { scheduleKind: f.scheduleKind ?? 'every', everyCount: f.everyCount ?? 1, everyUnit: f.everyUnit ?? 'd', weekday: f.weekday ?? 1, cron: f.cron ?? '' } : {}),
       })
+      // [feature:savemode]
+      // Während des Speicherns weitergetippt: Eingabe bleibt stehen und wird danach gespeichert
+      if (auto && fNow.current !== f) setView(v)
+      else
+      // [/feature:savemode]
       apply(v)
-      notify(t('Gespeichert'))
+      // [feature:savemode]
+      if (!auto) notify(t('Gespeichert'))
+      // [feature:savemode:else]
+      // notify(t('Gespeichert'))
+      // [/feature:savemode]
+      return true // [feature:savemode]
     } catch (e) { fail(e) } finally { setBusy(false) }
+    return false // [feature:savemode]
   }
+  later.current = save // [feature:savemode]
   const runTest = async () => {
     setTest(null); setBusy(true)
     try {
@@ -123,7 +166,6 @@ export function PlainBackupSettings() {
 
   if (!view.allowed) return (
     <div className={s.page}>
-      <PageTitle>{t('Datenexport')}</PageTitle>
       <MessageBar intent="info"><MessageBarBody>{t('Der Datenexport ist auf diesem Server nicht freigeschaltet. Freischalten lässt er sich über die Verwaltung.')}</MessageBarBody></MessageBar>
     </div>
   )
@@ -132,10 +174,20 @@ export function PlainBackupSettings() {
   const run = view.running
   return (
     <div className={s.page}>
-      <PageTitle>{t('Datenexport')}</PageTitle>
       <Text>{t('dmOffice legt deine Daten regelmäßig entschlüsselt und in offenen Formaten an einem separaten Speicherort ab. Die Dateien lassen sich ohne dmOffice öffnen. Zurückspielen lässt sich ein Datenexport nicht.')}</Text>
       <Text>{t('dmOffice schreibt ausschließlich an diesen Speicherort und liest keine Daten von dort zurück. Gelöschte Dateien bleiben zunächst im versteckten Ordner .trash erhalten und werden erst nach Ablauf der eingestellten Aufbewahrungsfrist endgültig entfernt.')}</Text>
 
+      <RibbonActions>
+        {run || view.queued
+          ? <RibbonButton icon={<Stop20Regular />} label={t('Anhalten')} onClick={stop} />
+          : <RibbonButton icon={<Play20Regular />} label={t('Jetzt exportieren')} primary disabled={!view.ready || dirty} onClick={runNow} />}
+        <RibbonButton icon={<PlugConnected20Regular />} label={t('Verbindung testen')} disabled={busy || !f.mount} onClick={runTest} />
+        {!auto && <>
+          <RibbonButton icon={<Save20Regular />} label={t('Speichern')} disabled={busy || !dirty} onClick={save} />
+          <RibbonButton icon={<ArrowUndo20Regular />} label={t('Verwerfen')} disabled={!dirty} onClick={() => apply(view)} />
+        </>}
+      </RibbonActions>
+      <SectionTabs page="plainbackup">
       <Section title={t('Zustand')}>
         {!view.ready && <Text className={s.muted}>{t('Noch nicht aktiviert.')}</Text>}
         {run && <>
@@ -157,12 +209,7 @@ export function PlainBackupSettings() {
         )}
         {/* Fehler des letzten Laufs nur, solange kein neuer läuft */}
         {st.lastError && !run && !view.queued && <MessageBar intent={st.lastError === 'Angehalten.' ? 'info' : 'error'}><MessageBarBody>{t(st.lastError)}</MessageBarBody></MessageBar>}
-        <div className={s.row}>
-          {run || view.queued
-            ? <Button onClick={stop}>{t('Anhalten')}</Button>
-            : <Button appearance="primary" disabled={!view.ready || dirty} onClick={runNow}>{t('Jetzt exportieren')}</Button>}
-          {dirty && view.ready && <Text size={200} className={s.muted}>{t('Erst speichern.')}</Text>}
-        </div>
+        {dirty && view.ready && !auto && <Text size={200} className={s.muted}>{t('Erst speichern.')}</Text>}
       </Section>
 
       <Section title={t('Ziel')} hint={t('Speicherort des Datenexports auf einem externen Server.')}>
@@ -190,15 +237,13 @@ export function PlainBackupSettings() {
             {browse && f.mount && <BrowseDialog mount={f.mount} start={f.folder.replace(/^\/+|\/+$/g, '')} title={t('Ordner wählen')}
               onClose={() => setBrowse(false)} onPick={p => { change({ folder: p }); setBrowse(false) }} />}
           </>}
-          <div className={s.row}>
-            <Button disabled={busy || !f.mount} onClick={runTest}>{t('Verbindung testen')}</Button>
-            {test && <Text className={test.ok ? s.ok : s.bad}>{test.text}</Text>}
-          </div>
+          {test && <Text className={test.ok ? s.ok : s.bad}>{test.text}</Text>}
         </div>
       </Section>
 
       <Section title={t('Bereiche')} hint={t('E-Mails sind nicht enthalten.')}>
-        {AREAS.filter(a => view.available.includes(a.key)).map(a => {
+        {[...AREAS, ...(view.pluginAreas ?? []).map(p => ({ key: p.key, label: () => p.label[lang] ?? p.label.de, hint: () => pluginExportHint(p.key), pick: false }))]
+          .filter(a => view.available.includes(a.key)).map(a => {
           const on = f.areas.includes(a.key)
           const skipped = f.skip.filter(x => x.startsWith(a.key + ':')).length
           return (
@@ -214,9 +259,15 @@ export function PlainBackupSettings() {
 
       <Section title={t('Zeitplan und Aufbewahrung')}>
         <div className={s.form}>
-          <Field label={t('Täglich um')} hint={t('Bei mehreren Personen läuft der Datenexport nacheinander; zur gewählten Uhrzeit beginnt der Lauf, sobald der vorige fertig ist.')}>
-            <Input type="time" value={f.time} onChange={(_, d) => change({ time: d.value })} style={{ maxWidth: 140 }} />
-          </Field>
+          {featureOn('exportcron')
+            ? <Field label={t('Zeitplan')} hint={t('Bei mehreren Benutzern läuft der Datenexport nacheinander. Zur geplanten Zeit beginnt der Lauf, sobald der vorige fertig ist.')}>
+              <SchedulePicker preview="/api/plainbackup/preview" at={f.time} onAt={x => change({ time: x })}
+                value={{ kind: f.scheduleKind ?? 'every', count: f.everyCount ?? 1, unit: f.everyUnit ?? 'd', weekday: f.weekday ?? 1, cron: f.cron ?? '0 3 * * *' }}
+                onChange={x => change({ scheduleKind: x.kind, everyCount: x.count, everyUnit: x.unit, weekday: x.weekday, cron: x.cron })} />
+            </Field>
+            : <Field label={t('Täglich um')} hint={t('Bei mehreren Benutzern läuft der Datenexport nacheinander. Zur gewählten Uhrzeit beginnt der Lauf, sobald der vorige fertig ist.')}>
+              <Input type="time" value={f.time} onChange={(_, d) => change({ time: d.value })} style={{ maxWidth: 140 }} />
+            </Field>}
           <Field label={t('Gelöschtes und ältere Versionen in .trash aufbewahren')}>
             <Select value={String(f.trashDays)} onChange={(_, d) => change({ trashDays: Number(d.value) })} style={{ maxWidth: 220 }}>
               {TRASH.map(d => <option key={d} value={d}>{d === 0 ? t('immer') : t('{n} Tage', { n: d })}</option>)}
@@ -233,13 +284,11 @@ export function PlainBackupSettings() {
             <Checkbox checked={confirm} onChange={(_, d) => { setConfirm(!!d.checked); setDirty(true) }}
               label={t('Die gewählten Daten liegen im Ziel unverschlüsselt. Wer Zugang zum Ziel hat, kann sie lesen.')} />
           )}
+          {auto && waiting && <Text size={200} className={s.muted}>{t('Das neue Ziel wird gespeichert, sobald es bestätigt ist.')}</Text>} {/* [feature:savemode] */}
           <Switch checked={f.enabled} disabled={needsConfirm && !confirm && !f.enabled} onChange={(_, d) => change({ enabled: d.checked })} label={t('Datenexport einschalten')} />
-          <div className={s.row}>
-            <Button appearance="primary" disabled={busy || !dirty} onClick={save}>{t('Speichern')}</Button>
-            {dirty && <Button appearance="subtle" onClick={() => apply(view)}>{t('Verwerfen')}</Button>}
-          </div>
         </div>
       </Section>
+      </SectionTabs>
 
       {pick && <SkipDialog area={pick} skip={f.skip} onDone={skip => { if (skip) change({ skip }); setPick(null) }} />}
     </div>
@@ -288,7 +337,11 @@ function SkipDialog({ area, skip, onDone }: { area: Area; skip: string[]; onDone
           </DialogContent>
           <DialogActions>
             <Button appearance="secondary" onClick={() => onDone(null)}>{t('Abbrechen')}</Button>
-            <Button appearance="primary" onClick={() => onDone([...sel])}>{t('Übernehmen')}</Button>
+            {/* [feature:savemode] */}
+            <Button appearance="primary" onClick={() => onDone([...sel])}>{featureOn('savemode') ? t('Speichern') : t('Übernehmen')}</Button>
+            {/* [feature:savemode:else] */}
+            {/* <Button appearance="primary" onClick={() => onDone([...sel])}>{t('Übernehmen')}</Button> */}
+            {/* [/feature:savemode] */}
           </DialogActions>
         </DialogBody>
       </DialogSurface>

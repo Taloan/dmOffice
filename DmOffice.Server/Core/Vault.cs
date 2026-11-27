@@ -67,6 +67,51 @@ public sealed class Vault
         }
     }
 
+    // [feature:masterkeyreq]
+    /// <summary>
+    /// Darf der Server mit diesem Datenverzeichnis ohne DMOFFICE_MASTER_KEY starten? Null: ja - die Variable ist gesetzt, oder die
+    /// Schlüsseldatei einer bestehenden Installation liegt da (dann bleibt es bei der Warnung). Sonst der Grund für den Abbruch:
+    /// Ein neues Datenverzeichnis (keine Schlüsseldatei, keine Benutzer) braucht einen eigenen Schlüssel außerhalb der Daten;
+    /// gibt es Benutzer, aber keinen Schlüssel, ließen sich ihre Daten mit einem neu erzeugten ohnehin nicht öffnen.
+    /// </summary>
+    public static string? StartRefused(DataPaths paths, string? environmentKey)
+    {
+        if (!string.IsNullOrWhiteSpace(environmentKey) || File.Exists(Path.Combine(paths.Root, "master.key"))) return null;
+        if (HasUsers(paths))
+            return "dmOffice startet nicht: Im Datenverzeichnis gibt es Benutzer, aber weder DMOFFICE_MASTER_KEY noch die Schlüsseldatei master.key. " +
+                   "Ohne den bisherigen Hauptschlüssel lassen sich die Daten nicht öffnen. DMOFFICE_MASTER_KEY mit dem bisherigen Wert setzen " +
+                   "oder master.key aus einer Sicherung zurück ins Datenverzeichnis legen und neu starten.";
+        return "dmOffice startet nicht: DMOFFICE_MASTER_KEY ist nicht gesetzt. Eine neue Installation braucht einen eigenen Hauptschlüssel als " +
+               "Umgebungsvariable - er liegt nicht bei den Daten, so bleiben auch Kopien und Sicherungen des Datenverzeichnisses verschlüsselt. " +
+               "Einen starken Wert erzeugt z. B. „openssl rand -hex 32“ (64 Zeichen). Ihn als DMOFFICE_MASTER_KEY in die Container-Vorlage " +
+               "bzw. in die .env neben compose.yaml eintragen, sicher aufbewahren (z. B. im Passwortmanager) und den Container neu starten. " +
+               "Ohne diesen Wert lassen sich die Daten später nicht mehr öffnen.";
+    }
+
+    private static bool HasUsers(DataPaths paths)
+    {
+        var file = Path.Combine(paths.Root, "users.json");
+        if (!File.Exists(file)) return false;
+        try { return JsonNode.Parse(File.ReadAllText(file)) is not JsonArray { Count: 0 }; }
+        // Unlesbar: lieber als bestehende Installation behandeln
+        catch (JsonException) { return true; }
+    }
+    // [/feature:masterkeyreq]
+
+    /// <summary>
+    /// Wirkt der Wert von DMOFFICE_MASTER_KEY wie eine selbst gewählte Passphrase statt einer langen Zufallsfolge? Abgeleitet
+    /// wird er mit festem Salt (für alle Installationen gleich, sonst ließe sich der Schlüssel bestehender Daten nicht mehr
+    /// bilden) - eine kurze Passphrase ist damit leichter zu erraten. Nur für den Hinweis im Log.
+    /// </summary>
+    public static bool LooksWeak(string? environmentKey)
+    {
+        var k = (environmentKey ?? "").Trim();
+        if (k.Length == 0) return false;
+        if (k.Length < 24) return true;
+        // Nur wenige verschiedene Zeichen (z. B. „aaaa…“ oder „1234…“)
+        return k.Distinct().Count() < 10;
+    }
+
     /// <summary>Die Variable gilt, aber die alte Schluesseldatei liegt noch im Datenverzeichnis.</summary>
     public bool OldKeyFileLeft => !KeyInDataDir && File.Exists(KeyFile);
 
@@ -117,11 +162,21 @@ public sealed class Vault
             }
             if (updated != null) { writes.Add((f, updated)); n += count; }
         }
+        // [feature:cfgseal]
+        // Siegel der Einstellungsdateien: was zum alten Schlüssel passte, gilt danach mit dem neuen (auch bei einem Abbruch)
+        var sealedBefore = ConfigSeal.ValidUnder(paths.Root, old);
+        try
+        {
+        // [/feature:cfgseal]
         foreach (var (f, t) in writes)
         {
             File.WriteAllText(f + ".rewrap", t);
             File.Move(f + ".rewrap", f, overwrite: true);
         }
+        // [feature:cfgseal]
+        }
+        finally { if (sealedBefore.Count > 0) ConfigSeal.Reseal(paths.Root, Key, sealedBefore); }
+        // [/feature:cfgseal]
         return n;
     }
 

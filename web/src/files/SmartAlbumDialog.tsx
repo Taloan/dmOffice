@@ -1,6 +1,6 @@
 import { Button, Checkbox, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Field, Input, Select, Spinner, Text, makeStyles, tokens } from '@fluentui/react-components'
 import { Add20Regular, Delete20Regular } from '@fluentui/react-icons'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, q } from '../api'
 import { t } from '../i18n'
 import { ATTRS, FilterAttr, knownValues } from './PhotoFilter'
@@ -33,7 +33,20 @@ export function SmartAlbumDialog({ title, initialName = '', initial, onClose, on
 }) {
   const s = useStyles()
   const [name, setName] = useState(initialName)
-  const [rule, setRule] = useState<SmartRule>(() => initial?.cols.length ? { cols: [...initial.cols], sel: initial.cols.map((_, i) => [...(initial.sel[i] ?? [])]) } : { cols: ['rating'], sel: [[]] })
+  // Jede Art nur einmal (ältere Regeln konnten eine doppelt enthalten); gewählte Werte doppelter Arten zusammengefasst
+  const [rule, setRule] = useState<SmartRule>(() => {
+    if (!initial?.cols.length) return { cols: ['rating'], sel: [[]] }
+    const cols: FilterAttr[] = [], sel: string[][] = []
+    initial.cols.forEach((c, i) => {
+      const k = cols.indexOf(c)
+      if (k < 0) { cols.push(c); sel.push([...(initial.sel[i] ?? [])]) }
+      else sel[k] = [...new Set([...sel[k], ...(initial.sel[i] ?? [])])]
+    })
+    return { cols, sel }
+  })
+  // Feste Kennung je Zeile: Die Art einer Zeile ändert sich beim Umschalten, die Zeile bleibt dieselbe
+  const next = useRef(0)
+  const [ids, setIds] = useState<number[]>(() => rule.cols.map(() => next.current++))
   const [facets, setFacets] = useState<Facets | null>(null)
   const [busy, setBusy] = useState(false)
   // Werte und Anzahlen vom Server; die zusätzliche letzte Spalte liefert, wie viele Fotos insgesamt passen
@@ -49,8 +62,20 @@ export function SmartAlbumDialog({ title, initialName = '', initial, onClose, on
   }, [filter]) // eslint-disable-line react-hooks/exhaustive-deps
   const matching = facets?.[rule.cols.length]?.total
   const free = useMemo(() => ORDER.filter(a => !rule.cols.includes(a)), [rule.cols])
-  const set = (i: number, cols: FilterAttr[], sel: string[][]) => setRule({ cols, sel })
-  const toggle = (i: number, v: string) => set(i, rule.cols, rule.sel.map((x, k) => k !== i ? x : x.includes(v) ? x.filter(y => y !== v) : [...x, v]))
+  const change = (i: number, col: FilterAttr) => {
+    if (rule.cols.some((c, k) => k !== i && c === col)) return
+    setRule(r => ({ cols: r.cols.map((c, k) => k === i ? col : c), sel: r.sel.map((x, k) => k === i ? [] : x) }))
+  }
+  const remove = (i: number) => {
+    setRule(r => ({ cols: r.cols.filter((_, k) => k !== i), sel: r.sel.filter((_, k) => k !== i) }))
+    setIds(l => l.filter((_, k) => k !== i))
+  }
+  const add = () => {
+    if (!free.length) return
+    setRule(r => ({ cols: [...r.cols, free[0]], sel: [...r.sel, []] }))
+    setIds(l => [...l, next.current++])
+  }
+  const toggle = (i: number, v: string) => setRule(r => ({ cols: r.cols, sel: r.sel.map((x, k) => k !== i ? x : x.includes(v) ? x.filter(y => y !== v) : [...x, v]) }))
   const ok = name.trim().length > 0 && rule.sel.some(x => x.length > 0)
 
   return (
@@ -72,14 +97,14 @@ export function SmartAlbumDialog({ title, initialName = '', initial, onClose, on
                   : attr.order === 'desc' ? b[0].localeCompare(a[0], undefined, { numeric: true })
                   : attr.order === 'num' ? Number(a[0]) - Number(b[0]) : a[0].localeCompare(b[0]))
                 return (
-                  <div key={col} className={s.row}>
+                  <div key={ids[i]} className={s.row}>
                     <div className={s.head}>
-                      <Select value={col} onChange={(_, d) => set(i, rule.cols.map((c, k) => k === i ? d.value as FilterAttr : c), rule.sel.map((x, k) => k === i ? [] : x))} aria-label={t('Bedingung')}>
+                      <Select value={col} onChange={(_, d) => change(i, d.value as FilterAttr)} aria-label={t('Bedingung')}>
                         {[col, ...free].map(a => <option key={a} value={a}>{ATTRS[a].label()}</option>)}
                       </Select>
                       <Text size={200} className={s.muted} style={{ flex: 1 }}>{rule.sel[i].length ? t('{n} gewählt', { n: rule.sel[i].length }) : t('noch nichts gewählt')}</Text>
                       <Button appearance="subtle" icon={<Delete20Regular />} aria-label={t('Bedingung entfernen')} disabled={rule.cols.length === 1}
-                        onClick={() => set(i, rule.cols.filter((_, k) => k !== i), rule.sel.filter((_, k) => k !== i))} />
+                        onClick={() => remove(i)} />
                     </div>
                     <div className={s.values}>
                       {facets == null && <Spinner size="tiny" />}
@@ -105,7 +130,7 @@ export function SmartAlbumDialog({ title, initialName = '', initial, onClose, on
               })}
             </div>
             {free.length > 0 && rule.cols.length < 6 && (
-              <Button icon={<Add20Regular />} style={{ marginTop: 10 }} onClick={() => set(rule.cols.length, [...rule.cols, free[0]], [...rule.sel, []])}>{t('Bedingung hinzufügen')}</Button>
+              <Button icon={<Add20Regular />} style={{ marginTop: 10 }} onClick={add}>{t('Bedingung hinzufügen')}</Button>
             )}
             <div className={s.match}>{matching == null ? <Spinner size="tiny" /> : t('{n} Fotos und Videos passen', { n: matching.toLocaleString() })}</div>
           </DialogContent>

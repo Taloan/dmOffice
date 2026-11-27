@@ -1,0 +1,10 @@
+{
+  "key": "demo",
+  "version": "1.0.0",
+  "files": {
+    "lang/en.json": "1c323756f4a9c03bb8c76246cfc13141e8da5cfe11e755aa903a52bde1abfe4e",
+    "plugin.json": "af8b92a4dea7602bf1e23f338c0100370443052966f023b68146d365c3a7dc92",
+    "web/entry.js": "b6017774995a05781bd6a6ba3f31c9e9515fc8e0b6b5c537bee2c68426da847e"
+  },
+  "signature": "MEQCIHeLExpk4L9OSoALV0yjp2W6W8O+MwpDW/oxD9nehFQfAiBnUGNsLiydH4e6pymJxz+AejLFJNS7q7bkiVhqiJQPCA=="
+}

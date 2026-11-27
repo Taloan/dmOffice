@@ -8,7 +8,7 @@ namespace DmOffice.Gallery;
 public static class ImportProfilesApi
 {
     public record Body(string? Name, List<ImportSource>? Sources, string? Mount, string? Target, string? Folders, string? Names, string? Title, string? Description,
-        bool Copy = false, int Every = 10, DateOnly? Since = null, bool Active = true, string? Language = null);
+        bool Copy = false, int Every = 10, DateOnly? Since = null, bool Active = true, string? Language = null, bool Subfolders = true);
     public record PreviewBody(List<ImportSource>? Sources, string? Folders, string? Names, string? Title, string? Description, string? Language = null);
 
     public static void Map(WebApplication app)
@@ -26,6 +26,9 @@ public static class ImportProfilesApi
                     p.Id, p.Name, p.Sources, p.Mount, mountName = mounts.FirstOrDefault(m => m.Id == p.Mount)?.Name, p.Target, p.Folders, p.Names, p.Title,
                     p.Description, p.Copy, p.Every, p.Since, p.Active, p.LastRun, p.Error, p.LastCount, p.Total, p.Pending,
                     running = ImportProfileJob.IsRunning(space.User.Id, p.Id),
+                    // [feature:importsub]
+                    p.Subfolders,
+                    // [/feature:importsub]
                 }),
                 // Als Quelle alle (nur zum Lesen eingebundene nur zum Kopieren), als Ziel nur, was sich beschreiben lässt
                 mounts = mounts.Select(m => new { m.Id, m.Name, m.ReadOnly, m.Available }),
@@ -49,13 +52,20 @@ public static class ImportProfilesApi
         {
             var space = http.Space();
             if (ImportProfiles.Of(space.Db).FirstOrDefault(x => x.Id == id) is not { } p) return Results.NotFound();
+            var before = new ImportProfile { Id = p.Id, Since = p.Since, Copy = p.Copy, Sources = [.. p.Sources] };
             if (await ApplyAsync(space, config, p, body, http.RequestAborted) is { } error) return Results.BadRequest(new { error });
+            ImportProfiles.Reconsider(space.Db, before, p);
             ImportProfiles.Update(space.Db, id, x =>
             {
                 (x.Name, x.Sources, x.Mount, x.Target, x.Folders, x.Names) = (p.Name, p.Sources, p.Mount, p.Target, p.Folders, p.Names);
                 (x.Title, x.Description, x.Copy, x.Every, x.Since, x.Active, x.Language) = (p.Title, p.Description, p.Copy, p.Every, p.Since, p.Active, p.Language);
+                // [feature:importsub]
+                x.Subfolders = p.Subfolders;
+                // [/feature:importsub]
                 x.Error = null;
             });
+            // Mit den neuen Angaben gleich prüfen, nicht erst nach dem Abstand
+            if (p.Active) ImportProfileJob.Request(space.User.Id, p.Id);
             return Results.Ok();
         });
 
@@ -86,14 +96,8 @@ public static class ImportProfilesApi
             var import = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, space.Zone);
             const int seq = 1;
             var ext = sample != null ? Path.GetExtension(sample) : ".JPG";
-            return new
-            {
-                sample,
-                folder = ImportProfiles.RenderFolder(body.Folders ?? "", facts, import, seq, culture),
-                name = ImportProfiles.RenderName(body.Names ?? "", facts, import, seq, culture) + ext,
-                title = ImportProfiles.RenderText(body.Title ?? "", facts, import, seq, culture),
-                description = ImportProfiles.RenderText(body.Description ?? "", facts, import, seq, culture),
-            };
+            var r = new ImportProfiles.Patterns(body.Folders ?? "", body.Names ?? "", body.Title ?? "", body.Description ?? "").Render(facts, import, seq, culture);
+            return new { sample, folder = r.Folder, name = r.Name + ext, title = r.Title, description = r.Description };
         });
     }
 
@@ -171,7 +175,12 @@ public static class ImportProfilesApi
         }
         var mount = (b.Mount ?? "").Trim();
         // Ziel nicht in einem Quellordner, sonst sortierte das Profil seine eigenen Fotos immer wieder um
-        if (sources.Any(s => s.Mount == mount && (s.Path.Length == 0 || target == s.Path || FileStore.InRoot(target, s.Path))))
+        // [feature:importsub]
+        var deep = b.Subfolders || !Features.On(Features.ImportSubfolders);
+        if (sources.Any(s => ImportProfiles.InSource(s, mount, target, deep)))
+        // [feature:importsub:else]
+        // if (sources.Any(s => s.Mount == mount && (s.Path.Length == 0 || target == s.Path || FileStore.InRoot(target, s.Path))))
+        // [/feature:importsub]
             return "Der Zielordner darf nicht in einem Quellordner liegen.";
         if (mount.Length == 0)
         {
@@ -187,14 +196,13 @@ public static class ImportProfilesApi
         var names = (b.Names ?? "").Trim();
         var title = (b.Title ?? "").Trim();
         var description = (b.Description ?? "").Trim();
-        if (names.Length == 0) return "Das Dateinamen-Muster ist leer.";
-        if (names.Contains('/') || names.Contains('\\')) return "Das Dateinamen-Muster darf keinen Schrägstrich enthalten.";
-        if (folders.Length > 500 || names.Length > 300 || title.Length > 500 || description.Length > 4000) return "Ein Muster ist zu lang.";
-        var unknown = new[] { folders, names, title, description }.SelectMany(ImportProfiles.Unknown).Distinct().ToList();
-        if (unknown.Count > 0) return "Unbekannter Platzhalter: " + string.Join(", ", unknown.Select(u => "{" + u + "}"));
+        if (new ImportProfiles.Patterns(folders, names, title, description).Error() is { } bad) return bad;
         if (b.Every is < 5 or > 1440) return "Das Intervall liegt zwischen 5 und 1440 Minuten.";
         (p.Name, p.Sources, p.Mount, p.Target, p.Folders, p.Names, p.Title, p.Description) = (name, sources, mount, target, folders, names, title, description);
         (p.Copy, p.Every, p.Since, p.Active, p.Language) = (b.Copy, b.Every, b.Since, b.Active, b.Language == "en" ? "en" : "de");
+        // [feature:importsub]
+        p.Subfolders = b.Subfolders;
+        // [/feature:importsub]
         return null;
     }
 }

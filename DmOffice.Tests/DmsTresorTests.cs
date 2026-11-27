@@ -174,4 +174,38 @@ public class DmsTresorTests : IClassFixture<ChatFixture>
         Assert.Equal(1, Convert.ToInt32(store.Scalar("SELECT COUNT(*) FROM dms_docs WHERE state = 'done' AND title LIKE '%Doppelt%'")));
         Tresor.Delete(id);
     }
+
+    // [feature:dmstresorplace]
+    [Fact]
+    public async Task Nicht_nach_Vorgabe_abgelegt_auch_im_Tresor()
+    {
+        var id = _fx.Id("cleo");
+        Tresor.Delete(id);
+        var c = _fx.As("cleo");
+        await Json(await c.PostAsJsonAsync("/api/tresor/setup", new { password = "tresor-pass-1", name = "Testhandy" }));
+        await Json(await c.GetAsync("/api/dms/profiles"));
+        // Ablage folgt den Angaben nicht: nach dem Umbenennen passt der Ort nicht mehr zur Vorgabe
+        var profile = (await Json(await c.PostAsJsonAsync("/api/dms/profiles", new
+        {
+            name = "Vorgabe", target = "tresor", folder = "Akten", folders = "{doc_year}", names = "{title}", unknown = "Unbekannt", follow = false, language = "de",
+        }))).GetProperty("id").GetString()!;
+        await Json(await Upload(c, profile, "Bescheid.txt", "Bescheid vom 03.02.2026"));
+        await Process("cleo");
+        var docId = (await Json(await c.GetAsync("/api/dms/docs?area=tresor"))).GetProperty("items")[0].GetProperty("id").GetInt64();
+        await Json(await c.PutAsJsonAsync($"/api/dms/docs/{docId}?area=tresor", new { title = "Bescheid", confirm = true }));
+        Assert.Empty((await Json(await c.GetAsync("/api/dms/docs/misplaced?area=tresor"))).EnumerateObject());
+        await Json(await c.PutAsJsonAsync($"/api/dms/docs/{docId}?area=tresor", new { title = "Steuerbescheid" }));
+
+        var wrong = await Json(await c.GetAsync("/api/dms/docs/misplaced?area=tresor"));
+        Assert.Equal("Akten/2026/Steuerbescheid.txt", wrong.GetProperty(docId.ToString()).GetString());
+        Assert.Equal(1, (await Json(await c.GetAsync("/api/dms/docs?area=tresor&misplaced=true"))).GetProperty("total").GetInt32());
+        // Der offene Bereich zählt den Tresor nicht mit
+        Assert.Empty((await Json(await c.GetAsync("/api/dms/docs/misplaced"))).EnumerateObject());
+
+        await Json(await c.PostAsJsonAsync("/api/dms/docs/refile?area=tresor", new { ids = new[] { docId } }));
+        Assert.Equal("Akten/2026/Steuerbescheid.txt", (await Json(await c.GetAsync($"/api/dms/docs/{docId}?area=tresor"))).GetProperty("path").GetString());
+        Assert.Empty((await Json(await c.GetAsync("/api/dms/docs/misplaced?area=tresor"))).EnumerateObject());
+        Tresor.Delete(id);
+    }
+    // [/feature:dmstresorplace]
 }

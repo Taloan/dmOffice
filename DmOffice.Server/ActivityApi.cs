@@ -41,7 +41,7 @@ public static class ActivityApi
         var s = space.Settings;
         var items = new List<Activity.Item>();
 
-        var accounts = s.MailAccounts.Where(a => !string.IsNullOrEmpty(a.ImapHost)).ToList();
+        var accounts = s.ActiveMailAccounts().Where(a => !string.IsNullOrEmpty(a.ImapHost)).ToList();
         if (accounts.Count > 0)
         {
             var states = accounts.Select(a => mail.StateOf(user, a.Id)).ToList();
@@ -54,7 +54,7 @@ public static class ActivityApi
             items.Add(WithPending(Base(user, Activity.MailQueue), MailQueue.Count(space.Db)));
         }
         if (s.MailAccounts.Any(a => a.Slim)) items.Add(Base(user, Activity.MailSlim));
-        if (s.MailAccounts.Any(a => a.TrashDays > 0 || a.JunkDays > 0)) items.Add(Base(user, Activity.MailTrash));
+        if (s.ActiveMailAccounts().Any(a => a.TrashDays > 0 || a.JunkDays > 0)) items.Add(Base(user, Activity.MailTrash));
 
         items.Add(WithPending(Base(user, Activity.FilesBlobs), Cached(user, "blobs", () => FileStore.PendingBlobs(space.Db))));
         items.Add(WithPending(Base(user, Activity.FilesHashes), Cached(user, "hashes", () => FileHashes.Pending(space.Db))));
@@ -82,22 +82,43 @@ public static class ActivityApi
                 var on = cur == null ? "startet gleich" : cur.Value.User == user ? $"vorher noch {cur.Value.Path} ({cur.Value.Step})" : "vorher noch der Ordner eines anderen Kontos";
                 items.Add(g with { State = "waiting", Detail = $"{string.Join(", ", waiting)} angefordert – {on}" });
             }
-            else items.Add(g.State == "running" ? g : g with { Detail = $"{sources.Count} Ordner, {sources.Sum(x => x.Count):N0} Fotos und Videos" + (watched > 0 ? $", {watched} überwacht" : "") });
+            // Noch nicht ausgelesene Fotos, aber der Job arbeitet gerade für ein anderes Konto (er liest einen Ordner nach dem anderen):
+            // als „wartet“ zeigen - sonst steht hier „ruhig“, während in der Galerie leere Kacheln stehen
+            else if (g.State != "running" && sources.Where(x => x.Watch || x.Draining).Sum(x => { var st = DmOffice.Gallery.GalleryFolders.Stages(space.Db, x.Id); return st.Listed + st.NoThumb; }) is var open and > 0)
+            {
+                var cur = DmOffice.Gallery.GalleryScanJob.Current;
+                var on = cur == null ? "geht gleich weiter" : cur.Value.User == user ? $"gerade {cur.Value.Path} ({cur.Value.Step})" : "vorher noch der Ordner eines anderen Kontos";
+                items.Add(g with { State = "waiting", Detail = $"{DmOffice.Core.Num.N(open)} Fotos noch nicht ausgelesen – {on}" });
+            }
+            else items.Add(g.State == "running" ? g : g with { Detail = $"{sources.Count} Ordner, {DmOffice.Core.Num.N(sources.Sum(x => x.Count))} Fotos und Videos" + (watched > 0 ? $", {watched} überwacht" : "") });
             if (sources.Any(x => x.Proxies)) items.Add(Base(user, Activity.GalleryProxies));
+            if (Features.On(Features.GalleryMedium) && sources.Any(x => !x.Proxies)) items.Add(Base(user, Activity.GalleryMedium)); // [feature:galmedium]
         }
+        // Abgleich nach dem Neuzuordnen eines Ordners: nur, solange er läuft oder sein Ergebnis noch da ist
+        if (Activity.Get(user, Activity.GalleryRelink) is { } galleryRelink) items.Add(galleryRelink);
+        if (Activity.Get(user, Activity.AudioRelink) is { } audioRelink) items.Add(audioRelink);
         // Übertragung zwischen Ablage und externen Ordnern: nur, solange sie läuft oder ihr Ergebnis noch da ist
         if (Activity.Get(user, Activity.FilesTransfer) is { } transfer) items.Add(transfer);
         if (Activity.Get(user, Activity.GallerySave) is { } saving) items.Add(saving);
+        if (Activity.Get(user, Activity.PhotoExport) is { } exporting) items.Add(exporting); // [feature:photoexport]
+        if (Features.On(Features.LensCorr) && Activity.Get(user, Activity.LensApply) is { } lensApply) items.Add(lensApply); // [feature:lenscorr]
+        if (Features.On(Features.LensLib) && Activity.Get(user, Activity.LensLib) is { } lensLib) items.Add(lensLib); // [feature:lenslib]
         // Importprofile und Audiothek-Ordner: nur, wenn welche eingerichtet sind
+        // Importprofile: Stand aus den Profilen selbst (wie bei den Kalender-Abos) - Fehler je aktivem Profil mit Namen, nicht nur der
+        // letzte Lauf; ein erfolgreicher Lauf oder ein ausgeschaltetes Profil hinterlässt keinen alten Fehler
         if (DmOffice.Gallery.ImportProfiles.Of(space.Db) is { Count: > 0 } profiles)
         {
             var g = Base(user, Activity.GalleryImport);
-            items.Add(g.State == "running" ? g : g with { Detail = $"{profiles.Count} Importprofile" });
+            var failed = profiles.Where(x => x.Active && !string.IsNullOrEmpty(x.Error)).ToList();
+            var error = failed.Count == 0 ? null : string.Join(" · ", failed.Select(x => $"{x.Name}: {x.Error}"));
+            var last = profiles.Select(x => x.LastRun).Where(x => x != null).DefaultIfEmpty().Max();
+            items.Add(g.State == "running" ? g
+                : new Activity.Item(Activity.GalleryImport, error != null ? "error" : "idle", null, null, null, $"{profiles.Count} Importprofile", null, last ?? g.Finished, error, g.Completed));
         }
         if (DmOffice.Audio.AudioFolders.Of(space.Db) is { Count: > 0 } audio)
         {
             var g = Base(user, Activity.AudioScan);
-            items.Add(g.State == "running" ? g : g with { Detail = $"{audio.Count} Ordner, {audio.Sum(x => x.Count):N0} Titel" });
+            items.Add(g.State == "running" ? g : g with { Detail = $"{audio.Count} Ordner, {DmOffice.Core.Num.N(audio.Sum(x => x.Count))} Titel" });
         }
 
         if (s.Notizi.Enabled)
@@ -145,8 +166,8 @@ public static class ActivityApi
                 // Zurückholen vom Ziel (nach Wiederherstellung, fehlende Inhalte) läuft im Hintergrund mit
                 var r = m.Restore is { Running: true } rr ? (rr.Missing > 0 ? "holt zurück" : "prüft, was hier fehlt") : null;
                 var fill = mirror.Prefill;
-                var detail = r ?? (fill != null ? "füllt den lokalen Speicherpool auf" : m.Running ? (m.Uploaded > 0 ? $"{m.Uploaded:N0} hochgeladen" : "prüft, was fehlt")
-                    : m.LastRun != null ? $"{m.Mirrored:N0} von {m.Local:N0} Inhalten am Ziel" + (m.Pending > 0 ? $", {m.Pending:N0} offen" : "") : null);
+                var detail = r ?? (fill != null ? "füllt den lokalen Speicherpool auf" : m.Running ? (m.Uploaded > 0 ? $"{DmOffice.Core.Num.N(m.Uploaded)} hochgeladen" : "prüft, was fehlt")
+                    : m.LastRun != null ? $"{DmOffice.Core.Num.N(m.Mirrored)} von {DmOffice.Core.Num.N(m.Local)} Inhalten am Ziel" + (m.Pending > 0 ? $", {DmOffice.Core.Num.N(m.Pending)} offen" : "") : null);
                 // Waehrend des Abgleichs bzw. Zurueckholens: so viele von so vielen - die Anzeige macht daraus „x von y“ und einen Balken
                 var (done, total) = m.Restore is { Running: true, Missing: > 0 } back ? ((long?)(back.Restored + back.NotThere + back.Failed), (long?)back.Missing)
                     : fill != null ? ((long?)fill.Done, (long?)fill.Total)
@@ -165,7 +186,7 @@ public static class ActivityApi
                 var read = mountIndex.Reading;
                 items.Add(new Activity.Item(Activity.MountIndex, check != null || read != null ? "running" : "idle",
                     check == null ? read?.Done : null, check == null ? read?.Total : null, null,
-                    check != null ? $"prüft „{check.Mount}“: {check.Done:N0} Einträge" : read != null ? $"wertet „{read.Mount}“ aus" : null, null,
+                    check != null ? $"prüft „{check.Mount}“: {DmOffice.Core.Num.N(check.Done)} Einträge" : read != null ? $"wertet „{read.Mount}“ aus" : null, null,
                     check != null || read != null ? null : mountIndex.LastScan(c.ExternalFolders), null, 0));
             }
             if (files != null)
@@ -178,9 +199,9 @@ public static class ActivityApi
                     var (fDone, fTotal) = back is { Running: true, Missing: > 0 } ? ((long?)(back.Restored + back.NotThere + back.Failed), (long?)back.Missing)
                         : f is { Running: true, Total: > 0 } ? ((long?)f.Done, (long?)f.Total) : (null, null);
                     var text = back?.Running == true ? "holt zurück"
-                        : f.Running ? (f.Uploaded > 0 ? $"{f.Uploaded:N0} übertragen" : "prüft, was fehlt")
+                        : f.Running ? (f.Uploaded > 0 ? $"{DmOffice.Core.Num.N(f.Uploaded)} übertragen" : "prüft, was fehlt")
                         : !BackupRules.FilesOn(c) ? "ausgeschaltet"
-                        : f.LastRun != null ? $"{f.Count:N0} Inhalte am Ziel" + (f.Pending > 0 ? $", {f.Pending:N0} offen" : "") : null;
+                        : f.LastRun != null ? $"{DmOffice.Core.Num.N(f.Count)} Inhalte am Ziel" + (f.Pending > 0 ? $", {DmOffice.Core.Num.N(f.Pending)} offen" : "") : null;
                     var on = BackupRules.FilesOn(c);
                     items.Add(new Activity.Item(Activity.FilesBackup, running ? "running" : on && f.LastError != null ? "error" : "idle",
                         fDone, fTotal, null, text, null, running ? null : f.LastRun, on || running ? f.LastError : null, 0));
@@ -197,6 +218,21 @@ public static class ActivityApi
                 health.Running ? "prüft" : h == null ? null : $"{h.Items.Count} Datenbanken" + (fixedN > 0 ? $", {fixedN} Index neu aufgebaut" : "") + (bad.Count == 0 ? ", alles in Ordnung" : ""),
                 null, health.Running ? null : h?.At, bad.Count > 0 ? "Beschädigt: " + string.Join(", ", bad.Select(i => i.Label)) + " – Verwaltung → Dateien → Datenbanken" : null, 0));
         }
+        // [feature:journal]
+        // Tagebuch-Import (Diarium): nur, wenn seit dem Start einer lief
+        if (DmOffice.Journal.JournalImport.Of(user).File != null) items.Add(Base(user, Activity.JournalImport));
+        // [/feature:journal]
+
+        // Datenexport (lesbare Kopie an ein Ziel der Person): nur, wenn eingerichtet - mit Steuerung (jobcontrol)
+        if (Features.On(Features.JobControl) && DmOffice.Storage.PlainBackup.Settings(space.Db) is var plain && DmOffice.Storage.PlainBackup.Ready(plain))
+        {
+            var run = DmOffice.Storage.PlainBackupService.Progress(user);
+            var st = DmOffice.Storage.PlainBackup.State(space.Db);
+            var queued = DmOffice.Storage.PlainBackupService.Queued(user);
+            items.Add(new Activity.Item(JobControl.DataExport, run != null ? "running" : queued ? "waiting" : st.LastError != null ? "error" : "idle",
+                run?.Done, run?.Total, null, run?.Current ?? (run == null && st.LastRun != null ? $"{DmOffice.Core.Num.N(st.Files)} Dateien am Ziel" : null),
+                run?.Started, run != null ? null : st.LastRun, run != null ? null : st.LastError, 0));
+        }
 
         var compact = SettingsApi.CompactOf(user);
         items.Add(compact is { Started: not null }
@@ -204,7 +240,45 @@ public static class ActivityApi
                 null, null, null, null, compact.Started,
                 compact.Running ? null : compact.Finished, compact.Error, 0)
             : Base(user, Activity.Compact));
-        return items;
+        return Features.On(Features.JobControl) ? items.Select(i => WithControl(space.User, i)).ToList() : items;
+    }
+
+    /// <summary>Wem ein steuerbarer Job gehört: Suche in Server-Mounts dem Server (nur Admins), sonst der Person.</summary>
+    private static string? OwnerOf(UserRecord me, string kind) =>
+        !JobControl.Kinds.Contains(kind) ? null : kind == Activity.MountIndex ? (me.IsAdmin ? JobControl.Server : null) : me.Id;
+
+    /// <summary>Steuerbare Jobs: Zustand „angehalten“ bzw. „übersprungen bis …“ und das Recht zu steuern.</summary>
+    private static Activity.Item WithControl(UserRecord me, Activity.Item i)
+    {
+        if (OwnerOf(me, i.Id) is not { } owner) return i;
+        // Angehalten oder übersprungen: Hinweise wie „– startet gleich“ stimmen dann nicht
+        string? Calm(string? d) => d is { } x && x.IndexOf(" – ", StringComparison.Ordinal) is var cut and > 0 ? x[..cut] : d;
+        if (JobControl.Paused(owner, i.Id)) return i with { Hold = "paused", Control = true, State = i.State == "running" ? "running" : "waiting", Detail = Calm(i.Detail) };
+        if (JobControl.SkippedUntil(owner, i.Id) is { } until) return i with { Hold = "skipped", HoldUntil = until, Control = true, Detail = Calm(i.Detail) };
+        return i with { Control = true };
+    }
+
+    public sealed record ControlBody(string? Kind, string? Action);
+
+    /// <summary>Nächster Termin eines Jobs (bis dahin ruht er nach „Überspringen“).</summary>
+    private static DateTime NextTerm(UserSpace space, string kind, ServerConfig config)
+    {
+        var now = DateTime.UtcNow;
+        switch (kind)
+        {
+            case Activity.GalleryScan: return now + DmOffice.Gallery.GalleryFolders.WatchEvery;
+            case Activity.GalleryImport:
+                var every = DmOffice.Gallery.ImportProfiles.Of(space.Db).Where(p => p.Active).Select(p => Math.Max(5, p.Every)).DefaultIfEmpty(60).Min();
+                return now + TimeSpan.FromMinutes(every);
+            case Activity.MountIndex:
+                return DmOffice.Storage.ServerMounts.Active(config.Current).Select(f => DmOffice.Storage.ExternalIndexer.NextDue(f, DateTimeOffset.Now).UtcDateTime)
+                    .DefaultIfEmpty(now.AddDays(1)).Min();
+            case JobControl.DataExport:
+                var s = DmOffice.Storage.PlainBackup.Settings(space.Db);
+                return DmOffice.Storage.PlainBackupService.NextSlots(s, space.Zone, now, 1).FirstOrDefault(now.AddDays(1));
+            case Activity.GalleryMedium: return DmOffice.Gallery.GalleryMediumJob.NextNight(DateTime.Now); // [feature:galmedium]
+            default: return now;
+        }
     }
 
     public static void Map(WebApplication app)
@@ -213,6 +287,33 @@ public static class ActivityApi
         {
             var items = Build(http.Space(), mail, config, mirror, backup, health, files, mountIndex);
             return Results.Ok(new { running = items.Count(i => i.State == "running"), items });
+        }).RequireAuthorization();
+
+        // Jobs steuern (jobcontrol): anhalten, fortsetzen, überspringen, abbrechen - eigene Jobs, Admins auch die des Servers
+        app.MapPost("/api/activity/control", (HttpContext http, ControlBody body, ServerConfig config) =>
+        {
+            if (!Features.On(Features.JobControl)) return Results.NotFound();
+            var space = http.Space();
+            var kind = body.Kind ?? "";
+            if (OwnerOf(space.User, kind) is not { } owner) return Results.StatusCode(403);
+            switch (body.Action)
+            {
+                case "pause":
+                    JobControl.Pause(owner, kind);
+                    if (kind == JobControl.DataExport) DmOffice.Storage.PlainBackupService.Stop(owner);
+                    break;
+                case "resume": JobControl.Resume(owner, kind); break;
+                case "skip":
+                    JobControl.Skip(owner, kind, NextTerm(space, kind, config));
+                    if (kind == JobControl.DataExport) DmOffice.Storage.PlainBackupService.Stop(owner);
+                    break;
+                case "cancel":
+                    if (kind == JobControl.DataExport) DmOffice.Storage.PlainBackupService.Stop(owner);
+                    else if (!JobControl.Cancel(owner, kind)) return Results.BadRequest(new { error = "Der Job läuft gerade nicht." });
+                    break;
+                default: return Results.BadRequest(new { error = "Unbekannte Aktion." });
+            }
+            return Results.Ok(new { paused = JobControl.Paused(owner, kind), skippedUntil = JobControl.SkippedUntil(owner, kind) });
         }).RequireAuthorization();
     }
 }

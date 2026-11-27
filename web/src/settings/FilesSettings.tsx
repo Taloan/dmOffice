@@ -1,10 +1,12 @@
+import { DeleteDismiss20Regular, History20Regular } from '@fluentui/react-icons'
 import { Button, Field, Select, Text, makeStyles, tokens } from '@fluentui/react-components'
 import { Fragment, useEffect, useState } from 'react'
 import { api, fmtSize } from '../api'
 import { useApp } from '../App'
 import { locale, t } from '../i18n'
-import { Hint, PageTitle, Section } from './parts'
+import { Hint, Section } from './parts'
 import { askConfirm } from '../shell/context'
+import { RibbonActions, RibbonButton } from '../shell/Ribbon'
 
 const useStyles = makeStyles({
   page: { display: 'flex', flexDirection: 'column', gap: '20px' },
@@ -35,14 +37,9 @@ export interface FileLimits {
 }
 
 /** Kopie am zweiten Ort (S3, WebDAV, Ordner) - null, solange die Verwaltung sie nicht eingeschaltet hat. */
-interface CopyInfo {
-  target: 's3' | 'webdav' | 'folder'; lastRun: string | null; ok: boolean
-  cache: { local: number; target: number; max: number } | null
-  backup: { lastRun: string | null; ok: boolean; keepCount: number } | null
-}
 interface ExternalSpace { id: string; name: string; kind: 'folder' | 'webdav' | 'onedrive' | 'pcloud'; readOnly: boolean; used: number | null; free: number | null; error: string | null }
 
-interface Data { settings: FileSettings; limits: FileLimits; usage: number; trash: number; versions: number; quota: number; used?: number; copy?: CopyInfo | null }
+interface Data { settings: FileSettings; limits: FileLimits; usage: number; trash: number; versions: number; quota: number; used?: number }
 
 /** Vorgaben fuer neue Freigabelinks - der Teilen-Dialog liest sie beim Oeffnen. */
 export const loadFileSettings = () => api.get<Data>('/api/files/settings').then(d => d.settings)
@@ -119,8 +116,7 @@ export function FilesStorageSettings() {
   )
   return (
     <div className={s.page}>
-      <PageTitle>{t('Speicherplatz')}</PageTitle>
-      <Section title={t('Belegt')} last={!data.copy && !ext?.length}>
+      <Section title={t('Belegt')} last={!ext?.length}>
         <div className={s.bars}>
           <Text>{t('Dateien')}</Text>{bar(data.usage, tokens.colorBrandBackground)}<Text>{fmtSize(data.usage)}</Text>
           <Text>{t('Frühere Versionen')}</Text>{bar(data.versions, tokens.colorPaletteMarigoldBorderActive)}<Text>{fmtSize(data.versions)}</Text>
@@ -129,43 +125,13 @@ export function FilesStorageSettings() {
         <Hint>{data.quota > 0
           ? t('{used} von {quota} belegt (alles zusammen). Wird es eng, weichen zuerst die ältesten Versionen, dann der Papierkorb.', { used: fmtSize(total), quota: fmtSize(data.quota) })
           : t('{used} belegt, keine Grenze gesetzt.', { used: fmtSize(total) })}</Hint>
-        <div className={s.buttons}>
-          <Button disabled={!data.trash} onClick={emptyTrash}>{t('Papierkorb leeren')}</Button>
-          <Button disabled={!data.versions} onClick={purge}>{t('Alle früheren Versionen löschen')}</Button>
-        </div>
+        <RibbonActions>
+          <RibbonButton icon={<DeleteDismiss20Regular />} label={t('Papierkorb leeren')} disabled={!data.trash} onClick={emptyTrash} />
+          <RibbonButton icon={<History20Regular />} label={t('Alle früheren Versionen löschen')} disabled={!data.versions} onClick={purge} />
+        </RibbonActions>
       </Section>
-      {data.copy && <CopySection copy={data.copy} last={!ext?.length} />}
       {!!ext?.length && <ExternalSection list={ext} />}
     </div>
-  )
-}
-
-const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : t('noch nicht'))
-
-function CopySection({ copy, last }: { copy: CopyInfo; last: boolean }) {
-  const s = useStyles()
-  const where = copy.target === 'webdav' ? t('einem WebDAV-Server') : copy.target === 'folder' ? t('einer zweiten Platte am Server') : t('einem S3-Speicher')
-  const c = copy.cache
-  const scale = c ? Math.max(c.max, c.local, 1) : 1
-  return (
-    <Section title={t('Kopie und Backup')} last={last}>
-      <Text>{t('Deine Dateien liegen zusätzlich verschlüsselt auf {where}. Zuletzt abgeglichen: {when}.', { where, when: when(copy.lastRun) })}</Text>
-      {!copy.ok && <Hint>{t('Beim letzten Abgleich gab es ein Problem – Näheres sieht die Verwaltung.')}</Hint>}
-      {c && (
-        <>
-          <div className={s.bars}>
-            <Text>{t('Hier auf dem Server')}</Text>
-            <div className={s.bar}><div className={s.fill} style={{ width: `${Math.max(c.local > 0 ? 1 : 0, (c.local / scale) * 100)}%`, backgroundColor: tokens.colorBrandBackground }} /></div>
-            <Text>{fmtSize(c.local)}</Text>
-          </div>
-          <Hint>{t('Der lokale Speicherpool hält neue und zuletzt verwendete Dateien bereit. Die übrigen Dateien liegen im Storage Extender und werden beim Öffnen automatisch nachgeladen. Das erste Öffnen dauert dann etwas länger.')}</Hint>
-        </>
-      )}
-      {copy.backup
-        ? <Text>{t('Das Core-Backup bewahrt {n} Stände auf. Letztes Backup: {when}.', { n: copy.backup.keepCount, when: when(copy.backup.lastRun) })}</Text>
-        : null}
-      {copy.backup && !copy.backup.ok && <Hint>{t('Das letzte Backup hat nicht geklappt – Näheres sieht die Verwaltung.')}</Hint>}
-    </Section>
   )
 }
 
@@ -198,7 +164,6 @@ export function FilesVersionSettings() {
   const st = data.settings, l = data.limits
   return (
     <div className={s.page}>
-      <PageTitle>{t('Frühere Versionen')}</PageTitle>
       <Text>{t('Beim Überschreiben einer Datei bleibt der alte Stand als Version erhalten und lässt sich wiederherstellen. Das kostet Speicherplatz.')}</Text>
       <div className={s.row}>
         <Field label={t('Art')}>
@@ -250,7 +215,6 @@ export function FilesTrashSettings() {
   }
   return (
     <div className={s.page}>
-      <PageTitle>{t('Papierkorb')}</PageTitle>
       <Text>{t('Gelöschte Dateien und Ordner lassen sich aus dem Papierkorb zurückholen, bis er geleert wird.')}</Text>
       {trash && (items.length === 0
         ? <Text className={s.muted}>{t('Der Papierkorb ist leer.')}</Text>
@@ -283,7 +247,6 @@ export function FilesLinkSettings() {
   const st = data.settings, l = data.limits
   return (
     <div className={s.page}>
-      <PageTitle>{t('Freigabelinks')}</PageTitle>
       <Text>{t('Vorgaben für neue Links im Teilen-Dialog – dort lassen sie sich je Link ändern.')}</Text>
       <div className={s.row}>
         <Choice label={t('Läuft ab nach Abrufen')} value={st.linkMaxDownloads} steps={[1, 3, 5, 10, 25, 50, 100, 0]} max={l.linkMaxDownloads}

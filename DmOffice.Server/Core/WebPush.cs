@@ -38,7 +38,7 @@ public sealed class WebPush
     /// <summary>Für Tests: Datei, Schlüssel und Client direkt.</summary>
     public WebPush(string path, byte[] key, ECDsa vapid, HttpClient http, ILogger<WebPush>? log = null)
     {
-        _connectionString = new SqliteConnectionStringBuilder { DataSource = path, Password = "x'" + Convert.ToHexString(key) + "'", DefaultTimeout = 30 }.ToString();
+        _connectionString = DmOffice.Core.UserDb.ConnectionStringOf(path, key);
         _vapid = vapid;
         _http = http;
         _log = log;

@@ -1,4 +1,5 @@
 using DmOffice.Notes;
+using DmOffice.Notes;
 
 namespace DmOffice.Tests;
 
@@ -61,4 +62,5 @@ public class FoodTextTests
         Assert.Null(FoodText.Ingredient("Für den Teig:"));
         Assert.Null(FoodText.Ingredient("   "));
     }
+
 }

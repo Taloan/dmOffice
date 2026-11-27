@@ -1,7 +1,7 @@
 import { Button, Link, Popover, PopoverSurface, PopoverTrigger, ProgressBar, Spinner, Text, Tooltip, makeStyles, tokens } from '@fluentui/react-components'
-import { CheckmarkCircle16Regular, ErrorCircle16Regular, Pulse20Regular, Clock16Regular, Circle16Regular } from '@fluentui/react-icons'
+import { CheckmarkCircle16Regular, ErrorCircle16Regular, Pulse20Regular, Clock16Regular, Circle16Regular, PauseCircle16Regular } from '@fluentui/react-icons'
 import { useEffect, useRef, useState } from 'react'
-import { api, fmtSize } from '../api'
+import { api, featureOn, fmtSize } from '../api'
 import { locale, t, tError } from '../i18n'
 import { usePoll } from './hooks'
 
@@ -16,6 +16,15 @@ export interface ActivityItem {
   finished: string | null
   error: string | null
   completed: number
+  report?: string[] | null
+  /** jobcontrol: angehalten oder übersprungen (bis holdUntil); control: darf steuern */
+  hold?: 'paused' | 'skipped' | null
+  holdUntil?: string | null
+  control?: boolean
+  // [feature:photoexport]
+  /** Zielordner nach dem Lauf */
+  link?: string | null
+  // [/feature:photoexport]
 }
 export interface ActivityState { running: number; items: ActivityItem[] }
 
@@ -30,6 +39,7 @@ const useStyles = makeStyles({
   name: { fontWeight: 600, fontSize: '13px' },
   sub: { color: tokens.colorNeutralForeground3, fontSize: '12px', overflowWrap: 'anywhere' },
   err: { color: tokens.colorPaletteRedForeground1, fontSize: '12px', overflowWrap: 'anywhere' },
+  controls: { display: 'flex', flexWrap: 'wrap', gap: '4px', paddingTop: '2px' },
   surface: { width: 'min(380px, calc(100vw - 24px))', maxHeight: 'min(560px, 80vh)', overflowY: 'auto', padding: '12px 16px' },
   head: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', paddingBottom: '4px' },
   foot: { paddingTop: '8px', fontSize: '12px' },
@@ -59,6 +69,9 @@ function nameOf(id: string): string {
     case 'mail-slim': return t('Slim Mode aufräumen')
     case 'files-transfer': return t('Dateien übertragen')
     case 'gallery-save': return t('In Ablage sichern')
+    case 'photo-export': return t('Fotos exportieren') // [feature:photoexport]
+    case 'lens-apply': return t('Objektivkorrektur eintragen') // [feature:lenscorr]
+    case 'lens-library': return t('Objektivprofile aus ZIP-Datei einlesen') // [feature:lenslib]
     case 'mail-trash': return t('Papierkorb und Junk leeren')
     case 'mail-classify': return t('Posteingang neu einordnen')
     case 'files-blobs': return t('Dateiinhalte auslagern')
@@ -70,19 +83,26 @@ function nameOf(id: string): string {
     case 'subscriptions': return t('Kalender-Abos abrufen')
     case 'graph': return t('Mit Microsoft abgleichen')
     case 'compact': return t('Datenbank verdichten')
+    // [feature:journal]
+    case 'journal-import': return t('Tagebuch importieren')
+    // [/feature:journal]
     case 'storage-sync': return t('Storage Extender abgleichen')
     case 'core-backup': return t('Core-Backup')
     case 'files-backup': return t('Files-Backup')
     case 'mount-index': return t('Suche in Server-Mounts')
     case 'files-meta': return t('Aufnahmedaten auslesen')
-    case 'gallery-scan': return t('Galerie-Ordner einlesen')
+    case 'gallery-scan': return t('Externe Galerie-Ordner einlesen')
     case 'storage-cleanup': return t('Alte Daten am bisherigen Ziel löschen')
     case 'gallery-import': return t('Importprofile')
     case 'audio-scan': return t('Audiothek-Ordner einlesen')
     case 'gallery-proxies': return t('Große Vorschauen erzeugen')
+    case 'gallery-medium': return t('Mittlere Vorschauen nachholen (nachts)') // [feature:galmedium]
+    case 'gallery-relink': return t('Externe Galerie-Ordner abgleichen')
+    case 'audio-relink': return t('Audiothek-Ordner abgleichen')
     case 'photo-write': return t('Bearbeitete Fotos speichern')
     case 'photo-auto': return t('Fotos automatisch verbessern')
     case 'db-health': return t('Datenbanken prüfen')
+    case 'data-export': return t('Datenexport')
     case 'dms': return t('DMS: Dokumente verarbeiten')
     default: return id
   }
@@ -91,7 +111,9 @@ function nameOf(id: string): string {
 /** Ein Satz zum Zustand: was gerade geschieht, was noch ansteht, wann es zuletzt lief. */
 function describe(i: ActivityItem): string {
   const parts: string[] = []
-  if (i.state === 'running') parts.push(t('läuft'))
+  if (i.hold === 'paused') parts.push(i.state === 'running' ? t('hält an') : t('angehalten'))
+  else if (i.hold === 'skipped') parts.push(t('übersprungen bis {when}', { when: new Date(i.holdUntil!).toLocaleString(locale, { dateStyle: 'short', timeStyle: 'short' }) }))
+  else if (i.state === 'running') parts.push(t('läuft'))
   else if (i.state === 'waiting') parts.push(t('wartet'))
   if (i.detail) parts.push(i.detail)
   // Übertragen zählt Bytes - als Größe zeigen (190,0 MB von 3,1 GB), sonst Anzahl
@@ -106,14 +128,45 @@ function describe(i: ActivityItem): string {
   return parts.join(' · ')
 }
 
-function Row({ item }: { item: ActivityItem }) {
+/** Anhalten, fortsetzen, überspringen, abbrechen (jobcontrol) - nur für steuerbare Jobs. */
+function Controls({ item, onDone }: { item: ActivityItem; onDone: () => void }) {
+  const s = useStyles()
+  const [busy, setBusy] = useState(false)
+  if (!item.control || !featureOn('jobcontrol')) return null
+  const act = async (action: 'pause' | 'resume' | 'skip' | 'cancel') => {
+    setBusy(true)
+    try { await api.post('/api/activity/control', { kind: item.id, action }); onDone() }
+    catch (e) { alert(tError(e instanceof Error ? e.message : String(e))) }
+    finally { setBusy(false) }
+  }
+  // [feature:photoexport]
+  let oneOff = item.id === 'files-transfer' || item.id === 'photo-export'
+  // [feature:photoexport:else]
+  // let oneOff = item.id === 'files-transfer'
+  // [/feature:photoexport]
+  if (item.id === 'lens-apply') oneOff = true // [feature:lenscorr]
+  if (item.id === 'lens-library') oneOff = true // [feature:lenslib]
+  const btn = (label: string, action: 'pause' | 'resume' | 'skip' | 'cancel', tip: string) =>
+    <Tooltip content={tip} relationship="description"><Button size="small" disabled={busy} onClick={() => act(action)}>{label}</Button></Tooltip>
+  return <div className={s.controls}>
+    {item.hold ? btn(t('Fortsetzen'), 'resume', item.hold === 'skipped' ? t('Gleich wieder wie geplant laufen lassen') : t('Dort weitermachen, wo angehalten wurde'))
+      : <>
+        {(item.state === 'running' || item.state === 'waiting' || !oneOff) && btn(t('Anhalten'), 'pause', oneOff ? t('Wartet an der aktuellen Datei, bis „Fortsetzen“') : t('Hält an und beginnt keinen neuen Lauf, bis „Fortsetzen“ – auch nach einem Neustart'))}
+        {!oneOff && btn(t('Überspringen'), 'skip', t('Diesen Lauf beenden und bis zum nächsten Termin ruhen'))}
+      </>}
+    {item.state === 'running' && btn(t('Abbrechen'), 'cancel', oneOff ? t('Übertragung beenden; Übertragenes bleibt im Ziel') : t('Nur diesen Lauf beenden; der nächste beginnt wie geplant'))}
+  </div>
+}
+
+function Row({ item, onChanged }: { item: ActivityItem; onChanged?: () => void }) {
   const s = useStyles()
   const pct = item.state === 'running' && item.total ? Math.min(1, (item.done ?? 0) / item.total) : undefined
   const bar = item.state === 'waiting' && item.total && item.done != null ? Math.min(1, item.done / item.total) : pct
   return (
     <div className={s.row}>
       <span className={s.icon}>
-        {item.state === 'running' ? <Spinner size="extra-tiny" />
+        {item.hold ? <PauseCircle16Regular />
+          : item.state === 'running' ? <Spinner size="extra-tiny" />
           : item.state === 'error' ? <ErrorCircle16Regular primaryFill={tokens.colorPaletteRedForeground1} />
           : item.state === 'waiting' ? <Clock16Regular />
           : item.finished ? <CheckmarkCircle16Regular primaryFill={tokens.colorPaletteGreenForeground1} /> : <Circle16Regular />}
@@ -123,6 +176,18 @@ function Row({ item }: { item: ActivityItem }) {
         <span className={s.sub}>{describe(item)}</span>
         {bar != null && <ProgressBar value={bar} thickness="medium" />}
         {item.error && <span className={s.err}>{tError(item.error)}</span>}
+        <Controls item={item} onDone={() => { onChanged?.(); window.dispatchEvent(new Event('dmoffice:activity')) }} />
+        {/* [feature:photoexport] */}
+        {item.link != null && item.state !== 'running' && <Link href={'#/files/' + item.link.split('/').filter(Boolean).map(encodeURIComponent).join('/')}>{t('Zielordner öffnen')}</Link>}
+        {/* [/feature:photoexport] */}
+        {!!item.report?.length && <details className={s.sub}>
+          {/* [feature:photoexport] */}
+          <summary>{item.id === 'photo-export' ? t('Fehler ({n})', { n: n(item.report.length) }) : t('Entfernte Dateien ({n})', { n: n(item.report.length) })}</summary>
+          {/* [feature:photoexport:else] */}
+          {/* <summary>{t('Entfernte Dateien ({n})', { n: n(item.report.length) })}</summary> */}
+          {/* [/feature:photoexport] */}
+          {item.report.map(p => <div key={p}>{p}</div>)}
+        </details>}
       </div>
     </div>
   )
@@ -185,7 +250,7 @@ export function ActivityButton({ mobile, className }: { mobile: boolean; classNa
           <Text size={200}>{now > 0 ? t('{n} laufen', { n: now }) : t('Gerade ruhig')}</Text>
         </div>
         {/* Im Fenster nur, was gerade ansteht; alle Dienste stehen hinter „Alles anzeigen“ */}
-        <ActivityList data={data && { ...data, items: data.items.filter(i => i.state !== 'idle') }} />
+        <ActivityList data={data && { ...data, items: data.items.filter(i => i.state !== 'idle' || !!i.hold || (!!i.report?.length && !!i.finished && Date.now() - new Date(i.finished).getTime() < 86_400_000)) }} />
         <div className={s.foot}>
           <Link href="#/settings/activity" onClick={() => setOpen(false)}>{t('Alles anzeigen')}</Link>
         </div>

@@ -36,6 +36,7 @@ dmOffice runs as a Docker container. It is meant for Unraid but works on any Doc
 
 1. Search for **dmOffice** under *Apps* and install it. If the app is not listed there yet, see the [README](../README.md#unraid).
 2. In the template, set **DMOFFICE_MASTER_KEY** – a long random string, e.g. from `openssl rand -hex 32`. Keep this key safe (password manager): **without it, your data can no longer be opened.**
+   Without this variable a new installation does not start. <!-- [feature:masterkeyreq] -->
 3. Choose a port and click *Apply*.
 
 **Docker Compose**
@@ -398,3 +399,9 @@ Check *Settings* → *Files*: previous versions and the recycle bin count toward
 
 **I have lost the master key.**
 Then the databases can no longer be opened. Messages remain on the mail server; calendars, contacts, notes and files only on the connected devices.
+
+<!-- [feature:cfgseal] -->
+**dmOffice does not start: "users.json … was changed outside dmOffice".**
+dmOffice seals the user list (`users.json`) and the server settings (`server.json`) with a key derived from the master key (file `config.seal` in the data directory) and checks the seal on every start. If one of the files was changed, deleted or replaced by something other than dmOffice, the server stops with this message in the container log. If the change was yours – file edited by hand, an older backup copied back, return from an older version – check the content and seal again with the container stopped:
+`docker run --rm -e DMOFFICE_MASTER_KEY -v <data directory>:/data <image> reseal-config` (same variable and data directory as the container; on Unraid in the terminal, data directory `/mnt/user/appdata/dmoffice`). The command lists all users with admin rights – if someone is listed who should not be there, copy `users.json` back from a backup and seal again. Without a seal (first start of this version, older backup) dmOffice seals the files as they are and writes a warning to the log.
+<!-- [/feature:cfgseal] -->

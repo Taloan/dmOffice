@@ -126,6 +126,7 @@ export interface Mount { id: string; name: string; kind: 'folder' | 'webdav' | '
 export interface AudioSource {
   id: string; mount: string; mountName: string | null; path: string; available: boolean; watch: boolean
   lastScan: string | null; error: string | null; count: number; scanning: boolean; pending: number
+  relink?: import('../files/FolderRelink').RelinkInfo | null
 }
 
 /** Audiothek-Ordner, deren externer Ordner gerade nicht erreichbar ist - deren Titel lassen sich nicht abspielen. */

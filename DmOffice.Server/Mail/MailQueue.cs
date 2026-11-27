@@ -47,6 +47,13 @@ public static class MailQueue
                 DateTimeOffset.FromUnixTimeMilliseconds(r.GetInt64(4)).UtcDateTime.ToString("o"), r.GetString(5), r.IsDBNull(6) ? null : r.GetString(6)));
     }
 
+    /// <summary>Mails im Postausgang, die über dieses Konto gehen (als Konto oder Quelle), samt geplanten.</summary>
+    public static int CountFor(UserDb db, string account)
+    {
+        Ensure(db);
+        return Convert.ToInt32(db.Scalar("SELECT COUNT(*) FROM mail_queue WHERE account=$a OR source=$a", ("$a", account)));
+    }
+
     public static int Count(UserDb db)
     {
         Ensure(db);
@@ -67,12 +74,14 @@ public static class MailQueue
             ("$t", Ms(sendAtUtc)), ("$i", id)) > 0;
     }
 
-    /// <summary>Faellige Mails fuer den Versand reservieren (state 'sending'), damit keine doppelt rausgeht.</summary>
-    public static List<Item> TakeDue(UserDb db, DateTime nowUtc)
+    /// <summary>Faellige Mails fuer den Versand reservieren (state 'sending'), damit keine doppelt rausgeht.
+    /// Mails der Konten in <paramref name="skip"/> (deaktiviert) bleiben liegen.</summary>
+    public static List<Item> TakeDue(UserDb db, DateTime nowUtc, IReadOnlySet<string>? skip = null)
     {
         Ensure(db);
-        var ids = db.Query("SELECT id FROM mail_queue WHERE state='queued' AND send_at<=$t ORDER BY send_at LIMIT 20",
-            r => r.GetInt64(0), ("$t", Ms(nowUtc)));
+        var due = db.Query("SELECT id, account, source FROM mail_queue WHERE state='queued' AND send_at<=$t ORDER BY send_at",
+            r => (Id: r.GetInt64(0), Account: r.GetString(1), Source: r.GetString(2)), ("$t", Ms(nowUtc)));
+        var ids = due.Where(x => skip == null || skip.Count == 0 || !(skip.Contains(x.Account) || skip.Contains(x.Source))).Select(x => x.Id).Take(20);
         var items = new List<Item>();
         foreach (var id in ids)
             if (db.Exec("UPDATE mail_queue SET state='sending' WHERE id=$i AND state='queued'", ("$i", id)) > 0 && Load(db, id) is { } it)
@@ -132,12 +141,13 @@ public sealed class MailQueueSender(Spaces spaces, ImapPool pool, MailSync sync,
         var recovered = new HashSet<string>();
         while (!stop.IsCancellationRequested)
         {
-            foreach (var space in spaces.All())
+            foreach (var space in spaces.Working())
             {
                 try
                 {
                     if (recovered.Add(space.User.Id)) MailQueue.RecoverStuck(space.Db);
-                    foreach (var item in MailQueue.TakeDue(space.Db, DateTime.UtcNow))
+                    // Deaktivierte Postfächer (Kennung mailaccountoff): ihre Mails warten, bis das Postfach wieder aktiv ist
+                    foreach (var item in MailQueue.TakeDue(space.Db, DateTime.UtcNow, space.Settings.OffMailAccountIds()))
                         await Send(space, item, stop);
                 }
                 catch (Exception e) { log.LogWarning("Postausgang {User}: {Error}", space.User.Login, e.Message); }

@@ -25,11 +25,22 @@ public sealed class ExternalIndex
 
     static ExternalIndex() => SQLitePCL.Batteries_V2.Init();
 
-    public ExternalIndex(DataPaths paths, Vault vault) : this(Path.Combine(paths.Root, "extindex.db"), LoadKey(paths, vault)) { }
+    public ExternalIndex(DataPaths paths, Vault vault, ServerConfig config) : this(Path.Combine(paths.Root, "extindex.db"), LoadKey(paths, vault)) =>
+        OpenRemote = f => ServerMounts.Open(config, f);
+
+    /// <summary>Treiber für Server-Mounts, die kein Pfad im Container sind (WebDAV, SFTP, OneDrive, pCloud).</summary>
+    public Func<ExternalFolderDef, IStorageDriver>? OpenRemote { get; set; }
+
+    internal IStorageDriver Remote(ExternalFolderDef f) => (OpenRemote ?? throw new InvalidOperationException("Kein Treiber für Server-Mounts.")).Invoke(f);
+
+    private static string RootOf(ExternalFolderDef f) => ServerMounts.Location(f);
+
+    /// <summary>Ein Eintrag beim Auflisten: Name, Ordner, Größe, Änderung (Unix-Sekunden).</summary>
+    private sealed record Listed(string Name, bool IsDir, long Size, long Modified);
 
     internal ExternalIndex(string path, byte[] key)
     {
-        _connectionString = new SqliteConnectionStringBuilder { DataSource = path, Password = "x'" + Convert.ToHexString(key) + "'", DefaultTimeout = 30 }.ToString();
+        _connectionString = DmOffice.Core.UserDb.ConnectionStringOf(path, key);
         using var conn = Open();
         // Ältere Form: wegwerfen, der Index lässt sich neu aufbauen
         if (UserDb.Query(conn, "PRAGMA user_version", r => r.GetInt64(0)).First() < SchemaVersion)
@@ -153,7 +164,7 @@ END;");
         foreach (var k in known)
         {
             var f = wanted.FirstOrDefault(w => w.Id == k.Mount);
-            if (f == null || f.Path != k.Root || IncludeKey(f) != k.Include) { Drop(conn, k.Mount); _states.TryRemove(k.Mount, out _); }
+            if (f == null || RootOf(f) != k.Root || IncludeKey(f) != k.Include) { Drop(conn, k.Mount); _states.TryRemove(k.Mount, out _); }
             else if (ContentKey(f) != k.Key)
             {
                 ForgetUnwanted(conn, f);
@@ -163,7 +174,7 @@ END;");
         }
         foreach (var f in wanted)
             UserDb.Exec(conn, "INSERT OR IGNORE INTO ext_mounts(mount, root, include, content_key) VALUES ($m, $r, $i, $k)",
-                ("$m", f.Id), ("$r", f.Path), ("$i", IncludeKey(f)), ("$k", ContentKey(f)));
+                ("$m", f.Id), ("$r", RootOf(f)), ("$i", IncludeKey(f)), ("$k", ContentKey(f)));
         return wanted;
     }
 
@@ -246,13 +257,24 @@ END;");
     /// </summary>
     public long Scan(ExternalFolderDef f, CancellationToken ct = default, Action<long>? progress = null)
     {
-        var root = Path.GetFullPath(f.Path).TrimEnd(Path.DirectorySeparatorChar);
+        var local = ServerMounts.IsFolder(f);
+        var root = local ? Path.GetFullPath(f.Path).TrimEnd(Path.DirectorySeparatorChar) : "";
         using var conn = Open();
-        if (!Directory.Exists(root))
+        if (local && !Directory.Exists(root))
         {
             UserDb.Exec(conn, "UPDATE ext_mounts SET scan_note = $n WHERE mount = $m", ("$n", "Den Ordner gibt es auf dem Server gerade nicht."), ("$m", f.Id));
             return 0;
         }
+        IStorageDriver? remote = null;
+        if (!local)
+            try { remote = Remote(f); remote.ListAsync("", ct).GetAwaiter().GetResult(); }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                remote?.Dispose();
+                UserDb.Exec(conn, "UPDATE ext_mounts SET scan_note = $n WHERE mount = $m", ("$n", "Der Server-Mount ist gerade nicht erreichbar."), ("$m", f.Id));
+                return 0;
+            }
+        using var driver = remote;
         var open = UserDb.Query(conn, "SELECT scan_stamp, root_listed FROM ext_mounts WHERE mount = $m",
             r => (Stamp: r.IsDBNull(0) ? (long?)null : r.GetInt64(0), RootListed: r.GetInt64(1)), ("$m", f.Id)).First();
         var stamp = open.Stamp ?? Unix();
@@ -279,7 +301,7 @@ END;");
                 }
                 else
                 {
-                    var listed = ApplyDir(conn, f, root, rel, include, stamp);
+                    var listed = ApplyDir(conn, f, ListDir(root, driver, rel, ct), rel, include, stamp);
                     if (listed == null) continue;
                     foreach (var dir in listed.Value.Dirs) pending.Push(dir);
                     count += listed.Value.Count;
@@ -299,12 +321,36 @@ END;");
     }
 
     /// <summary>Einen Ordner auflisten und eintragen. Gibt Unterordner und Zahl der Einträge zurück; null, wenn er sich nicht lesen lässt.</summary>
-    private (List<string> Dirs, long Count, List<string> NewDirs)? ApplyDir(SqliteConnection conn, ExternalFolderDef f, string root, string rel, HashSet<string>? include, long stamp)
+    /// <summary>Einen Ordner auflisten: im Container direkt (ohne Verknüpfungen), sonst über den Treiber. Null, wenn er sich nicht lesen lässt.</summary>
+    private static List<Listed>? ListDir(string root, IStorageDriver? driver, string rel, CancellationToken ct)
     {
+        if (driver != null)
+        {
+            try
+            {
+                return driver.ListAsync(rel, ct).GetAwaiter().GetResult()
+                    .Select(e => new Listed(e.Name, e.IsDir, e.IsDir ? 0 : e.Size, e.Modified == DateTime.MinValue ? 0
+                        : new DateTimeOffset(e.Modified.Kind == DateTimeKind.Unspecified ? DateTime.SpecifyKind(e.Modified, DateTimeKind.Utc) : e.Modified.ToUniversalTime()).ToUnixTimeSeconds())).ToList();
+            }
+            catch (Exception e) when (e is not OperationCanceledException) { return null; }
+        }
         var path = rel.Length == 0 ? root : Path.Combine(root, rel.Replace('/', Path.DirectorySeparatorChar));
         List<FileSystemInfo> entries;
         try { entries = new DirectoryInfo(path).EnumerateFileSystemInfos("*", ListOptions).ToList(); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return null; }
+        var list = new List<Listed>();
+        foreach (var e in entries)
+        {
+            try { list.Add(new Listed(e.Name, e is DirectoryInfo, e is FileInfo fi ? fi.Length : 0, new DateTimeOffset(e.LastWriteTimeUtc).ToUnixTimeSeconds())); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        }
+        return list;
+    }
+
+    /// <summary>Einen aufgelisteten Ordner eintragen. Gibt Unterordner und Zahl der Einträge zurück; null, wenn er sich nicht lesen ließ.</summary>
+    private (List<string> Dirs, long Count, List<string> NewDirs)? ApplyDir(SqliteConnection conn, ExternalFolderDef f, List<Listed>? entries, string rel, HashSet<string>? include, long stamp)
+    {
+        if (entries == null) return null;
 
         var known = UserDb.Query(conn, "SELECT path, size, modified, is_dir FROM ext_files WHERE mount = $m AND parent = $p",
             r => (Path: r.GetString(0), Size: r.GetInt64(1), Modified: r.GetInt64(2), Dir: r.GetInt64(3) != 0), ("$m", f.Id), ("$p", rel))
@@ -317,19 +363,13 @@ END;");
         foreach (var e in entries)
         {
             if (Skip(e.Name)) continue;
-            var isDir = e is DirectoryInfo;
+            var isDir = e.IsDir;
             // Oben nur die ausgewählten Ordner
             if (rel.Length == 0 && include != null && !(isDir && include.Contains(e.Name))) continue;
             var child = rel.Length == 0 ? e.Name : rel + "/" + e.Name;
             present.Add(child);
             count++;
-            long size, modified;
-            try
-            {
-                size = isDir ? 0 : ((FileInfo)e).Length;
-                modified = new DateTimeOffset(e.LastWriteTimeUtc).ToUnixTimeSeconds();
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { continue; }
+            long size = e.Size, modified = e.Modified;
             if (isDir) dirs.Add(child);
             var isKnown = known.TryGetValue(child, out var k);
             if (isKnown && k.Dir == isDir)
@@ -362,20 +402,25 @@ END;");
     /// <summary>Ein Ordner hat sich über dmOffice geändert oder wurde geöffnet: gleich nachziehen, neue Unterordner mit allem darin.</summary>
     public void RefreshDir(ExternalFolderDef f, string rel, CancellationToken ct = default)
     {
-        var root = Path.GetFullPath(f.Path).TrimEnd(Path.DirectorySeparatorChar);
+        var local = ServerMounts.IsFolder(f);
+        var root = local ? Path.GetFullPath(f.Path).TrimEnd(Path.DirectorySeparatorChar) : "";
         var include = f.Include.Count > 0 ? new HashSet<string>(f.Include, StringComparer.Ordinal) : null;
         if (rel.Length > 0 && include != null && !include.Contains(rel.Split('/')[0])) return;
         using var conn = Open();
+        using var driver = local ? null : Remote(f);
         var todo = new Stack<string>();
         todo.Push(rel);
         while (todo.Count > 0)
         {
             ct.ThrowIfCancellationRequested();
             var dir = todo.Pop();
-            var full = dir.Length == 0 ? root : Path.GetFullPath(Path.Combine(root, dir.Replace('/', Path.DirectorySeparatorChar)));
-            if (full != root && !full.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.Ordinal)) continue;
-            if (!Directory.Exists(full)) continue;
-            var listed = ApplyDir(conn, f, root, dir, include, 0);
+            if (local)
+            {
+                var full = dir.Length == 0 ? root : Path.GetFullPath(Path.Combine(root, dir.Replace('/', Path.DirectorySeparatorChar)));
+                if (full != root && !full.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.Ordinal)) continue;
+                if (!Directory.Exists(full)) continue;
+            }
+            var listed = ApplyDir(conn, f, ListDir(root, driver, dir, ct), dir, include, 0);
             if (listed != null) foreach (var d in listed.Value.NewDirs) todo.Push(d);
         }
         _states.TryRemove(f.Id, out _);
@@ -404,7 +449,8 @@ END;");
 
     /// <summary>Eine Datei lesen und ihren Text eintragen. Den Versuch vorher zählen: bringt eine Datei den Prozess zum Absturz,
     /// kommt sie nach drei Versuchen nicht wieder.</summary>
-    public void Process(ExternalFolderDef f, Pending p, ExtractLimits? limits = null, CancellationToken ct = default)
+    /// <param name="driver">Andere Arten als Pfad im Container: ein Treiber für mehrere Dateien nacheinander (sonst je Datei ein eigener)</param>
+    public void Process(ExternalFolderDef f, Pending p, ExtractLimits? limits = null, CancellationToken ct = default, IStorageDriver? driver = null)
     {
         using (var conn = Open()) UserDb.Exec(conn, "UPDATE ext_files SET tries = tries + 1 WHERE id = $id", ("$id", p.Id));
         limits ??= new ExtractLimits { MaxBytes = f.MaxBytes };
@@ -413,6 +459,28 @@ END;");
         if (p.Tries >= 3) result = new Extracted("", "none", "error", "Abgebrochen nach mehreren Versuchen.");
         else if (!TextExtract.Supported(p.Name, null)) result = Extracted.Skip("Dateityp ohne Text");
         else if (p.Size > limits.MaxBytes) result = Extracted.Skip($"größer als {limits.MaxBytes / 1024 / 1024} MB");
+        else if (!ServerMounts.IsFolder(f))
+        {
+            var own = driver == null ? Remote(f) : null;
+            try
+            {
+                var d = driver ?? own!;
+                var stat = d.StatAsync(p.Path, ct).GetAwaiter().GetResult();
+                if (stat == null || stat.IsDir) { using var c = Open(); UserDb.Exec(c, "DELETE FROM ext_files WHERE id = $id", ("$id", p.Id)); return; }
+                if (stat.Size > limits.MaxBytes) result = Extracted.Skip($"größer als {limits.MaxBytes / 1024 / 1024} MB");
+                else
+                {
+                    using var s = d.OpenReadAsync(p.Path, ct).GetAwaiter().GetResult();
+                    // Die Größe nennt das Ziel - gelesen wird höchstens die Grenze
+                    var bytes = ReadLimit.ReadAllAsync(s, limits.MaxBytes, ct, stat.Size).GetAwaiter().GetResult();
+                    result = TextExtract.Extract(bytes, p.Name, null, f.Groups.Contains(ExternalFolderDef.GroupImages) && Ocr.Available, limits, ct);
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (KeyNotFoundException) { using var c = Open(); UserDb.Exec(c, "DELETE FROM ext_files WHERE id = $id", ("$id", p.Id)); return; }
+            catch (Exception e) { result = new Extracted("", "none", "error", e.GetBaseException().Message); }
+            finally { own?.Dispose(); }
+        }
         else
         {
             var root = Path.GetFullPath(f.Path).TrimEnd(Path.DirectorySeparatorChar);
@@ -561,6 +629,16 @@ public sealed class ExternalIndexer(ExternalIndex index, ServerConfig config, IL
         }
     }
 
+    /// <summary>Nächste Prüfung nach dem Zeitplan des Ordners (für „Überspringen“, jobcontrol); manuell: in einem Tag.</summary>
+    public static DateTimeOffset NextDue(ExternalFolderDef f, DateTimeOffset now) => f.SearchCheck switch
+    {
+        ExternalFolderDef.CheckManual => now.AddDays(1),
+        ExternalFolderDef.CheckHourly => now.AddHours(1),
+        ExternalFolderDef.CheckSixHours => now.AddHours(6),
+        ExternalFolderDef.CheckWeekly => new DateTimeOffset(now.Date.AddDays(7 - (int)now.DayOfWeek).AddHours(3), now.Offset),
+        _ => new DateTimeOffset(now.Date.AddHours(3), now.Offset) is var t && t > now ? t : t.AddDays(1),
+    };
+
     /// <summary>Nur nachts auswerten: zwischen 22 und 6 Uhr Ortszeit.</summary>
     internal static bool ReadAllowed(ExternalFolderDef f, DateTimeOffset now) => f.SearchRead != ExternalFolderDef.ReadNight || now.Hour >= 22 || now.Hour < 6;
 
@@ -580,9 +658,10 @@ public sealed class ExternalIndexer(ExternalIndex index, ServerConfig config, IL
             {
                 var next = index.NextPending(f, Math.Min(20, max - done));
                 if (next.Count == 0) break;
+                using var driver = ServerMounts.IsFolder(f) ? null : index.Remote(f);
                 foreach (var p in next)
                 {
-                    index.Process(f, p, ct: ct);
+                    index.Process(f, p, ct: ct, driver: driver);
                     done++;
                     if (pause is { } ps && ps > TimeSpan.Zero) await Task.Delay(ps, ct);
                 }
@@ -593,6 +672,7 @@ public sealed class ExternalIndexer(ExternalIndex index, ServerConfig config, IL
 
     protected override async Task ExecuteAsync(CancellationToken stop)
     {
+        JobControl.Resumed += (_, kind) => { if (kind == DmOffice.Core.Activity.MountIndex) { Wake(_wakeScan); Wake(_wakeRead); } };
         try { await Task.Delay(TimeSpan.FromSeconds(45), stop); } catch (OperationCanceledException) { return; }
         await Task.WhenAll(Loop(CheckAsync, _wakeScan, TimeSpan.FromMinutes(1), stop), Loop(ReadAsync, _wakeRead, TimeSpan.FromMinutes(1), stop), RefreshAsync(stop));
     }
@@ -612,7 +692,11 @@ public sealed class ExternalIndexer(ExternalIndex index, ServerConfig config, IL
 
     private Task<bool> CheckAsync(CancellationToken stop)
     {
-        var wanted = index.Sync(config.Current.ExternalFolders);
+        var wanted = index.Sync(ServerMounts.Active(config.Current));
+        // Angehalten oder übersprungen (jobcontrol, Job des Servers): „Jetzt prüfen“ hebt nur das Überspringen auf
+        if (!_forced.IsEmpty) JobControl.ClearSkip(JobControl.Server, DmOffice.Core.Activity.MountIndex);
+        if (JobControl.Blocked(JobControl.Server, DmOffice.Core.Activity.MountIndex)) return Task.FromResult(false);
+        using var control = JobControl.Run(JobControl.Server, DmOffice.Core.Activity.MountIndex);
         foreach (var f in wanted)
         {
             var forced = _forced.TryRemove(f.Id, out _);
@@ -620,9 +704,10 @@ public sealed class ExternalIndexer(ExternalIndex index, ServerConfig config, IL
             Checking = new Progress(f.Name, 0, null);
             try
             {
-                index.Scan(f, stop, n => Checking = new Progress(f.Name, n, null));
+                index.Scan(f, stop, n => { JobControl.Check(JobControl.Server, DmOffice.Core.Activity.MountIndex); Checking = new Progress(f.Name, n, null); });
                 log.LogInformation("Suche in Server-Mounts: „{Mount}“ geprüft", f.Name);
             }
+            catch (JobControl.Stopped) { return Task.FromResult(false); }
             finally { Checking = null; }
             Wake(_wakeRead);
         }
@@ -631,8 +716,10 @@ public sealed class ExternalIndexer(ExternalIndex index, ServerConfig config, IL
 
     private async Task<bool> ReadAsync(CancellationToken stop)
     {
+        if (JobControl.Blocked(JobControl.Server, DmOffice.Core.Activity.MountIndex)) { Reading = null; return false; }
+        using var control = JobControl.Run(JobControl.Server, DmOffice.Core.Activity.MountIndex);
         var any = false;
-        foreach (var f in config.Current.ExternalFolders.Where(f => f.Level == ExternalFolderDef.LevelContents))
+        foreach (var f in ServerMounts.Active(config.Current).Where(f => f.Level == ExternalFolderDef.LevelContents))
         {
             index.RunReset(f);
             if (!ReadAllowed(f, DateTimeOffset.Now)) continue;
@@ -641,14 +728,24 @@ public sealed class ExternalIndexer(ExternalIndex index, ServerConfig config, IL
             any = true;
             var state = index.StateOf(f, TimeSpan.FromMinutes(1));
             Reading = new Progress(f.Name, state.Done, state.Wanted);
+            using var driver = ServerMounts.IsFolder(f) ? null : OpenOrNull(f);
             foreach (var p in next)
             {
-                index.Process(f, p, ct: stop);
+                try { JobControl.Check(JobControl.Server, DmOffice.Core.Activity.MountIndex); }
+                catch (JobControl.Stopped) { Reading = null; return false; }
+                index.Process(f, p, ct: stop, driver: driver);
                 await Task.Delay(TimeSpan.FromMilliseconds(50), stop);
             }
         }
         if (!any) Reading = null;
         return any;
+    }
+
+    /// <summary>Treiber für einen Durchgang beim Auswerten; nicht erreichbar: null (dann versucht es jede Datei selbst und vermerkt den Fehler).</summary>
+    private IStorageDriver? OpenOrNull(ExternalFolderDef f)
+    {
+        try { return index.Remote(f); }
+        catch (Exception e) when (e is not OperationCanceledException) { return null; }
     }
 
     private async Task RefreshAsync(CancellationToken stop)
@@ -657,7 +754,7 @@ public sealed class ExternalIndexer(ExternalIndex index, ServerConfig config, IL
         {
             await foreach (var (mount, dir) in _refresh.Reader.ReadAllAsync(stop))
             {
-                var f = config.Current.ExternalFolders.FirstOrDefault(x => x.Id == mount && x.Level != ExternalFolderDef.LevelNone);
+                var f = ServerMounts.Active(config.Current).FirstOrDefault(x => x.Id == mount && x.Level != ExternalFolderDef.LevelNone);
                 if (f == null || index.LastScan(f.Id) == null) continue;
                 try
                 {

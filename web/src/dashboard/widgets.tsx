@@ -1,9 +1,13 @@
 // Die Widgets der Übersicht: jedes holt seine Daten selbst (useWidgetData), Aktionen laufen über die Endpunkte der Bereiche.
+import { finishToFiles, uploadChunked } from '../files/chunked'
+import { UploadBar, useUploadTask } from '../files/UploadBar'
 import { Button, Checkbox, Input, Spinner, Text, Tooltip, makeStyles, mergeClasses, tokens } from '@fluentui/react-components'
 import { ArrowRight16Regular, Checkmark16Regular, Dismiss16Regular, Send16Regular, Star16Filled } from '@fluentui/react-icons'
 import { useEffect, useState } from 'react'
 import { api, fmtSize, q } from '../api'
+import { featureOn } from '../api' // [feature:diaryrecallthumbs]
 import { useApp } from '../App'
+import { undoAllOn } from '../shell/undo'
 import { locale, t } from '../i18n'
 import { parseNaturalDate } from '../shell/naturalDate'
 import { taskDue } from '../shell/DateHint'
@@ -12,6 +16,9 @@ import { composeItem, parseItem } from '../tasks/shopParse'
 import { usePrefs } from '../prefs'
 import { KindIcon, Thumb, hasThumb, kindOf } from '../files/common'
 import { gallerySource, openPhotoFromElsewhere } from '../files/GalleryFolders'
+// [feature:journal]
+import { MOODS } from '../journal/api'
+// [/feature:journal]
 import { UserAvatar } from '../chat/UserAvatar'
 import { Widget, dashboardApi, useWidgetData } from './api'
 
@@ -44,6 +51,9 @@ export const WIDGET_INFO: Record<string, { label: () => string; hint: () => stri
   pukki: { label: () => t('Pukki'), hint: () => t('fragen und Überblick'), size: 2 },
   weather: { label: () => t('Wetter'), hint: () => t('heute und 7 Tage'), size: 2 },
   news: { label: () => t('Schlagzeilen'), hint: () => t('eigene Feeds'), size: 2 },
+  // [feature:journal]
+  journal: { label: () => t('Tagebuch'), hint: () => t('heute und Rückblick'), size: 2 },
+  // [/feature:journal]
   photos: { label: () => t('Fotos'), hint: () => t('An diesem Tag'), size: 2 },
   notes: { label: () => t('Notizen'), hint: () => t('Favoriten oben'), size: 2 },
   files: { label: () => t('Dateien'), hint: () => t('Favoriten, zuletzt'), size: 2 },
@@ -204,13 +214,18 @@ interface TasksData {
 }
 export function TasksWidget({ w, big }: { w: Widget; big: boolean }) {
   const s = useWidgetStyles()
-  const { fail } = useApp()
+  const { fail, undoable } = useApp()
   const { data, error, reload } = useWidgetData<TasksData>('tasks', w.opts)
   const [text, setText] = useState('')
   const [undo, setUndo] = useState<{ list: number; uri: string; title: string } | null>(null)
   if (!data) return <Loading error={error} />
   const done = async (x: TasksData['items'][0]) => {
-    try { await dashboardApi.taskDone(x.list, x.uri, true); setUndo({ list: x.list, uri: x.uri, title: x.title }); reload(); setTimeout(() => setUndo(u => u?.uri === x.uri ? null : u), 8000) } catch (e) { fail(e) }
+    try {
+      await dashboardApi.taskDone(x.list, x.uri, true); reload()
+      // Einheitliches Rückgängig (Kennung undoall): gemeinsame Leiste statt der eigenen Zeile im Widget
+      if (undoAllOn()) { undoable(t('Erledigt: {title}', { title: x.title }), async () => { await dashboardApi.taskDone(x.list, x.uri, false); reload() }); return }
+      setUndo({ list: x.list, uri: x.uri, title: x.title }); setTimeout(() => setUndo(u => u?.uri === x.uri ? null : u), 8000)
+    } catch (e) { fail(e) }
   }
   const undoIt = async () => { if (!undo) return; try { await dashboardApi.taskDone(undo.list, undo.uri, false); setUndo(null); reload() } catch (e) { fail(e) } }
   const add = async () => {
@@ -224,7 +239,7 @@ export function TasksWidget({ w, big }: { w: Widget; big: boolean }) {
   return (
     <div className={s.col} style={{ height: '100%' }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', cursor: 'pointer' }} onClick={() => go('#/tasks')}>
-        <div style={{ width: 30, height: 30, borderRadius: '50%', background: tokens.colorBrandBackground, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Checkmark16Regular style={{ color: '#fff' }} /></div>
+        <div style={{ width: 30, height: 30, borderRadius: '50%', background: tokens.colorBrandBackground, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Checkmark16Regular style={{ color: tokens.colorNeutralForegroundOnBrand }} /></div>
         <span style={{ fontSize: 30, fontWeight: 600, lineHeight: 1 }}>{count}</span>
       </div>
       <div style={{ fontSize: 14, fontWeight: 600, color: tokens.colorBrandForeground1 }}>{t('Heute')}</div>
@@ -341,7 +356,7 @@ export function ChatWidget({ w, big }: { w: Widget; big: boolean }) {
                 <div className={s.ell} style={{ fontSize: 13, fontWeight: r.unread ? 600 : 400 }}>{r.title}{r.mentioned > 0 && <span style={{ color: tokens.colorBrandForeground1 }}> @</span>}</div>
                 {r.last && <div className={mergeClasses(s.mut, s.ell)} style={{ fontSize: 11 }}>{r.last.from}: {r.last.text}</div>}
               </div>
-              {r.unread > 0 && <span style={{ background: tokens.colorBrandBackground, color: '#fff', borderRadius: 999, padding: '0 7px', fontSize: 11 }}>{r.unread}</span>}
+              {r.unread > 0 && <span style={{ background: tokens.colorBrandBackground, color: tokens.colorNeutralForegroundOnBrand, borderRadius: 999, padding: '0 7px', fontSize: 11 }}>{r.unread}</span>}
               {big && r.unread > 0 && <Button size="small" appearance="subtle" icon={<Send16Regular />} aria-label={t('Antwort schreiben …')} onClick={e => { e.stopPropagation(); setReply(reply?.room === r.id ? null : { room: r.id, text: '' }) }} />}
             </div>
             {reply?.room === r.id && <Input size="small" className={s.input} autoFocus value={reply.text} onChange={(_, d) => setReply({ room: r.id, text: d.value })} placeholder={t('Antwort schreiben …')}
@@ -443,6 +458,62 @@ export function NewsWidget({ w, big }: { w: Widget; big: boolean }) {
   )
 }
 
+// [feature:journal]
+// ---------------- Tagebuch ----------------
+
+interface JEntry { id: string; journal: number; uri: string; date: string; title: string | null; snippet: string; mood: number | null; weather: string | null; place: string | null; image: string | null; photos: number }
+export function JournalWidget({ w, big }: { w: Widget; big: boolean }) {
+  const s = useWidgetStyles()
+  const { fail, notify } = useApp()
+  const { data, error, reload } = useWidgetData<{ today: JEntry[]; back: { label: string; day: string; entries: JEntry[] }[]; streak: number; journals: { id: number; name: string }[]; writeTo: number | null }>('journal', w.opts, 300_000)
+  const [idx, setIdx] = useState(0)
+  if (!data) return <Loading error={error} />
+  const groups = data.back.filter(b => b.entries.length > 0)
+  const cur = groups[Math.min(idx, Math.max(0, groups.length - 1))]
+  const e = cur?.entries[0]
+  // [feature:diaryrecallthumbs]
+  // Einstellung „Fotos zeigen“ (im Web vorgegeben an, wie bisher)
+  const img = featureOn('diaryrecallthumbs') && w.opts?.photos === false ? null : e?.image
+  // [feature:diaryrecallthumbs:else]
+  // const img = e?.image
+  // [/feature:diaryrecallthumbs]
+  const write = async (mood: number) => {
+    if (data.writeTo == null) return
+    try {
+      await api.post('/api/journal/entries', { journal: data.writeTo, date: new Date().toISOString(), mood, html: '', tags: [], media: [], refs: [], private: false, showEvents: true })
+      notify(t('Eintrag angelegt.')); reload(); go('#/journal/' + isoToday())
+    } catch (err) { fail(err) }
+  }
+  // In die Liste des Tages, der Eintrag hervorgehoben - zum Lesen, nicht zum Bearbeiten
+  const openEntry = (x: JEntry) => go('#/journal/' + x.date.slice(0, 10) + '/' + encodeURIComponent(x.id))
+  // Ein Rückblick: „Heute vor …“ mit allen Rückblicken, dieser hervorgehoben
+  const openBack = (x: JEntry) => go('#/journal/onthisday/' + encodeURIComponent(x.id))
+  return (
+    <div style={{ display: 'flex', gap: 12, height: '100%', margin: -14 }}>
+      {e && img && (
+        <div className={s.photo} style={{ width: '42%', flexShrink: 0, borderRadius: 0 }} onClick={() => openBack(e)}>
+          <img className={s.img} src={'/api/journal/file?' + q({ journal: e.journal, path: img, size: 512 })} alt="" loading="lazy" />
+          <span style={{ position: 'absolute', left: 8, bottom: 8, background: 'rgba(0,0,0,.55)', color: '#fff', borderRadius: 999, padding: '2px 8px', fontSize: 11 }}>{cur.label}</span>
+        </div>
+      )}
+      <div className={s.col} style={{ padding: 14, paddingLeft: img ? 0 : 14 }}>
+        <Head label={t('Tagebuch') + (groups.length ? ' · ' + t('Rückblick') : '')} onClick={() => go('#/journal')} />
+        {e ? <>
+          <div style={{ fontSize: 14, fontWeight: 600, cursor: 'pointer' }} className={s.ell} onClick={() => openBack(e)}>{e.title || cur.label}</div>
+          <div className={s.mut} style={{ fontSize: 12, lineHeight: 1.4, overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: big ? 5 : 2, WebkitBoxOrient: 'vertical' }}>{e.snippet}</div>
+          {!img && <span className={s.mut} style={{ fontSize: 11 }}>{cur.label}{e.mood ? ' · ' + MOODS.find(m => m.value === e.mood)?.emoji : ''}</span>}
+        </> : <Empty text={data.today.length ? '' : t('Kein Rückblick – an diesem Tag gab es noch keinen Eintrag.')} />}
+        <div style={{ flex: 1 }} />
+        {groups.length > 1 && <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>{groups.slice(0, 5).map((g, i) => <span key={g.day} className={mergeClasses(s.chip, i === idx && s.chipOn)} onClick={() => setIdx(i)}>{g.label}</span>)}</div>}
+        {data.today.length > 0
+          ? <Text size={200} className={s.mut} style={{ cursor: 'pointer' }} onClick={() => openEntry(data.today[0])}>{t('Heute')}: {data.today[0].title || data.today[0].snippet.slice(0, 50)}{data.streak > 1 ? ` · ${t('{n} Tage in Folge', { n: data.streak })}` : ''}</Text>
+          : data.writeTo != null && <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Text size={200} className={s.mut}>{t('Heute schreiben')}:</Text>{MOODS.map(m => <span key={m.value} style={{ cursor: 'pointer', fontSize: 18 }} title={t('Wie geht es dir?')} onClick={() => write(m.value)}>{m.emoji}</span>)}</div>}
+      </div>
+    </div>
+  )
+}
+
+// [/feature:journal]
 // ---------------- Fotos ----------------
 
 /** Wo die Diashow je Widget stand - beim nächsten Öffnen der Übersicht geht es mit dem folgenden Foto weiter, nicht wieder mit dem ersten. */
@@ -517,15 +588,27 @@ export function FilesWidget({ w, big }: { w: Widget; big: boolean }) {
   const { fail, notify } = useApp()
   const { data, error, reload } = useWidgetData<{ items: { path: string; name: string; isDir: boolean; size: number; mime: string | null; modified: string; etag: string; favorite: boolean; used: string | null }[]; favorites: number }>('files', w.opts)
   const [over, setOver] = useState(false)
+  const up = useUploadTask()
   if (!data) return <Loading error={error} />
   const folder = (w.opts?.folder as string) ?? ''
+  // Wie in der Dateiablage in Teilen hochladen: auch große Dateien, mit Fortschritt und Abbrechen
   const drop = async (e: React.DragEvent) => {
     e.preventDefault(); setOver(false)
-    const files = Array.from(e.dataTransfer.files); if (!files.length) return
+    const files = Array.from(e.dataTransfer.files); if (!files.length || up.busy) return
     try {
-      for (const f of files) { const fd = new FormData(); fd.append('file', f, f.name); await api.form('/api/files/upload?' + q({ path: folder, conflict: 'rename', mtime: f.lastModified }), fd) }
-      notify(t('Hochgeladen: {name}', { name: files.map(f => f.name).join(', ') })); reload()
-    } catch (err) { fail(err) }
+      const total = files.reduce((n, f) => n + f.size, 0)
+      const ok = await up.run(async (onProgress, signal) => {
+        let before = 0
+        for (let i = 0; i < files.length; i++) {
+          const f = files[i]
+          const id = await uploadChunked(f, f.name, loaded => onProgress({ bytes: before + loaded, total, done: i, count: files.length, name: f.name }), undefined, undefined, signal)
+          await finishToFiles(id, folder, 'rename', undefined, f.lastModified)
+          before += f.size
+        }
+        return true
+      })
+      if (ok) notify(t('Hochgeladen: {name}', { name: files.map(f => f.name).join(', ') }))
+    } catch (err) { fail(err) } finally { reload() }
   }
   return (
     <div className={s.col} style={{ height: '100%', outline: over ? `2px dashed ${tokens.colorBrandStroke1}` : undefined, outlineOffset: -4, borderRadius: 12 }}
@@ -542,6 +625,7 @@ export function FilesWidget({ w, big }: { w: Widget; big: boolean }) {
         ))}
       </div>
       <Text size={100} className={s.mut}>{over ? t('Datei hierher ziehen zum Hochladen nach „{folder}“', { folder: folder || t('Dateien') }) : ''}</Text>
+      {up.bar && <UploadBar p={up.progress!} onCancel={up.cancel} style={{ padding: '4px 0', borderTop: 'none' }} />}
     </div>
   )
 }
@@ -653,7 +737,7 @@ export function SystemWidget({ w }: { w: Widget }) {
       <Row color={!data.storage.on ? yellow : data.storage.lastError ? red : green} label={t('Storage Extender')} value={!data.storage.on ? t('aus') : ago(data.storage.lastRun)} />
       <Row color={!data.backup.enabled || data.backup.blocked ? red : data.backup.lastError || old(data.backup.lastRun, 48) ? yellow : green} label={t('Core-Backup')} value={!data.backup.enabled ? t('aus') : ago(data.backup.lastRun)} />
       <Row color={!data.profile.at ? red : data.profile.current ? green : yellow} label={t('Zugangsdaten für den Notfall')} value={!data.profile.at ? t('nie gesichert') : data.profile.current ? t('gesichert') : t('veraltet')} />
-      {data.volume && <Row color={lowDisk ? red : green} label={t('Platte')} value={fmtSize(data.volume.free) + ' ' + t('frei')} />}
+      {data.volume && <Row color={lowDisk ? red : green} label={t('Speicherplatz')} value={fmtSize(data.volume.free) + ' ' + t('frei')} />}
       {(data.storage.lastError || data.backup.lastError || data.backup.blocked) && <Text size={100} style={{ color: red }} className={s.ell}>{data.backup.blocked || data.backup.lastError || data.storage.lastError}</Text>}
     </div>
   )
@@ -675,6 +759,9 @@ export function WidgetBody({ w }: { w: Widget }) {
     case 'pukki': return <PukkiWidget w={w} />
     case 'weather': return <WeatherWidget w={w} big={big} />
     case 'news': return <NewsWidget w={w} big={big} />
+    // [feature:journal]
+    case 'journal': return <JournalWidget w={w} big={big} />
+    // [/feature:journal]
     case 'photos': return <PhotosWidget w={w} big={big} />
     case 'notes': return <NotesWidget w={w} big={big} />
     case 'files': return <FilesWidget w={w} big={big} />

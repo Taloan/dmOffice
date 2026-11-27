@@ -8,7 +8,7 @@ import {
 import { Copy20Regular, Delete20Regular, Link20Regular, LockClosed16Regular } from '@fluentui/react-icons'
 import { PeopleList, Right, rightOf, usePeople } from '../calendar/ShareDialog'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api, q } from '../api'
+import { api, publicOrigin, q } from '../api'
 import { locale, t } from '../i18n'
 import { Item } from './common'
 import { loadFileSettings } from '../settings/FilesSettings'
@@ -117,7 +117,7 @@ export interface Link {
   expired?: boolean; item?: Item | null
 }
 
-export const linkUrl = (l: Link) => `${location.origin}/s/${l.token}`
+export const linkUrl = (l: Link) => `${publicOrigin()}/s/${l.token}`
 
 // Wie bei den Freigaben an Personen: Senden = der andere bekommt die Datei (ansehen, herunterladen),
 // Teilen = er arbeitet mit (legt Dateien dazu); "Nur hochladen" ist ein Briefkasten und keins von beiden
@@ -158,9 +158,9 @@ export function ShareManyDialog({ items, onClose, notify, fail }: {
     <Dialog open onOpenChange={(_, d) => !d.open && onClose()}>
       <DialogSurface style={{ maxWidth: 560 }}>
         <DialogBody>
-          <DialogTitle>{t('{n} Einträge mit Personen teilen', { n: items.length })}</DialogTitle>
+          <DialogTitle>{t('{n} Einträge mit Benutzern teilen', { n: items.length })}</DialogTitle>
           <DialogContent>
-            <PeopleList state={people} intro={t('Die gewählten Personen sehen die Einträge bei sich unter „Mit mir geteilt“. Wer schon Zugriff hat, behält ihn; entziehen geht einzeln über „Teilen …“.')} />
+            <PeopleList state={people} intro={t('Die gewählten Benutzer sehen die Einträge bei sich unter „Mit mir geteilt“. Wer schon Zugriff hat, behält ihn. Ein Zugriff lässt sich nur einzeln über „Teilen …“ entziehen.')} />
           </DialogContent>
           <DialogActions>
             <Button onClick={onClose}>{t('Abbrechen')}</Button>
@@ -258,13 +258,13 @@ export function ShareDialog({ item, onClose, notify, fail }: {
           <DialogTitle>{t('„{name}“ teilen', { name: item.name || t('Meine Dateien') })}</DialogTitle>
           <DialogContent>
             {withPeople && <>
-              <Text block weight="semibold">{t('Mit Personen teilen')}</Text>
+              <Text block weight="semibold">{t('Mit Benutzern teilen')}</Text>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 6 }}>
                 <PeopleList state={people} intro={item.isDir
                   ? t('Wer hier Zugriff hat, sieht den Ordner samt Unterordnern bei sich unter „Mit mir geteilt“ – mit „Ansehen und Kopie behalten“ und „Gemeinsam bearbeiten“ auch auf ihren Geräten und in verbundenen Programmen, mit „Nur ansehen“ nur in dmOffice. Mit „Gemeinsam bearbeiten“ lassen sich Dateien hochladen, ändern, umbenennen und löschen; Gelöschtes landet in deinem Papierkorb und der Speicherplatz zählt bei dir.')
                   : t('Wer hier Zugriff hat, sieht die Datei bei sich unter „Mit mir geteilt“ – mit „Ansehen und Kopie behalten“ und „Gemeinsam bearbeiten“ auch auf ihren Geräten und in verbundenen Programmen, mit „Nur ansehen“ nur in dmOffice. Mit „Gemeinsam bearbeiten“ darf er sie auch ändern; die Datei bleibt bei dir.')} />
                 {!people.nobody && (
-                  <div><Button appearance="primary" disabled={!people.people || !peopleReady} onClick={savePeople}>{t('Personen speichern')}</Button></div>
+                  <div><Button appearance="primary" disabled={!people.people || !peopleReady} onClick={savePeople}>{t('Benutzer speichern')}</Button></div>
                 )}
               </div>
               <Divider style={{ margin: '16px 0 12px' }} />

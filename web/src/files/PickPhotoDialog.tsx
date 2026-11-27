@@ -14,7 +14,7 @@ const useStyles = makeStyles({
     maxHeight: 'calc(100vh - 320px)', minHeight: '240px', overflowY: 'auto', alignContent: 'start',
   },
   cell: {
-    aspectRatio: '1', borderRadius: tokens.borderRadiusMedium, overflow: 'hidden', cursor: 'pointer', padding: 0, border: 'none',
+    position: 'relative', aspectRatio: '1', borderRadius: tokens.borderRadiusMedium, overflow: 'hidden', cursor: 'pointer', padding: 0, border: 'none',
     backgroundColor: tokens.colorNeutralBackground3, outline: '2px solid transparent', outlineOffset: '-2px',
     ':hover': { outline: `2px solid ${tokens.colorBrandStroke1}` },
   },
@@ -26,15 +26,38 @@ const useStyles = makeStyles({
 const monthName = (k: string) => new Date(+k.slice(0, 4), +k.slice(5) - 1, 1).toLocaleDateString(locale, { month: 'long', year: 'numeric' })
 const isImage = (i: Item) => (i.mime ?? '').startsWith('image/')
 
+// [feature:noteimg]
+/** Größe beim Einfügen eines Bildes: 1280 px Kantenlänge oder das Original. */
+export type ImageSize = 'orig' | 1280
+/** Gewählte Größe, für alle Wege gleich gemerkt (Galerie, Dateien, Gerät). */
+export function useImageSize(): [ImageSize, (v: ImageSize) => void] {
+  const [size, setSize] = useState<ImageSize>(() => { try { return localStorage.getItem('dm.pickPhotoSize') === 'orig' ? 'orig' : 1280 } catch { return 1280 } })
+  const pick = (v: ImageSize) => { setSize(v); try { localStorage.setItem('dm.pickPhotoSize', String(v)) } catch { /* ohne Speicher */ } }
+  return [size, pick]
+}
+/** Auswahl 1280 px / Original - in den Dialogen links neben den Knöpfen. */
+export function ImageSizeSelect({ value, onChange }: { value: ImageSize; onChange: (v: ImageSize) => void }) {
+  return (
+    <Select value={String(value)} onChange={(_, d) => onChange(d.value === 'orig' ? 'orig' : 1280)} aria-label={t('Größe')} style={{ marginRight: 'auto' }}>
+      <option value="1280">{t('1280 px (empfohlen)')}</option>
+      <option value="orig">{t('Original')}</option>
+    </Select>
+  )
+}
+// [/feature:noteimg]
+
 /**
  * Ein Foto aus der Galerie wählen (eigene Ablage und Galerie-Ordner): Vorschaubilder Monat für Monat, neueste zuerst,
  * oder nach Name, Ort, Tag suchen. Gibt den Pfad zurück („ext:…“ bei Galerie-Ordnern). Mit onPickMany: mehrere
  * ankreuzen (auch über Monate hinweg) und mit „Übernehmen“ zurückgeben.
  */
-export function PickPhotoDialog({ title, onPick, onPickMany, onClose }: {
-  title: string; onPick?: (path: string) => void; onPickMany?: (items: Item[]) => void; onClose: () => void
+export function PickPhotoDialog({ title, onPick, onPickMany, onClose, sizeChoice }: {
+  title: string; onPick?: (path: string) => void; onPickMany?: (items: Item[], size: ImageSize) => void; onClose: () => void
+  /** Größe wählen lassen: 1280 px oder Original (Kennung noteimg) - die Wahl bleibt gemerkt */
+  sizeChoice?: boolean
 }) {
   const s = useStyles()
+  const [size, pickSize] = useImageSize()
   const [picked, setPicked] = useState<Item[]>([])
   const toggle = (i: Item) => setPicked(p => p.some(x => x.path === i.path) ? p.filter(x => x.path !== i.path) : [...p, i])
   const [months, setMonths] = useState<TLBucket[] | null>(null)
@@ -78,8 +101,9 @@ export function PickPhotoDialog({ title, onPick, onPickMany, onClose }: {
             </div>
           </DialogContent>
           <DialogActions>
+            {sizeChoice && <ImageSizeSelect value={size} onChange={pickSize} />}
             <Button onClick={onClose}>{t('Abbrechen')}</Button>
-            {onPickMany && <Button appearance="primary" disabled={!picked.length} onClick={() => onPickMany(picked)}>{t('Übernehmen ({n})', { n: picked.length })}</Button>}
+            {onPickMany && <Button appearance="primary" disabled={!picked.length} onClick={() => onPickMany(picked, sizeChoice ? size : 'orig')}>{t('Übernehmen ({n})', { n: picked.length })}</Button>}
           </DialogActions>
         </DialogBody>
       </DialogSurface>

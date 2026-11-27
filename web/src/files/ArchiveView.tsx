@@ -1,13 +1,15 @@
 // Archiv als Ordner (ZIP, 7z, RAR, TAR, TAR.GZ): blättern, Dateien öffnen, entpacken; ZIPs auch ändern. Änderungen sammeln
-// sich auf dem Server, bis „Speichern“ ein neues ZIP schreibt (das alte bleibt als Version) oder „Verwerfen“ sie löscht.
+// sich auf dem Server, bis „Speichern“ (Menüband) ein neues ZIP schreibt (das alte bleibt als Version) oder „Verwerfen“ sie löscht.
+import { sendFiles } from './chunked'
+import { useUploadTask } from './UploadBar'
 import {
   Breadcrumb, BreadcrumbButton, BreadcrumbDivider, BreadcrumbItem, Button, Checkbox, Field, Input, makeStyles, Menu, MenuDivider, MenuItem, MenuItemCheckbox,
-  MenuList, MenuPopover, mergeClasses, MessageBar, MessageBarActions, MessageBarBody, Spinner, Table, TableBody, TableCell, TableCellLayout,
-  TableHeader, TableHeaderCell, TableRow, Text, tokens, Toolbar, ToolbarButton,
+  MenuList, MenuPopover, mergeClasses, MessageBar, MessageBarBody, Spinner, Table, TableBody, TableCell, TableCellLayout,
+  TableHeader, TableHeaderCell, TableRow, Text, tokens,
 } from '@fluentui/react-components'
 import {
-  ArrowClockwise20Regular, ArrowDownload20Regular, ArrowUpload20Regular, Delete20Regular, FolderAdd20Regular, FolderArrowUp20Regular,
-  LockClosed20Regular, Open20Regular, Rename20Regular, Save20Regular,
+  ArrowClockwise20Regular, ArrowDownload20Regular, ArrowUndo20Regular, ArrowUpload20Regular, Delete20Regular, Dismiss20Regular, FolderAdd20Regular,
+  FolderArrowUp20Regular, LockClosed20Regular, Open20Regular, Rename20Regular, Save20Regular,
 } from '@fluentui/react-icons'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, ApiError, fmtSize, q } from '../api'
@@ -18,6 +20,7 @@ import { ColHead } from './FileColumns'
 import { fmtWhen, Item, KindIcon, kindLabel, kindOf, Source, viewKind } from './common'
 import { Viewer } from './Viewer'
 import { entriesOf, readEntries, Upload } from './FilesView'
+import { RibbonActions, RibbonButton, RibbonDivider } from '../shell/Ribbon'
 
 interface Row { path: string; name: string; isDir: boolean; size: number; packed: number; modified: string | null; added: boolean; changed: boolean; mime: string | null }
 interface Listing {
@@ -181,8 +184,9 @@ export function ArchiveView({ file, dir, onDir, onLeave, onPending }: {
     setBusy(true)
     try { await f(); load() } catch (e) { failed(e) } finally { setBusy(false) }
   }
+  const up = useUploadTask()
   const upload = async (files: Upload[]) => {
-    if (!files.length || !canEdit) return
+    if (!files.length || !canEdit || up.busy) return
     const names = new Set(rows.map(r => r.name))
     const clash = files.filter(f => !f.rel.includes('/') && names.has(f.rel))
     let conflict: string | undefined
@@ -191,11 +195,10 @@ export function ArchiveView({ file, dir, onDir, onLeave, onPending }: {
         : t('{n} Dateien gibt es im Archiv schon. Ersetzen?', { n: clash.length }), t('Ersetzen'))) return
       conflict = 'replace'
     }
+    // Große Dateien in Teilen (sendFiles), mit Fortschritt und Abbrechen
     await run(async () => {
-      const form = new FormData()
-      for (const f of files) form.append('file', f.file, f.rel)
-      await api.form('/api/files/archive/upload?' + q({ path: file, dir, conflict }), form)
-      notify(t('Zum Archiv hinzugefügt'), t('Gespeichert wird beim Verlassen oder mit „Speichern“.'))
+      if (await up.run((onProgress, signal) => sendFiles('/api/files/archive/upload?' + q({ path: file, dir, conflict }), files.map(f => ({ file: f.file, name: f.rel })), onProgress, signal)) !== undefined)
+        notify(t('Zum Archiv hinzugefügt'), t('Gespeichert wird beim Verlassen oder mit „Speichern“.'))
     })
   }
   const mkdir = async () => {
@@ -333,15 +336,27 @@ export function ArchiveView({ file, dir, onDir, onLeave, onPending }: {
       }}>
       <div className={s.head}>
         {crumbs}
-        <div style={{ flex: 1 }} />
-        <Toolbar size="small">
-          {canEdit && <ToolbarButton icon={<ArrowUpload20Regular />} disabled={busy} onClick={() => fileInput.current?.click()}>{t('Hinzufügen')}</ToolbarButton>}
-          {canEdit && <ToolbarButton icon={<FolderAdd20Regular />} disabled={busy} onClick={mkdir}>{t('Neuer Ordner')}</ToolbarButton>}
-          <ToolbarButton icon={<FolderArrowUp20Regular />} disabled={busy || !data || data.bomb} onClick={() => extract(picked)}>
-            {picked.length ? t('Markierte entpacken') : t('Alles entpacken')}
-          </ToolbarButton>
-          <ToolbarButton icon={<ArrowClockwise20Regular />} onClick={load} aria-label={t('Aktualisieren')} title={t('Aktualisieren')} />
-        </Toolbar>
+        <RibbonActions>
+          <RibbonButton icon={<Open20Regular />} label={t('Öffnen')} disabled={picked.length !== 1} onClick={() => open(picked[0])} />
+          <RibbonButton icon={<ArrowDownload20Regular />} label={t('Herunterladen')} disabled={picked.length !== 1 || picked[0].isDir || !!data?.bomb} onClick={() => download(picked[0])} />
+          <RibbonButton icon={<FolderArrowUp20Regular />} label={picked.length ? t('Markierte entpacken') : t('Alles entpacken')} disabled={busy || !data || data.bomb} onClick={() => extract(picked)} />
+          {canEdit && <>
+            <RibbonButton icon={<Rename20Regular />} label={t('Umbenennen')} disabled={busy || picked.length !== 1} onClick={() => rename(picked[0])} />
+            <RibbonButton icon={<Delete20Regular />} label={t('Aus dem Archiv entfernen')} disabled={busy || !picked.length} onClick={() => remove(picked)} />
+            <RibbonDivider />
+            <RibbonButton icon={<ArrowUpload20Regular />} label={t('Hinzufügen')} disabled={busy} onClick={() => fileInput.current?.click()} />
+            <RibbonButton icon={<FolderAdd20Regular />} label={t('Neuer Ordner')} disabled={busy} onClick={mkdir} />
+          </>}
+          {data?.pending && <>
+            <RibbonDivider />
+            <RibbonButton primary icon={<Save20Regular />} label={t('Speichern')} disabled={busy} onClick={() => save(data.pending!.stale)} />
+            <RibbonButton icon={<ArrowUndo20Regular />} label={t('Verwerfen')} disabled={busy} onClick={discard} />
+          </>}
+          {data?.encrypted && !data.unlocked && <RibbonButton icon={<LockClosed20Regular />} label={t('Entsperren')} onClick={() => setLocked({ wrong: false })} />}
+          <RibbonDivider />
+          <RibbonButton icon={<ArrowClockwise20Regular />} label={t('Aktualisieren')} onClick={load} />
+          <RibbonButton icon={<Dismiss20Regular />} label={t('Archiv schließen')} onClick={() => onLeave(parentOf(file))} />
+        </RibbonActions>
         <input ref={fileInput} type="file" multiple hidden onChange={e => { if (e.target.files) upload(Array.from(e.target.files).map(f => ({ file: f, rel: f.name }))); e.target.value = '' }} />
       </div>
       <div className={s.bars}>
@@ -352,16 +367,11 @@ export function ArchiveView({ file, dir, onDir, onLeave, onPending }: {
                 : t('Änderungen im Archiv – noch nicht gespeichert.')}{' '}
               <span className={s.muted}>{t('Ohne Speichern verworfen am {when}.', { when: fmtWhen(data.pending.expires, locale) })}</span>
             </MessageBarBody>
-            <MessageBarActions>
-              <Button appearance="primary" size="small" icon={<Save20Regular />} disabled={busy} onClick={() => save(data.pending!.stale)}>{t('Speichern')}</Button>
-              <Button size="small" disabled={busy} onClick={discard}>{t('Verwerfen')}</Button>
-            </MessageBarActions>
           </MessageBar>
         )}
         {data?.encrypted && !data.unlocked && (
           <MessageBar intent="info">
             <MessageBarBody>{t('Verschlüsselt – Namen sind lesbar, zum Öffnen, Entpacken und Ändern wird das Passwort gebraucht.')}</MessageBarBody>
-            <MessageBarActions><Button size="small" icon={<LockClosed20Regular />} onClick={() => setLocked({ wrong: false })}>{t('Entsperren')}</Button></MessageBarActions>
           </MessageBar>
         )}
         {data?.readOnly && <MessageBar intent={data.bomb || data.unsafe ? 'error' : 'info'}><MessageBarBody>{data.readOnly}</MessageBarBody></MessageBar>}
@@ -415,6 +425,8 @@ export function ArchiveView({ file, dir, onDir, onLeave, onPending }: {
         )}
         {data && !rows.length && <Text className={s.muted} style={{ display: 'block', padding: 16 }}>{canEdit ? t('Leer. Dateien hierher ziehen oder „Hinzufügen“.') : t('Leer.')}</Text>}
       </div>
+
+      {up.bar}
 
       {/* Spalten wählen (Rechtsklick auf die Kopfzeile) */}
       {colMenu && <Menu key={`${colMenu.x},${colMenu.y}`} open onOpenChange={(_, d) => { if (!d.open) setColMenu(null) }} positioning={{ autoSize: 'height', target: at(colMenu), position: 'below', align: 'start', offset: 2 }}>

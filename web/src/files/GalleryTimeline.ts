@@ -51,6 +51,9 @@ async function getJson(url: string, etag?: string | null): Promise<{ status: num
 
 const queryOf = (x: TLQuery) => q({ sort: x.sort, desc: x.desc, stack: x.stack, ext: x.ext || undefined, filter: x.filter || undefined, group: x.group || undefined })
 
+/** Abschnitt der noch nicht ausgelesenen Fotos (Server: GalleryTimeline.UnreadKey), auch mit Quelle davor („s…|unread“) */
+export const isUnreadKey = (k: string) => k === 'unread' || k.endsWith('|unread')
+
 /** So viele Monate höchstens im Speicher - weiter entfernte fallen wieder heraus (zurückgescrollt: neu geladen). */
 const KEEP = 24
 /** So viele Monate gleichzeitig laden. */
@@ -67,6 +70,13 @@ export function useGalleryTimeline(enabled: boolean, query: TLQuery, onError: (e
   const [version, setVersion] = useState(0)
   const loaded = useRef(new Map<string, { h: string; items: Item[] }>())
   const meta = useRef(new Map<string, Meta>())
+  // Zeitpunkt, nach dem der Server ein Foto in seinen Monat einsortiert hat (Aufnahme, sonst Änderung der Datei). Abschnitte und
+  // Überschriften richten sich danach, nicht nach einem später beim Ansehen gelesenen Aufnahmedatum - sonst stünde ein Foto von 2013
+  // mit der Überschrift „Juni 2013“ mitten im Januar 2021, bis der Server es umsortiert hat
+  const placed = useRef(new Map<string, number>())
+  const moveTimer = useRef<number | null>(null)
+  // Noch nicht ausgelesene Fotos (Abschnitt „unread“, Kennung galunread)
+  const unread = useRef(new Set<string>())
   const tag = useRef<string | null>(null)
   const wants = useRef(new Map<string, string[]>())
   const inflight = useRef(new Set<string>())
@@ -74,7 +84,7 @@ export function useGalleryTimeline(enabled: boolean, query: TLQuery, onError: (e
   const stateRef = useRef(state); stateRef.current = state
   const errRef = useRef(onError); errRef.current = onError
 
-  const forget = (items: Item[]) => { for (const i of items) { meta.current.delete(i.path); for (const s of i.stack ?? []) meta.current.delete(s.path) } }
+  const forget = (items: Item[]) => { for (const i of items) { meta.current.delete(i.path); placed.current.delete(i.path); unread.current.delete(i.path); for (const s of i.stack ?? []) { meta.current.delete(s.path); placed.current.delete(s.path) } } }
 
   // Was weit weg ist, wieder vergessen: behalten werden die gewünschten und die ihnen nächsten Monate
   const evict = () => {
@@ -111,6 +121,9 @@ export function useGalleryTimeline(enabled: boolean, query: TLQuery, onError: (e
       if (r.status === 304 && old) { loaded.current.set(k, { ...old, h }); return }
       if (old) forget(old.items)
       const items = (r.data.items as Row[]).map(x => decode(x, meta.current))
+      const place = (i: Item) => placed.current.set(i.path, meta.current.get(i.path)?.taken ?? Date.parse(i.modified))
+      for (const i of items) { place(i); for (const s of i.stack ?? []) place(s) }
+      if (isUnreadKey(k)) for (const i of items) unread.current.add(i.path)
       loaded.current.set(k, { h: r.etag?.replace(/"/g, '') ?? h, items })
       evict()
       setVersion(v => v + 1)
@@ -140,11 +153,13 @@ export function useGalleryTimeline(enabled: boolean, query: TLQuery, onError: (e
     if (enabled) void refresh()
   }, [key, enabled]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  /** Diese Monate werden gebraucht (je Zweck: „view“ für den Bildausschnitt, „viewer“ für den Betrachter). */
+  /** Diese Monate werden gebraucht (je Zweck: „view“ für den Bildausschnitt, „viewer“ für den Betrachter, „jump“ für das Ziel eines Sprungs). */
   const want = useCallback((keys: string[], slot = 'view') => {
     const before = wants.current.get(slot)
     if (before && before.length === keys.length && before.every((k, n) => k === keys[n])) { pump(); return }
-    wants.current.set(slot, keys)
+    // Sprung über die Jahresleiste zuerst laden
+    if (slot === 'jump') { const rest = [...wants.current].filter(([s]) => s !== 'jump'); wants.current = new Map([['jump', keys], ...rest]) }
+    else wants.current.set(slot, keys)
     pump()
   }, [pump])
 
@@ -154,6 +169,11 @@ export function useGalleryTimeline(enabled: boolean, query: TLQuery, onError: (e
     const by = new Map(list.map(p => [p.path, p]))
     const fresh = <T extends Item>(i: T): T => { const p = by.get(i.path); return p ? { ...i, etag: p.etag, size: p.size, modified: p.modified } : i }
     for (const p of list) meta.current.set(p.path, p.meta)
+    // Aufnahmedatum in einem anderen Monat als bisher eingeordnet (erst beim Ansehen gelesen): den Stand vom Server bald neu holen,
+    // dann wandert das Foto in seinen Monat. Der Server baut seinen Index höchstens alle 15 Sekunden neu - einmal danach fragen
+    const month = (ms: number) => { const d = new Date(ms); return d.getFullYear() * 12 + d.getMonth() }
+    const moved = list.some(p => { if (unread.current.has(p.path) && p.meta.taken != null) return true; const was = placed.current.get(p.path); const now = p.meta.taken ?? Date.parse(p.modified); return was != null && !isNaN(now) && month(was) !== month(now) })
+    if (moved && moveTimer.current == null) moveTimer.current = window.setTimeout(() => { moveTimer.current = null; void refresh() }, 16_000)
     for (const [k, l] of loaded.current) {
       if (!l.items.some(i => by.has(i.path) || i.stack?.some(x => by.has(x.path)))) continue
       loaded.current.set(k, { ...l, items: l.items.map(i => fresh(i.stack?.some(x => by.has(x.path)) ? { ...i, stack: i.stack.map(fresh) } : i)) })
@@ -168,8 +188,15 @@ export function useGalleryTimeline(enabled: boolean, query: TLQuery, onError: (e
     return m
   }, [state, version]) // eslint-disable-line react-hooks/exhaustive-deps
   const loadedOf = useCallback((k: string) => loaded.current.get(k)?.items, [version]) // eslint-disable-line react-hooks/exhaustive-deps
+  /** Ist der geladene Monat auf dem Stand, den die Monatsliste nennt? (Sonst zählt die Anzahl schon den neueren Stand.) */
+  const currentOf = useCallback((k: string) => { const l = loaded.current.get(k); return !!l && l.h === stateRef.current?.buckets.find(b => b.k === k)?.h }, [version]) // eslint-disable-line react-hooks/exhaustive-deps
   const metaOf = useCallback((path: string) => meta.current.get(path), [version]) // eslint-disable-line react-hooks/exhaustive-deps
-  return { state, items, version, loaded: loadedOf, metaOf, bucketOf, want, refresh, patch, stamp: tag.current }
+  /** Wonach der Server das Foto einsortiert hat (ms); undefined: nicht in einem geladenen Monat */
+  const placedOf = useCallback((path: string) => placed.current.get(path), [version]) // eslint-disable-line react-hooks/exhaustive-deps
+  /** Steht das Foto im Abschnitt der noch nicht ausgelesenen? */
+  const unreadOf = useCallback((path: string) => unread.current.has(path), [version]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => { if (moveTimer.current != null) clearTimeout(moveTimer.current) }, [])
+  return { state, items, version, loaded: loadedOf, currentOf, metaOf, placedOf, unreadOf, bucketOf, want, refresh, patch, stamp: tag.current }
 }
 
 /** Werte der Filterleiste vom Server: je Spalte alle Werte mit Anzahl (jede Spalte nach den linken gefiltert). */

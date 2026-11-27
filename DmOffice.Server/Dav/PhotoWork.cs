@@ -81,13 +81,12 @@ public static class PhotoWork
             using (driver)
             {
                 var st = await driver.StatAsync(rel, CancellationToken.None) ?? throw new KeyNotFoundException("Datei nicht gefunden.");
+                if (st.Size > MaxPhotoBytes(rel)) throw new ArgumentException(TooLarge);
                 var stamp = st.Size ^ (new DateTimeOffset(DateTime.SpecifyKind(st.Modified, DateTimeKind.Utc)).ToUnixTimeMilliseconds() << 1);
                 var file = FileOf(key);
                 if (Load(file, stamp) is { } cached) { File.SetLastWriteTimeUtc(file, DateTime.UtcNow); return cached; }
                 await using var s = await driver.OpenReadAsync(rel, CancellationToken.None);
-                using var ms = new MemoryStream();
-                await s.CopyToAsync(ms);
-                var data = ms.ToArray();
+                var data = await ReadCappedAsync(s, rel, st.Size, CancellationToken.None);
                 Store(file, stamp, data);
                 Prune();
                 return data;
@@ -103,10 +102,20 @@ public static class PhotoWork
         using (driver)
         {
             await using var s = await driver.OpenReadAsync(rel, ct);
-            using var ms = new MemoryStream();
-            await s.CopyToAsync(ms, ct);
-            return ms.ToArray();
+            return await ReadCappedAsync(s, rel, 0, ct);
         }
+    }
+
+    private const string TooLarge = "Das Foto ist zu groß.";
+
+    /// <summary>Höchste Größe eines Fotos zum Bearbeiten und Auslesen (RAW größer): größere werden nicht in den Speicher geladen.</summary>
+    public static long MaxPhotoBytes(string name) => (DmOffice.Dav.Thumbs.IsRaw(name) ? 200L : 80L) * 1024 * 1024;
+
+    /// <summary>Ganz lesen, aber höchstens <see cref="MaxPhotoBytes"/> - auch wenn der Speicher eine kleinere Größe nennt.</summary>
+    private static async Task<byte[]> ReadCappedAsync(Stream s, string name, long expected, CancellationToken ct)
+    {
+        try { return await DmOffice.Core.ReadLimit.ReadAllAsync(s, MaxPhotoBytes(name), ct, expected); }
+        catch (DmOffice.Core.ReadLimit.TooLargeException) { throw new ArgumentException(TooLarge); }
     }
 
     // ---------------- Schreiben ----------------
@@ -144,7 +153,7 @@ public static class PhotoWork
         {
             try
             {
-                var src = DmOffice.Gallery.GalleryFolders.Of(space.Db).FirstOrDefault(s => s.Id == p.Source) ?? throw new KeyNotFoundException("Galerie-Ordner fehlt.");
+                var src = DmOffice.Gallery.GalleryFolders.Of(space.Db).FirstOrDefault(s => s.Id == p.Source) ?? throw new KeyNotFoundException("Externer Galerie-Ordner fehlt.");
                 var (driver, ro) = DmOffice.Storage.ExternalFolders.Open(space, _config, src.Mount);
                 using (driver)
                 {

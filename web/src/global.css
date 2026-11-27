@@ -11,6 +11,7 @@ body { font-family: 'Segoe UI', 'Segoe UI Web (West European)', -apple-system, B
 .dm-editor p { margin: 0 0 4px; }
 .dm-editor blockquote { margin: 0 0 0 8px; padding-left: 10px; border-left: 3px solid rgba(128, 128, 128, .5); }
 .dm-editor img { max-width: 100%; }
+.dm-editor img[data-dm-sel] { outline: 2px solid #0f6cbd; outline-offset: 2px; }
 .dm-editor table { border-collapse: collapse; }
 .dm-editor td, .dm-editor th { border: 1px solid rgba(128, 128, 128, .4); padding: 3px 6px; vertical-align: top; }
 .dm-editor [contenteditable="false"] { border-left: 3px solid rgba(128, 128, 128, .45); padding-left: 6px; margin: 4px 0; overflow-x: auto; cursor: default; }
@@ -33,6 +34,8 @@ body { font-family: 'Segoe UI', 'Segoe UI Web (West European)', -apple-system, B
 .fc .fc-col-header-cell-cushion, .fc .fc-daygrid-day-number { color: var(--colorNeutralForeground2); text-decoration: none; font-weight: 400; }
 .fc .fc-timegrid-slot { height: 2.2em; }
 .fc .fc-timegrid-slot-label-cushion { color: var(--colorNeutralForeground3); font-size: 11px; }
+/* „Ganztägig“ wie die Uhrzeiten: in der schmalen Achsenspalte sonst abgeschnitten („Ganztägi“) */
+.fc .fc-timegrid-axis-cushion { color: var(--colorNeutralForeground3); font-size: 11px; }
 .fc .fc-event { border-radius: 4px; padding: 1px 3px; cursor: pointer; }
 /* Titel in seiner eigenen Schreibrichtung: bei Arabisch und Hebräisch bleibt der Anfang sichtbar, abgeschnitten wird das Ende */
 .fc .fc-event-title, .fc .fc-list-event-title { unicode-bidi: plaintext; }
@@ -104,3 +107,10 @@ body { font-family: 'Segoe UI', 'Segoe UI Web (West European)', -apple-system, B
 .dm-folders-compact .dm-fsec, .dm-folders-compact .dm-fsub { margin-bottom: 0 !important; }
 .dm-folders-compact .dm-fsec, .dm-folders-compact .dm-facc + .dm-fsub:not(.dm-facc) { border-top: 1px solid var(--colorNeutralStroke2); margin-top: 3px; padding-top: 3px; }
 .dm-folders-compact > .dm-fsec:first-child { border-top: none; margin-top: 0; padding-top: 0; }
+
+/* Tabellenkopf überall gleich (Vorbild Helpdesk/Finanzen, tableHeadLook in shell/GridColumns.tsx): grau, halbfett.
+   Fluent setzt am Kopfknopf resize: horizontal - das zeigt Eckmarken; die Breite ändert unser eigener Griff */
+.fui-TableHeader .fui-TableRow { background-color: var(--colorNeutralBackground2); }
+.fui-TableHeaderCell { color: var(--colorNeutralForeground2); }
+th.fui-TableHeaderCell .fui-TableHeaderCell__button { font-weight: var(--fontWeightSemibold); resize: none; }
+

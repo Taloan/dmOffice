@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { api, fmtSize, q } from '../api'
 import { Item, ownSource, Thumb } from '../files/common'
 import { t } from '../i18n'
+import { ImageSize, ImageSizeSelect, useImageSize } from '../files/PickPhotoDialog' // [feature:noteimg]
 
 const useStyles = makeStyles({
   surface: { width: 'min(720px, calc(100vw - 24px))', maxWidth: 'none', height: 'min(640px, calc(100vh - 48px))', display: 'flex', flexDirection: 'column' },
@@ -11,16 +12,19 @@ const useStyles = makeStyles({
   list: { flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column' },
   row: { display: 'flex', alignItems: 'center', gap: '12px', padding: '6px 4px', cursor: 'pointer', borderRadius: tokens.borderRadiusMedium,
     ':hover': { backgroundColor: tokens.colorNeutralBackground1Hover } },
-  thumb: { width: '44px', height: '44px', flexShrink: 0, borderRadius: '6px', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' },
+  thumb: { position: 'relative', width: '44px', height: '44px', flexShrink: 0, borderRadius: '6px', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' },
   name: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' },
   sub: { color: tokens.colorNeutralForeground3, fontSize: '12px' },
 })
 
 /** Dateien aus der eigenen Dateiablage zum Anhaengen waehlen: Ordner oeffnen, Dateien ankreuzen, mit Vorschaubildern. */
-export function StoredFilesDialog({ onPick, onClose, action }: { onPick: (items: Item[]) => void; onClose: () => void
+export function StoredFilesDialog({ onPick, onClose, action, sizeChoice }: { onPick: (items: Item[], size: ImageSize) => void; onClose: () => void
   /** Beschriftung des Knopfs mit {n}; Vorgabe „Anfügen ({n})“ */
-  action?: string }) {
+  action?: string
+  /** Größe der Bilder wählen lassen: 1280 px oder Original (Kennung noteimg) - gemerkt wie in der Galerie */
+  sizeChoice?: boolean }) {
   const s = useStyles()
+  const [size, pickSize] = useImageSize()
   const [path, setPath] = useState('')
   const [items, setItems] = useState<Item[] | null>(null)
   const [picked, setPicked] = useState<Item[]>([])
@@ -56,8 +60,9 @@ export function StoredFilesDialog({ onPick, onClose, action }: { onPick: (items:
             })}
           </DialogContent>
           <DialogActions>
+            {sizeChoice && <ImageSizeSelect value={size} onChange={pickSize} />}
             <Button onClick={onClose}>{t('Abbrechen')}</Button>
-            <Button appearance="primary" disabled={!picked.length} onClick={() => onPick(picked)}>{action ? action.replace('{n}', String(picked.length)) : t('Anfügen ({n})', { n: picked.length })}</Button>
+            <Button appearance="primary" disabled={!picked.length} onClick={() => onPick(picked, sizeChoice ? size : 'orig')}>{action ? action.replace('{n}', String(picked.length)) : t('Anfügen ({n})', { n: picked.length })}</Button>
           </DialogActions>
         </DialogBody>
       </DialogSurface>

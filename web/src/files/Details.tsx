@@ -5,12 +5,12 @@ import { Button, Dialog, DialogBody, DialogContent, DialogSurface, DialogTitle, 
 import {
   ArrowDownload20Regular, Dismiss20Regular, Edit20Regular, FullScreenMaximize16Regular, History20Regular, Link20Regular, Open20Regular, People20Regular, Share20Regular, Star20Filled, Star20Regular,
 } from '@fluentui/react-icons'
-import { Suspense, lazy, useCallback, useEffect, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react'
 import { api, featureOn, fmtSize, q } from '../api'
 import { DmsFileInfo } from '../dms/DmsFileInfo'
 import { locale, t } from '../i18n'
 import { failedText } from './failedText'
-import { Item, KindIcon, Thumb, hasThumb, kindLabel, kindOf, ownSource, parentOf } from './common'
+import { Item, KindIcon, ShownName, Thumb, hasThumb, plainName, kindLabel, kindOf, ownSource, parentOf } from './common'
 import { Link, copyText, linkStatus } from './Dialogs'
 import { extPlace, gallerySource, isExt } from './GalleryFolders'
 import { FilterAttr, Meta, dimsOf, fmtAperture, fmtDuration, fmtExposure, labelColor, labelName, MARK_LABELS } from './PhotoFilter'
@@ -67,7 +67,7 @@ interface Info {
 
 export function Details({ item, selection, onClose, onOpen, onOpenFolder, onShare, onFavorite, onDownload, version, fail, notify, onChanged, meta, metaOf, width, labels, onLabelsMany, onFilter, inViewer, onMark }: {
   /** Galerie: Sterne, Markierung, Farbe sofort zeigen, im Hintergrund schreiben */
-  onMark?: (body: { pick?: number; rating?: number; label?: string }, items: Item[]) => void
+  onMark?: (body: { pick?: number; rating?: number; label?: string; title?: string; description?: string }, items: Item[]) => void
   item: Item | null; selection: Item[]; onClose: () => void; onOpen: (i: Item) => void; onOpenFolder: (path: string, focus?: string) => void
   onShare: (i: Item) => void; onFavorite: (i: Item, on: boolean) => void; onDownload?: (list: Item[]) => void
   version: number; fail: (e: unknown) => void; notify: (m: string) => void; onChanged: () => void
@@ -170,7 +170,7 @@ export function Details({ item, selection, onClose, onOpen, onOpenFolder, onShar
       <div className={s.head}>
         <KindIcon item={i} />
         {/* Wurzel des Tresors heißt intern „tresor:“ */}
-        <span className={s.title} title={i.name}>{/^tresor:\/?$/.test(i.name) ? t('Tresor') : i.name || t('Meine Dateien')}</span>
+        <span className={s.title} title={plainName(i.name)}>{/^tresor:\/?$/.test(i.name) ? t('Tresor') : i.name ? <ShownName name={i.name} /> : t('Meine Dateien')}</span>
         <Button appearance="subtle" icon={<Dismiss20Regular />} onClick={onClose} aria-label={t('Schließen')} />
       </div>
       <div className={s.body}>
@@ -259,7 +259,7 @@ export function Details({ item, selection, onClose, onOpen, onOpenFolder, onShar
         {!i.isDir && (kindOf(i) === 'image' || /\.(heic|arw|cr[23]|nef|raf|dng|orf|rw2)$/i.test(i.name)) && !i.path.startsWith('alb:') && <AllTags item={i} />}
         {info?.people && info.people.length > 0 && <>
           <Divider style={{ flexGrow: 0 }} />
-          <span className={s.section}><People20Regular style={{ verticalAlign: 'middle' }} /> {t('Geteilt mit {n} Person(en)', { n: info.people.length })}</span>
+          <span className={s.section}><People20Regular style={{ verticalAlign: 'middle' }} /> {info.people.length === 1 ? t('Geteilt mit einem Benutzer') : t('Geteilt mit {n} Benutzern', { n: info.people.length })}</span>
           {info.people.map(p => <span key={p.id} className={s.muted}>{p.displayName} · {rightLabel()[rightOf(p)]}</span>)}
           <Button size="small" onClick={() => onShare(i)}>{t('Freigabe verwalten')}</Button>
         </>}
@@ -327,14 +327,25 @@ function AllTags({ item }: { item: Item }) {
   </>
 }
 
+/** Titel, Beschreibung usw. schreiben; der Server nimmt höchstens 50 Fotos je Anfrage - größere Auswahl in Teilen. */
+async function writeInfo(items: Item[], body: object) {
+  const failed: { name: string; error: string }[] = []
+  for (let k = 0; k < items.length; k += 50) {
+    const r = await api.post<{ failed: { name: string; error: string }[] }>('/api/gallery/info', { items: items.slice(k, k + 50).map(i => i.path), ...body })
+    failed.push(...(r.failed ?? []))
+  }
+  return failed
+}
+
 /**
  * Titel, Beschreibung und Sterne eines oder mehrerer Fotos (JPG in die Datei, RAW in die XMP-Datei daneben - dieselben Felder wie
  * Lightroom: dc:title, dc:description, xmp:Rating). Bei mehreren: gemeinsame Werte vorbelegt; Unterschiedliches bleibt, solange
- * das Feld nicht geändert wird. Sterne werden gleich gespeichert, Titel und Beschreibung mit „Speichern“.
+ * das Feld nicht geändert wird. Sterne werden gleich gespeichert, Titel und Beschreibung mit „Speichern“, Enter im Titel
+ * oder beim Wechsel zu einem anderen Foto.
  */
 function PhotoInfoEditor({ items, metas, fail, notify, onChanged, onMark }: { items: Item[]; metas: (Meta | undefined)[]; fail: (e: unknown) => void; notify: (m: string) => void; onChanged: () => void
   /** Sterne, Markierung, Farbe sofort zeigen und im Hintergrund schreiben (Galerie) */
-  onMark?: (body: { pick?: number; rating?: number; label?: string }, items: Item[]) => void }) {
+  onMark?: (body: { pick?: number; rating?: number; label?: string; title?: string; description?: string }, items: Item[]) => void }) {
   const common = (f: (m: Meta | undefined) => string) => { const v = metas.map(f); return v.every(x => x === v[0]) ? v[0] : null }
   const title0 = common(m => m?.title ?? ''), desc0 = common(m => m?.description ?? '')
   const ratings = metas.map(m => m?.rating ?? 0)
@@ -353,18 +364,29 @@ function PhotoInfoEditor({ items, metas, fail, notify, onChanged, onMark }: { it
   useEffect(() => { setPick(pick0) }, [pick0])
   useEffect(() => { setLabel(label0) }, [label0])
   const titleChanged = title !== (title0 ?? ''), descChanged = desc !== (desc0 ?? '')
+  const textBody = { ...(titleChanged ? { title } : {}), ...(descChanged ? { description: desc } : {}) }
+  // Nicht gespeicherter Titel/Beschreibung: beim Wechsel zu einem anderen Foto (die Ansicht wird ersetzt) noch schreiben
+  const saved = useRef('')
+  const pending = useRef<{ items: Item[]; body: typeof textBody } | null>(null)
+  pending.current = (titleChanged || descChanged) && JSON.stringify(textBody) !== saved.current ? { items, body: textBody } : null
+  useEffect(() => () => {
+    const p = pending.current
+    // Galerie: gleich zeigen, geschrieben wird im Hintergrund (bei einem Fehler kommt der vorige Stand zurück)
+    if (p && onMark) onMark(p.body, p.items)
+    else if (p) writeInfo(p.items, p.body).then(f => { if (f.length) fail(new Error(failedText(f))); else notify(t('Gespeichert')); onChanged() }, fail)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
   const send = async (body: object, done: string) => {
-    // Nur Sterne, Markierung oder Farbe: gleich zeigen, geschrieben wird im Hintergrund
+    // Galerie: gleich zeigen, geschrieben wird im Hintergrund (bei einem Fehler kommt der vorige Stand zurück)
     const keys = Object.keys(body)
-    if (onMark && keys.length > 0 && keys.every(k => k === 'rating' || k === 'pick' || k === 'label')) { onMark(body as { pick?: number; rating?: number; label?: string }, items); return }
+    if (onMark && keys.length > 0 && keys.every(k => ['rating', 'pick', 'label', 'title', 'description'].includes(k))) {
+      if ('title' in body || 'description' in body) { saved.current = JSON.stringify(body); pending.current = null }
+      onMark(body as { pick?: number; rating?: number; label?: string; title?: string; description?: string }, items)
+      return
+    }
     setBusy(true)
     try {
-      // Der Server nimmt höchstens 50 Fotos je Anfrage - größere Auswahl in Teilen
-      const failed: { name: string; error: string }[] = []
-      for (let k = 0; k < items.length; k += 50) {
-        const r = await api.post<{ failed: { name: string; error: string }[] }>('/api/gallery/info', { items: items.slice(k, k + 50).map(i => i.path), ...body })
-        failed.push(...(r.failed ?? []))
-      }
+      const failed = await writeInfo(items, body)
+      if ('title' in body || 'description' in body) saved.current = JSON.stringify(body)
       if (failed.length) fail(new Error(failedText(failed)))
       else notify(done)
       onChanged()
@@ -407,11 +429,12 @@ function PhotoInfoEditor({ items, metas, fail, notify, onChanged, onMark }: { it
           {label == null && <Text size={200} style={{ marginLeft: 6 }}>{t('Unterschiedlich')}</Text>}
         </div>
       </Field>
-      <Field label={t('Titel')}><Input value={title} placeholder={title0 == null ? mixed : undefined} onChange={(_, d) => setTitle(d.value)} /></Field>
+      <Field label={t('Titel')}><Input value={title} placeholder={title0 == null ? mixed : undefined} onChange={(_, d) => setTitle(d.value)}
+        onKeyDown={e => { if (e.key === 'Enter' && (titleChanged || descChanged) && !busy) { e.preventDefault(); void send(textBody, t('Gespeichert')) } }} /></Field>
       <Field label={t('Beschreibung')}><Textarea value={desc} placeholder={desc0 == null ? mixed : undefined} onChange={(_, d) => setDesc(d.value)} resize="vertical" rows={3} /></Field>
       {(titleChanged || descChanged) && <div style={{ display: 'flex', gap: 6 }}>
         <Button appearance="primary" size="small" disabled={busy}
-          onClick={() => send({ ...(titleChanged ? { title } : {}), ...(descChanged ? { description: desc } : {}) }, t('Gespeichert'))}>{t('Speichern')}</Button>
+          onClick={() => send(textBody, t('Gespeichert'))}>{t('Speichern')}</Button>
         <Button size="small" disabled={busy} onClick={() => { setTitle(title0 ?? ''); setDesc(desc0 ?? '') }}>{t('Verwerfen')}</Button>
       </div>}
     </div>

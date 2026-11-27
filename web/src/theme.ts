@@ -13,6 +13,13 @@ export const accents = [
   { name: 'Fuchsia', color: '#D6007E' },
 ]
 
+/** Gelbgrün: das Gegenstück zu Violett, die Hervorhebung der Website (Kennung limeaccent) */
+export const LIME = '#D4FF3A'
+export const limeAccent = { name: 'Limette', color: LIME }
+/** Helle Farbe: Schrift darauf dunkel, Schrift in dieser Farbe auf hellem Grund abgedunkelt (sonst unlesbar) */
+const luminance = (c: string) => { const [r, g, b] = hex(c).map(x => { const v = x / 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4 }); return 0.2126 * r + 0.7152 * g + 0.0722 * b }
+export const isLightAccent = (c: string) => luminance(c) > 0.4
+
 const hex = (c: string) => [1, 3, 5].map(i => parseInt(c.slice(i, i + 2), 16))
 const mix = (a: number[], b: number[], t: number) =>
   '#' + a.map((x, i) => Math.round(x + (b[i] - x) * t).toString(16).padStart(2, '0')).join('')
@@ -45,14 +52,52 @@ function anthracite(theme: Theme): Theme {
   return out as unknown as Theme
 }
 
-const themes = new Map<string, { light: Theme; dark: Theme }>()
-export function themesFor(color?: string): { light: Theme; dark: Theme } {
-  const c = (color || SIGNATURE).toUpperCase()
-  if (!themes.has(c)) {
-    const b = brandFrom(c)
-    themes.set(c, { light: createLightTheme(b), dark: anthracite({ ...createDarkTheme(b), colorBrandForeground1: b[110], colorBrandForeground2: b[120] }) })
+/**
+ * Dunkler Modus mit getauschten Stufen (Kennung darkswap, Einstellung „Darstellung“): Inhalte (Listen, Mails, Dokumente) bekommen
+ * die dunkelste Fläche, Kopfzeile, Menüband und Leisten die hellere - so hat der Inhalt den meisten Kontrast, wie im hellen Modus.
+ */
+/** Vorgabe für die Helligkeit der helleren Fläche in Prozent: getauscht etwas dunkler, sonst wirkt der Rahmen zu hell */
+export const darkLightDefault = (swap: boolean) => swap ? 75 : 100
+const shade = (hex: string, f: number) => {
+  const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex)
+  if (!m) return hex
+  return '#' + m.slice(1).map(x => Math.round(parseInt(x, 16) * f).toString(16).padStart(2, '0')).join('')
+}
+
+function swapLevels(theme: Theme, swap: boolean, light: number): Theme {
+  const o: Record<string, string> = { ...(theme as any) }
+  const src = theme as unknown as Record<string, string>
+  // Die hellere Fläche: getauscht Kopf und Leisten (Stufe 3), sonst die Inhalte (Stufe 1) - der Regler gilt immer ihr
+  const f = Math.max(0.4, Math.min(1.5, light / 100))
+  for (const v of ['', 'Hover', 'Pressed', 'Selected']) {
+    if (swap) {
+      o['colorNeutralBackground1' + v] = src['colorNeutralBackground3' + v]
+      o['colorNeutralBackground3' + v] = shade(src['colorNeutralBackground1' + v], f)
+    } else o['colorNeutralBackground1' + v] = shade(src['colorNeutralBackground1' + v], f)
   }
-  return themes.get(c)!
+  return o as unknown as Theme
+}
+
+const themes = new Map<string, { light: Theme; dark: Theme }>()
+export function themesFor(color?: string, swap = false, light?: number): { light: Theme; dark: Theme } {
+  const c = (color || SIGNATURE).toUpperCase()
+  const lv = Math.round(light ?? darkLightDefault(swap))
+  const key = c + (swap ? ':swap' : '') + ':' + lv
+  if (!themes.has(key)) {
+    const b = brandFrom(c)
+    const dark = anthracite({ ...createDarkTheme(b), colorBrandForeground1: b[110], colorBrandForeground2: b[120] })
+    const light = createLightTheme(b)
+    if (isLightAccent(c)) {
+      // helle Akzentfarbe: dunkle Schrift auf Flächen, abgedunkelte Farbe für Schrift und Linien auf hellem Grund
+      const onBrand = '#0A0912', ink = mix(hex(c), [0, 0, 0], 0.62), inkHover = mix(hex(c), [0, 0, 0], 0.72)
+      Object.assign(light, { colorNeutralForegroundOnBrand: onBrand, colorBrandForeground1: ink, colorBrandForeground2: ink, colorBrandForegroundLink: ink,
+        colorBrandForegroundLinkHover: inkHover, colorBrandForegroundLinkPressed: inkHover, colorCompoundBrandForeground1: ink,
+        colorCompoundBrandForeground1Hover: inkHover, colorCompoundBrandForeground1Pressed: inkHover })
+      Object.assign(dark, { colorNeutralForegroundOnBrand: onBrand })
+    }
+    themes.set(key, { light, dark: swap || lv !== 100 ? swapLevels(dark, swap, lv) : dark })
+  }
+  return themes.get(key)!
 }
 
 /** Das dmOffice-Symbol in einer Farbe (Fläche und Haken), als Bildadresse. Gleiche Form wie public/favicon.svg und brand.js. */
@@ -77,7 +122,7 @@ export function applyBrand(color?: string) {
 export const lightTheme: Theme = themesFor(SIGNATURE).light
 export const darkTheme: Theme = themesFor(SIGNATURE).dark
 
-/** Das Thema, das die App gerade nutzt (Akzentfarbe) - für Dialoge, die außerhalb des App-Baums gerendert werden */
+/** Das Thema, das die App gerade nutzt (Akzentfarbe, Stufen im Dunkelmodus) - für Dialoge, die außerhalb des App-Baums gerendert werden */
 let active: { light: Theme; dark: Theme } = { light: lightTheme, dark: darkTheme }
 export const setActiveThemes = (t: { light: Theme; dark: Theme }) => { active = t }
 export const activeTheme = (dark: boolean): Theme => dark ? active.dark : active.light

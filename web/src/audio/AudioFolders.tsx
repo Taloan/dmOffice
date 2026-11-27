@@ -1,12 +1,13 @@
 import {
   Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Dropdown, Option, Spinner, Switch, Text, Tooltip, makeStyles, tokens,
 } from '@fluentui/react-components'
-import { ArrowClockwise20Regular, ArrowUp20Regular, Delete20Regular, Folder20Filled, Prohibited16Filled } from '@fluentui/react-icons'
+import { ArrowClockwise20Regular, ArrowUp20Regular, Delete20Regular, Folder20Filled, FolderSwap20Regular, Prohibited16Filled } from '@fluentui/react-icons'
 import { useEffect, useState } from 'react'
-import { api, q } from '../api'
+import { api, featureOn, q } from '../api'
 import { useApp } from '../App'
 import { t } from '../i18n'
 import { AudioSource, loadSources, Mount, sourceName } from './library'
+import { RelinkDialog, relinkLine } from '../files/FolderRelink'
 
 const useStyles = makeStyles({
   row: { display: 'flex', flexDirection: 'column', gap: '2px', padding: '6px 0', borderBottom: `1px solid ${tokens.colorNeutralStroke2}` },
@@ -30,11 +31,12 @@ export function AudioFoldersDialog({ onClose }: { onClose: (changed: boolean) =>
   const [mount, setMount] = useState('')
   const [path, setPath] = useState('')
   const [dirs, setDirs] = useState<string[] | null>(null)
+  const [relink, setRelink] = useState<AudioSource | null>(null)
   const load = () => loadSources().then(setData).catch(fail)
   useEffect(() => { load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
   // Während eingelesen wird, den Stand nachladen
   useEffect(() => {
-    if (!data?.sources.some(x => x.scanning || x.pending > 0)) return
+    if (!data?.sources.some(x => x.scanning || x.pending > 0 || x.relink?.pending)) return
     const h = setTimeout(() => { load(); setChanged(true) }, 3000)
     return () => clearTimeout(h)
   }, [data]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -70,11 +72,15 @@ export function AudioFoldersDialog({ onClose }: { onClose: (changed: boolean) =>
                         : t('Wird gleich eingelesen …')}
                       {x.pending ? ' · ' + t('{n} noch ohne Tags', { n: x.pending.toLocaleString() }) : ''}
                     </Text>
+                    {relinkLine(x.relink) && <Text size={200} className={s.muted}>{relinkLine(x.relink)}</Text>}
                   </div>
                   {(x.scanning || x.pending > 0) && <Spinner size="tiny" />}
                   <Tooltip content={t('Jetzt neu einlesen')} relationship="label">
                     <Button appearance="subtle" icon={<ArrowClockwise20Regular />} disabled={x.scanning} onClick={() => act(() => api.post(`/api/audio/sources/${x.id}/scan`))} />
                   </Tooltip>
+                  {featureOn('relink') && <Tooltip content={t('Ordner neu zuordnen …')} relationship="label">
+                    <Button appearance="subtle" icon={<FolderSwap20Regular />} disabled={x.scanning} onClick={() => setRelink(x)} />
+                  </Tooltip>}
                   <Tooltip content={t('Aus der Audiothek nehmen (die Dateien bleiben)')} relationship="label">
                     <Button appearance="subtle" icon={<Delete20Regular />} onClick={() => act(() => api.del(`/api/audio/sources/${x.id}`))} />
                   </Tooltip>
@@ -110,6 +116,8 @@ export function AudioFoldersDialog({ onClose }: { onClose: (changed: boolean) =>
             <Button onClick={() => onClose(changed)}>{t('Schließen')}</Button>
           </DialogActions>
         </DialogBody>
+        {relink && <RelinkDialog kind="audio" source={relink} mounts={data.mounts} name={sourceName(relink, data.mounts)}
+          onClose={done => { setRelink(null); if (done) { setChanged(true); load() } }} />}
       </DialogSurface>
     </Dialog>
   )

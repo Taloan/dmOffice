@@ -330,6 +330,34 @@ public class UpdateSafetyTests
         Assert.Equal("ok", Integrity(env));
     }
 
+    [Fact]
+    public void Laufender_Umbau_meldet_sich_sofort_statt_zu_warten()
+    {
+        // Ladekreis 23.11.: andere Anfragen warteten auf den Umbau. Jetzt: sofort „läuft“, Statusabfrage ohne Blick in die Datenbank
+        var env = Env.Make("legacy-v1.0.0.dmdb");
+        var id = env.User.Id;
+        using var inStep = new ManualResetEventSlim();
+        using var go = new ManualResetEventSlim();
+        UserDb.StepHooks[id] = v => { if (v == 18) { inStep.Set(); go.Wait(TimeSpan.FromSeconds(30)); } };
+        try
+        {
+            var runner = Task.Run(() => env.Spaces.Get(id));
+            Assert.True(inStep.Wait(TimeSpan.FromSeconds(30)));
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var ex = Assert.Throws<UpdatePendingException>(() => env.Spaces.Get(id));
+            Assert.Equal("running", ex.Reason);
+            var plan = env.Update.Plan(env.User);
+            Assert.Equal("running", plan.State);
+            Assert.True(plan.Pending);
+            Assert.True(sw.Elapsed < TimeSpan.FromSeconds(5));
+            go.Set();
+            Assert.NotNull(runner.Wait(TimeSpan.FromSeconds(60)) ? runner.Result : null);
+        }
+        finally { go.Set(); UserDb.StepHooks.TryRemove(id, out _); }
+        Assert.NotNull(env.Spaces.Get(id));
+        Assert.False(env.Update.Plan(env.User).Pending);
+    }
+
     [Theory]
     [InlineData(10)]
     [InlineData(11)]

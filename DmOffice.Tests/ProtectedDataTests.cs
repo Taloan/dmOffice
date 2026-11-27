@@ -6,7 +6,11 @@ using DmOffice.Dav;
 
 namespace DmOffice.Tests;
 
-/// <summary>Was anderen nicht zugänglich ist und nicht aus der Hand geht: Termine, Tresor, notizi-Zugang, reservierter Systemordner.</summary>
+// [feature:journal]
+/// <summary>Was anderen nicht zugänglich ist und nicht aus der Hand geht: Termine, Tresor, notizi-Zugang, Tagebuch-Medien.</summary>
+// [feature:journal:else]
+// /// <summary>Was anderen nicht zugänglich ist und nicht aus der Hand geht: Termine, Tresor, notizi-Zugang, reservierter Systemordner.</summary>
+// [/feature:journal]
 [Collection("server")]
 public class ProtectedDataTests : IClassFixture<ChatFixture>
 {
@@ -165,4 +169,41 @@ public class ProtectedDataTests : IClassFixture<ChatFixture>
         foreach (var root in new[] { ".", "..", "a/../b", "dmVAULT", "dmVAULT/vault" })
             Assert.Equal(HttpStatusCode.BadRequest, (await c.PutAsJsonAsync("/api/settings/notizi", new { enabled = false, root, dbFolder = "" })).StatusCode);
     }
+// [feature:journal]
+
+    [Fact]
+    public async Task Geteiltes_Tagebuch_gibt_keine_anderen_Dateien_des_Besitzers_her()
+    {
+        var anna = _fx.As("anna");
+        var ben = _fx.As("ben");
+        var folder = "Geheim" + Guid.NewGuid().ToString("N")[..6];
+        var space = _fx.Space("anna");
+        FileStore.EnsureDir(space.Db, folder);
+        FileStore.Put(space.Db, folder + "/g.txt", "geheim"u8.ToArray(), "text/plain");
+        var name = "TB" + Guid.NewGuid().ToString("N")[..6];
+        var own = (await Json(await anna.PostAsJsonAsync("/api/journal/journals", new { name, color = "#123" }))).GetProperty("id").GetInt64();
+        (await anna.PutAsJsonAsync($"/api/pim/shares/{own}", new { members = new[] { _fx.Id("ben") } })).EnsureSuccessStatusCode();
+        var j = (await Json(await ben.GetAsync("/api/journal/journals"))).EnumerateArray().First(x => x.GetProperty("name").GetString() == name).GetProperty("id").GetInt64();
+
+        var media = new[] { new { path = folder + "/g.txt", mime = "text/plain" } };
+        Assert.False((await ben.PostAsJsonAsync("/api/journal/entries", new { journal = j, date = "2030-01-01T10:00:00Z", html = "<p>x</p>", media })).IsSuccessStatusCode);
+        Assert.False((await ben.PostAsJsonAsync("/api/journal/from-media", new { journal = j, media })).IsSuccessStatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await ben.GetAsync($"/api/journal/file?journal={j}&path={Uri.EscapeDataString(folder + "/g.txt")}")).StatusCode);
+
+        // Über die Kalender-Wege gibt es das Tagebuch für Mitglieder nicht
+        Assert.Equal(HttpStatusCode.NotFound, (await ben.GetAsync($"/api/pim/export/{j}")).StatusCode);
+        var dav = _fx.As("ben");
+        Assert.Equal(HttpStatusCode.NotFound, (await dav.PutAsync($"/dav/calendars/ben/shared{j}/x.ics", new StringContent("x"))).StatusCode);
+
+        // Im Medienordner gilt nur, was ein sichtbarer Eintrag schon hat oder das Mitglied selbst hineingegeben hat
+        var path = Journal.JournalMediaStore.Root + "/2030/01/" + name + ".txt";
+        FileStore.EnsureDir(space.Db, Journal.JournalMediaStore.Root + "/2030/01");
+        FileStore.Put(space.Db, path, "hallo"u8.ToArray(), "text/plain");
+        var mediaPath = new[] { new { path, mime = "text/plain" } };
+        Assert.False((await ben.PostAsJsonAsync("/api/journal/entries", new { journal = j, date = "2030-01-02T10:00:00Z", html = "<p>y</p>", media = mediaPath })).IsSuccessStatusCode);
+        await Json(await anna.PostAsJsonAsync("/api/journal/entries", new { journal = own, date = "2030-01-02T09:00:00Z", html = "<p>a</p>", media = mediaPath }));
+        await Json(await ben.PostAsJsonAsync("/api/journal/entries", new { journal = j, date = "2030-01-02T10:00:00Z", html = "<p>y</p>", media = new[] { new { path, mime = "text/plain" } } }));
+        Assert.True((await ben.GetAsync($"/api/journal/file?journal={j}&path={Uri.EscapeDataString(path)}")).IsSuccessStatusCode);
+    }
+// [/feature:journal]
 }

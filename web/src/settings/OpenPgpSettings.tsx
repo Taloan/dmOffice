@@ -1,15 +1,16 @@
 import {
-  Badge, Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Field, Input, Switch, Text, Textarea, makeStyles, tokens,
+  Badge, Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Field, Input, MenuDivider, MenuItem, Switch, Text, Textarea, makeStyles, tokens,
 } from '@fluentui/react-components'
 import { ArrowDownload20Regular, ArrowUpload20Regular, Checkmark20Regular, Delete20Regular, Key20Regular } from '@fluentui/react-icons'
 import { useEffect, useRef, useState } from 'react'
-import { api } from '../api'
+import { api, featureOn } from '../api'
 import { useApp } from '../App'
 import { t } from '../i18n'
 import { fingerprintText, PgpAccount, pgpChanged, PgpSettings } from '../mail/Pgp'
 import { fmtDay } from '../shell/hooks'
-import { askConfirm } from '../shell/context'
-import { Hint, PageTitle, Section } from './parts'
+import { ContextMenu, askConfirm, useContextMenu } from '../shell/context'
+import { Hint, Section } from './parts'
+import { RibbonActions, RibbonButton } from '../shell/Ribbon'
 
 interface KnownKey {
   fingerprint: string; emails: string[]; userIds: string[]; source: string; confirmed: boolean
@@ -34,6 +35,9 @@ export function OpenPgpSettings() {
   const [st, setSt] = useState<PgpSettings | null>(null)
   const [keys, setKeys] = useState<KnownKey[]>([])
   const [importFor, setImportFor] = useState<PgpAccount | 'public' | null>(null)
+  // Rechtsklick (Kennung ctxall) auf ein eigenes Konto oder einen Schlüssel anderer: dieselben Aktionen wie die Knöpfe
+  const menu = useContextMenu<{ account: PgpAccount } | { key: KnownKey }>()
+  const ctxall = featureOn('ctxall')
   const apply = (n: PgpSettings) => { setSt(n); pgpChanged(n) }
   const loadKeys = () => api.get<KnownKey[]>('/api/mail/pgp/keys').then(setKeys).catch(fail)
   useEffect(() => { api.get<PgpSettings>('/api/mail/pgp/settings').then(apply).catch(fail); loadKeys() }, []) // eslint-disable-line react-hooks/exhaustive-deps
@@ -49,13 +53,21 @@ export function OpenPgpSettings() {
     try { apply(await api.del<PgpSettings>(`/api/mail/pgp/${encodeURIComponent(a.id)}/key`)); loadKeys() } catch (e) { fail(e) }
   }
 
-  if (!st) return <PageTitle>OpenPGP</PageTitle>
+  const confirmKey = async (k: KnownKey) => {
+    if (!await askConfirm(t('Schlüssel bestätigen'), t('Vergleiche den Fingerabdruck mit dem Absender: {fp}. Stimmt er überein?', { fp: fingerprintText(k.fingerprint) }), t('Stimmt überein'))) return
+    try { await api.post(`/api/mail/pgp/keys/${k.fingerprint}/confirm`); loadKeys() } catch (e) { fail(e) }
+  }
+  const removeKey = async (k: KnownKey) => {
+    if (!await askConfirm('', t('Diesen Schlüssel löschen?'))) return
+    try { await api.del(`/api/mail/pgp/keys/${k.fingerprint}`); loadKeys() } catch (e) { fail(e) }
+  }
+
+  if (!st) return null
   return (
     <>
-      <PageTitle>OpenPGP</PageTitle>
       <Section title={t('Eigene Schlüssel')} hint={t('Mit einem eigenen Schlüssel signierst du deine Mails. Der private Schlüssel liegt verschlüsselt auf dem dmOffice-Server.')}>
         {st.accounts.map(a => (
-          <div key={a.id} className={s.account}>
+          <div key={a.id} className={s.account} onContextMenu={ctxall ? e => menu.open(e, { account: a }) : undefined}>
             <Text weight="semibold">{a.email || a.name}</Text>
             {a.key ? <>
               <span className={s.mono}>{fingerprintText(a.key.fingerprint)}</span>
@@ -82,11 +94,9 @@ export function OpenPgpSettings() {
       <Section title={t('Schlüssel anderer')} hint={t('Öffentliche Schlüssel von Absendern übernimmt dmOffice aus angehängten Schlüsseln und Autocrypt-Kopfzeilen. Aus einer Mail gelten sie erst als geprüft, wenn du den Fingerabdruck bestätigst.')} last>
         <Switch checked={st.wkd} label={t('Unbekannte Schlüssel beim Mailanbieter des Absenders nachschlagen (WKD)')} onChange={(_, d) => save({ wkd: d.checked })} />
         <Hint>{t('Nur bei signierten Mails mit unbekanntem Schlüssel, nie bei Junk, höchstens einmal am Tag je Absender. Der Anbieter des Absenders erfährt dabei, dass die Mail geöffnet wurde.')}</Hint>
-        <div className={s.row}>
-          <Button icon={<ArrowUpload20Regular />} onClick={() => setImportFor('public')}>{t('Öffentlichen Schlüssel importieren')}</Button>
-        </div>
+        <RibbonActions><RibbonButton icon={<ArrowUpload20Regular />} label={t('Öffentlichen Schlüssel importieren')} onClick={() => setImportFor('public')} /></RibbonActions>
         {keys.filter(k => k.source !== 'own').map(k => (
-          <div key={k.fingerprint} className={s.key}>
+          <div key={k.fingerprint} className={s.key} onContextMenu={ctxall ? e => menu.open(e, { key: k }) : undefined}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
               <Text weight="semibold">{k.userIds.join(', ') || k.emails.join(', ') || t('(ohne Adresse)')}</Text>
               <span className={s.mono}>{fingerprintText(k.fingerprint)}</span>
@@ -97,19 +107,40 @@ export function OpenPgpSettings() {
               </div>
             </div>
             <div className={s.row} style={{ flexWrap: 'nowrap' }}>
-              {!k.confirmed && <Button size="small" icon={<Checkmark20Regular />} onClick={async () => {
-                if (!await askConfirm(t('Schlüssel bestätigen'), t('Vergleiche den Fingerabdruck mit dem Absender: {fp}. Stimmt er überein?', { fp: fingerprintText(k.fingerprint) }), t('Stimmt überein'))) return
-                try { await api.post(`/api/mail/pgp/keys/${k.fingerprint}/confirm`); loadKeys() } catch (e) { fail(e) }
-              }}>{t('Bestätigen')}</Button>}
+              {!k.confirmed && <Button size="small" icon={<Checkmark20Regular />} onClick={() => confirmKey(k)}>{t('Bestätigen')}</Button>}
               <Button size="small" appearance="subtle" icon={<ArrowDownload20Regular />} as="a" href={`/api/mail/pgp/keys/${k.fingerprint}/export`} aria-label={t('Exportieren')} />
-              <Button size="small" appearance="subtle" icon={<Delete20Regular />} aria-label={t('Löschen')} onClick={async () => {
-                if (!await askConfirm('', t('Diesen Schlüssel löschen?'))) return
-                try { await api.del(`/api/mail/pgp/keys/${k.fingerprint}`); loadKeys() } catch (e) { fail(e) }
-              }} />
+              <Button size="small" appearance="subtle" icon={<Delete20Regular />} aria-label={t('Löschen')} onClick={() => removeKey(k)} />
             </div>
           </div>
         ))}
       </Section>
+      {menu.ctx && (() => {
+        const d = menu.ctx.data
+        if ('key' in d) {
+          const k = d.key
+          return (
+            <ContextMenu at={menu.ctx.at} onClose={menu.close}>
+              {!k.confirmed && <MenuItem icon={<Checkmark20Regular />} onClick={() => confirmKey(k)}>{t('Bestätigen')}</MenuItem>}
+              <MenuItem icon={<ArrowDownload20Regular />} onClick={() => { location.href = `/api/mail/pgp/keys/${k.fingerprint}/export` }}>{t('Exportieren')}</MenuItem>
+              <MenuDivider />
+              <MenuItem icon={<Delete20Regular />} onClick={() => removeKey(k)}>{t('Löschen')}</MenuItem>
+            </ContextMenu>
+          )
+        }
+        const a = d.account
+        return (
+          <ContextMenu at={menu.ctx.at} onClose={menu.close}>
+            {a.key ? <>
+              <MenuItem icon={<ArrowDownload20Regular />} onClick={() => { location.href = `/api/mail/pgp/${encodeURIComponent(a.id)}/public` }}>{t('Öffentlichen Schlüssel exportieren')}</MenuItem>
+              <MenuDivider />
+              <MenuItem icon={<Delete20Regular />} onClick={() => remove(a)}>{t('Entfernen')}</MenuItem>
+            </> : <>
+              <MenuItem icon={<Key20Regular />} onClick={() => generate(a)}>{t('Schlüssel erzeugen')}</MenuItem>
+              <MenuItem icon={<ArrowUpload20Regular />} onClick={() => setImportFor(a)}>{t('Schlüssel importieren')}</MenuItem>
+            </>}
+          </ContextMenu>
+        )
+      })()}
       {importFor && <ImportDialog target={importFor} onClose={() => setImportFor(null)} onDone={n => {
         if (n) apply(n)
         loadKeys()

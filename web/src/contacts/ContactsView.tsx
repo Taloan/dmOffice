@@ -1,6 +1,7 @@
+import { saveUrl } from '../shell/browser'
 import { sendToChat } from '../chat/SendToChat'
 import {
-  Avatar, Button, Dropdown, Field, Input, Option, SearchBox, Spinner, Switch, Text, Textarea, Toolbar, ToolbarButton, makeStyles, mergeClasses, tokens,
+  Avatar, Button, Dropdown, Field, Input, Option, SearchBox, Spinner, Switch, Text, Textarea, makeStyles, mergeClasses, tokens,
   Menu, MenuDivider, MenuItem, MenuList, MenuPopover, MenuTrigger, Link,
 } from '@fluentui/react-components'
 import {
@@ -19,11 +20,12 @@ import { RibbonButton, RibbonDivider, RibbonHeader, useSidePane } from '../shell
 import { BackBar, SidePane, useBackClose, useIsMobile, useMobileStyles } from '../shell/mobile'
 import { usePrefs } from '../prefs'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Account, api, Collection, Contact } from '../api'
+import { Account, api, Collection, Contact, featureOn } from '../api'
 import { useApp } from '../App'
-import { CollectionDialog, importInto, removeCollection } from '../calendar/CollectionDialog'
+import { CollectionDialog, importDetail, importInto, removeCollection } from '../calendar/CollectionDialog'
 import { locale, t } from '../i18n'
 import { usePaneWidth } from '../shell/Splitter'
+import { FilterSelect } from '../shell/FilterSelect'
 
 const useStyles = makeStyles({
   outer: { display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 },
@@ -287,7 +289,7 @@ export default function ContactsView() {
         <MenuItem icon={<Rename20Regular />} onClick={() => renameBook(b)}>{t('Umbenennen')}</MenuItem>
         <MenuDivider />
         <MenuItem icon={<ArrowImport20Regular />} onClick={() => importTo(b.id)}>{t('Importieren (.vcf) …')}</MenuItem>
-        <MenuItem icon={<ArrowExport20Regular />} onClick={() => window.open(`/api/pim/export/${b.id}`)}>{t('Exportieren (.vcf)')}</MenuItem>
+        <MenuItem icon={<ArrowExport20Regular />} onClick={() => saveUrl(`/api/pim/export/${b.id}`)}>{t('Exportieren (.vcf)')}</MenuItem>
         <MenuDivider />
         {b.graph
           ? <MenuItem icon={<Cloud20Regular />} onClick={() => { location.hash = '#/settings/accounts' }}>{t('Microsoft-Abgleich …')}</MenuItem>
@@ -309,7 +311,7 @@ export default function ContactsView() {
       <MenuDivider />
       <TargetMenu kind="move" targets={books.filter(b => !(inBooks.size === 1 && inBooks.has(b.id))).map(b => ({ id: b.id, label: b.name }))} onPick={id => transfer(sel, Number(id), false)} />
       <TargetMenu kind="copy" targets={books.filter(b => !(inBooks.size === 1 && inBooks.has(b.id))).map(b => ({ id: b.id, label: b.name }))} onPick={id => transfer(sel, Number(id), true)} />
-      {one && <MenuItem icon={<ArrowExport20Regular />} onClick={() => window.open(`/api/pim/contacts/${one.book}/${encodeURIComponent(one.uri)}/vcf`)}>{t('Exportieren (.vcf)')}</MenuItem>}
+      {one && <MenuItem icon={<ArrowExport20Regular />} onClick={() => saveUrl(`/api/pim/contacts/${one.book}/${encodeURIComponent(one.uri)}/vcf`)}>{t('Exportieren (.vcf)')}</MenuItem>}
       {sel.every(c => c.book > 0) && <MenuItem icon={<Chat20Regular />} onClick={() => sendToChat(sel.map(c => ({ type: 'contact' as const, collection: c.book, item: c.uri })))}>{t('Im Chat …')}</MenuItem>}
       <MenuDivider />
       <MenuItem icon={<Delete20Regular />} onClick={() => removeMany(sel)}>{t('Löschen')}</MenuItem>
@@ -343,11 +345,14 @@ export default function ContactsView() {
           <RibbonButton icon={<Mail20Regular />} label={t('contact|E-Mail')} disabled={!detail?.emails[0]} disabledFocusable={!!detail?.emails[0] && hasMail === false} title={noMail}
             onClick={() => detail?.emails[0] && hasMail !== false && writeMail(detail.emails[0].value)} />
           <RibbonButton icon={<Edit20Regular />} label={t('Bearbeiten')} disabled={!detail} onClick={() => detail && !edit && setEdit(detail)} />
+          {/* VIP: in der App gibt es Benachrichtigungen "nur von VIPs", der Prio-Posteingang zeigt sie immer */}
+          <RibbonButton icon={detail?.vip ? <Star20Filled color={tokens.colorPaletteYellowForeground1} /> : <Star20Regular />} label={t('VIP')} disabled={!detail || !!edit}
+            pressed={!!detail?.vip} onClick={() => detail && save({ ...detail, vip: !detail.vip, moveTo: detail.book })} />
           <RibbonButton icon={<Delete20Regular />} label={t('Löschen')} disabled={!detail && !picked.length} onClick={() => picked.length > 1 ? removeMany(picked) : detail && remove(detail)} />
           <RibbonDivider />
           <RibbonButton icon={<BookAdd20Regular />} label={t('Neues Adressbuch')} onClick={() => setBookDialog('new')} />
           <RibbonButton icon={<ArrowImport20Regular />} label={t('Importieren')} disabled={!books.length} onClick={() => importTo(book === 'all' ? books[0]?.id : book)} />
-          <RibbonButton icon={<ArrowExport20Regular />} label={t('Exportieren')} disabled={book === 'all'} onClick={() => book !== 'all' && window.open(`/api/pim/export/${book}`)} />
+          <RibbonButton icon={<ArrowExport20Regular />} label={t('Exportieren')} disabled={book === 'all'} onClick={() => book !== 'all' && saveUrl(`/api/pim/export/${book}`)} />
         </>}
         view={<>
           <Menu>
@@ -364,15 +369,13 @@ export default function ContactsView() {
           <RibbonButton icon={<PanelLeft20Regular />} label={t('Ordnerbereich')} pressed={sidePane} onClick={toggleSide} />
         </>} />
       <div className={s.root}>
-      <SidePane className={mergeClasses(s.books, nv.pane)} open={sidePane} onClose={closeSide} width={{ key: 'contacts.books', def: 220 }}>
+      <SidePane className={mergeClasses(s.books, nv.pane)} open={sidePane} onClose={closeSide} width={{ key: 'contacts.books', def: 240 }}>
         <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }} onContextMenu={e => cm.open(e, { kind: 'side' })}>
         <div className={mergeClasses(nv.row, book === 'all' && nv.active)} onClick={() => setBook('all')}><People20Regular /><span className={nv.name}>{t('Alle Kontakte')}</span></div>
-        <div className={nv.section}><span style={{ flex: 1 }}>{t('Adressbücher')}</span>
-          <Button appearance="subtle" size="small" icon={<BookAdd20Regular />} aria-label={t('Neues Adressbuch')} title={t('Neues Adressbuch')} onClick={() => setBookDialog('new')} />
-        </div>
+        {/* Neues Adressbuch: im Menüband und im Kontextmenü der Leiste */}
+        <div className={nv.section}>{t('Adressbücher')}</div>
         {/* Mit Microsoft verbundene Adressbuecher stehen je Konto darunter */}
         {books.filter(b => !b.graph).map(bookRow)}
-        <Link className={nv.link} onClick={() => setBookDialog('new')}>{t('+ Adressbuch')}</Link>
         {graphAccounts(books).map(g => <div key={g.account} style={{ display: 'contents' }}>
           <div className={nv.section} title={g.email}><Cloud16Regular /><span style={{ flex: 1, marginLeft: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t('Outlook · {name}', { name: g.name })}</span></div>
           {books.filter(b => b.graph?.account === g.account).map(bookRow)}
@@ -384,8 +387,7 @@ export default function ContactsView() {
           if (f) {
             try {
               const r = await importInto(Number(importInput.current!.dataset.book), f)
-              notify(r.added === 1 ? t('1 Kontakt übernommen') : t('{n} Kontakte übernommen', { n: r.added }),
-                r.failed ? (r.failed === 1 ? t('1 Eintrag ließ sich nicht lesen') : t('{n} ließen sich nicht lesen', { n: r.failed })) : undefined)
+              notify(r.added === 1 ? t('1 Kontakt übernommen') : t('{n} Kontakte übernommen', { n: r.added }), importDetail(r))
               load()
             } catch (err) { fail(err) }
           }
@@ -432,15 +434,6 @@ export default function ContactsView() {
                   {(detail.title || detail.org) && <Text block>{[detail.title, detail.org, detail.department].filter(Boolean).join(' · ')}</Text>}
                 </div>
               </div>
-              <Toolbar style={{ marginBottom: 12, padding: 0, flexWrap: 'wrap' }}>
-                {detail.emails[0] && <ToolbarButton icon={<Mail20Regular />} disabledFocusable={hasMail === false} title={noMail}
-                  onClick={() => hasMail !== false && writeMail(detail.emails[0].value)}>{t('contact|E-Mail')}</ToolbarButton>}
-                <ToolbarButton icon={<Edit20Regular />} onClick={() => setEdit(detail)}>{t('Bearbeiten')}</ToolbarButton>
-                {/* VIP: in der App gibt es Benachrichtigungen "nur von VIPs", der Prio-Posteingang zeigt sie immer */}
-                <ToolbarButton icon={detail.vip ? <Star20Filled color={tokens.colorPaletteYellowForeground1} /> : <Star20Regular />}
-                  onClick={() => save({ ...detail, vip: !detail.vip, moveTo: detail.book })}>{t('VIP')}</ToolbarButton>
-                <ToolbarButton icon={<Delete20Regular />} onClick={() => remove(detail)}>{t('Löschen')}</ToolbarButton>
-              </Toolbar>
               {detail.emails.map((e, i) => (
                 <div key={'e' + i} className={s.row}><Mail20Regular /><span className={s.label}>{typeLabel(emailTypes, e.type)}</span>{hasMail === false ? <span style={wrap}>{e.value}</span> : <Link style={wrap} onClick={() => writeMail(e.value)}>{e.value}</Link>}</div>
               ))}
@@ -475,6 +468,7 @@ function ContactForm({ initial, books, onSave, onCancel, dirtyRef }: {
   dirtyRef: React.MutableRefObject<boolean>
 }) {
   const s = useStyles()
+  const { notify } = useApp()
   const [c, setC] = useState<Contact>({ ...initial, moveTo: initial.book })
   const [start] = useState(() => JSON.stringify({ ...initial, moveTo: initial.book }))
   dirtyRef.current = JSON.stringify(c) !== start
@@ -533,7 +527,9 @@ function ContactForm({ initial, books, onSave, onCancel, dirtyRef }: {
             cv.getContext('2d')!.drawImage(img, 0, 0, cv.width, cv.height)
             set({ photo: cv.toDataURL('image/jpeg', 0.85) })
           }
+          img.onerror = () => notify(t('„{name}“ ist kein Bild.', { name: f.name }), undefined, 'warning')
           img.src = URL.createObjectURL(f)
+          e.target.value = ''
         }} />
       </div>
       <div className={s.grid}>
@@ -571,9 +567,10 @@ function ContactForm({ initial, books, onSave, onCancel, dirtyRef }: {
         <Switch className={s.full} label={t('VIP – Benachrichtigungen und Prio-Posteingang')} checked={!!c.vip} onChange={(_, d) => set({ vip: d.checked })} />
         {books.length > 1 && (
           <Field label={t('Adressbuch')} className={s.full}>
+            {featureOn('filterpick') ? <FilterSelect value={String(c.moveTo)} onChange={v => set({ moveTo: Number(v) })} items={books.map(b => ({ id: String(b.id), label: b.name }))} /> :
             <Dropdown value={books.find(b => b.id === c.moveTo)?.name ?? ''} selectedOptions={[String(c.moveTo)]} onOptionSelect={(_, d) => set({ moveTo: Number(d.optionValue) })}>
               {books.map(b => <Option key={b.id} value={String(b.id)}>{b.name}</Option>)}
-            </Dropdown>
+            </Dropdown>}
           </Field>
         )}
         <div className={s.full} style={{ display: 'flex', gap: 8, marginTop: 8 }}>

@@ -6,6 +6,7 @@ import { lazy, Suspense } from 'react'
 import { App } from './App'
 import './global.css'
 import { registerServiceWorker } from './pwa'
+import { captureHandle } from './linkhandler'
 import { themesFor, useIsDark } from './theme'
 
 // Oeffentlicher Link (/s/{token}): eigene Seite ohne Anmeldung
@@ -26,5 +27,7 @@ function PublicPage({ token, kind = 'share' }: { token: string; kind?: 'share' |
 }
 
 if (!shared && !album) registerServiceWorker()
+// E-Mail-Link oder Kalender-Abo (?handle=): merken, bis die Anmeldung durch ist
+if (!shared && !album) captureHandle()
 
 createRoot(document.getElementById('root')!).render(shared ? <PublicPage token={shared[1]} /> : album ? <PublicPage token={album[1]} kind="album" /> : <App />)

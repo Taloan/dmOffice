@@ -2,6 +2,8 @@
 export const plainbackup: Record<string, string> = {
   // Korrekturen 2.1
   'nein': 'no',
+  'Zeitplan': 'Schedule',
+  'Bei mehreren Benutzern läuft der Datenexport nacheinander. Zur geplanten Zeit beginnt der Lauf, sobald der vorige fertig ist.': 'With several users the data export runs one after another. At the scheduled time the run starts as soon as the previous one has finished.',
   'Datenexport': 'Data export',
   'dmOffice legt deine Daten regelmäßig entschlüsselt und in offenen Formaten an einem separaten Speicherort ab. Die Dateien lassen sich ohne dmOffice öffnen. Zurückspielen lässt sich ein Datenexport nicht.': 'dmOffice regularly stores your data decrypted and in open formats at a separate location. The files can be opened without dmOffice. A data export cannot be restored.',
   'dmOffice schreibt ausschließlich an diesen Speicherort und liest keine Daten von dort zurück. Gelöschte Dateien bleiben zunächst im versteckten Ordner .trash erhalten und werden erst nach Ablauf der eingestellten Aufbewahrungsfrist endgültig entfernt.':
@@ -53,11 +55,14 @@ export const plainbackup: Record<string, string> = {
   'eine .vcf-Datei je Adressbuch': 'one .vcf file per address book',
   'eine .md-Datei je Notiz, Bilder und Anhänge daneben': 'one .md file per note, images and attachments next to it',
   'Liste der Dokumente mit Titel, Datum, Korrespondent, Typ und Tags': 'list of documents with title, date, correspondent, type and tags',
+  // [feature:journal]
+  'eine .md-Datei je Eintrag': 'one .md file per entry',
+  // [/feature:journal]
   'Ordner auswählen …': 'Choose folders …',
   'Ordner auswählen … ({n} abgewählt)': 'Choose folders … ({n} excluded)',
   'Zeitplan und Aufbewahrung': 'Schedule and retention',
   'Täglich um': 'Daily at',
-  'Bei mehreren Personen läuft der Datenexport nacheinander; zur gewählten Uhrzeit beginnt der Lauf, sobald der vorige fertig ist.': 'For several people the data export runs one after another; at the chosen time the run starts as soon as the previous one has finished.',
+  'Bei mehreren Benutzern läuft der Datenexport nacheinander. Zur gewählten Uhrzeit beginnt der Lauf, sobald der vorige fertig ist.': 'For several users the data export runs one after another. At the chosen time the run starts as soon as the previous one has finished.',
   'Gelöschtes und ältere Versionen in .trash aufbewahren': 'Keep deleted items and older versions in .trash',
   'immer': 'forever',
   'Ältere Versionen geänderter Dateien aufbewahren': 'Keep older versions of changed files',
@@ -69,10 +74,9 @@ export const plainbackup: Record<string, string> = {
   'Zustand': 'Status',
   'Zuklappen': 'Collapse',
   // Verwaltung
-  'Person': 'Person',
   '{n}-mal nacheinander: ': '{n} times in a row: ',
-  'Keine Personen.': 'No people.',
-  'Mit dem Datenexport legt jede Person ihre Daten entschlüsselt und lesbar an einem eigenen Ziel ab. Eingerichtet wird er unter Einstellungen → Konto → Datenexport.': 'With the data export, each person stores their data decrypted and readable at a target of their own. It is set up under Settings → Account → Data export.',
+  'Keine Benutzer.': 'No users.',
+  'Mit dem Datenexport kann jeder Benutzer seine Daten entschlüsselt und lesbar an einem eigenen Ziel ablegen. Eingerichtet wird der Datenexport unter Einstellungen → Konto → Datenexport.': 'With the data export, each user can store their data decrypted and readable at a target of their own. The data export is set up under Settings → Account → Data export.',
   'Benutzer dürfen den Datenexport einrichten': 'Users may set up data export',
   'Gesperrt: eingerichtete Datenexporte ruhen, ihre Einstellungen und Ziele bleiben unberührt.': 'Blocked: data exports already set up are paused; their settings and targets stay untouched.',
   // Meldungen des Servers

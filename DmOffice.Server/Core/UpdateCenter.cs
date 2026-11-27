@@ -221,6 +221,14 @@ public sealed class UpdateCenter
         var plan = new UserPlan { UserId = u.Id, Login = u.Login, To = UserDb.LatestVersion, From = UserDb.LatestVersion };
         var path = _paths.UserDb(u.Id);
         if (IsOpen?.Invoke(u.Id) == true || !File.Exists(path) || new FileInfo(path).Length == 0) return plan;
+        // Laeuft der Umbau, nicht in die Datenbank schauen: das wartete auf ihn, und die Oberflaeche zeigte nur den Ladekreis
+        if (Activity.Get(u.Id, Activity.Migration) is { State: "running" })
+        {
+            plan.Pending = true;
+            plan.State = "running";
+            if (_inspected.TryGetValue(u.Id, out var last)) plan.From = last.Info.Version;
+            return plan;
+        }
         UserDb.Inspection info;
         try { info = Inspect(u); }
         catch (Exception ex) { plan.State = "error"; plan.Message = ex.Message; return plan; }

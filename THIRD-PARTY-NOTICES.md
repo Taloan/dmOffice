@@ -69,27 +69,29 @@ The icons are the Fluent UI System Icons published by Microsoft under the MIT li
 
 | Component | Version | License | Source |
 |---|---|---|---|
-| AngleSharp | 1.7.2 | MIT | https://github.com/AngleSharp/AngleSharp |
-| AngleSharp.Css | 1.0.2 | MIT | https://github.com/AngleSharp/AngleSharp.Css |
+| AngleSharp | 1.10.0 | MIT | https://github.com/AngleSharp/AngleSharp |
+| AngleSharp.Css | 1.4.0 | MIT | https://github.com/AngleSharp/AngleSharp.Css |
 | Anthropic | 13.1.0 | Apache-2.0 | https://www.github.com/anthropics/anthropic-sdk-csharp |
 | AWSSDK.S3 (2 packages) | 4.0.104.6 … | Apache-2.0 | https://github.com/aws/aws-sdk-net/ |
 | bblanchon.PDFium.Linux (3 packages) | 152.0.7961 | Apache-2.0 | https://github.com/bblanchon/pdfium-binaries |
 | BouncyCastle.Cryptography | 2.7.0 | MIT | https://github.com/bcgit/bc-csharp |
+| DnsClient | 1.8.0 | Apache-2.0 | https://github.com/MichaCo/DnsClient.NET |
 | DocumentFormat.OpenXml (2 packages) | 3.5.1 | MIT | https://github.com/dotnet/Open-XML-SDK |
-| HtmlSanitizer | 9.2.1039 | MIT | https://github.com/mganss/HtmlSanitizer |
-| Ical.Net | 4.3.1 | MIT | https://github.com/ical-org/ical.net |
+| HtmlSanitizer | 11.0.26 | MIT | https://github.com/mganss/HtmlSanitizer |
+| Ical.Net | 5.2.4 | MIT | https://github.com/ical-org/ical.net |
 | Konscious.Security.Cryptography.Argon2 (2 packages) | 1.3.1 … | MIT | https://github.com/kmaragon/Konscious.Security.Cryptography |
-| MailKit | 4.18.1 | MIT | https://github.com/jstedfast/MailKit |
+| MailKit | 5.0.0 | MIT | https://github.com/jstedfast/MailKit |
 | MetadataExtractor | 2.8.1 | Apache-2.0 | https://github.com/drewnoakes/metadata-extractor-dotnet |
-| Microsoft.Data.Sqlite.Core (3 packages) | 10.0.0 … | MIT | https://github.com/dotnet/dotnet |
+| Microsoft.Data.Sqlite.Core (3 packages) | 11.0.0 … | MIT | https://github.com/dotnet/dotnet |
 | Microsoft.Extensions.AI.Abstractions | 10.5.1 | MIT | https://github.com/dotnet/extensions |
-| MimeKit | 4.18.1 | MIT | https://github.com/jstedfast/MimeKit |
-| NodaTime | 3.2.0 | Apache-2.0 | https://github.com/nodatime/nodatime |
+| MimeKit.Cryptography (2 packages) | 5.0.0 | MIT | https://github.com/jstedfast/MimeKit |
+| NodaTime | 3.2.2 | Apache-2.0 | https://github.com/nodatime/nodatime |
 | PdfPig | 0.1.16 | Apache-2.0 | https://github.com/UglyToad/PdfPig |
 | PDFtoImage | 5.4.0 | MIT | https://github.com/sungaila/PDFtoImage |
 | SharpCompress | 0.50.7 | MIT | https://github.com/adamhathcock/sharpcompress |
 | SkiaSharp (4 packages) | 4.150.1 | MIT | https://go.microsoft.com/fwlink/?linkid=868515 |
-| SQLitePCLRaw.bundle_e_sqlcipher (4 packages) | 2.1.11 | Apache-2.0 | https://github.com/ericsink/SQLitePCL.raw |
+| SQLite3MC.PCLRaw.bundle (3 packages) | 2.6.1 | MIT | https://github.com/utelle/SQLite3MultipleCiphers-NuGet |
+| SQLitePCLRaw.core | 3.0.5 | Apache-2.0 | https://github.com/ericsink/SQLitePCL.raw |
 | SSH.NET | 2026.0.0 | MIT | https://github.com/sshnet/SSH.NET |
 | Ude.NetStandard | 1.2.0 | MPL-1.1 OR GPL-2.0-or-later OR LGPL-2.1-or-later | https://github.com/yinyue200/ude |
 | XmpCore | 6.1.10.1 | BSD-3-Clause | https://github.com/drewnoakes/xmp-core-dotnet |
@@ -218,6 +220,7 @@ The programs are installed from the package sources of the base image (Ubuntu 24
 | NumPy – calculations in the Photo Engine | 2.5.4 | BSD-3-Clause | https://numpy.org |
 | Pillow – image files in the Photo Engine | 13.0.0 | MIT-CMU | https://python-pillow.org |
 | libjpeg-turbo, libtiff, libwebp, OpenJPEG, FreeType, HarfBuzz, Little CMS, libavif, libpng, Brotli, liblzma, Zstandard, libxcb (in Pillow) – separate libraries of the Pillow installation, full wording in its license file | – | BSD-2-Clause AND BSD-3-Clause AND FTL AND IJG AND libpng-2.0 AND libtiff AND MIT AND 0BSD AND Zlib | https://github.com/python-pillow/Pillow/tree/main/wheels/dependency_licenses |
+| YuNet – finding faces in the Photo Engine; training data: see photo-engine/models/README.md | – | MIT | https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet |
 | Haar-Kaskaden (OpenCV) – finding faces in the Photo Engine if YuNet fails | – | Intel-OpenCV | https://github.com/opencv/opencv/tree/4.x/data/haarcascades |
 
 ## Connected services (separate containers, not part of the image)
@@ -247,4 +250,4 @@ No code taken over; the format was implemented from the published documentation.
 
 ## Compatibility with the AGPL-3.0
 
-dmOffice itself is licensed under the GNU AGPL-3.0 (see `LICENSE`). The libraries of the web interface and the server are under MIT, Apache-2.0, ISC, 0BSD or BSD-style licenses, the SIL Open Font License or in the public domain; these allow redistribution as part of an AGPL-3.0 work, and Apache-2.0 is compatible with version 3 of the GPL/AGPL. The programs in the Docker image (Poppler under GPL, libheif under LGPL-3.0, Ghostscript under AGPL-3.0) are only called as separate processes and are shipped unchanged with their package license texts. The Photo Engine (AGPL-3.0, like dmOffice) loads its libraries into its own process; the wheels ship LibRaw, FFmpeg and libquadmath as separate shared libraries under the LGPL and do not contain the GPL add-on packs of LibRaw.
+dmOffice itself is licensed under the GNU AGPL-3.0 (see `LICENSE`). The libraries of the web interface and the server are under MIT, Apache-2.0, ISC, 0BSD or BSD-style licenses, the SIL Open Font License or in the public domain; these allow redistribution as part of an AGPL-3.0 work, and Apache-2.0 is compatible with version 3 of the GPL/AGPL. The programs in the Docker image (Poppler under GPL, libheif under LGPL-3.0, Ghostscript under AGPL-3.0) are only called as separate processes and are shipped unchanged with their package license texts. The Photo Engine (AGPL-3.0, like dmOffice) loads its libraries into its own process; the wheels ship LibRaw, FFmpeg and libquadmath as separate shared libraries under the LGPL and do not contain the GPL add-on packs of LibRaw. The license listed for YuNet is the one published for the model file. It does not cover the training data; see `photo-engine/models/README.md`.

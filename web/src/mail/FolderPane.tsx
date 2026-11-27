@@ -1,5 +1,5 @@
 import {
-  Button, CounterBadge, Menu, MenuDivider, MenuItem, MenuItemRadio, MenuList, MenuPopover, MenuTrigger, Text, Tooltip,
+  CounterBadge, Menu, MenuDivider, MenuItem, MenuItemRadio, MenuList, MenuPopover, MenuTrigger, Text, Tooltip,
   makeStyles, mergeClasses, tokens,
 } from '@fluentui/react-components'
 import {
@@ -8,16 +8,17 @@ import {
   Rename20Regular, Color20Regular, NumberSymbol20Regular, Broom20Regular, MailRead20Regular, ArrowSync20Regular, ArrowUp20Regular, ArrowDown20Regular,
   Open20Regular, DataBarVertical20Regular, Flag20Regular, Clock20Regular, CalendarClock20Regular,
 } from '@fluentui/react-icons'
-import { useRef, useState } from 'react'
+import { useRef, useState, type ReactNode } from 'react'
 import { Account, api, featureOn, Folder } from '../api'
 import { cleanupDays, cleanupLabel } from '../settings/AccountsSettings'
 import { useApp } from '../App'
 import { usePrefs } from '../prefs'
 import type { Selection } from './MailView'
-import { locale, t, lang } from '../i18n'
+import { locale, t, lang, tError } from '../i18n'
 import { VirtualFolders } from './VirtualFolders'
 import { CatchallSection, isCatchallFolder, useCatchall } from './CatchallFolders'
 import { mailAccountType } from './dragTypes'
+import { warm } from './preload'
 import { askConfirm, askText } from '../shell/context'
 
 const useStyles = makeStyles({
@@ -104,6 +105,9 @@ function tree(account: string, folders: Folder[], order: Record<string, string[]
   return roots
 }
 
+/** „Alle Posteingänge“ in der Favoritenliste (prefs.favorites, sonst „Konto|Ordnerpfad“) */
+const UNIFIED_FAV = '*|' + UNIFIED
+
 interface Props {
   accounts: Account[]
   folders: Record<string, Folder[]>
@@ -114,9 +118,21 @@ interface Props {
   onDrop: (account: string, target: string, ids: number[], from: string, copy: boolean) => void
   onChanged: () => void
   onCategoryDrop?: (key: string, ids: number[]) => void
+  /** „Alle als gelesen markieren“: gleich sichtbar, der Server folgt im Hintergrund. Ohne: hier selbst und danach onChanged */
+  onMarkRead?: (account: string, f: Folder) => void
+  /** Knopf rechts in der obersten Zeile (Ordnerbereich minimieren/anheften), keine eigene Zeile */
+  corner?: ReactNode
 }
 
-export function FolderPane({ accounts, folders, selection, status, onSelect, onDrop, onChanged, onCategoryDrop }: Props) {
+/** Neuer Mailordner (Name per Rückfrage); parent '' = oberste Ebene des Kontos. Menüband „Neuer Ordner“ und Kontextmenü. */
+export async function createMailFolder(account: string, parent: string, onChanged: () => void) {
+  const name = (await askText(t('Neuer Ordner'), '', t('Name des neuen Ordners:')))?.trim()
+  if (!name) return
+  await api.post(`/api/mail/${account}/folders`, { path: parent, newName: name })
+  setTimeout(onChanged, 1500)
+}
+
+export function FolderPane({ accounts, folders, selection, status, onSelect, onDrop, onChanged, onCategoryDrop, onMarkRead, corner }: Props) {
   const s = useStyles()
   const { fail, notify } = useApp()
   const { prefs, update } = usePrefs()
@@ -126,6 +142,7 @@ export function FolderPane({ accounts, folders, selection, status, onSelect, onD
   const [dropTarget, setDropTarget] = useState<string | null>(null)
   const [cleanup, setCleanup] = useState<Record<string, number>>({})
   const [menu, setMenu] = useState<{ account: string; folder: Folder | null; x: number; y: number; fav?: boolean } | null>(null)
+  const [uniMenu, setUniMenu] = useState<{ x: number; y: number; fav: boolean } | null>(null)
 
   const favorites = prefs.favorites ?? []
   const custom = (prefs.sortFolders ?? 'custom') === 'custom'
@@ -139,17 +156,14 @@ export function FolderPane({ accounts, folders, selection, status, onSelect, onD
     try { localStorage.setItem('dmoffice.folders.closed', JSON.stringify(next)) } catch { /* egal */ }
   }
 
-  const create = async (account: string, parent: string) => {
-    const name = (await askText(t('Neuer Ordner'), '', t('Name des neuen Ordners:')))?.trim()
-    if (!name) return
-    try { await api.post(`/api/mail/${account}/folders`, { path: parent, newName: name }); setTimeout(onChanged, 1500) } catch (e) { fail(e) }
-  }
+  const create = (account: string, parent: string) => createMailFolder(account, parent, onChanged).catch(fail)
   const rename = async (account: string, f: Folder) => {
     const name = (await askText(t('Umbenennen'), f.name, t('Neuer Name:'), t('Umbenennen')))?.trim()
     if (!name || name === f.name) return
     try { await api.post(`/api/mail/${account}/folders/rename`, { path: f.path, newName: name }); setTimeout(onChanged, 1500) } catch (e) { fail(e) }
   }
   const markRead = async (account: string, f: Folder) => {
+    if (onMarkRead) return onMarkRead(account, f)
     try { await api.post(`/api/mail/${account}/folders/read`, { path: f.path }); onChanged() } catch (e) { fail(e) }
   }
   // Mails, die schon vor dem Anlegen des Kontos da waren, wie neue einordnen (Junk, Relevant/Sonstige, Kategorien)
@@ -288,6 +302,7 @@ export function FolderPane({ accounts, folders, selection, status, onSelect, onD
           insert?.rowKey === rowKey && (insert.after ? s.lineAfter : s.lineBefore))}
         style={{ paddingLeft: 4 + depth * 14 }}
         onClick={() => f.selectable && onSelect({ account, folder: f.path })}
+        onPointerEnter={() => f.selectable && warm(account, f.path)}
         onContextMenu={e => { e.preventDefault(); setMenu({ account, folder: f, x: e.clientX, y: e.clientY, fav: !!opts.fav }) }}
         draggable={!!opts.fav || !f.special}
         onDragStart={e => {
@@ -353,36 +368,72 @@ export function FolderPane({ accounts, folders, selection, status, onSelect, onD
     </div>
   )
 
+  // Alle Posteingaenge (ab zwei Konten): die Posteingaenge aller Konten zusammen, ganz oben
+  const inboxes = accounts.filter(a => a.inUnified !== false || !featureOn('unifiedpick'))
+    .map(a => (folders[a.id] || []).find(f => f.special === 'inbox')).filter(Boolean) as Folder[]
+  const unifiedShown = (prefs.showUnified ?? true) && accounts.length > 1 && inboxes.length > 1
+  const uniFav = featureOn('unifiedfav')
+  const unifiedUnread = inboxes.reduce((n, f) => n + (f.unread || 0), 0)
+  const unifiedActive = selection?.folder === UNIFIED
+  // Bündig mit den Überschriften (Favoriten, Konten): das Symbol steht dort, wo bei ihnen der Pfeil steht
+  // Als Favorit (Kennung „unifiedfav“): eine Zeile unter den Favoriten, wie ein Ordner einzurücken, umzusortieren und zu entfernen
+  const unifiedEl = (fav: boolean) => {
+    const rowKey = 'fav:' + UNIFIED_FAV
+    const el = (
+      <div key={fav ? rowKey : 'unified'}
+        className={mergeClasses('dm-frow', s.item, unifiedActive && s.active, fav && insert?.rowKey === rowKey && (insert.after ? s.lineAfter : s.lineBefore))}
+        style={fav ? { paddingLeft: 4 } : { paddingLeft: 6, gap: 4 }}
+        onClick={() => onSelect({ account: accounts[0].id, folder: UNIFIED })}
+        onPointerEnter={() => warm(accounts[0].id, UNIFIED)}
+        onContextMenu={uniFav ? e => { e.preventDefault(); e.stopPropagation(); setMenu(null); setUniMenu({ x: e.clientX, y: e.clientY, fav }) } : undefined}
+        draggable={fav}
+        onDragStart={fav ? e => { dragged.current = { account: '*', path: UNIFIED, fav: true }; e.dataTransfer.setData('application/x-dmoffice-folder', UNIFIED_FAV); e.dataTransfer.effectAllowed = 'move' } : undefined}
+        onDragEnd={fav ? () => { dragged.current = null; setInsert(null) } : undefined}
+        onDragOver={fav ? e => {
+          const d = dragged.current
+          if (!d?.fav || !e.dataTransfer.types.includes('application/x-dmoffice-folder')) return
+          e.preventDefault()
+          const r = e.currentTarget.getBoundingClientRect()
+          setInsert({ rowKey, after: e.clientY > r.top + r.height / 2 })
+        } : undefined}
+        onDragLeave={fav ? () => setInsert(x => (x?.rowKey === rowKey ? null : x)) : undefined}
+        onDrop={fav ? e => {
+          e.preventDefault()
+          const d = dragged.current
+          if (d?.fav) placeFavorite(d.account + '|' + d.path, UNIFIED_FAV, insert?.rowKey === rowKey && insert.after)
+          dragged.current = null
+          setInsert(null)
+        } : undefined}>
+        {fav && <span className={s.twisty} />}
+        <span className={s.icon} style={fav ? undefined : { width: 16, justifyContent: 'center' }}><Mail20Regular /></span>
+        <span className={s.name}>{t('Alle Posteingänge')}</span>
+        {unifiedUnread > 0 && <CounterBadge count={unifiedUnread} size="small" overflowCount={9999} />}
+        {!fav && cornerAt === 'unified' && cornerSlot}
+      </div>
+    )
+    return fav ? el : <div className="dm-fsec" style={{ marginBottom: 10 }}>{el}</div>
+  }
+
   const favoriteRows = favorites.map(k => {
+    if (k === UNIFIED_FAV) return uniFav && unifiedShown ? unifiedEl(true) : null
     const [account, ...rest] = k.split('|')
     const f = folders[account]?.find(x => x.path === rest.join('|'))
     return f ? row(account, f, 0, { fav: true }) : null
   }).filter(Boolean)
 
-  const favSection = (prefs.showFavorites ?? true) && favoriteRows.length > 0 && (
+  const pinFav = prefs.pinFavorites ?? true
+  const favShown = (prefs.showFavorites ?? true) && favoriteRows.length > 0
+  const unifiedInFav = favShown && favorites.includes(UNIFIED_FAV) && uniFav
+  const cornerAt: 'fav' | 'unified' | 'account' | 'none' = !corner ? 'none' : pinFav && favShown ? 'fav' : unifiedShown && !unifiedInFav ? 'unified' : accounts.length ? 'account' : 'none'
+  const cornerSlot = <span onClick={e => e.stopPropagation()} style={{ display: 'flex', marginLeft: 'auto' }}>{corner}</span>
+  const favSection = favShown && (
     <div className="dm-fsec" style={{ marginBottom: 10 }}>
       <div className={mergeClasses('dm-fhead', s.account)} onClick={() => toggle('favorites')}>
         {closed.favorites ? <ChevronRight16Regular /> : <ChevronDown16Regular />}
         <Text weight="semibold" style={{ flex: 1 }}>{t('Favoriten')}</Text>
+        {cornerAt === 'fav' && cornerSlot}
       </div>
       {!closed.favorites && favoriteRows}
-    </div>
-  )
-
-  // Alle Posteingaenge (ab zwei Konten): die Posteingaenge aller Konten zusammen, ganz oben
-  const inboxes = accounts.filter(a => a.inUnified !== false || !featureOn('unifiedpick'))
-    .map(a => (folders[a.id] || []).find(f => f.special === 'inbox')).filter(Boolean) as Folder[]
-  const unifiedUnread = inboxes.reduce((n, f) => n + (f.unread || 0), 0)
-  const unifiedActive = selection?.folder === UNIFIED
-  // Bündig mit den Überschriften (Favoriten, Konten): das Symbol steht dort, wo bei ihnen der Pfeil steht
-  const unifiedRow = (prefs.showUnified ?? true) && accounts.length > 1 && inboxes.length > 1 && (
-    <div className="dm-fsec" style={{ marginBottom: 10 }}>
-      <div className={mergeClasses('dm-frow', s.item, unifiedActive && s.active)} style={{ paddingLeft: 6, gap: 4 }}
-        onClick={() => onSelect({ account: accounts[0].id, folder: UNIFIED })}>
-        <span className={s.icon} style={{ width: 16, justifyContent: 'center' }}><Mail20Regular /></span>
-        <span className={s.name}>{t('Alle Posteingänge')}</span>
-        {unifiedUnread > 0 && <CounterBadge count={unifiedUnread} size="small" overflowCount={9999} />}
-      </div>
     </div>
   )
 
@@ -394,10 +445,11 @@ export function FolderPane({ accounts, folders, selection, status, onSelect, onD
   return (
     // Abstände (Ansicht): Zeilenhöhe und Lücken je Stufe (global.css), wie in der Liste
     <div className={mergeClasses(s.root, 'dm-folders-' + (prefs.folderDensity ?? prefs.density ?? 'normal'))}
-      onClick={() => setMenu(null)}
+      onClick={() => { setMenu(null); setUniMenu(null) }}
       onContextMenu={e => { if (e.defaultPrevented || !accounts.length) return; e.preventDefault(); setMenu({ account: (selection?.account && selection.folder !== UNIFIED ? selection.account : accounts[0].id), folder: null, x: e.clientX, y: e.clientY }) }}>
-      {unifiedRow}
-      {(prefs.pinFavorites ?? true) && favSection}
+      {cornerAt === 'none' && corner && <div style={{ display: 'flex', justifyContent: 'flex-end' }}>{corner}</div>}
+      {pinFav && favSection}
+      {unifiedShown && !unifiedInFav && unifiedEl(false)}
       {accounts.map((a, i) => {
         const list = folders[a.id] || []
         const err = status?.accounts?.[a.id]?.error
@@ -407,10 +459,8 @@ export function FolderPane({ accounts, folders, selection, status, onSelect, onD
               onContextMenu={e => { e.preventDefault(); setMenu({ account: a.id, folder: null, x: e.clientX, y: e.clientY }) }}>
               {closed[a.id] ? <ChevronRight16Regular /> : <ChevronDown16Regular />}
               <Text weight="semibold" truncate style={{ flex: 1 }} title={a.email}>{a.name || a.email}</Text>
-              {err && <Tooltip content={err} relationship="description"><Warning16Filled color={tokens.colorPaletteRedForeground1} /></Tooltip>}
-              <Tooltip content={t('Neuer Ordner')} relationship="label">
-                <Button appearance="transparent" size="small" icon={<FolderAdd20Regular />} onClick={e => { e.stopPropagation(); create(a.id, '') }} />
-              </Tooltip>
+              {err && <Tooltip content={tError(err)} relationship="description"><Warning16Filled color={tokens.colorPaletteRedForeground1} /></Tooltip>}
+              {i === 0 && cornerAt === 'account' && cornerSlot}
             </div>
             {!closed[a.id] && (list.length === 0
               ? <Text size={200} style={{ paddingLeft: 24, color: tokens.colorNeutralForeground3 }}>{err ? t('Keine Verbindung') : t('Wird geladen …')}</Text>
@@ -418,10 +468,26 @@ export function FolderPane({ accounts, folders, selection, status, onSelect, onD
           </div>
         )
       })}
-      <CatchallSection st={catchall} folders={folders} selection={selection} onSelect={onSelect} />
+      <CatchallSection st={catchall} folders={folders} selection={selection} onSelect={onSelect} onChanged={onChanged} />
       <VirtualFolders accounts={accounts} folders={folders} selection={selection} onSelect={onSelect} refresh={status} onCategoryDrop={onCategoryDrop} />
-      {!(prefs.pinFavorites ?? true) && favSection}
+      {!pinFav && favSection}
 
+      {uniMenu && (
+        <Menu open onOpenChange={(_, d) => !d.open && setUniMenu(null)}
+          positioning={{ target: { getBoundingClientRect: () => ({ x: uniMenu.x, y: uniMenu.y, top: uniMenu.y, left: uniMenu.x, bottom: uniMenu.y, right: uniMenu.x, width: 0, height: 0 }) } as any }}>
+          <MenuPopover>
+            <MenuList>
+              <MenuItem icon={favorites.includes(UNIFIED_FAV) ? <StarOff20Regular /> : <Star20Regular />}
+                onClick={() => update({ favorites: favorites.includes(UNIFIED_FAV) ? favorites.filter(x => x !== UNIFIED_FAV) : [...favorites, UNIFIED_FAV] })}>
+                {favorites.includes(UNIFIED_FAV) ? t('Aus Favoriten entfernen') : t('Zu Favoriten hinzufügen')}
+              </MenuItem>
+              {uniMenu.fav && <MenuDivider />}
+              {uniMenu.fav && <MenuItem icon={<ArrowUp20Regular />} disabled={favorites.indexOf(UNIFIED_FAV) <= 0} onClick={() => shiftFavorite(UNIFIED_FAV, -1)}>{t('In Favoriten nach oben')}</MenuItem>}
+              {uniMenu.fav && <MenuItem icon={<ArrowDown20Regular />} disabled={favorites.indexOf(UNIFIED_FAV) >= favorites.length - 1} onClick={() => shiftFavorite(UNIFIED_FAV, 1)}>{t('In Favoriten nach unten')}</MenuItem>}
+            </MenuList>
+          </MenuPopover>
+        </Menu>
+      )}
       {menu && (
         <Menu open onOpenChange={(_, d) => !d.open && setMenu(null)}
           positioning={{ autoSize: 'height', target: { getBoundingClientRect: () => ({ x: menu.x, y: menu.y, top: menu.y, left: menu.x, bottom: menu.y, right: menu.x, width: 0, height: 0 }) } as any }}>

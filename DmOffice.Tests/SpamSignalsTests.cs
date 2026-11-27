@@ -130,6 +130,16 @@ public class SpamSignalsTests
         Assert.Equal((0.19, "trusted"), SpamSignals.Adjust(0.5, r, trusted: true, own: false, Settings));
     }
 
+    [Fact]
+    public void Sicherer_Absender_schlaegt_Urteil_des_Mailservers_und_alle_Merkmale()
+    {
+        // Der Mailserver kennt das Adressbuch nicht: Spam-Kopfzeile, verschleierter Name, Meldungen anderer zählen dann nicht
+        var r = SpamSignals.Of(Mail("Anna <anna@example.org>", "Treffen")) with { ServerSpam = true, Obfuscated = true, RandomId = true, SharedReports = 3 };
+        var (score, rule) = SpamSignals.Adjust(0.99, r, trusted: true, own: false, Settings);
+        Assert.True(score < Settings.HamCutoff);
+        Assert.Equal("trusted", rule);
+    }
+
     [Theory]
     [InlineData("Ihr Geschenk wartet __ID:aa11bb22cc33", true)]
     [InlineData("Gewinnbenachrichtigung #Ref: 8f3k29dk4x", true)]

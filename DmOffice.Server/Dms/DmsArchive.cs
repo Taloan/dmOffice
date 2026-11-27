@@ -59,7 +59,7 @@ public static class DmsArchive
                     var jpg = prefix + ".jpg";
                     if (code != 0 || !File.Exists(jpg))
                     {
-                        if (page == 1) return new(null, "", "PDF-Seite rendern: " + Short(err));
+                        if (page == 1) return new(null, "", Ocr.Unreadable);
                         break;
                     }
                     Page(jpg, prefix);
@@ -82,7 +82,7 @@ public static class DmsArchive
                     if (tools.Heif == null) return new(null, "", "HEIC lässt sich auf diesem Server nicht lesen.");
                     image = Path.Combine(dir, "in.jpg");
                     var (code, _, err) = Ocr.Run(tools.Heif, [input, image], null, PageTimeout, ct);
-                    if (code != 0 || !File.Exists(image)) return new(null, "", "HEIC: " + Short(err));
+                    if (code != 0 || !File.Exists(image)) return new(null, "", Ocr.UnreadableImage);
                 }
                 // Mehrseitiges TIFF erkennt tesseract selbst
                 Page(image, Path.Combine(dir, "p1"));

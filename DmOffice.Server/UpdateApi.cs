@@ -27,6 +27,11 @@ public static class UpdateApi
                 // Seine Datenbank wartet: die Oberflaeche zeigt dann nur den Assistenten statt der Programme
                 mine = new { pending = plan.Pending, plan.State, plan.From, plan.To, plan.MissingBytes, plan.BackupMissingBytes, plan.NeedsConsent },
                 attention = user.IsAdmin && update.AnyAttention(),
+                // [feature:migrationprogress]
+                // Fortschritt des laufenden Umbaus für die Warteseite (Schritt, Titel)
+                progress = Features.On(Features.MigrationProgress) && Activity.Get(user.Id, Activity.Migration) is { State: "running" } a
+                    ? new { a.Done, a.Total, a.Detail, a.Started } : null,
+                // [/feature:migrationprogress]
             });
         }).RequireAuthorization();
 

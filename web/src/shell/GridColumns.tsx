@@ -4,6 +4,11 @@ import { useRef, useState } from 'react'
 import { t } from '../i18n'
 import { usePrefs } from '../prefs'
 
+/** Aussehen jeder Tabelle (Vorbild Helpdesk/Finanzen), in allen Bereichen gleich - nicht je Bereich eigene Werte setzen.
+ * Kopfzeile: grauer Hintergrund, halbfett. Rahmen: um Tabellen innerhalb einer Seite (nicht um Listen, die den ganzen Bereich füllen). */
+export const tableHeadLook = { fontWeight: tokens.fontWeightSemibold, color: tokens.colorNeutralForeground2, backgroundColor: tokens.colorNeutralBackground2 }
+export const tableFrameLook = { border: `1px solid ${tokens.colorNeutralStroke2}`, borderRadius: tokens.borderRadiusMedium }
+
 /**
  * Spalten einer Tabelle aus CSS-Raster wie im Explorer: Klick auf den Kopf sortiert (noch einmal: umgekehrt), Breite an der
  * rechten Kante ziehen (Doppelklick: Vorgabe), Reihenfolge per Ziehen, Rechtsklick auf die Kopfzeile wählt die Spalten.

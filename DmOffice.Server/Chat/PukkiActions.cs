@@ -194,6 +194,12 @@ public static partial class Pukki
             if (fb == null) return;
             reply = fb;
         }
+        // Notfallzugang: „Kein Notfall“
+        else if (key == DmOffice.Emergency.EmergencyService.DenyKey)
+        {
+            reply = DmOffice.Emergency.EmergencyService.DenyFromChat(services, space.User.Id, action.Data ?? "");
+            chat.SetActions(message.Id, null);
+        }
         // Mails lesen erlauben (Ja/Nein unter der Bitte um Erlaubnis)
         else if (key is MailAllow or MailDeny) reply = MailPermission(chat, space, message, key, action);
         // Noch einmal erinnern (Knöpfe unter einer Erinnerung)

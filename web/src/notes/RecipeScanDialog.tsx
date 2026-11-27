@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import { useApp } from '../App'
 import { t } from '../i18n'
-import { PageTitle, Section } from '../settings/parts'
+import { Section } from '../settings/parts'
 
 export interface ScanDraft {
   title: string; yield: string; prepTime: string; cookTime: string; totalTime: string; description: string
@@ -116,8 +116,11 @@ export function RecipeScanDialog({ folder, onClose }: { folder: string | null; o
     } catch (e) { fail(e) } finally { setBusy(false) }
   }
   // Je Rezept eine Notiz; schlägt eins fehl, bleiben die übrigen im Dialog
+  // Ohne Titel, Zutaten und Zubereitung entstünde ein leeres Rezept
+  const emptyDraft = (d: ScanDraft) => !d.title.trim() && !d.ingredients.trim() && !d.steps.trim()
+  const anyEmpty = !!drafts?.some(emptyDraft)
   const save = async () => {
-    if (!drafts) return
+    if (!drafts || anyEmpty) return
     setBusy(true)
     let last: number | null = null
     let i = 0
@@ -225,11 +228,13 @@ export function RecipeScanDialog({ folder, onClose }: { folder: string | null; o
           </DialogContent>
           <DialogActions>
             {busy && <Spinner size="tiny" />}
+            {draft && anyEmpty && !busy && <Text className={s.muted} style={{ alignSelf: 'center' }}>{drafts!.length > 1
+              ? t('Jedes Rezept braucht einen Titel, Zutaten oder eine Zubereitung.') : t('Zum Anlegen Titel, Zutaten oder Zubereitung eintragen.')}</Text>}
             {draft && <Button disabled={busy} onClick={() => setDrafts(null)}>{t('Zurück')}</Button>}
             <Button disabled={busy} onClick={() => onClose(null)}>{t('Abbrechen')}</Button>
             {!draft
               ? <Button appearance="primary" disabled={busy || pages.length === 0 || !state?.ocr} onClick={recognize}>{busy ? t('Erkennt …') : t('Erkennen')}</Button>
-              : <Button appearance="primary" disabled={busy} onClick={save}>{drafts!.length > 1 ? t('{n} Rezepte anlegen', { n: drafts!.length }) : t('Rezept anlegen')}</Button>}
+              : <Button appearance="primary" disabled={busy || anyEmpty} onClick={save}>{drafts!.length > 1 ? t('{n} Rezepte anlegen', { n: drafts!.length }) : t('Rezept anlegen')}</Button>}
           </DialogActions>
         </DialogBody>
       </DialogSurface>
@@ -287,7 +292,6 @@ export function RecipeScanSettings() {
   }
   return (
     <>
-      <PageTitle>{t('Rezept-Scan')}</PageTitle>
       <Section title={t('Texterkennung')} hint={t('„Rezept aus Foto“ in den Notizen liest Kochbuchseiten auf diesem Server und macht daraus eine Rezept-Notiz.')}>
         {state == null ? <Spinner size="tiny" /> : <Text>{state.ocr ? t('Texterkennung ist verfügbar.') : state.reason ?? t('Texterkennung ist auf diesem Server nicht verfügbar.')}</Text>}
       </Section>

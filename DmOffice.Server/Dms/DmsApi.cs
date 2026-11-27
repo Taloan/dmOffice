@@ -19,7 +19,14 @@ public static class DmsApi
 
     public record EntryBody(string? Kind, string? Name, string? Parent, string? Color, string? Match, string? MatchText, bool? CaseSensitive);
     public record DocBody(string? Title, string? DocDate, string? Correspondent, string? Doctype, List<string>? Tags, List<string>? AddTags,
-        List<string>? RemoveTags, bool? Confirm, string? Role = null, string? Amount = null, string? DocPeriod = null);
+        List<string>? RemoveTags, bool? Confirm, string? Role = null, string? Amount = null, string? DocPeriod = null,
+        /// <summary>Kennung der Änderung (vom Web, je Aktion): eine Massenänderung lässt sich darüber als Ganzes zurücknehmen (dmshistory)</summary>
+        string? ChangeId = null,
+        /// <summary>Eigene Felder (dmsfields): Kennung → Wert, leer entfernt</summary>
+        Dictionary<string, string?>? Fields = null);
+    public record UndoBody(string Change);
+    /// <summary>Zusammenführen (dmsmerge): Quellen gehen im Ziel auf; DryRun nur zählen</summary>
+    public record MergeBody(string? Target, List<string>? Sources, bool? DryRun);
     public record FixedBody(bool Fixed);
     public record AiRunBody(string Kind, string Field, string? Entry, string? Mode);
     public record AiEditBody(string? Entry, string? NewName, string? Parent);
@@ -28,6 +35,7 @@ public static class DmsApi
     public record IdsBody(List<long> Ids);
     /// <summary>Nach Vorgabe ablegen; Profile: dieses Ablageprofil gilt danach für die Dokumente (Ordner und Dateiname).</summary>
     public record RefileBody(List<long> Ids, string? Profile);
+    public record RoleNameBody(string? At);
     public record ImportFilesBody(List<string> Paths, string? Profile, bool? Move);
     public record MoveAreaBody(List<long> Ids, string To, string? Profile);
     public record PauseBody(bool Paused);
@@ -64,8 +72,16 @@ public static class DmsApi
         });
         DmsHost Host() => DmsHost.Current!;
         // Bereich der Anfrage: area=tresor → Tresor (nur offen auf diesem Gerät, sonst 423), sonst der offene Bereich
-        DmsStore Store(HttpContext http, string? area) =>
-            area == "tresor" ? DmsStore.ForTresor(http.Space().Db, Core.Tresor.Db(http)) : http.Space().Db;
+        DmsStore Store(HttpContext http, string? area)
+        {
+            if (area != "tresor") return http.Space().Db;
+            var store = DmsStore.ForTresor(http.Space().Db, Core.Tresor.Db(http));
+            // Bei geschlossenem Tresor zusammengeführte Einträge (dmsmerge): jetzt nachholen
+            if (Features.On(Features.DmsMerge))
+                foreach (var d in DmsMerge.CatchUp(store))
+                    try { DmsImport.Refile(http.Space(), Host(), d, false, store); } catch (Exception e) when (e is not OutOfMemoryException) { /* beim nächsten Ändern */ }
+            return store;
+        }
         // Dokumente, die bei geschlossenem Tresor abgelegt wurden, übernimmt der Tresor beim Öffnen
         var spaces = app.Services.GetRequiredService<Spaces>();
         DmsImport.SpaceOf = id => spaces.Get(id);
@@ -73,9 +89,35 @@ public static class DmsApi
 
         // Stand: Texterkennung, PDF/A, KI, Posteingang
         // Abzeichen in der linken Leiste: Summe der Inboxen (Dateiablage, Tresor nur offen auf diesem Gerät, dazu was vor dem Tresor wartet); legt nichts an
+        // Rolle im Dateinamen (Kennung dmsrolename): aus, vorn oder hinten - benennt alle Rollendokumente um; den Tresor beim nächsten Öffnen
+        api.MapGet("/rolename", (HttpContext http) => Features.On(Features.DmsRoleName)
+            ? Results.Ok(new { at = DmsImport.Settings(http.Space().Db).RoleInName }) : Results.NotFound());
+        api.MapPut("/rolename", (RoleNameBody b, HttpContext http) =>
+        {
+            if (!Features.On(Features.DmsRoleName)) return Results.NotFound();
+            if (b.At is not ("off" or "start" or "end")) return Results.BadRequest(new { error = "Unbekannte Einstellung." });
+            var space = http.Space();
+            var s = DmsImport.Settings(space.Db);
+            s.RoleInName = b.At;
+            var tresorOpen = Core.Tresor.IsOpen(http, touch: false) && Core.Tresor.DbOf(space.User.Id) is not null;
+            s.RoleSyncTresor = Core.Tresor.Exists(space.User.Id) && !tresorOpen;
+            DmsImport.SaveSettings(space.Db, s);
+            var n = DmsImport.SyncRoleTags(space, Host(), space.Db);
+            if (tresorOpen && Core.Tresor.DbOf(space.User.Id) is { } tdb) n += DmsImport.SyncRoleTags(space, Host(), DmsStore.ForTresor(space.Db, tdb));
+            return Results.Ok(new { at = s.RoleInName, renamed = n, tresorLater = s.RoleSyncTresor });
+        });
+
         api.MapGet("/inbox-count", (HttpContext http) =>
         {
             var space = http.Space();
+            // Rolle im Dateinamen: im Tresor nachholen, sobald er offen ist
+            if (Features.On(Features.DmsRoleName) && DmsImport.Settings(space.Db) is { RoleSyncTresor: true } rs
+                && Core.Tresor.IsOpen(http, touch: false) && Core.Tresor.DbOf(space.User.Id) is { } rtdb)
+            {
+                rs.RoleSyncTresor = false;
+                DmsImport.SaveSettings(space.Db, rs);
+                try { DmsImport.SyncRoleTags(space, Host(), DmsStore.ForTresor(space.Db, rtdb)); } catch (Exception e) when (e is not OutOfMemoryException) { rs.RoleSyncTresor = true; DmsImport.SaveSettings(space.Db, rs); }
+            }
             static bool Used(DmsStore s) => s.Scalar("SELECT 1 FROM sqlite_master WHERE name = 'dms_docs'") != null;
             DmsStore files = space.Db;
             var n = Used(files) ? Dms.InboxCount(files) : 0;
@@ -156,7 +198,11 @@ public static class DmsApi
         api.MapPut("/settings", (DmsSettings body, HttpContext http) =>
         {
             // Anhalten gehört zur Warteschlange (eigener Aufruf), nicht zu den Einstellungen
-            body.Paused = DmsImport.Settings(http.Space().Db).Paused;
+            var before = DmsImport.Settings(http.Space().Db);
+            body.Paused = before.Paused;
+            // Rolle im Dateinamen hat einen eigenen Aufruf (benennt um)
+            body.RoleInName = before.RoleInName;
+            body.RoleSyncTresor = before.RoleSyncTresor;
             DmsImport.SaveSettings(http.Space().Db, body);
             return Results.Ok(body);
         });
@@ -176,6 +222,13 @@ public static class DmsApi
 
         api.MapGet("/lists", (HttpContext http) => Dms.EntriesWithCounts(http.Space().Db));
 
+        // Eigene Felder (dmsfields): für das ganze DMS, Werte am Dokument
+        api.MapGet("/fields", (HttpContext http) => Features.On(Features.DmsFields) ? Results.Ok(DmsFields.All(http.Space().Db)) : Results.NotFound());
+        api.MapPost("/fields", (DmsFields.Input b, HttpContext http) => Features.On(Features.DmsFields) ? Results.Ok(DmsFields.Save(http.Space().Db, null, b)) : Results.NotFound());
+        api.MapPut("/fields/{id}", (string id, DmsFields.Input b, HttpContext http) => Features.On(Features.DmsFields) ? Results.Ok(DmsFields.Save(http.Space().Db, id, b)) : Results.NotFound());
+        api.MapDelete("/fields/{id}", (string id, HttpContext http) => { if (Features.On(Features.DmsFields)) DmsFields.Delete(http.Space().Db, id); return Results.NoContent(); });
+        api.MapPut("/fields-order", (List<string> ids, HttpContext http) => { if (Features.On(Features.DmsFields)) DmsFields.Order(http.Space().Db, ids); return Results.NoContent(); });
+
         api.MapPost("/lists", (EntryBody b, HttpContext http) =>
         {
             var e = Dms.Create(http.Space().Db, b.Kind ?? "", b.Name, string.IsNullOrEmpty(b.Parent) ? null : b.Parent, b.Color, b.Match, b.MatchText, b.CaseSensitive ?? false);
@@ -185,9 +238,38 @@ public static class DmsApi
 
         api.MapPut("/lists/{id}", (string id, EntryBody b, HttpContext http) =>
         {
-            var e = Dms.Update(http.Space().Db, id, b.Name, b.Parent, b.Color, b.Match, b.MatchText, b.CaseSensitive);
+            DmsEntry e;
+            try { e = Dms.Update(http.Space().Db, id, b.Name, b.Parent, b.Color, b.Match, b.MatchText, b.CaseSensitive); }
+            // Name vergeben: mit dmsmerge bietet das Web „Zusammenführen“ an
+            catch (DmsNameTakenException x) when (Features.On(Features.DmsMerge)) { return Results.Conflict(new { error = x.Message, existing = x.Existing }); }
             Reassess(http.Space());
-            return e;
+            return Results.Ok(e);
+        });
+
+        // Zusammenführen (dmsmerge): Dokumente, Gelerntes und Vorgaben der Quellen gehen auf das Ziel über, die Quellen werden gelöscht
+        api.MapPost("/lists/merge", (MergeBody b, HttpContext http) =>
+        {
+            if (!Features.On(Features.DmsMerge)) return Results.NotFound();
+            var space = http.Space();
+            var plan = DmsMerge.Check(space.Db, b.Target, b.Sources);
+            var sources = plan.Sources.Select(s => s.Id).ToList();
+            var tresorExists = Core.Tresor.Exists(space.User.Id);
+            var tdb = tresorExists && Core.Tresor.IsOpen(http, touch: false) ? Core.Tresor.DbOf(space.User.Id) : null;
+            if (b.DryRun == true)
+                return Results.Ok(new DmsMerge.Result(DmsMerge.Affected(space.Db, sources).Count,
+                    tdb == null ? null : DmsMerge.Affected(DmsStore.ForTresor(space.Db, tdb), sources).Count, tresorExists && tdb == null, ""));
+            var change = "merge-" + Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(8)).ToLowerInvariant();
+            var (result, refile) = DmsMerge.Run(space.Db, tdb, tresorExists, plan, change);
+            foreach (var (store, docs) in refile)
+                foreach (var d in docs)
+                    try
+                    {
+                        DmsImport.Refile(space, Host(), d, false, store);
+                        if (Features.On(Features.DmsRoleName)) DmsImport.SyncRoleTag(space, Host(), d, store);
+                    }
+                    catch (Exception e) when (e is not OutOfMemoryException) { /* beim nächsten Ändern */ }
+            Reassess(space);
+            return Results.Ok(result);
         });
 
         // Für die Rückfrage vor dem Löschen: wie viele Dokumente den Eintrag selbst tragen
@@ -206,14 +288,14 @@ public static class DmsApi
 
         api.MapGet("/docs", (HttpContext http, string? q, string? correspondent, string? doctype, string? tags, string? docFrom, string? docTo,
             string? importedFrom, string? importedTo, bool? inbox, string? profile, string? mime, bool? noCorrespondent, bool? noDoctype, bool? noTags,
-            bool? paperlessDiffers, bool? queued, string? sort, bool? desc, string? area, int? offset, int? limit, string? role, bool? noRole, bool? @fixed, bool? misplaced) =>
+            bool? paperlessDiffers, bool? queued, string? sort, bool? desc, string? area, int? offset, int? limit, string? role, bool? noRole, bool? @fixed, bool? misplaced, string? exact) =>
         {
             var space = http.Space();
             var store = Store(http, area);
             long? Day(string? d, bool end) => d != null && DateOnly.TryParseExact(d, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var x)
                 ? new DateTimeOffset(TimeZoneInfo.ConvertTimeToUtc(x.ToDateTime(end ? new TimeOnly(23, 59, 59) : TimeOnly.MinValue), space.Zone)).ToUnixTimeSeconds() : null;
             var filter = new Dms.Filter(q, correspondent, doctype, tags?.Split(',', StringSplitOptions.RemoveEmptyEntries).ToList(), docFrom, docTo,
-                Day(importedFrom, false), Day(importedTo, true), inbox, profile, mime, noCorrespondent, noDoctype, noTags, paperlessDiffers, queued, sort, desc ?? false, role, noRole, @fixed);
+                Day(importedFrom, false), Day(importedTo, true), inbox, profile, mime, noCorrespondent, noDoctype, noTags, paperlessDiffers, queued, sort, desc ?? false, role, noRole, @fixed, exact?.Split(',', StringSplitOptions.RemoveEmptyEntries).ToList());
             // Nur die, deren Ablage nicht zur Vorgabe passt (dmsplace): erst alle passenden holen, dann prüfen und blättern
             if (misplaced == true && Features.On(Features.DmsPlace))
             {
@@ -233,7 +315,7 @@ public static class DmsApi
             return Results.Ok(new { id = DmsAiCheck.Start(http.Space(), Host(), b.Kind, b.Field, b.Entry, b.Mode ?? DmsAiCheck.Existing) });
         });
         api.MapGet("/ai/runs", (HttpContext http) => Features.On(Features.DmsAiCheck) ? Results.Ok(DmsAiCheck.Runs(http.Space().Db)) : Results.NotFound());
-        api.MapPost("/ai/runs/{id:long}/cancel", (long id) => { DmsAiCheck.Cancel(id); return Results.NoContent(); });
+        api.MapPost("/ai/runs/{id:long}/cancel", (long id, HttpContext http) => { DmsAiCheck.Cancel(http.Space(), id); return Results.NoContent(); });
         api.MapGet("/ai/suggestions", (long? run, HttpContext http) =>
         {
             if (!Features.On(Features.DmsAiCheck)) return Results.NotFound();
@@ -283,6 +365,39 @@ public static class DmsApi
             var store = Store(http, area);
             Change(http.Space(), [id], b, store);
             return Dms.Get(store, id);
+        });
+
+        // Versionen der Angaben (dmshistory): auflisten, eine wiederherstellen, eine Massenänderung zurücknehmen
+        api.MapGet("/docs/{id:long}/history", (long id, string? area, HttpContext http) =>
+        {
+            if (!Features.On(Features.DmsHistory)) return Results.NotFound();
+            return Results.Ok(DmsHistory.List(Store(http, area), id));
+        });
+        api.MapPost("/docs/{id:long}/history/{version:long}/restore", (long id, long version, string? area, HttpContext http) =>
+        {
+            if (!Features.On(Features.DmsHistory)) return Results.NotFound();
+            var store = Store(http, area);
+            if (DmsHistory.Get(store, id, version) is not { } v) return Results.NotFound(new { error = "Version nicht gefunden." });
+            // Zusammengeführte Einträge, auf die die Version verweist, entstehen wieder (dmsmerge)
+            if (Features.On(Features.DmsMerge)) DmsMerge.Revive(http.Space().Db, v.Before);
+            Change(http.Space(), [id], ToBody(v.Before), store);
+            return Results.Ok(Dms.Get(store, id));
+        });
+        api.MapPost("/history/undo", (UndoBody b, string? area, HttpContext http) =>
+        {
+            if (!Features.On(Features.DmsHistory)) return Results.NotFound();
+            var store = Store(http, area);
+            int restored = 0, skipped = 0;
+            foreach (var (doc, before, after) in DmsHistory.OfChange(store, b.Change))
+            {
+                // Seitdem noch einmal geändert: diesen Stand nicht überschreiben
+                var now = Dms.ByIds(store, [doc]).FirstOrDefault();
+                if (now == null || !DmsHistory.Same(DmsHistory.Of(now), after)) { skipped++; continue; }
+                if (Features.On(Features.DmsMerge)) DmsMerge.Revive(http.Space().Db, before);
+                Change(http.Space(), [doc], ToBody(before), store);
+                restored++;
+            }
+            return Results.Ok(new { restored, skipped });
         });
 
         api.MapPost("/docs/batch", (BatchBody b, string? area, HttpContext http) =>
@@ -378,15 +493,19 @@ public static class DmsApi
             var store = Store(http, area);
             // Vor dem ersten Löschen prüfen: Sonst wäre von einer Auswahl nur ein Teil gelöscht
             if (Dms.ByIds(store, b.Ids).Any(d => d.Fixed)) throw new DavForbiddenException("Fixierte Dokumente lassen sich nicht löschen. Bitte zuerst die Fixierung aufheben.");
+            // Für „Rückgängig“ (Kennung undoall): die Einträge im Papierkorb der Dateiablage
+            var trash = new List<long>();
             foreach (var d in Dms.ByIds(store, b.Ids))
             {
                 // Noch nicht abgelegt (wartend oder mit Fehler): es gibt nur Original und Eintrag
                 if (d.FileId == 0 && d.Mount == null) { DmsImport.ForgetUnplaced(store, d.Id); continue; }
+                var path = !store.Tresor && d.Mount == null && d.FileId != 0 ? FileStore.ById(space.Db, d.FileId)?.Path : null;
                 // Im Tresor und im externen Ordner gibt es keinen Papierkorb: Angaben gleich mit weg
                 if (await DmsImport.RemoveFileAsync(space, Host(), store, d, purge: false, ct))
                     DmsImport.Forget(store, d.Id, store.Scalar("SELECT original_blob FROM dms_docs WHERE id = $d", ("$d", d.Id)) as string);
+                else if (path != null && FileStore.TrashIdOf(space.Db, path) is long id) trash.Add(id);
             }
-            return Results.NoContent();
+            return Features.On(Features.UndoAll) ? Results.Ok(new { trash }) : Results.NoContent();
         });
 
         // Fixieren oder die Fixierung bewusst aufheben
@@ -491,7 +610,6 @@ public static class DmsApi
             }
             // Typ kann aus einem Mail-Anhang stammen: gezeigt nur, was sicher ist
             var (mime, download) = Dav.FilesApi.Shown(http, doc.Mime, name, inline: true);
-            if (download == null) http.Response.Headers.ContentDisposition = new System.Net.Mime.ContentDisposition { Inline = true, FileName = name }.ToString();
             return Results.File(data, mime, download, enableRangeProcessing: true);
         });
 
@@ -569,8 +687,9 @@ public static class DmsApi
                 profile = (DmsFiling.Of(space).Where(p => p.Target == "tresor").OrderByDescending(p => p.Default).FirstOrDefault()
                     ?? throw new ArgumentException("Es gibt kein Ablageprofil mit Ziel Tresor.")).Id;
             var results = new List<object>();
-            await foreach (var file in MultipartUpload.Files(request, ct))
+            await foreach (var file in MultipartUpload.Files(request, ct, space.Db))
             {
+                if (!DmsImport.IsDocument(file.FileName, file.ContentType)) { results.Add(new { name = file.FileName, rejected = true }); continue; }
                 var r = await DmsImport.ImportAsync(space, file.Body, file.FileName, file.ContentType, new DmsImport.Info("upload", Profile: profile), ct);
                 results.Add(new { name = file.FileName, id = r.Id, duplicate = r.Duplicate, dropped = r.Dropped });
             }
@@ -600,6 +719,7 @@ public static class DmsApi
                 // Nur eigene Dateien; was nicht geht, zählt die Antwort mit, statt es wegzulassen
                 if (f == null || f.IsDir || Host().Protected(space, path)) { results.Add(new { name = Path.GetFileName(path), skipped = true }); continue; }
                 if (Dms.IsDocPath(space.Db, path)) { results.Add(new { name = f.Name, duplicate = true }); continue; }
+                if (!DmsImport.IsDocument(f.Name, f.Mime)) { results.Add(new { name = f.Name, rejected = true }); continue; }
                 DmsImport.Result r;
                 await using (var s = FileStore.OpenRead(space.Db, path))
                     r = await DmsImport.ImportAsync(space, s, f.Name, f.Mime, new DmsImport.Info("files", path, Profile: b.Profile, FileDate: f.Modified, Freed: b.Move != false ? f.Size : 0), ct);
@@ -818,16 +938,44 @@ public static class DmsApi
         foreach (var id in Dms.Reassess(space.Db)) DmsImport.Refile(space, DmsHost.Current!, id, false, space.Db);
     }
 
+    /// <summary>Ein gespeicherter Stand als Änderung: alle Angaben auf diesen Stand</summary>
+    private static DocBody ToBody(DmsHistory.Meta m)
+    {
+        var c = DmsHistory.ToChange(m);
+        return new DocBody(c.Title, c.DocDate, c.Correspondent, c.Doctype, c.Tags, null, null, null, Amount: c.Amount);
+    }
+
     internal static void Change(UserSpace space, IEnumerable<long> ids, DocBody b, DmsStore? store = null)
     {
         store ??= space.Db;
+        store.ReplacedHolders.Clear();
+        // Versionen der Angaben: Stand davor merken, nach dem Ändern je geändertem Dokument eine Version
+        var history = Features.On(Features.DmsHistory) ? DmsHistory.Snapshot(store, ids.Distinct().ToList()) : null;
         var changed = Dms.Apply(store, ids, new Dms.Change(b.Title, b.DocDate, b.Correspondent, b.Doctype, b.Tags, b.AddTags, b.RemoveTags, b.Confirm == false && !Features.On(Features.DmsRework) ? null : b.Confirm, b.Role, b.Amount,
-            Features.On(Features.DmsYear) ? b.DocPeriod : null));
+            Features.On(Features.DmsYear) ? b.DocPeriod : null, Features.On(Features.DmsFields) ? b.Fields : null));
+        if (history != null) DmsHistory.Record(store, history, b.ChangeId is { Length: > 0 and <= 64 } cid ? cid : null);
         // Die übrigen offenen Dokumente der Inbox reagieren auf die Zuordnung (Gelerntes, neue Einträge)
         foreach (var id in Dms.Reassess(store)) if (!changed.Contains(id)) changed.Add(id);
+        // Abgelöste Rolleninhaber: im selben Bereich mit ablegen, im anderen nur, wenn er erreichbar ist (Tresor offen)
+        foreach (var (tresor, doc, roleName) in store.ReplacedHolders.ToList())
+        {
+            var other = tresor == store.Tresor ? store : !tresor ? space.Db : Core.Tresor.DbOf(space.User.Id) is { } tdb ? DmsStore.ForTresor(space.Db, tdb) : null;
+            if (other == null) continue;
+            // Nach Vorgabe neu ablegen (falls das Profil der Angabe folgt); sonst - oder von Hand abgelegt - nur „[Rolle]“ aus dem Namen nehmen,
+            // damit nie zwei Dateien die Rolle tragen
+            try
+            {
+                DmsImport.Refile(space, DmsHost.Current!, doc, false, other);
+                DmsImport.SyncRoleTag(space, DmsHost.Current!, doc, other);
+            }
+            catch (Exception e) when (e is not OutOfMemoryException) { /* beim nächsten Ändern */ }
+            changed.Remove(doc);
+        }
         foreach (var id in changed)
         {
             DmsImport.Refile(space, DmsHost.Current!, id, false, store);
+            // Rolle im Namen auch, wenn das Profil der Angabe nicht folgt (nur umbenennen)
+            if (Features.On(Features.DmsRoleName)) try { DmsImport.SyncRoleTag(space, DmsHost.Current!, id, store); } catch (Exception e) when (e is not OutOfMemoryException) { /* beim nächsten Ändern */ }
             // Externer Ordner: Angaben im Hintergrund neu in die PDF schreiben, wenn das Profil es will
             if (!store.Tresor && Dms.Get(store, id) is { Mount: not null, PdfA: true } d && DmsFiling.Find(space, d.Profile) is { WriteMeta: true })
             {

@@ -16,12 +16,11 @@ public sealed class DriverVaultFiles(IStorageDriver driver, string root) : IVaul
     public bool FileExists(string rel) => Run(driver.StatAsync(P(rel), default)) is { IsDir: false };
     public bool DirExists(string rel) => Run(driver.StatAsync(P(rel), default)) is { IsDir: true };
 
+    /// <summary>Nur kleine Verwaltungsdateien (masterkey, vault.cryptomator, dir.c9r, name.c9s): höchstens <see cref="VaultFileLimits.MaxMetaFile"/>.</summary>
     public byte[] ReadAll(string rel)
     {
         using var s = Run(driver.OpenReadAsync(P(rel), default));
-        var m = new MemoryStream();
-        s.CopyTo(m);
-        return m.ToArray();
+        return DmOffice.Core.ReadLimit.ReadAll(s, VaultFileLimits.MaxMetaFile);
     }
 
     public Stream OpenRead(string rel)

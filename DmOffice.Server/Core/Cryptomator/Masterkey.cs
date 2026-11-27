@@ -52,6 +52,8 @@ public static class MasterkeyFile
     /// <summary>Vorgaben wie in cryptolib (scrypt N = 2^15, r = 8, p = 1). Tests nehmen weniger.</summary>
     public static int DefaultCost { get; set; } = 32768;
     public const int DefaultBlockSize = 8;
+    /// <summary>Höchstwert für N·r beim Lesen (Speicher 128·N·r).</summary>
+    public const long MaxCostTimesBlockSize = 1 << 19;
 
     private sealed class Model
     {
@@ -105,8 +107,10 @@ public static class MasterkeyFile
     public static Masterkey? Read(ReadOnlySpan<byte> json, string password)
     {
         var m = JsonSerializer.Deserialize<Model>(json) ?? throw new FormatException("masterkey.cryptomator ist leer.");
-        // Obergrenzen (Cryptomator nimmt 2^15/8): ein präparierter Tresor soll den Server nicht mit Speicher oder Rechenzeit lahmlegen
-        if (m.ScryptCostParam < 2 || m.ScryptBlockSize < 1 || m.ScryptCostParam > 1 << 20 || m.ScryptBlockSize > 16
+        // Obergrenzen (Cryptomator nimmt 2^15/8, Speicher 128·N·r = 32 MiB): ein veränderter Tresor soll den Server nicht mit Speicher
+        // oder Rechenzeit lahmlegen - höchstens das Doppelte, 64 MiB je Ableitung
+        if (m.ScryptCostParam < 2 || m.ScryptBlockSize < 1 || m.ScryptCostParam > MaxCostTimesBlockSize || m.ScryptBlockSize > 16
+            || (long)m.ScryptCostParam * m.ScryptBlockSize > MaxCostTimesBlockSize
             || (m.ScryptCostParam & (m.ScryptCostParam - 1)) != 0)
             throw new FormatException("masterkey.cryptomator hat ungültige scrypt-Werte.");
         var kek = Kek(password, Convert.FromBase64String(m.ScryptSalt), m.ScryptCostParam, m.ScryptBlockSize);

@@ -49,6 +49,33 @@ public class ApiHardeningTests : IClassFixture<FilesServerFixture>
     }
 
     [Fact]
+    public async Task Abgeschicktes_Formular_aendert_ueber_die_Schnittstelle_nichts()
+    {
+        var c = await SignedIn();
+        var stamp = Guid.NewGuid().ToString("N")[..8];
+        HttpRequestMessage Req(string mode)
+        {
+            var r = Mkdir("nav-" + stamp + "-" + mode, "same-origin");
+            r.Headers.Add("Sec-Fetch-Mode", mode);
+            return r;
+        }
+        // Formular in einem Inhalt, den die eigene Seite anzeigt: Seitenwechsel von derselben Herkunft
+        Assert.Equal(HttpStatusCode.Forbidden, (await c.SendAsync(Req("navigate"))).StatusCode);
+        // Die Oberfläche selbst (fetch)
+        Assert.True((await c.SendAsync(Req("cors"))).IsSuccessStatusCode);
+        Assert.True((await c.SendAsync(Req("same-origin"))).IsSuccessStatusCode);
+        // Downloads per Formular bleiben
+        var zip = new HttpRequestMessage(HttpMethod.Post, "/api/files/zip") { Content = new FormUrlEncodedContent([new("paths", "nav-" + stamp + "-cors")]) };
+        zip.Headers.Add("Sec-Fetch-Site", "same-origin");
+        zip.Headers.Add("Sec-Fetch-Mode", "navigate");
+        Assert.NotEqual(HttpStatusCode.Forbidden, (await c.SendAsync(zip)).StatusCode);
+        // App-Passwort (kein Cookie) ist nicht betroffen
+        var app = Mkdir("nav-" + stamp + "-app", null);
+        app.Headers.Add("Sec-Fetch-Mode", "navigate");
+        Assert.True((await _fx.Client().SendAsync(app)).IsSuccessStatusCode);
+    }
+
+    [Fact]
     public async Task Anmeldung_aus_neuem_Browser_wird_gemeldet()
     {
         int Notices() => DmOffice.Core.SecurityNotice.Of(_fx.Db).Count(e => e.What.Contains("neuer Browser"));
@@ -131,6 +158,27 @@ public class ApiHardeningTests : IClassFixture<FilesServerFixture>
         prop.Headers.Add("Depth", "0");
         Assert.Equal((HttpStatusCode)207, (await dav.SendAsync(prop)).StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, (await dav.GetAsync("/api/mail/accounts")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Anmeldestand_mit_App_Passwort_nennt_das_Konto()
+    {
+        // Die App fragt die Release-Liste mit App-Passwort ab; ohne Konto übernahm sie sie nicht und zeigte alles als eingeschaltet
+        var app = _fx.Client(signedIn: false);
+        app.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", Convert.ToBase64String(Encoding.UTF8.GetBytes($"{L}:{_fx.AppPassword}")));
+        var state = await app.GetFromJsonAsync<System.Text.Json.JsonElement>("/api/auth/state");
+        Assert.True(state.GetProperty("loggedIn").GetBoolean());
+        Assert.Equal(L, state.GetProperty("user").GetProperty("login").GetString());
+        Assert.Equal(System.Text.Json.JsonValueKind.Array, state.GetProperty("featuresOff").ValueKind);
+        // Geräte-Anmeldung bleibt eingeschränkt: kein Admin-Zugang über das App-Passwort
+        Assert.Equal(HttpStatusCode.Unauthorized, (await app.GetAsync("/api/admin/users")).StatusCode);
+
+        // Falsches App-Passwort: nicht angemeldet
+        var wrong = _fx.Client(signedIn: false);
+        wrong.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", Convert.ToBase64String(Encoding.UTF8.GetBytes($"{L}:falsch-falsch")));
+        var anon = await wrong.GetFromJsonAsync<System.Text.Json.JsonElement>("/api/auth/state");
+        Assert.False(anon.GetProperty("loggedIn").GetBoolean());
+        Assert.Equal(System.Text.Json.JsonValueKind.Null, anon.GetProperty("user").ValueKind);
     }
 
     [Fact]

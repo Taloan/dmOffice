@@ -584,6 +584,8 @@ public static class Oidc
             }
             finally { AccountLock.Release(); }
 
+            if (linked!.LockedOut) return Page("Konto gesperrt", Auth.LockedError, other: true);
+
             // Zwei-Faktor-Anmeldung am Konto und der Anbieter bestätigt keinen eigenen zweiten Faktor: Code abfragen
             if (linked!.TwoFactor && !ProviderMfa(claims))
             {
@@ -618,6 +620,7 @@ public static class Oidc
             }
             Auth.Succeeded(key);
             http.Response.Cookies.Delete(name, new CookieOptions { Path = "/api/auth/oidc", Secure = http.Request.IsHttps });
+            if (u.LockedOut) return Results.Json(new { error = Auth.LockedError }, statusCode: 403);
             await SignIn(http, u, stored.IdToken, dp, config);
             return Results.Ok();
         });
@@ -642,6 +645,7 @@ public static class Oidc
         {
             if (!config.Current.Oidc.AllowUnlink || OnlyOidc(config)) return Results.Json(new { error = "Die Verknüpfung kann nur die Verwaltung lösen." }, statusCode: 403);
             if ((b.Password ?? "").Length < 8) return Results.BadRequest(new { error = "Das neue Passwort braucht mindestens 8 Zeichen." });
+            if (UserStore.PasswordProblem(b.Password!) is { } weak) return Results.BadRequest(new { error = weak });
             var id = http.User.FindFirstValue(ClaimTypes.NameIdentifier)!;
             var u = users.ById(id)!;
             if (u.OidcSubject == null) return Results.BadRequest(new { error = "Dein Konto ist nicht verknüpft." });
@@ -704,14 +708,14 @@ public static class Oidc
             var by = http.User.FindFirstValue(ClaimTypes.NameIdentifier) ?? "";
             var expected = string.IsNullOrWhiteSpace(b.Expected) ? null : b.Expected.Trim();
             if ((b.Invite || expected != null) && u.IsAdmin)
-                return Results.BadRequest(new { error = "Administratorkonten verknüpft die Person selbst unter Einstellungen → Sicherheit." });
+                return Results.BadRequest(new { error = "Ein Administratorkonto kann nur der Benutzer selbst verknüpfen, unter Einstellungen → Sicherheit." });
             if (b.Invite)
             {
                 var token = Passwords.NewToken();
                 var until = DateTimeOffset.UtcNow.AddDays(7);
                 users.Update(id, x => x.OidcExpected = InviteValue(token, until));
                 SecurityNotice.ByAdmin(http.RequestServices, id, by, "Einladungslink für die Anmeldung über OIDC erstellt");
-                return Results.Ok(new { url = $"{http.Request.Scheme}://{http.Request.Host}/api/auth/oidc/start?invite={Uri.EscapeDataString(token)}", until });
+                return Results.Ok(new { url = $"{PublicAddress.Origin(http)}/api/auth/oidc/start?invite={Uri.EscapeDataString(token)}", until });
             }
             if (expected != null && (!expected.Contains('@') || expected.Length > 254 || expected.StartsWith(InvitePrefix, StringComparison.Ordinal)))
                 return Results.BadRequest(new { error = "Bitte eine E-Mail-Adresse angeben. Für einen Anmeldenamen einen Einladungslink erstellen." });
@@ -731,6 +735,7 @@ public static class Oidc
             var pw = b.Password ?? "";
             if (u.NoOwnPassword && pw.Length == 0) return Results.BadRequest(new { error = "Das Konto hat noch kein eigenes Passwort. Bitte ein Passwort festlegen." });
             if (pw.Length is > 0 and < 8) return Results.BadRequest(new { error = "Das Passwort braucht mindestens 8 Zeichen." });
+            if (pw.Length > 0 && UserStore.PasswordProblem(pw) is { } weak) return Results.BadRequest(new { error = weak });
             users.Update(id, x =>
             {
                 x.OidcSubject = null; x.OidcExpected = null;

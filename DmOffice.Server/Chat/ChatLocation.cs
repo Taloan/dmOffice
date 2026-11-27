@@ -47,7 +47,7 @@ public static partial class ChatApi
             var me = Me(http);
             var room = chat.Room(me, id);
             if (!chat.Rights(me).LocationRequests) throw new UnauthorizedAccessException("Standort-Anfragen sind für dich in der Verwaltung nicht erlaubt.");
-            if (!MayAskLocation(chat, room, me)) throw new UnauthorizedAccessException("Diese Person möchte nicht nach ihrem Standort gefragt werden.");
+            if (!MayAskLocation(chat, room, me)) throw new UnauthorizedAccessException("Dieser Benutzer möchte nicht nach seinem Standort gefragt werden.");
             var msg = chat.Post(me, id, "Wo bist du gerade? Schickst du mir deinen Standort?",
                 actions: [new ChatAction(LocYes, "Standort schicken"), new ChatAction(LocNo, "Nicht schicken")]);
             return MessageDto(chat.Message(me, msg), users, chat);

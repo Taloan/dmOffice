@@ -81,21 +81,71 @@ public static class PhotoEngine
     }
 
     /// <summary>Werte anwenden: mit maxEdge eine Vorschau (aufrecht), ohne das Original in voller Größe (Metadaten bleiben, Drehangabe unverändert).</summary>
-    public static async Task<byte[]?> DevelopAsync(byte[] jpeg, PhotoAdjust.Values v, int? maxEdge, int quality, ILogger? log, CancellationToken ct)
+    /// <summary>
+    /// Vorschau als JPEG (/preview) für Formate, die dmOffice selbst nicht dekodiert (TIFF, auch 16 Bit; Kennung tiffpreview), aufrecht und
+    /// höchstens <paramref name="maxEdge"/> groß. Null: Engine aus oder nicht erreichbar (nichts merken, später noch einmal); leer: Datei nicht
+    /// lesbar (merken, kein Vorschaubild).
+    /// </summary>
+    public static Task<byte[]?> PreviewAsync(byte[] image, int maxEdge, ILogger? log, CancellationToken ct) =>
+        PreviewAsync(() => new ByteArrayContent(image), maxEdge, log, ct);
+
+    /// <summary>Wie oben, die Datei wird aus dem Stream durchgereicht statt ganz in den Speicher geladen.</summary>
+    public static Task<byte[]?> PreviewAsync(Stream image, int maxEdge, ILogger? log, CancellationToken ct) =>
+        PreviewAsync(() =>
+        {
+            var c = new StreamContent(image, 81920);
+            if (image.CanSeek) c.Headers.ContentLength = image.Length - image.Position;
+            return c;
+        }, maxEdge, log, ct);
+
+    private static async Task<byte[]?> PreviewAsync(Func<HttpContent> body, int maxEdge, ILogger? log, CancellationToken ct)
+    {
+        if (!Configured) return null;
+        using var lease = await ConnectAsync(ct);
+        if (lease == null) return null;
+        try
+        {
+            using var req = Request(lease, HttpMethod.Post, "/preview?max_edge=" + maxEdge + "&quality=90");
+            req.Content = body();
+            req.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+            using var limit = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            limit.CancelAfter(TimeSpan.FromSeconds(90));
+            using var res = await Http.SendAsync(req, limit.Token);
+            if (res.StatusCode == System.Net.HttpStatusCode.BadRequest) return [];
+            if (!res.IsSuccessStatusCode) { log?.LogWarning("Photo-Engine /preview: {Status}", (int)res.StatusCode); return null; }
+            var bytes = await res.Content.ReadAsByteArrayAsync(limit.Token);
+            return PhotoEdit.IsJpeg(bytes) ? bytes : [];
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
+        {
+            log?.LogWarning("Photo-Engine nicht erreichbar: {Error}", e.GetBaseException().Message);
+            return null;
+        }
+    }
+
+    // [feature:lenscorr]
+    /// <param name="lens">Objektivkorrektur (Block „lens“, LensProfiles.Block); null: keine</param>
+    public static async Task<byte[]?> DevelopAsync(byte[] jpeg, PhotoAdjust.Values v, int? maxEdge, int quality, ILogger? log, CancellationToken ct,
+        System.Text.Json.Nodes.JsonObject? lens = null)
+    // [feature:lenscorr:else]
+    // public static async Task<byte[]?> DevelopAsync(byte[] jpeg, PhotoAdjust.Values v, int? maxEdge, int quality, ILogger? log, CancellationToken ct)
+    // [/feature:lenscorr]
     {
         using var lease = await ConnectAsync(ct);
         if (lease == null) return null;
         try
         {
-            var corrections = JsonSerializer.Serialize(new
+            var body = new System.Text.Json.Nodes.JsonObject
             {
-                global = new
+                ["global"] = JsonSerializer.SerializeToNode(new
                 {
                     exposure_ev = v.Exposure, contrast = v.Contrast, highlights = v.Highlights, shadows = v.Shadows, whites = v.Whites, blacks = v.Blacks,
                     temperature_shift = v.Temperature, tint_shift = v.Tint, vibrance = v.Vibrance, saturation = v.Saturation, dehaze = v.Dehaze, clarity = v.Clarity,
-                },
-                crop = new { straighten_deg = 0 },
-            });
+                }),
+                ["crop"] = new System.Text.Json.Nodes.JsonObject { ["straighten_deg"] = 0 },
+            };
+            if (lens != null) body["lens"] = lens.DeepClone();   // [feature:lenscorr]
+            var corrections = body.ToJsonString();
             using var req = Request(lease, HttpMethod.Post, "/develop?quality=" + quality + (maxEdge is int m ? "&max_edge=" + m : ""));
             req.Content = new ByteArrayContent(jpeg);
             req.Content.Headers.ContentType = new MediaTypeHeaderValue("image/jpeg");
@@ -124,4 +174,31 @@ public static class PhotoEngine
             return null;
         }
     }
+// [feature:lenscorr]
+
+    /// <summary>
+    /// Auftrag an die Engine mit JSON-Antwort (Objektivprofile lesen, Schachbrett finden, Verzeichnung bestimmen). Status 0: keine Engine
+    /// oder keine Antwort.
+    /// </summary>
+    public static async Task<(int Status, System.Text.Json.Nodes.JsonNode? Json)> CallAsync(string path, byte[] body, string contentType, int seconds, CancellationToken ct)
+    {
+        if (!Configured) return (0, null);
+        using var lease = await ConnectAsync(ct);
+        if (lease == null) return (0, null);
+        try
+        {
+            using var req = Request(lease, HttpMethod.Post, path);
+            req.Content = new ByteArrayContent(body);
+            req.Content.Headers.ContentType = new MediaTypeHeaderValue(contentType);
+            using var limit = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            limit.CancelAfter(TimeSpan.FromSeconds(seconds));
+            using var res = await Http.SendAsync(req, limit.Token);
+            var text = await res.Content.ReadAsStringAsync(limit.Token);
+            System.Text.Json.Nodes.JsonNode? json = null;
+            try { json = System.Text.Json.Nodes.JsonNode.Parse(text); } catch (JsonException) { }
+            return ((int)res.StatusCode, json);
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested) { return (0, null); }
+    }
+// [/feature:lenscorr]
 }

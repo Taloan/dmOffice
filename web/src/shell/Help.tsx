@@ -2,8 +2,9 @@ import {
   Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Link, Menu, MenuDivider, MenuItem, MenuList, MenuPopover, MenuTrigger, Text, Tooltip, tokens,
 } from '@fluentui/react-components'
 import { Book20Regular, Globe20Regular, Info20Regular, QuestionCircle20Regular } from '@fluentui/react-icons'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useApp } from '../App'
+import { featureOn } from '../api'
 import { lang, t } from '../i18n'
 import { copyText } from './browser'
 import { brandLogo } from '../theme'
@@ -19,6 +20,13 @@ const open = (url: string) => { window.open(url, '_blank', 'noopener,noreferrer'
 /** Hilfe in der Kopfzeile: Webseite, Handbuch, GitHub und ein Infofenster. */
 export function HelpMenu({ className, release, build, extra }: { className?: string; release: string; build: string; extra?: string[] }) {
   const [about, setAbout] = useState(false)
+  // F1 öffnet überall das Handbuch (Kennung f1help)
+  useEffect(() => {
+    if (!featureOn('f1help')) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'F1' && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) { e.preventDefault(); open(MANUAL) } }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
   return (
     <>
       <Menu>
@@ -30,7 +38,7 @@ export function HelpMenu({ className, release, build, extra }: { className?: str
         <MenuPopover>
           <MenuList>
             <MenuItem icon={<Globe20Regular />} onClick={() => open(WEBSITE)}>{t('Webseite von dmOffice')}</MenuItem>
-            <MenuItem icon={<Book20Regular />} onClick={() => open(MANUAL)}>{t('Handbuch')}</MenuItem>
+            <MenuItem icon={<Book20Regular />} secondaryContent={featureOn('f1help') ? 'F1' : undefined} onClick={() => open(MANUAL)}>{t('Handbuch')}</MenuItem>
             <MenuItem icon={<Globe20Regular />} onClick={() => open(GITHUB)}>{t('dmOffice auf GitHub')}</MenuItem>
             <MenuDivider />
             <MenuItem icon={<Info20Regular />} onClick={() => setAbout(true)}>{t('Über dmOffice')}</MenuItem>

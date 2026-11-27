@@ -9,6 +9,12 @@ namespace DmOffice.Dms;
 public sealed record DmsEntry(string Id, string Kind, string? Parent, string Name, string? Color, string Match, string? MatchText,
     bool CaseSensitive, int Count = 0, string? LastUsed = null);
 
+/// <summary>Name schon vergeben (Umbenennen, Verschieben): Existing ist der Eintrag mit dem Namen - zum Zusammenführen (dmsmerge).</summary>
+public sealed class DmsNameTakenException(string message, string existing) : ArgumentException(message)
+{
+    public string Existing { get; } = existing;
+}
+
 /// <summary>Ein Tag an einem Dokument; Auto = vom DMS gesetzt und noch nicht bestätigt.</summary>
 public sealed record DmsDocTag(string Id, bool Auto);
 
@@ -24,7 +30,9 @@ public sealed record DmsDoc(long Id, long FileId, string? Path, string State, st
     /// <summary>Betrag in Cent (von Hand eingetragen), null: keiner.</summary>
     long? Amount = null,
     /// <summary>Fixiert: Inhalt nicht änderbar, Dokument nicht löschbar, bis die Fixierung bewusst aufgehoben wird.</summary>
-    bool Fixed = false);
+    bool Fixed = false,
+    /// <summary>Werte eigener Felder (DmsFields, Kennung dmsfields): Feld-Kennung → Wert; null: keine.</summary>
+    Dictionary<string, string>? Fields = null);
 
 /// <summary>
 /// DMS (docs/dms-konzept.md): Dokumente sind Dateien der Dateiablage; DMS führt seine Angaben in eigenen Tabellen (dms_*)
@@ -92,7 +100,7 @@ CREATE TABLE IF NOT EXISTS dms_seen (source TEXT NOT NULL, path TEXT NOT NULL, e
         // Angaben noch in die PDF zu schreiben
         foreach (var (col, type) in new[] { ("pl", "INTEGER NOT NULL DEFAULT 0"), ("pl_correspondent", "TEXT NULL"), ("pl_doctype", "TEXT NULL"), ("pl_tags", "TEXT NULL"),
                      ("ext_mount", "TEXT NULL"), ("ext_path", "TEXT NULL"), ("ext_original", "TEXT NULL"), ("ext_sha", "TEXT NULL"), ("meta_dirty", "INTEGER NOT NULL DEFAULT 0"),
-                     ("role", "TEXT NULL"), ("role_since", "INTEGER NULL"), ("amount", "INTEGER NULL"), ("fixed", "INTEGER NOT NULL DEFAULT 0"),
+                     ("role", "TEXT NULL"), ("role_since", "INTEGER NULL"), ("amount", "INTEGER NULL"), ("fixed", "INTEGER NOT NULL DEFAULT 0"), ("fields", "TEXT NULL"),
                      // Betrag von Hand gesetzt (auch geleert): die Erkennung fasst ihn nicht mehr an
                      ("amount_set", "INTEGER NOT NULL DEFAULT 0") })
             if (!have.Contains(col)) db.Exec($"ALTER TABLE dms_docs ADD COLUMN {col} {type}");
@@ -217,8 +225,8 @@ CREATE TABLE IF NOT EXISTS dms_seen (source TEXT NOT NULL, path TEXT NOT NULL, e
             if (Below(all, id).Contains(newParent)) throw new ArgumentException("Ein Eintrag kann nicht unter sich selbst liegen.");
         }
         var n = name == null ? e.Name : CleanName(name);
-        if (all.Any(c => c.Parent == newParent && c.Id != id && string.Equals(c.Name, n, StringComparison.CurrentCultureIgnoreCase)))
-            throw new ArgumentException($"„{n}“ gibt es hier schon.");
+        if (all.FirstOrDefault(c => c.Parent == newParent && c.Id != id && string.Equals(c.Name, n, StringComparison.CurrentCultureIgnoreCase)) is { } taken)
+            throw new DmsNameTakenException($"„{n}“ gibt es hier schon.", taken.Id);
         var m = e.Kind == Role ? None : match ?? e.Match;
         if (m == Sender && e.Kind != Correspondent) throw new ArgumentException("„Absender“ gibt es nur für Korrespondenten.");
         var t = e.Kind == Role ? null : matchText == null ? e.MatchText : matchText.Trim();
@@ -277,7 +285,7 @@ CREATE TABLE IF NOT EXISTS dms_seen (source TEXT NOT NULL, path TEXT NOT NULL, e
 
     private static string DocColumns(DmsStore db) => $@"d.id, COALESCE(d.fileid, 0), {db.PathCol}, d.state, d.title, d.doc_date, d.imported, d.correspondent, d.doctype, d.inbox, d.by_ai,
         d.error, d.original_name, d.mime, d.size, d.original_blob, d.archive, d.pdfa, d.profile, d.source, d.sender, d.auto_correspondent, d.auto_doctype,
-        d.manual, d.ai_suggestion, d.pl, d.pl_correspondent, d.pl_doctype, d.pl_tags, {PlDiffers}, d.ext_mount, d.ext_path, d.ext_original IS NOT NULL, d.role, d.amount, d.fixed";
+        d.manual, d.ai_suggestion, d.pl, d.pl_correspondent, d.pl_doctype, d.pl_tags, {PlDiffers}, d.ext_mount, d.ext_path, d.ext_original IS NOT NULL, d.role, d.amount, d.fixed, d.fields";
 
     private static DmsDoc ReadDoc(Microsoft.Data.Sqlite.SqliteDataReader r, Dictionary<long, List<DmsDocTag>> tags)
     {
@@ -291,7 +299,8 @@ CREATE TABLE IF NOT EXISTS dms_seen (source TEXT NOT NULL, path TEXT NOT NULL, e
             r.GetInt64(23) != 0, r.IsDBNull(24) ? null : r.GetString(24), r.GetInt64(1) != 0 && r.IsDBNull(2),
             r.GetInt64(25) == 0 ? null : new PaperlessValues(r.IsDBNull(26) ? null : r.GetString(26), r.IsDBNull(27) ? null : r.GetString(27),
                 r.IsDBNull(28) || r.GetString(28).Length == 0 ? [] : r.GetString(28).Split(',').ToList(), r.GetInt64(29) != 0), mount,
-            r.IsDBNull(33) ? null : r.GetString(33), Amount: r.IsDBNull(34) ? null : r.GetInt64(34), Fixed: r.GetInt64(35) != 0);
+            r.IsDBNull(33) ? null : r.GetString(33), Amount: r.IsDBNull(34) ? null : r.GetInt64(34), Fixed: r.GetInt64(35) != 0,
+            Fields: r.IsDBNull(36) ? null : DmsFields.Parse(r.GetString(36)));
     }
 
     private static Dictionary<long, List<DmsDocTag>> TagsOf(DmsStore db, IEnumerable<long>? ids = null)
@@ -316,7 +325,10 @@ CREATE TABLE IF NOT EXISTS dms_seen (source TEXT NOT NULL, path TEXT NOT NULL, e
     public sealed record Filter(string? Query = null, string? Correspondent = null, string? Doctype = null, List<string>? Tags = null,
         string? DocFrom = null, string? DocTo = null, long? ImportedFrom = null, long? ImportedTo = null, bool? Inbox = null, string? Profile = null,
         string? Mime = null, bool? NoCorrespondent = null, bool? NoDoctype = null, bool? NoTags = null, bool? PaperlessDiffers = null,
-        bool? Queued = null, string? Sort = null, bool Desc = false, string? Role = null, bool? NoRole = null, bool? Fixed = null);
+        bool? Queued = null, string? Sort = null, bool Desc = false, string? Role = null, bool? NoRole = null, bool? Fixed = null,
+        /// <summary>Einträge (Kennungen), bei denen nur ihre eigenen Dokumente zählen, nicht die der Unterbegriffe: ein Ordner des Baums mit weiteren
+        /// Ebenen darunter (etwa Jahr) zeigt nur, was der Baum dort zählt.</summary>
+        List<string>? Exact = null);
 
     /// <summary>Sortierbare Spalten der Dokumentliste (Klick auf den Spaltenkopf).</summary>
     public static readonly string[] SortKeys = ["date", "title", "correspondent", "doctype", "tags", "role", "imported", "size", "name", "type", "source"];
@@ -334,7 +346,7 @@ CREATE TABLE IF NOT EXISTS dms_seen (source TEXT NOT NULL, path TEXT NOT NULL, e
         var all = Entries(db.User);
         void InEntries(string column, string id, string name)
         {
-            var below = Below(all, id).ToList();
+            var below = f.Exact?.Contains(id) == true ? [id] : Below(all, id).ToList();
             var ps = below.Select((_, i) => $"${name}{i}").ToList();
             where.Add($"{column} IN ({string.Join(",", ps)})");
             args.AddRange(below.Select((b, i) => (ps[i], (object?)b)));
@@ -346,7 +358,7 @@ CREATE TABLE IF NOT EXISTS dms_seen (source TEXT NOT NULL, path TEXT NOT NULL, e
         if (filterTags.Count > MaxFilterTags) throw new ArgumentException($"Zu viele Tags auf einmal (höchstens {MaxFilterTags}).");
         foreach (var tag in filterTags)
         {
-            var below = Below(all, tag).ToList();
+            var below = f.Exact?.Contains(tag) == true ? [tag] : Below(all, tag).ToList();
             var ps = below.Select((_, i) => $"$g{ti}_{i}").ToList();
             where.Add($"d.id IN (SELECT doc FROM dms_doc_tags WHERE tag IN ({string.Join(",", ps)}))");
             args.AddRange(below.Select((b, i) => (ps[i], (object?)b)));
@@ -373,7 +385,7 @@ CREATE TABLE IF NOT EXISTS dms_seen (source TEXT NOT NULL, path TEXT NOT NULL, e
         var join = "";
         // Gleicher Wert: der zuletzt importierte zuerst (bzw. in der gewählten Richtung), dann die Kennung
         var order = "COALESCE(d.doc_date, date(d.imported, 'unixepoch')) DESC, d.imported DESC, d.id DESC";
-        if (f.Sort != null && SortKeys.Contains(f.Sort))
+        if (f.Sort != null && (SortKeys.Contains(f.Sort) || f.Sort.StartsWith("f:", StringComparison.Ordinal)))
         {
             var dir = f.Desc ? "DESC" : "ASC";
             // Korrespondent und Dokumenttyp nach dem vollen Namen (mit übergeordneten Einträgen); die Listen liegen nicht immer in derselben Datenbank
@@ -395,6 +407,8 @@ CREATE TABLE IF NOT EXISTS dms_seen (source TEXT NOT NULL, path TEXT NOT NULL, e
                 "tags" => $"COALESCE((SELECT MIN({ByName("g.tag", Tag)}) FROM dms_doc_tags g WHERE g.doc = d.id), {all.Count(e => e.Kind == Tag)})",
                 "imported" => "d.imported",
                 "amount" => "COALESCE(d.amount, 0)",
+                // Eigenes Feld: Zahl und Betrag nach Wert, sonst nach Text; ohne Wert ans Ende
+                { } k when k.StartsWith("f:") && FieldSort(db, k[2..]) is { } fs => fs,
                 "size" => "d.size",
                 "name" => "d.original_name COLLATE NOCASE",
                 "type" => "d.mime",
@@ -408,7 +422,9 @@ CREATE TABLE IF NOT EXISTS dms_seen (source TEXT NOT NULL, path TEXT NOT NULL, e
             // weil der Titel die Endung nicht enthält. Treffer im Text zuerst, nach Relevanz
             const string rank = "(SELECT bm25(dms_fts, 4.0, 1.0) FROM dms_fts WHERE dms_fts MATCH $q AND rowid = d.id)";
             var name = f.Query.Trim().TrimStart('*').Replace("!", "!!").Replace("%", "!%").Replace("_", "!_");
-            where.Add("(d.id IN (SELECT rowid FROM dms_fts WHERE dms_fts MATCH $q) OR d.original_name LIKE $n ESCAPE '!' OR d.placed_path LIKE $n ESCAPE '!')");
+            // Werte eigener Felder (dmsfields) mitsuchen: „Steuernummer 12/345“ findet den Bescheid auch, wenn die Nummer im Text anders umbrochen ist
+            where.Add("(d.id IN (SELECT rowid FROM dms_fts WHERE dms_fts MATCH $q) OR d.original_name LIKE $n ESCAPE '!' OR d.placed_path LIKE $n ESCAPE '!'"
+                + (Features.On(Features.DmsFields) ? " OR d.fields LIKE $n ESCAPE '!')" : ")"));
             args.Add(("$q", match));
             args.Add(("$n", "%" + name + "%"));
             if (f.Sort == null) order = $"{rank} IS NULL, {rank}, d.id DESC";
@@ -516,12 +532,22 @@ CREATE TABLE IF NOT EXISTS dms_seen (source TEXT NOT NULL, path TEXT NOT NULL, e
         db.Exec("INSERT INTO dms_fts(rowid, title, body) VALUES($d, $t, $b)", ("$d", id), ("$t", title), ("$b", body));
     }
 
+    /// <summary>Sortierausdruck für ein eigenes Feld (nur bekannte Kennungen - der Ausdruck kommt ins SQL).</summary>
+    private static string? FieldSort(DmsStore db, string id)
+    {
+        if (!Features.On(Features.DmsFields) || DmsFields.All(db.User).FirstOrDefault(f => f.Id == id) is not { } f) return null;
+        var v = $"json_extract(d.fields, '$.{f.Id}')";
+        return f.Type is DmsFields.Number or DmsFields.Money ? $"{v} IS NULL, CAST({v} AS REAL)" : $"{v} IS NULL, {v} COLLATE NOCASE";
+    }
+
     // ---------------- Angaben setzen ----------------
 
     /// <summary>Änderung von Hand. Null = unverändert; Korrespondent/Dokumenttyp "" = keiner; Datum "" = keins.</summary>
     public sealed record Change(string? Title = null, string? DocDate = null, string? Correspondent = null, string? Doctype = null,
         List<string>? Tags = null, List<string>? AddTags = null, List<string>? RemoveTags = null, bool? Confirm = null, string? Role = null, string? Amount = null,
-        string? DocPeriod = null);
+        string? DocPeriod = null,
+        /// <summary>Eigene Felder (dmsfields): Kennung → Wert, leer entfernt; nicht genannte bleiben</summary>
+        Dictionary<string, string?>? Fields = null);
 
     // ---------------- Fixiert ----------------
 
@@ -588,6 +614,8 @@ CREATE TABLE IF NOT EXISTS dms_seen (source TEXT NOT NULL, path TEXT NOT NULL, e
                 throw new ArgumentException("Ungültiges Datum.");
             // Das Datum wandert in Dateinamen und Ordner; Jahre vor 1000 sind Tippfehler
             if (d.Year < 1000) throw new ArgumentException("Ungültiges Datum.");
+            // … und weit in der Zukunft auch („9999-12-31“ ergaebe einen Ordner „9999“); ein Jahr Spielraum fuer Vorausdatiertes
+            if (d > DateOnly.FromDateTime(DateTime.Today).AddYears(1)) throw new ArgumentException("Das Dokumentdatum darf höchstens ein Jahr in der Zukunft liegen.");
             date = d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
         }
         var title = c.Title == null ? null : CleanText(c.Title);
@@ -609,11 +637,15 @@ CREATE TABLE IF NOT EXISTS dms_seen (source TEXT NOT NULL, path TEXT NOT NULL, e
                 : throw new ArgumentException("Ungültiger Betrag.");
 
         var changed = new List<long>();
+        List<DmsFields.Field>? fieldDefs = null;
         foreach (var doc in ByIds(db, idList))
         {
             if (doc.State == "queued") continue;
             // Der Betrag ändert nichts an der Ablage
             if (c.Amount != null) db.Exec("UPDATE dms_docs SET amount = $a, amount_set = 1 WHERE id = $d", ("$a", amount), ("$d", doc.Id));
+            // Eigene Felder ändern nichts an Ablage und Gelerntem
+            if (c.Fields is { Count: > 0 })
+                db.Exec("UPDATE dms_docs SET fields = $f WHERE id = $d", ("$f", DmsFields.Merge(fieldDefs ??= DmsFields.All(db.User), db.Scalar("SELECT fields FROM dms_docs WHERE id = $d", ("$d", doc.Id)) as string, c.Fields)), ("$d", doc.Id));
             HashSet<string>? tokens = null;
             HashSet<string> Tok() => tokens ??= DmsAssign.Tokens(db, doc.Id);
             void Learn(string entry, bool positive)
@@ -663,6 +695,10 @@ CREATE TABLE IF NOT EXISTS dms_seen (source TEXT NOT NULL, path TEXT NOT NULL, e
                 if (v != doc.Role || (v != null && !doc.RoleCurrent))
                 {
                     var now = Unix();
+                    // Bisheriger Inhaber der neuen Rolle: verliert sie (frühere Version) - merken, damit er neu abgelegt wird (Platzhalter Rolle im Namen)
+                    if (v != null)
+                        foreach (var (pt, pd) in db.User.Query("SELECT tresor, doc FROM dms_roles WHERE role = $r", r => (r.GetInt64(0) != 0, r.GetInt64(1)), ("$r", v)))
+                            if (pt != db.Tresor || pd != doc.Id) db.ReplacedHolders.Add((pt, pd, byId[v].Name));
                     db.Exec("UPDATE dms_docs SET role = $r, role_since = $n WHERE id = $d", ("$r", v), ("$n", v == null ? null : now), ("$d", doc.Id));
                     // Hatte dieses Dokument die bisherige Rolle inne: sie hat danach keines mehr
                     if (doc.Role != null && doc.RoleCurrent)

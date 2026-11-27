@@ -347,6 +347,16 @@
    }
   },
   {
+   "name": "SFace",
+   "license": "Apache-2.0",
+   "url": "https://github.com/opencv/opencv_zoo/tree/main/models/face_recognition_sface",
+   "note": {
+    "de": "Gesichtererkennung in der Photo-Engine; Trainingsdaten: siehe photo-engine/models/README.md",
+    "en": "face recognition in the Photo Engine; training data: see photo-engine/models/README.md"
+   },
+   "feature": "faces"
+  },
+  {
    "name": "Haar-Kaskaden (OpenCV)",
    "copyright": "Copyright (C) 2000, Intel Corporation",
    "license": "Intel-OpenCV",
@@ -446,7 +456,15 @@
    ],
    "packages": "packages",
    "compatTitle": "Compatibility with the AGPL-3.0",
-   "compat": "dmOffice itself is licensed under the GNU AGPL-3.0 (see `LICENSE`). The libraries of the web interface and the server are under MIT, Apache-2.0, ISC, 0BSD or BSD-style licenses, the SIL Open Font License or in the public domain; these allow redistribution as part of an AGPL-3.0 work, and Apache-2.0 is compatible with version 3 of the GPL/AGPL. The programs in the Docker image (Poppler under GPL, libheif under LGPL-3.0, Ghostscript under AGPL-3.0) are only called as separate processes and are shipped unchanged with their package license texts. The Photo Engine (AGPL-3.0, like dmOffice) loads its libraries into its own process; the wheels ship LibRaw, FFmpeg and libquadmath as separate shared libraries under the LGPL and do not contain the GPL add-on packs of LibRaw. The license listed for YuNet is the one published for the model file. It does not cover the training data; see `photo-engine/models/README.md`."
+   "compat": [
+    {
+     "feature": "faces",
+     "text": "dmOffice itself is licensed under the GNU AGPL-3.0 (see `LICENSE`). The libraries of the web interface and the server are under MIT, Apache-2.0, ISC, 0BSD or BSD-style licenses, the SIL Open Font License or in the public domain; these allow redistribution as part of an AGPL-3.0 work, and Apache-2.0 is compatible with version 3 of the GPL/AGPL. The programs in the Docker image (Poppler under GPL, libheif under LGPL-3.0, Ghostscript under AGPL-3.0) are only called as separate processes and are shipped unchanged with their package license texts. The Photo Engine (AGPL-3.0, like dmOffice) loads its libraries into its own process; the wheels ship LibRaw, FFmpeg and libquadmath as separate shared libraries under the LGPL and do not contain the GPL add-on packs of LibRaw. The licenses listed for YuNet and SFace are those published for the model files. They do not cover the training data; see `photo-engine/models/README.md`."
+    },
+    {
+     "text": "dmOffice itself is licensed under the GNU AGPL-3.0 (see `LICENSE`). The libraries of the web interface and the server are under MIT, Apache-2.0, ISC, 0BSD or BSD-style licenses, the SIL Open Font License or in the public domain; these allow redistribution as part of an AGPL-3.0 work, and Apache-2.0 is compatible with version 3 of the GPL/AGPL. The programs in the Docker image (Poppler under GPL, libheif under LGPL-3.0, Ghostscript under AGPL-3.0) are only called as separate processes and are shipped unchanged with their package license texts. The Photo Engine (AGPL-3.0, like dmOffice) loads its libraries into its own process; the wheels ship LibRaw, FFmpeg and libquadmath as separate shared libraries under the LGPL and do not contain the GPL add-on packs of LibRaw. The license listed for YuNet is the one published for the model file. It does not cover the training data; see `photo-engine/models/README.md`."
+    }
+   ]
   },
   "de": {
    "title": "Fremde Bestandteile",
@@ -475,7 +493,15 @@
    ],
    "packages": "Pakete",
    "compatTitle": "Verträglichkeit mit der AGPL-3.0",
-   "compat": "dmOffice selbst steht unter der GNU AGPL-3.0 (siehe `LICENSE`). Die Bibliotheken der Weboberfläche und des Servers stehen unter MIT-, Apache-2.0-, ISC-, 0BSD- oder BSD-artigen Lizenzen, der SIL Open Font License oder sind gemeinfrei; diese erlauben die Weitergabe als Teil eines Werks unter der AGPL-3.0, Apache-2.0 ist mit Version 3 der GPL/AGPL verträglich. Die Programme im Docker-Image (Poppler unter GPL, libheif unter LGPL-3.0, Ghostscript unter AGPL-3.0) werden nur als eigene Prozesse aufgerufen und unverändert mit den Lizenztexten ihrer Pakete ausgeliefert. Die Photo-Engine (AGPL-3.0 wie dmOffice) lädt ihre Bibliotheken in den eigenen Prozess; die Pakete bringen LibRaw, FFmpeg und libquadmath als eigene Bibliotheken unter der LGPL mit und enthalten die GPL-Zusatzpakete von LibRaw nicht. Die für YuNet genannte Lizenz ist die für die Modelldatei veröffentlichte. Sie erfasst die Trainingsdaten nicht; siehe `photo-engine/models/README.md`."
+   "compat": [
+    {
+     "feature": "faces",
+     "text": "dmOffice selbst steht unter der GNU AGPL-3.0 (siehe `LICENSE`). Die Bibliotheken der Weboberfläche und des Servers stehen unter MIT-, Apache-2.0-, ISC-, 0BSD- oder BSD-artigen Lizenzen, der SIL Open Font License oder sind gemeinfrei; diese erlauben die Weitergabe als Teil eines Werks unter der AGPL-3.0, Apache-2.0 ist mit Version 3 der GPL/AGPL verträglich. Die Programme im Docker-Image (Poppler unter GPL, libheif unter LGPL-3.0, Ghostscript unter AGPL-3.0) werden nur als eigene Prozesse aufgerufen und unverändert mit den Lizenztexten ihrer Pakete ausgeliefert. Die Photo-Engine (AGPL-3.0 wie dmOffice) lädt ihre Bibliotheken in den eigenen Prozess; die Pakete bringen LibRaw, FFmpeg und libquadmath als eigene Bibliotheken unter der LGPL mit und enthalten die GPL-Zusatzpakete von LibRaw nicht. Die für YuNet und SFace genannten Lizenzen sind die für die Modelldateien veröffentlichten. Sie erfassen die Trainingsdaten nicht; siehe `photo-engine/models/README.md`."
+    },
+    {
+     "text": "dmOffice selbst steht unter der GNU AGPL-3.0 (siehe `LICENSE`). Die Bibliotheken der Weboberfläche und des Servers stehen unter MIT-, Apache-2.0-, ISC-, 0BSD- oder BSD-artigen Lizenzen, der SIL Open Font License oder sind gemeinfrei; diese erlauben die Weitergabe als Teil eines Werks unter der AGPL-3.0, Apache-2.0 ist mit Version 3 der GPL/AGPL verträglich. Die Programme im Docker-Image (Poppler unter GPL, libheif unter LGPL-3.0, Ghostscript unter AGPL-3.0) werden nur als eigene Prozesse aufgerufen und unverändert mit den Lizenztexten ihrer Pakete ausgeliefert. Die Photo-Engine (AGPL-3.0 wie dmOffice) lädt ihre Bibliotheken in den eigenen Prozess; die Pakete bringen LibRaw, FFmpeg und libquadmath als eigene Bibliotheken unter der LGPL mit und enthalten die GPL-Zusatzpakete von LibRaw nicht. Die für YuNet genannte Lizenz ist die für die Modelldatei veröffentlichte. Sie erfasst die Trainingsdaten nicht; siehe `photo-engine/models/README.md`."
+    }
+   ]
   }
  }
 }

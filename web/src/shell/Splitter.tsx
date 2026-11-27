@@ -73,3 +73,75 @@ function Splitter({ edge, inside, width, clamp, onLive, onDone, onReset }: {
       onDoubleClick={onReset} />
   )
 }
+
+const useRowStyles = makeStyles({
+  // Waagerechte Griffleiste unter einem Bereich (Liste über dem Lesebereich); wie split, nur quer
+  split: {
+    height: '7px', margin: '-3px 0', flexShrink: 0, alignSelf: 'stretch', cursor: 'row-resize', zIndex: 5, position: 'relative',
+    touchAction: 'none',
+    ':hover': { backgroundImage: `linear-gradient(to bottom, transparent 3px, ${tokens.colorBrandStroke1} 3px, ${tokens.colorBrandStroke1} 4px, transparent 4px)` },
+  },
+  active: { backgroundImage: `linear-gradient(to bottom, transparent 3px, ${tokens.colorBrandStroke1} 3px, ${tokens.colorBrandStroke1} 4px, transparent 4px)` },
+})
+
+/**
+ * Höhe eines Bereichs (Liste über dem Lesebereich), mit der Maus verstellbar und gemerkt wie die Breite (prefs.paneWidths[key]).
+ * Ohne gemerkten Wert: height undefined - es gilt die Vorgabe aus dem CSS (etwa 42 %). Doppelklick: zurück zur Vorgabe.
+ * Die Leiste (handle) gehört direkt unter den Bereich; sie misst beim Ziehen dessen aktuelle Höhe.
+ */
+export function usePaneHeight(key: string, min = 120) {
+  const { prefs, update } = usePrefs()
+  const mobile = useIsMobile()
+  const [live, setLive] = useState<number | null>(null)
+  // Oben und unten bleibt Platz für den anderen Bereich
+  const clamp = (h: number) => Math.max(min, Math.min(window.innerHeight - 200, h))
+  const saved = prefs.paneWidths?.[key]
+  const height = live ?? (saved != null ? clamp(saved) : undefined)
+  const save = (h: number | null) => {
+    const next = { ...(prefs.paneWidths ?? {}) }
+    if (h == null) delete next[key]; else next[key] = Math.round(h)
+    update({ paneWidths: next })
+  }
+  const handle = () => mobile ? null : (
+    <RowSplitter clamp={clamp} onLive={setLive} onDone={h => { setLive(null); save(h) }} onReset={() => { setLive(null); save(null) }} />
+  )
+  return { height: mobile ? undefined : height, handle }
+}
+
+function RowSplitter({ clamp, onLive, onDone, onReset }: {
+  clamp: (h: number) => number; onLive: (h: number) => void; onDone: (h: number) => void; onReset: () => void
+}) {
+  const s = useRowStyles()
+  const drag = useRef<{ y: number; h: number; now: number } | null>(null)
+  const [on, setOn] = useState(false)
+  return (
+    <div className={mergeClasses(s.split, on && s.active)} role="separator" aria-orientation="horizontal"
+      title={t('Höhe ziehen · Doppelklick: Vorgabe')}
+      onPointerDown={e => {
+        if (e.button !== 0) return
+        // Bereich darüber: die Leiste folgt ihm direkt
+        const above = e.currentTarget.previousElementSibling as HTMLElement | null
+        if (!above) return
+        e.preventDefault()
+        e.currentTarget.setPointerCapture(e.pointerId)
+        const h = above.getBoundingClientRect().height
+        drag.current = { y: e.clientY, h, now: h }
+        setOn(true)
+        document.body.style.userSelect = 'none'
+      }}
+      onPointerMove={e => {
+        const d = drag.current
+        if (!d) return
+        d.now = clamp(d.h + e.clientY - d.y)
+        onLive(d.now)
+      }}
+      onPointerUp={() => {
+        const d = drag.current
+        drag.current = null
+        setOn(false)
+        document.body.style.userSelect = ''
+        if (d && d.now !== d.h) onDone(d.now)
+      }}
+      onDoubleClick={onReset} />
+  )
+}

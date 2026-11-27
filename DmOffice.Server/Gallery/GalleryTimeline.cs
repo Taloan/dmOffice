@@ -19,7 +19,8 @@ public static class GalleryTimeline
 {
     /// <summary>Ein Foto oder Video, wie die Galerie es zeigt. Id ist der Pfad in der Galerie (eigene Ablage oder „ext:…“).</summary>
     public sealed record Entry(string Id, string Name, long Size, string? Mime, long Modified, string Etag, long FileId, FileMeta.Row? Meta, string? Description,
-        bool Favorite = false, bool Link = false, bool People = false, string? Owner = null, bool? CanWrite = null, bool ShowOnly = false, List<Entry>? Stack = null, bool Dupe = false)
+        bool Favorite = false, bool Link = false, bool People = false, string? Owner = null, bool? CanWrite = null, bool ShowOnly = false, List<Entry>? Stack = null, bool Dupe = false,
+        bool Unread = false)
     {
         /// <summary>Aufnahmezeit, sonst Änderungszeit (ms, UTC) - danach sortiert und gruppiert die Galerie.</summary>
         public long Taken => Meta?.Taken ?? Modified;
@@ -113,6 +114,7 @@ public static class GalleryTimeline
         foreach (var m in mounts) sb.Append(m.Share.Id).Append(':').Append(OwnVersion(m.Owner.Db)).Append(m.CanWrite ? 'w' : 'r').Append(m.ShowOnly ? 's' : '-').Append(',');
         sb.Append('|').AppendJoin(',', FileStore.FavoriteIds(space.Db).Order()).Append('|').AppendJoin(',', FileStore.SharedIds(space.Db).Order()).Append('|')
             .AppendJoin(',', People(http, space).Order());
+        sb.Append(LensProfiles.ListTag);   // [feature:lenscorr]
         return "\"" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sb.ToString())))[..20].ToLowerInvariant() + "\"";
     }
 
@@ -153,7 +155,9 @@ public static class GalleryTimeline
         var extEdits = DmOffice.Dav.PhotoEdits.Fingerprints(space.Db);
         foreach (var e in GalleryFolders.List(space, config))
             list.Add(new Entry("ext:" + e.Source + "/" + e.Path, e.Path[(e.Path.LastIndexOf('/') + 1)..], e.Size, e.Mime, e.Modified,
-                GalleryFolders.TileTag(e, extEdits), 0, e.Meta, e.Description));
+                GalleryFolders.TileTag(e, extEdits), 0, e.Meta, e.Description,
+                // Noch nicht ausgelesen (nur aufgelistet, Aufnahmedatum unbekannt): eigener Abschnitt statt unter dem Dateidatum (galunread)
+                Unread: e.Pending && e.Meta?.Taken == null && Features.On(Features.GalleryUnread)));
         return list;
     }
 
@@ -239,6 +243,9 @@ public static class GalleryTimeline
         return outList;
     }
 
+    /// <summary>Abschnitt der noch nicht ausgelesenen Fotos (Kennung galunread), am Ende der Zeitleiste.</summary>
+    public const string UnreadKey = "unread";
+
     private static readonly CompareInfo Names = CultureInfo.GetCultureInfo("de-DE").CompareInfo;
     private const CompareOptions NameOrder = CompareOptions.IgnoreCase | CompareOptions.NumericOrdering;
 
@@ -264,13 +271,16 @@ public static class GalleryTimeline
         // nach Name, „Ohne …“ zuletzt), darin wie gewählt
         groupOf ??= q.Group == "source" ? e => SourceOf(ix, e) : null;
         var source = groupOf != null ? sorted.Distinct().ToDictionary(e => e, e => groupOf(e), ReferenceEqualityComparer.Instance) : null;
+        // Nach Aufnahme: noch nicht ausgelesene ans Ende (je Gruppe), in welcher Richtung auch immer - sie haben noch kein Datum
+        var unreadLast = q.Sort == "taken";
         sorted.Sort((a, b) =>
             (source == null ? 0 : string.CompareOrdinal(source[a].Key, source[b].Key)) is var s && s != 0 ? s
+            : unreadLast && a.Unread != b.Unread ? (a.Unread ? 1 : -1)
             : dir * by(a, b) is var c && c != 0 ? c : string.CompareOrdinal(a.Id, b.Id));
         // Abschnitte: Monate (Zeitzone des Benutzers) bei Sortierung nach Datum, sonst Seiten; nach Quelle je Quelle und Monat
         var buckets = new List<Bucket>();
         var time = q.Sort is "taken" or "modified";
-        string KeyOf(Entry e, int n) => (source == null ? "" : "s" + source[e].Key + "|") + (time
+        string KeyOf(Entry e, int n) => (source == null ? "" : "s" + source[e].Key + "|") + (unreadLast && e.Unread ? UnreadKey : time
             ? TimeZoneInfo.ConvertTimeFromUtc(DateTimeOffset.FromUnixTimeMilliseconds(q.Sort == "modified" ? e.Modified : e.Taken).UtcDateTime, zone).ToString("yyyy-MM", CultureInfo.InvariantCulture)
             : "p" + (n / PageSize).ToString(CultureInfo.InvariantCulture));
         var cur = new List<Entry>();

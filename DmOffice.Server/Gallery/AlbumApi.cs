@@ -17,6 +17,8 @@ public static class AlbumApi
     public record UpdateBody(string? Name, string? Rule, List<string>? Members);
     public record PathsBody(List<string> Paths);
     public record KeysBody(List<string> Keys);
+    /// <summary>Schnellsammlung: In true/false legt fest, ob hinein oder heraus; ohne: alle drin → heraus, sonst hinein.</summary>
+    public record QuickBody(List<string> Paths, bool? In);
 
     /// <summary>Ein Foto, wie ein Album es zeigt. Ref: "f:&lt;fileid&gt;" oder "x:&lt;quelle&gt;/&lt;pfad&gt;".</summary>
     public sealed record Photo(string Owner, string Ref, string Name, long Size, string? Mime, DateTime Modified, string Etag,
@@ -125,17 +127,25 @@ public static class AlbumApi
 
     // ---------------- Inhalt eines Albums ----------------
 
-    private static readonly ConcurrentDictionary<long, (DateTime At, string? Rule, List<Photo> List)> SmartCache = new();
+    /// <summary>Smarte Alben: die Trefferliste, höchstens einmal gleichzeitig berechnet (Lazy) - jede Vorschau und jede Anfrage braucht sie,
+    /// und bei zehntausenden Fotos rechnete sonst jede gleichzeitige Anfrage die ganze Regel selbst: die Vorschaubilder kamen kaum an.</summary>
+    private static readonly ConcurrentDictionary<long, (DateTime At, string? Rule, Lazy<List<Photo>> List)> SmartCache = new();
+    private static readonly TimeSpan SmartTtl = TimeSpan.FromMinutes(2);
 
     public static List<Photo> ItemsOf(Album album, Spaces spaces, ServerConfig config, AlbumStore store)
     {
         if (album.Kind == Album.Smart)
         {
-            if (SmartCache.TryGetValue(album.Id, out var c) && c.Rule == album.Rule && DateTime.UtcNow - c.At < TimeSpan.FromMinutes(1)) return c.List;
-            var owner = spaces.Get(album.Owner);
-            var list = Media(owner, config).Where(p => Matches(album.Rule, p, owner.Zone)).ToList();
-            SmartCache[album.Id] = (DateTime.UtcNow, album.Rule, list);
-            return list;
+            var entry = SmartCache.AddOrUpdate(album.Id,
+                _ => (DateTime.UtcNow, album.Rule, Build()),
+                (_, old) => old.Rule == album.Rule && DateTime.UtcNow - old.At < SmartTtl ? old : (DateTime.UtcNow, album.Rule, Build()));
+            try { return entry.List.Value; }
+            catch { SmartCache.TryRemove(album.Id, out _); throw; }
+            Lazy<List<Photo>> Build() => new(() =>
+            {
+                var owner = spaces.Get(album.Owner);
+                return Media(owner, config).Where(p => Matches(album.Rule, p, owner.Zone)).ToList();
+            }, LazyThreadSafetyMode.ExecutionAndPublication);
         }
         var result = new List<Photo>();
         foreach (var g in store.Items(album.Id).GroupBy(i => i.Owner))
@@ -162,7 +172,29 @@ public static class AlbumApi
     };
 
     private static Album Visible(AlbumStore store, long id, string me) =>
-        store.Get(id) is { } a && a.Sees(me) ? a : throw new KeyNotFoundException("Album nicht gefunden.");
+        store.Get(id) is { } a && a.Sees(me) && (a.Kind != Album.Quick || Features.On(Features.QuickCollection)) ? a : throw new KeyNotFoundException("Album nicht gefunden.");
+
+    /// <summary>
+    /// Verweis auf ein eigenes Foto: Pfad in der Ablage („f:&lt;fileid&gt;“), ext:-Kennung eines Galerie-Ordners („x:…“) oder
+    /// ein eigenes Foto aus einem Album („alb:&lt;Album&gt;/&lt;Besitzer&gt;|&lt;Verweis&gt;“); null, wenn es keins ist.
+    /// </summary>
+    private static string? RefOf(UserSpace space, ServerConfig config, string path, Func<string, bool> system)
+    {
+        if (path.StartsWith("alb:", StringComparison.Ordinal))
+        {
+            var key = path.IndexOf('/') is > 4 and var s ? path[(s + 1)..] : "";
+            var bar = key.IndexOf('|');
+            return bar > 0 && key[..bar] == space.User.Id && key[(bar + 1)..] is { } r && (r.StartsWith("f:") || r.StartsWith("x:")) ? r : null;
+        }
+        // Systemordner (Tagebuch-Medien, notizi, System-Tresor) gehören wie in der Galerie nicht in Alben
+        if (path.StartsWith("ext:")) { GalleryFolders.Resolve(space, config, path[4..]); return "x:" + path[4..]; }
+        return FileStore.Get(space.Db, path) is { IsDir: false } f && FileKinds.Of(f) is "image" or "video" && !system(f.Path) ? "f:" + f.FileId : null;
+    }
+
+    /// <summary>Kennung in der Galerie zu einem Verweis (Pfad in der Ablage oder ext:-Kennung); null, wenn die Datei weg ist.</summary>
+    private static string? GalleryIdOf(UserSpace space, string reference) =>
+        reference.StartsWith("x:") ? "ext:" + reference[2..]
+        : reference.StartsWith("f:") && long.TryParse(reference[2..], out var id) && FileStore.ById(space.Db, id) is { IsDir: false } f ? f.Path : null;
 
     /// <summary>Darf me dieses Foto über das Album sehen?</summary>
     private static Photo Allowed(Album album, string key, Spaces spaces, ServerConfig config, AlbumStore store)
@@ -209,10 +241,13 @@ public static class AlbumApi
         api.MapGet("", (HttpContext http, AlbumStore store, Spaces spaces, ServerConfig config, UserStore users) =>
         {
             var me = http.Space().User.Id;
-            return store.ForUser(me).Select(a =>
+            // Schnellsammlung: vom System angelegt, steht vorn
+            var quick = Features.On(Features.QuickCollection);
+            if (quick) store.Quick(me);
+            return store.ForUser(me).Where(a => quick || a.Kind != Album.Quick).OrderBy(a => a.Kind == Album.Quick ? 0 : 1).Select(a =>
             {
-                var items = a.Kind == Album.Fixed ? null : ItemsOf(a, spaces, config, store);
-                var first = a.Kind == Album.Fixed ? store.Items(a.Id).FirstOrDefault() : null;
+                var items = a.Holds ? null : ItemsOf(a, spaces, config, store);
+                var first = a.Holds ? store.Items(a.Id).FirstOrDefault() : null;
                 return new
                 {
                     id = a.Id, name = a.Name, kind = a.Kind, rule = a.Owner == me ? a.Rule : null, owner = a.Owner, ownerName = users.ById(a.Owner)?.DisplayName,
@@ -237,6 +272,7 @@ public static class AlbumApi
             var me = http.Space().User.Id;
             var a = Visible(store, id, me);
             if (a.Owner != me) throw new UnauthorizedAccessException("Nur der Besitzer ändert das Album.");
+            if (a.Kind == Album.Quick) return Results.BadRequest(new { error = "Die Schnellsammlung lässt sich nicht umbenennen oder teilen." });
             var name = body.Name?.Trim();
             if (name is { Length: 0 or > 80 }) return Results.BadRequest(new { error = "Name fehlt oder ist zu lang." });
             if (body.Rule != null && (a.Kind != Album.Smart || ParseRule(body.Rule) == null)) return Results.BadRequest(new { error = "Ungültiger Filter." });
@@ -251,6 +287,7 @@ public static class AlbumApi
         {
             var me = http.Space().User.Id;
             var a = Visible(store, id, me);
+            if (a.Kind == Album.Quick) return Results.BadRequest(new { error = "Die Schnellsammlung lässt sich nicht löschen." });
             if (a.Owner == me) store.Delete(id); else store.Leave(id, me);
             SmartCache.TryRemove(id, out _);
             return Results.Ok();
@@ -268,16 +305,37 @@ public static class AlbumApi
         {
             var space = http.Space();
             var a = Visible(store, id, space.User.Id);
-            if (a.Kind != Album.Fixed) return Results.BadRequest(new { error = "In ein Smart-Album lässt sich nichts legen." });
-            var refs = new List<string>();
-            // Systemordner (notizi, System-Tresor) gehören wie in der Galerie nicht in Alben
+            if (!a.Holds) return Results.BadRequest(new { error = "In ein Smart-Album lässt sich nichts legen." });
             var system = FileStore.SystemFilter(space.Db);
-            foreach (var p in body.Paths ?? [])
-            {
-                if (p.StartsWith("ext:")) { GalleryFolders.Resolve(space, config, p[4..]); refs.Add("x:" + p[4..]); }
-                else if (FileStore.Get(space.Db, p) is { IsDir: false } f && FileKinds.Of(f) is "image" or "video" && !system(f.Path)) refs.Add("f:" + f.FileId);
-            }
+            var refs = (body.Paths ?? []).Select(p => RefOf(space, config, p, system)).OfType<string>().ToList();
             return Results.Ok(new { added = store.Add(id, space.User.Id, refs, space.User.Id) });
+        });
+
+        // ---------------- Schnellsammlung (Kennung quickcoll) ----------------
+
+        // Was drin ist, als Kennungen der Galerie (Pfad in der Ablage, ext:…) - für den Kreis auf den Kacheln
+        api.MapGet("/quick", (HttpContext http, AlbumStore store) =>
+        {
+            if (!Features.On(Features.QuickCollection)) return Results.NotFound();
+            var space = http.Space();
+            var a = store.Quick(space.User.Id);
+            return Results.Ok(new { id = a.Id, paths = store.Items(a.Id).Select(i => GalleryIdOf(space, i.Ref)).OfType<string>() });
+        });
+
+        // Wie Lightroom (Taste B): sind schon alle drin, kommen sie heraus, sonst kommen die fehlenden hinein
+        api.MapPost("/quick/toggle", (QuickBody body, HttpContext http, AlbumStore store, ServerConfig config) =>
+        {
+            if (!Features.On(Features.QuickCollection)) return Results.NotFound();
+            var space = http.Space();
+            var me = space.User.Id;
+            var a = store.Quick(me);
+            var system = FileStore.SystemFilter(space.Db);
+            var refs = (body.Paths ?? []).Select(p => RefOf(space, config, p, system)).OfType<string>().Distinct().ToList();
+            if (refs.Count == 0) return Results.BadRequest(new { error = "Keine Fotos gewählt." });
+            var inside = body.In is bool into ? !into : refs.All(r => store.Contains(a.Id, me, r));
+            if (inside) store.Remove(a.Id, refs.Select(r => (me, r)));
+            else store.Add(a.Id, me, refs, me);
+            return Results.Ok(new { @in = !inside, count = store.Items(a.Id).Count });
         });
 
         // Herausnehmen: der Besitzer alles, Mitglieder nur ihre eigenen Fotos

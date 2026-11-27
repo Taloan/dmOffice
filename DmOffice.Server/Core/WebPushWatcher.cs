@@ -54,7 +54,7 @@ public sealed class WebPushWatcher(WebPush web, Spaces spaces, IServiceProvider 
     /// <summary>Neue ungelesene Mail im Posteingang: eine Benachrichtigung je Konto und Runde (die neueste, „+ n weitere“).</summary>
     private async Task NewMail(UserSpace space, CancellationToken ct)
     {
-        foreach (var a in space.Settings.MailAccounts)
+        foreach (var a in space.Settings.ActiveMailAccounts())
         {
             var inbox = MailStore.Folders(space.Db, a.Id).FirstOrDefault(f => f.Special == "inbox");
             if (inbox == null) continue;
@@ -82,6 +82,20 @@ public sealed class WebPushWatcher(WebPush web, Spaces spaces, IServiceProvider 
         if (!_remindedUntil.TryGetValue(user, out var from)) { _remindedUntil[user] = now; return; }
         _remindedUntil[user] = now;
         var today = DateOnly.FromDateTime(Pukki.Now(space));
+        // Ab 2.2 (Kennungen calremind ...): mehrere Erinnerungen, Kalender-Standard; ganztägig ohne Uhrzeit
+        if (Pim.CalendarReminders.Active)
+        {
+            foreach (var d in Pim.CalendarReminders.Due(services, space, from, now))
+            {
+                var lead = (int)Math.Round((d.StartUtc - d.FireUtc).TotalMinutes);
+                var text = d.AllDay
+                    ? PukkiParse.DayText(DateOnly.ParseExact(d.Start[..10], "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture), today) + " (ganztägig)"
+                    : PukkiParse.DayText(DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(d.StartUtc, space.Zone)), today) + " "
+                      + TimeZoneInfo.ConvertTimeFromUtc(d.StartUtc, space.Zone).ToString("HH:mm") + (lead > 0 ? $" (in {PukkiService.Span(lead)})" : "");
+                await web.Send(user, d.Title, text, "/#/calendar", $"reminder-{d.Title}-{d.StartUtc:yyyyMMddHHmm}-{d.Minutes}", urgent: true, ct);
+            }
+            return;
+        }
         foreach (var (title, start, minutes) in PukkiService.DueReminders(services, space, from, now))
         {
             var local = TimeZoneInfo.ConvertTimeFromUtc(start, space.Zone);

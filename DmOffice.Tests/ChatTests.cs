@@ -177,13 +177,37 @@ public class ChatTests : IClassFixture<ChatFixture>
         Assert.Equal(0, changes.GetProperty("messages").GetArrayLength());
     }
 
+    // [feature:mailpush]
+    [Fact]
+    public async Task Warten_wacht_auch_bei_neuer_Mail_auf()
+    {
+        var sync = _fx.Factory.Services.GetRequiredService<DmOffice.Mail.MailSync>();
+        var seq = (await Json(await _fx.As("cleo").GetAsync("/api/chat/status"))).GetProperty("seq").GetInt64();
+        var v = sync.Version(_fx.Id("cleo"));
+        var wait = _fx.As("cleo").GetAsync($"/api/chat/wait?since={seq}&timeout=20&mail={v}");
+        await Task.Delay(300);
+        Assert.False(wait.IsCompleted);
+        sync.Touch(_fx.Id("cleo"));
+        var w = await Json(await wait);
+        Assert.True(w.GetProperty("mail").GetInt64() > v);
+        Assert.Equal(seq, w.GetProperty("seq").GetInt64());
+
+        // Ohne mail wie bisher: nur der Chat weckt, kein Feld mail
+        var plain = await Json(await _fx.As("cleo").GetAsync($"/api/chat/wait?since={seq}&timeout=1"));
+        Assert.False(plain.TryGetProperty("mail", out _));
+    }
+    // [/feature:mailpush]
+
     [Fact]
     public async Task Datei_als_Verweis_lesen_speichern_und_weg()
     {
         var a = await Direct("anna", "ben");
-        var msg = await Json(await _fx.As("anna").PostAsync($"/api/chat/rooms/{a}/upload?name=einkauf.txt&text=Liste",
+        var frage = await Say("ben", a, "Was brauchen wir?");
+        // Antwort mit Anhang: der Bezug auf die zitierte Nachricht bleibt
+        var msg = await Json(await _fx.As("anna").PostAsync($"/api/chat/rooms/{a}/upload?name=einkauf.txt&text=Liste&replyTo={frage}",
             new StringContent("Milch, Brot", Encoding.UTF8, "text/plain")));
         var id = msg.GetProperty("id").GetInt64();
+        Assert.Equal(frage, msg.GetProperty("replyTo").GetInt64());
         Assert.Equal("einkauf.txt", msg.GetProperty("refs")[0].GetProperty("name").GetString());
         // Liegt bei Anna in der Ablage unter Chat/
         Assert.NotNull(FileStore.Get(_fx.Space("anna").Db, "Chat/einkauf.txt"));
@@ -439,6 +463,70 @@ public class ChatTests : IClassFixture<ChatFixture>
             Assert.True(chat.Room("u2", g).Members.Single(m => m.Id == "u2").Admin);
             Assert.Single(chat.Room("u2", d).Members);
             Assert.Contains(chat.Messages("u2", g), m => m.Text == "Hallo" && m.Sender == "u1");
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        }
+        finally { try { dir.Delete(true); } catch (IOException) { } }
+    }
+
+    [Fact]
+    public void Ausblenden_nur_fuer_mich_bis_zur_naechsten_Nachricht()
+    {
+        var dir = Directory.CreateTempSubdirectory("dmchatunit");
+        try
+        {
+            var chat = new ChatStore(Path.Combine(dir.FullName, "chat.db"), new byte[32]);
+            var d = chat.OpenDirect("u1", "u2");
+            chat.Post("u2", d, "Eins");
+            var seqU2 = chat.Seq("u2");
+            chat.Hide("u1", d);
+            Assert.Empty(chat.Rooms("u1"));
+            Assert.Equal(0, chat.Unread("u1"));
+            // Das Gegenueber merkt nichts: Raum, Mitglieder, Stand unveraendert
+            Assert.Equal(seqU2, chat.Seq("u2"));
+            Assert.Equal(2, chat.Room("u2", d).Members.Count);
+
+            // Beide blenden aus: der Verlauf bleibt
+            chat.Hide("u2", d);
+            Assert.Empty(chat.Rooms("u2"));
+            Assert.Equal(d, chat.DirectRoom("u1", "u2"));
+
+            // Die naechste Nachricht bringt die Unterhaltung bei beiden zurueck, mit Zaehler
+            chat.Post("u2", d, "Zwei");
+            var back = chat.Room("u1", d);
+            Assert.Equal(2, back.Unread);
+            Assert.Equal(2, chat.Unread("u1"));
+            Assert.Equal(new[] { "Eins", "Zwei" }, chat.Messages("u1", d).Select(m => m.Text));
+            Assert.Single(chat.Rooms("u2"));
+
+            // Oeffnen bringt sie ebenfalls zurueck; Gruppen werden verlassen, nicht ausgeblendet
+            chat.Hide("u1", d);
+            Assert.Equal(d, chat.OpenDirect("u1", "u2"));
+            Assert.Single(chat.Rooms("u1"));
+            var g = chat.CreateGroup("u1", "Team", new[] { "u2" });
+            Assert.Throws<InvalidOperationException>(() => chat.Hide("u1", g));
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        }
+        finally { try { dir.Delete(true); } catch (IOException) { } }
+    }
+
+    [Fact]
+    public void Frueher_verlassene_Unterhaltung_kommt_ausgeblendet_zurueck()
+    {
+        var dir = Directory.CreateTempSubdirectory("dmchatunit");
+        try
+        {
+            var chat = new ChatStore(Path.Combine(dir.FullName, "chat.db"), new byte[32]);
+            var d = chat.OpenDirect("u1", "u2");
+            var e = chat.OpenDirect("u1", "u3");
+            chat.Post("u2", d, "Alt");
+            chat.RemoveMember("u1", d, "u1");   // so ging „Ausblenden“ bisher
+            chat.Forget("u3");                  // geloeschter Benutzer
+            Assert.Equal(1, chat.RestoreHidden(u => u != "u3"));
+            Assert.Equal(0, chat.RestoreHidden(_ => true));   // nur einmal
+            Assert.Equal(new[] { e }, chat.Rooms("u1").Select(r => r.Id));   // d ausgeblendet
+            Assert.Single(chat.Room("u1", e).Members);
+            chat.Post("u2", d, "Neu");
+            Assert.Equal(1, chat.Room("u1", d).Unread);
             Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
         }
         finally { try { dir.Delete(true); } catch (IOException) { } }

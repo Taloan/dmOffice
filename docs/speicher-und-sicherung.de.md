@@ -6,7 +6,11 @@ dmOffice 2.0 legt eine zweite Kopie der Daten in zwei Teilen ab:
 | Was | Wohin | Wie oft |
 |---|---|---|
 | Dateiinhalte | **Storage Extender** | laufend |
-| Datenbanken (Mails, Kalender, Kontakte, Aufgaben, Notizen, Chat, Namen und Ordner der Dateien, Benutzer, Einstellungen) | **Core-Backup** | z. B. täglich |
+<!-- [feature:journal] -->
+| Datenbanken (Mails, Kalender, Kontakte, Aufgaben, Notizen, Tagebuch, Chat, Namen und Ordner der Dateien, Benutzer, Einstellungen) | **Core-Backup** | z. B. täglich |
+<!-- [feature:journal:else] -->
+<!-- | Datenbanken (Mails, Kalender, Kontakte, Aufgaben, Notizen, Chat, Namen und Ordner der Dateien, Benutzer, Einstellungen) | **Core-Backup** | z. B. täglich | -->
+<!-- [/feature:journal] -->
 | Externe Ordner | – | nicht gesichert, selbst sichern ([Externe Ordner](externe-ordner.de.md)) |
 | Hauptschlüssel | – | nirgends gesichert, selbst aufbewahren |
 
@@ -30,9 +34,9 @@ Mit dem Storage Extender erweitert dmOffice die interne Dateiablage um einen ext
 
 **Art:**
 
-- **Ordner auf dem Server** – z. B. eine USB-Platte, im Container unter `/external/<Name>` eingebunden. Der Ordner darf
+- **Ordner auf dem Server** – z. B. ein USB-Speicher, im Container unter `/external/<Name>` eingebunden. Der Ordner darf
   nicht im Datenverzeichnis liegen und sich nicht mit einem freigegebenen externen Ordner überschneiden. Ein Ordner auf
-  derselben Platte wie dmOffice hilft nicht, wenn diese Platte ausfällt.
+  demselben Speicher wie dmOffice hilft nicht, wenn dieser Speicher ausfällt.
 - **WebDAV** – z. B. Nextcloud oder Storage Box: Adresse, Benutzername, Passwort (am besten ein eigenes App-Passwort). Ein
   fehlender Zielordner wird angelegt.
 - **S3** – z. B. Garage, MinIO oder Hetzner Object Storage: Adresse, Region, Bucket, Ordner im Bucket, Zugangsschlüssel,
@@ -158,14 +162,22 @@ Rechner haben will, synchronisiert das Ziel dorthin.
   und einem Ordner, Vorgabe „Datensicherung“), **Verbindung testen**, Bereiche und Ordner,
   Uhrzeit. Einschalten erst nach der Bestätigung, dass die Daten im Ziel lesbar liegen.
 - **Inhalt:** Dateien bytegenau als Originale in ihrer Ordnerstruktur, Kalender und Aufgaben als `.ics`, Kontakte als
-  `.vcf`, Notizen als `.md`, DMS als Liste (`.csv`, `.json`), Alben als `.json`. Jeder
+  <!-- [feature:journal] -->
+  `.vcf`, Notizen und Tagebuch als `.md`, DMS als Liste (`.csv`, `.json`), Coach als `.csv`, Alben als `.json`. Jeder
+  <!-- [feature:journal:else] -->
+  <!-- `.vcf`, Notizen als `.md`, DMS als Liste (`.csv`, `.json`), Alben als `.json`. Jeder -->
+  <!-- [/feature:journal] -->
   Bereich und einzelne Ordner lassen sich abwählen. Nicht enthalten: E-Mails (liegen beim Mailanbieter), externe Ordner,
   Chat. Ein Tresor im Cryptomator-Format in der Dateiablage kommt mit den Dateien verschlüsselt ins Ziel.
 - **Ablauf:** täglich zur gewählten Uhrzeit und mit **Jetzt exportieren**; übertragen wird nur Geändertes. Bei mehreren Personen
   läuft der Datenexport nacheinander. Zustand, letzter Lauf und letzter Fehler stehen in den Einstellungen; schlägt der
   Datenexport mehrmals nacheinander fehl, gibt Pukki Bescheid.
 - **Nur schreiben:** dmOffice liest aus dem Ziel nichts zurück.
-- **Ordnernamen:** in der Oberflächensprache beim ersten Lauf (deutsch: `Dateien` …, englisch: `Files` …), danach fest.
+<!-- [feature:journal] -->
+- **Ordnernamen:** in der Oberflächensprache beim ersten Lauf (deutsch: `Dateien`, `Tagebuch` …, englisch: `Files`, `Journal` …), danach fest. Tagebuch-Medien liegen je Jahr unter `Media/` neben den Einträgen.
+<!-- [feature:journal:else] -->
+<!-- - **Ordnernamen:** in der Oberflächensprache beim ersten Lauf (deutsch: `Dateien` …, englisch: `Files` …), danach fest. -->
+<!-- [/feature:journal] -->
 - **`.trash`:** Gelöschtes – und auf Wunsch ältere Versionen geänderter Dateien – kommt in den versteckten Ordner `.trash`
   im Ziel, mit gleicher Ordnerstruktur, und wird nach der Frist (7, 30, 90 Tage oder nie) entfernt.
 - Im Ziel erklärt eine `LIESMICH.txt` Aufbau und Programme.

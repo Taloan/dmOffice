@@ -1,3 +1,4 @@
+using MailKit;
 using System.Net;
 using System.Net.Sockets;
 using DmOffice.Core;

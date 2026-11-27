@@ -1,9 +1,11 @@
 import { Button, Input, MenuDivider, MenuItem, MenuItemCheckbox, MenuList, Switch, Text, Tooltip, makeStyles, tokens } from '@fluentui/react-components'
-import { Add16Regular, Delete16Regular, Settings20Regular, TagDismiss20Regular, ArrowUp16Regular, ArrowDown16Regular } from '@fluentui/react-icons'
-import { useEffect, useState } from 'react'
+import { Add20Regular, ArrowUndo20Regular, Delete16Regular, Save20Regular, Settings20Regular, TagDismiss20Regular, ArrowUp16Regular, ArrowDown16Regular } from '@fluentui/react-icons'
+import { RibbonActions, RibbonButton } from '../shell/Ribbon'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import { useApp } from '../App'
 import { t } from '../i18n'
+import { useAutoSave } from '../settings/autosave' // [feature:savemode]
 
 /** Kategorie: auf dem Mailserver ein IMAP-Tag (key), hier Name und Farbe. */
 /** smart: lernt (neue Mails bekommen sie automatisch); preset: mitgelieferte Kategorie mit Voreinstellung */
@@ -131,6 +133,23 @@ export function CategorySettings() {
   const change = (next: MailCategory[]) => { setList(next); setDirty(true) }
   const update = (i: number, p: Partial<MailCategory>) => change(list.map((c, j) => j === i ? { ...c, ...p } : c))
   const swap = (i: number, j: number) => { const n = [...list]; [n[i], n[j]] = [n[j], n[i]]; change(n) }
+  // [feature:savemode]
+  // Kennung savemode: speichert von selbst (Namen und Farbe beim Verlassen des Felds, alles andere sofort)
+  // Während des Speicherns weitergetippt: Eingabe bleibt stehen (neue Kategorien bekommen nur ihren Schlüssel) und wird danach gespeichert
+  const listNow = useRef(list)
+  listNow.current = list
+  const auto = useAutoSave(list, dirty, async () => {
+    const sent = list
+    try {
+      const saved = await saveCategories(sent)
+      if (listNow.current === sent) setDirty(false)
+      else if (saved.length === sent.length) setList(cur => cur.map((c, i) => !c.key && sent[i] && !sent[i].key && saved[i]?.key ? { ...c, key: saved[i].key } : c))
+      return true
+    } catch (e) { fail(e); return false }
+  })
+  // [feature:savemode:else]
+  // const auto = false
+  // [/feature:savemode]
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -152,13 +171,13 @@ export function CategorySettings() {
           <Button size="small" appearance="subtle" icon={<Delete16Regular />} onClick={() => change(list.filter((_, j) => j !== i))} aria-label={t('Entfernen')} />
         </div>
       ))}
-      <div className={s.row}>
-        <Button icon={<Add16Regular />} onClick={() => change([...list, { key: '', name: t('Neue Kategorie'), color: palette[list.length % palette.length] }])}>{t('Kategorie')}</Button>
-        <Button appearance="primary" disabled={!dirty} onClick={async () => {
+      <RibbonActions>
+        <RibbonButton primary icon={<Add20Regular />} label={t('Neue Kategorie')} onClick={() => change([...list, { key: '', name: t('Neue Kategorie'), color: palette[list.length % palette.length] }])} />
+        {!auto && <RibbonButton icon={<Save20Regular />} label={t('Speichern')} disabled={!dirty} onClick={async () => {
           try { await saveCategories(list); setDirty(false); notify(t('Kategorien gespeichert')) } catch (e) { fail(e) }
-        }}>{t('Speichern')}</Button>
-        {dirty && <Button appearance="subtle" onClick={() => { setList(cats); setDirty(false) }}>{t('Verwerfen')}</Button>}
-      </div>
+        }} />}
+        {!auto && <RibbonButton icon={<ArrowUndo20Regular />} label={t('Verwerfen')} disabled={!dirty} onClick={() => { setList(cats); setDirty(false) }} />}
+      </RibbonActions>
       <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>
         {t('Umbenennen und Umfärben ändert nur die Anzeige – das Tag auf dem Server bleibt, die Mails behalten ihre Kategorie.')}{' '}
         {t('Eine entfernte Kategorie bleibt an den Mails stehen und erscheint dann grau.')}

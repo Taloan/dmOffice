@@ -3,15 +3,16 @@
 import {
   Button, Checkbox, Dropdown, Field, Option, ProgressBar, Slider, Spinner, Text, makeStyles, tokens,
 } from '@fluentui/react-components'
-import { Folder20Filled } from '@fluentui/react-icons'
+import { Folder20Filled, DocumentArrowDown20Regular } from '@fluentui/react-icons'
 import { useEffect, useState } from 'react'
 import { api, q } from '../api'
 import { useApp } from '../App'
 import { BrowseDialog } from '../files/ImportProfiles'
 import { lang, t } from '../i18n'
 import { askConfirm } from '../shell/context'
-import { Hint, PageTitle } from '../settings/parts'
+import { Hint } from '../settings/parts'
 import { Kind, kindLabel, Match, matchLabel, Profile } from './model'
+import { RibbonActions, RibbonButton } from '../shell/Ribbon'
 
 interface PlEntry { key: string; kind: Kind; pk: number; name: string; match: Match; matchText: string | null; inboxTag: boolean; note: string | null; existing: string | null; mapped: string | null }
 interface ReadResult { documents: number; withFile: number; withArchive: number; missing: number; entries: PlEntry[] }
@@ -92,7 +93,6 @@ export function DmsPaperlessSettings() {
 
   return (
     <>
-      <PageTitle>{t('Übernahme aus paperless')}</PageTitle>
       <Hint>{t('Übernimmt Dokumente aus einem Export von paperless-ngx (document_exporter: Originale, Archivfassungen, manifest.json). Korrespondenten, Dokumenttypen und Tags kommen mit Namen, Farbe und Zuweisung. Wer, was und welches Thema bestimmt das DMS selbst; die Angaben aus paperless bleiben zum Vergleich, damit sich falsche Zuordnungen in paperless und Schwächen der Erkennung zeigen. Gelernt wird erst aus dem, was in der Inbox bestätigt wird.')}</Hint>
 
       <div className={s.box}>
@@ -105,7 +105,8 @@ export function DmsPaperlessSettings() {
           <Button icon={<Folder20Filled color="#E8A33D" />} onClick={() => setPick(true)}>{t('Ordner wählen')}</Button>
           <Text>{where}</Text>
         </div>
-        <div><Button appearance="primary" disabled={!folder || !!busy} onClick={doRead}>{busy === 'read' ? <Spinner size="tiny" /> : t('Einlesen')}</Button></div>
+        <RibbonActions><RibbonButton primary icon={<DocumentArrowDown20Regular />} label={t('Einlesen')} disabled={!folder || !!busy} onClick={doRead} /></RibbonActions>
+        {busy === 'read' && <Spinner size="tiny" />}
         {read && <Text>{t('{n} Dokumente, davon {f} mit Datei und {a} mit Archivfassung; {m} Dateien fehlen.', { n: read.documents, f: read.withFile, a: read.withArchive, m: read.missing })}</Text>}
       </div>
 

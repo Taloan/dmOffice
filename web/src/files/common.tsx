@@ -121,6 +121,13 @@ export const kindLabel = (k: Kind | string): string => ({
   audio: t('Audio'), video: t('Video'), archive: t('Archiv'), text: t('Textdatei'), other: t('Datei'),
 } as Record<string, string>)[k] ?? t('Datei')
 
+/**
+ * Dateiname zum Anzeigen: Richtungs-Steuerzeichen (etwa U+202E) entfernt, damit „Urlaub ‮gnp.exe“ nicht als „….png“
+ * erscheint; Name in <bdi>, damit Schrift von rechts nach links den Text daneben nicht mitdreht. Der echte Name bleibt unverändert.
+ */
+export const plainName = (n: string) => n.replace(/[\u202A-\u202E\u2066-\u2069]/g, '')
+export const ShownName = ({ name }: { name: string }) => <bdi>{plainName(name)}</bdi>
+
 /** Filter in Liste und Suche. */
 export const FILTERS: Kind[] = ['folder', 'image', 'pdf', 'doc', 'sheet', 'slides', 'text', 'audio', 'video', 'archive']
 
@@ -188,7 +195,7 @@ export interface Source {
 
 export const ownSource: Source = {
   download: (i, inline) => '/api/files/download?' + q({ path: i.path, inline: inline || undefined }),
-  thumb: (i, size = 256) => '/api/files/thumb?' + q({ path: i.path, size, v: i.etag }),
+  thumb: (i, size = 256) => '/api/files/thumb?' + q({ path: i.path, size, v: i.etag, quiet: 1 }),
   storeThumb: async (i, blob) => {
     await fetch('/api/files/thumb?' + q({ path: i.path }), { method: 'PUT', body: blob, credentials: 'same-origin' })
   },
@@ -198,7 +205,7 @@ export function publicSource(token: string): Source {
   const base = `/api/public/${encodeURIComponent(token)}`
   return {
     download: (i, inline) => `${base}/download?` + q({ path: i.path, inline: inline || undefined }),
-    thumb: (i, size = 256) => `${base}/thumb?` + q({ path: i.path, size, v: i.etag }),
+    thumb: (i, size = 256) => `${base}/thumb?` + q({ path: i.path, size, v: i.etag, quiet: 1 }),
   }
 }
 
@@ -230,10 +237,52 @@ function videoFrame(url: string): Promise<Blob | null> {
 
 /** Vorschauen, die in dieser Sitzung schon geladen wurden (liegen im Browser-Cache): sofort zeigen, ohne zu warten. */
 const thumbSeen = new Set<string>()
+/** Vorschauen vorab laden (etwa das Ziel eines Sprungs), damit die Kacheln gleich mit Bild erscheinen; fertig: alle da oder nach ms. */
+export function preloadThumbs(urls: string[], ms: number): Promise<void> {
+  const todo = urls.filter(u => !thumbSeen.has(u))
+  if (!todo.length) return Promise.resolve()
+  return new Promise(done => {
+    let left = todo.length
+    const one = () => { if (--left === 0) done() }
+    for (const u of todo) { const img = new Image(); img.onload = () => { thumbSeen.add(u); one() }; img.onerror = one; img.src = u }
+    setTimeout(done, ms)
+  })
+}
 
 /** Zuletzt gescrollt (irgendwo auf der Seite) - während schnellem Scrollen bleiben neue Vorschauen kurz Platzhalter. */
 let lastScroll = 0
-if (typeof window !== 'undefined') window.addEventListener('scroll', () => { lastScroll = Date.now() }, { capture: true, passive: true })
+// Von der Ansicht selbst gesetzte Scrollposition (Sprung, Ausgleich beim Nachladen): zählt nicht als Scrollen
+let quiet: { el: HTMLElement; top: number } | null = null
+if (typeof window !== 'undefined') window.addEventListener('scroll', e => {
+  const q = quiet
+  quiet = null
+  if (q && e.target === q.el && Math.abs(q.el.scrollTop - q.top) < 1) return
+  lastScroll = Date.now()
+}, { capture: true, passive: true })
+/** Scrollposition setzen, ohne dass die Vorschaubilder wie beim Scrollen von Hand erst auf eine Pause warten. */
+export function quietScroll(el: HTMLElement, top: number) {
+  el.scrollTop = top
+  quiet = { el, top: el.scrollTop }
+}
+
+/**
+ * Noch ladende Vorschaubilder. Die Module bleiben beim Wechsel eingehängt (nur ausgeblendet) - deren Abrufe liefen weiter
+ * und das neue Modul wartete mit seinen Daten dahinter. Beim Wechsel werden ausgeblendete Bilder deshalb angehalten (src weg,
+ * das bricht den Abruf ab) und beim Zurückkehren fortgesetzt.
+ */
+const loadingImgs = new Set<HTMLImageElement>()
+const parkedImgs = new Map<HTMLImageElement, string>()
+function sweepThumbs() {
+  for (const [img, src] of parkedImgs) {
+    if (!img.isConnected || img.getAttribute('src') !== null) parkedImgs.delete(img)
+    else if (img.getClientRects().length) { parkedImgs.delete(img); img.setAttribute('src', src) }
+  }
+  for (const img of loadingImgs) {
+    const src = img.getAttribute('src')
+    if (src && img.isConnected && !img.complete && !img.getClientRects().length) { parkedImgs.set(img, src); img.removeAttribute('src') }
+  }
+}
+if (typeof window !== 'undefined') window.addEventListener('hashchange', () => { setTimeout(sweepThumbs, 0); setTimeout(sweepThumbs, 120) })
 
 /**
  * Erst laden, wenn gerade nicht gescrollt wird (wie Immich: beim schnellen Scrollen Platzhalter). Welche Bilder überhaupt
@@ -256,11 +305,18 @@ function useScrollIdle(skip: boolean, ms = 150) {
 export function Thumb({ item, source, size = 256, className, fallbackLarge, fit = 'cover' }: {
   item: Item; source: Source; size?: number; className?: string; fallbackLarge?: boolean; fit?: 'cover' | 'contain'
 }) {
-  const [state, setState] = useState<'load' | 'ok' | 'none'>(hasThumb(item) ? 'load' : 'none')
   const [n, setN] = useState(0)
-  const ref = useRef<HTMLImageElement>(null)
   const url = source.thumb(item, size) + (n ? `&n=${n}` : '')
+  // Schon einmal geladen (liegt im Browser-Cache): gleich zeigen statt erst das Symbol - sonst blinkt die Kachel bei jedem Neuzeichnen
+  const [state, setState] = useState<'load' | 'ok' | 'none'>(hasThumb(item) ? thumbSeen.has(url) ? 'ok' : 'load' : 'none')
+  const ref = useRef<HTMLImageElement>(null)
   const go = useScrollIdle(thumbSeen.has(url))
+  useEffect(() => {
+    const img = ref.current
+    if (!go || state === 'ok' || !img) return
+    loadingImgs.add(img)
+    return () => { loadingImgs.delete(img); parkedImgs.delete(img) }
+  }, [go, state])
   // Nur bei einer anderen Datei zuruecksetzen - nicht beim ersten Zeichnen: Aus dem Browser-Cache kommt das Bild oft
   // schon vor diesem Effekt an (onLoad gelaufen), ein Zuruecksetzen danach liesse fuer immer nur das Symbol stehen.
   const shown = useRef(item.path + '|' + item.etag)
@@ -290,7 +346,7 @@ export function Thumb({ item, source, size = 256, className, fallbackLarge, fit 
       {state === 'load' && <KindIcon item={item} large={fallbackLarge} />}
       {go && <img ref={ref} className={className} loading="lazy" alt="" draggable={false}
         style={state === 'ok' ? { objectFit: fit } : { objectFit: fit, position: 'absolute', width: 1, height: 1, opacity: 0.01 }}
-        src={url} onLoad={() => { thumbSeen.add(url); setState('ok') }} onError={failed} />}
+        src={url} onLoad={() => { thumbSeen.add(url); setState('ok') }} onError={e => { if (!parkedImgs.has(e.currentTarget)) failed() }} />}
     </>
   )
 }

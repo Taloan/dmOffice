@@ -4,18 +4,23 @@ import {
   Toaster, useId, useToastController, Toast, ToastTitle, ToastBody, Link as FluentLink,
   Select,
 } from '@fluentui/react-components'
-import { createContext, useCallback, useContext, useEffect, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import { Key16Regular } from '@fluentui/react-icons'
 import { chooseLanguage, lang, t, tError } from './i18n'
-import { api, ApiError, demoMode, features, fmtSize, Me, OfflineError } from './api'
+import { api, ApiError, demoMode, setReauthHandler, featureOn, features, fmtSize, Me, OfflineError, server } from './api'
 import { applyBrand, brandLogo, setActiveThemes, storeTheme, themesFor, ThemeChoice, useIsDark } from './theme'
 import { currentPrefs, PrefsContext, usePrefsState, usePrefsVersion } from './prefs'
 import { Shell } from './shell/Shell'
 import { MailWindow, isMailWindow } from './mail/MailWindow'
+// Textbaustein oder Wissensartikel im eigenen Fenster (Kennung hdinline): #/popup/helpdesk/…
 import { applyUpdate, usePwa } from './pwa'
 import { useIsMobile } from './shell/mobile'
 import { UpdateGate, UpdateState } from './admin/UpdatePanel'
 import { e2eForget } from './e2e'
+import { UndoHost, pushUndo, undoAllOn } from './shell/undo'
+import { processHandle } from './linkhandler'
+import { isSftp } from './files/SftpFields' // [feature:sftptrust]
+import { ensureSftpTrust } from './files/SftpTrust' // [feature:sftptrust]
 
 interface AppCtx {
   me: Me
@@ -52,7 +57,7 @@ const useStyles = makeStyles({
 export function App() {
   const dark = useIsDark()
   usePrefsVersion()
-  const th = themesFor(currentPrefs.accent)
+  const th = featureOn('darkswap') ? themesFor(currentPrefs.accent, !!currentPrefs.darkSwap, currentPrefs.darkLight) : themesFor(currentPrefs.accent)
   setActiveThemes(th)
   useEffect(() => applyBrand(currentPrefs.accent), [currentPrefs.accent])
   return (
@@ -71,16 +76,33 @@ function Root() {
   const { dispatchToast, dismissToast } = useToastController(toasterId)
 
   const load = useCallback(() => {
-    api.get<{ setupNeeded: boolean; loggedIn: boolean; user: Me | null; demo?: { login: string; password: string } | null; featuresOff?: string[]; oidc?: string | null; oidcOnly?: boolean }>('/api/auth/state')
-      .then(s => { demoMode.on = !!s.demo; features.off = new Set(s.featuresOff ?? []); setState(s) }).catch(() => setState({ setupNeeded: false, loggedIn: false, user: null }))
+    api.get<{ setupNeeded: boolean; loggedIn: boolean; user: Me | null; demo?: { login: string; password: string } | null; featuresOff?: string[]; oidc?: string | null; oidcOnly?: boolean; publicUrl?: string | null }>('/api/auth/state')
+      .then(s => {
+        demoMode.on = !!s.demo; features.off = new Set(s.featuresOff ?? []); server.publicUrl = s.publicUrl ?? null
+        setState(s)
+      }).catch(() => setState({ setupNeeded: false, loggedIn: false, user: null }))
   }, [])
   useEffect(load, [load])
+  // Mitten in der Arbeit abgemeldet: Anmeldung im Dialog über der unveränderten Oberfläche. Wartende Anfragen laufen danach
+  // noch einmal (api.ts); mit einem anderen Konto lädt alles neu.
+  const [relogin, setRelogin] = useState(false)
+  const waiters = useRef<((ok: boolean) => void)[]>([])
+  const userId = state?.loggedIn ? state.user?.id : undefined
   useEffect(() => {
-    // Mitten in der Arbeit abgemeldet (nicht beim ersten Laden): die Anmeldeseite nennt den Grund
-    const onUnauth = () => setState(s => (s ? { ...s, ended: s.ended || s.loggedIn, loggedIn: false, user: null } : s))
+    if (!userId) return
+    setReauthHandler(() => new Promise<boolean>(res => { waiters.current.push(res); setRelogin(true) }))
+    const onUnauth = () => setRelogin(true)
     window.addEventListener('dmoffice:unauthorized', onUnauth)
-    return () => window.removeEventListener('dmoffice:unauthorized', onUnauth)
-  }, [])
+    return () => { setReauthHandler(null); window.removeEventListener('dmoffice:unauthorized', onUnauth) }
+  }, [userId])
+  const reloginDone = useCallback(async () => {
+    const s = await api.get<{ loggedIn: boolean; user: Me | null }>('/api/auth/state').catch(() => null)
+    if (!s?.loggedIn || s.user?.id !== userId) { location.reload(); return }
+    setRelogin(false)
+    const w = waiters.current
+    waiters.current = []
+    w.forEach(f => f(true))
+  }, [userId])
 
   // Datenaenderung (Update-Sicherheit): wartet die Datenbank dieses Benutzers noch, zeigt die Oberflaeche den Assistenten
   // statt der Programme und fragt oefter nach; der Verwaltung faellt zusaetzlich auf, wenn irgendwo etwas wartet
@@ -104,13 +126,21 @@ function Root() {
   }, [state?.loggedIn, round])
 
   const notify = useCallback((title: string, body?: string, intent: 'success' | 'error' | 'info' | 'warning' = 'success') =>
-    dispatchToast(<Toast><ToastTitle>{title}</ToastTitle>{body && <ToastBody style={{ whiteSpace: 'pre-line' }}>{body}</ToastBody>}</Toast>, { intent, timeout: intent === 'error' ? 8000 : 3000 }),
+    // Gleiche Meldung noch sichtbar (etwa nach zehn schnellen Klicks): nicht noch einmal stapeln - die Kennung aus Art und Text
+    // lässt den Toaster eine zweite gleiche nicht anzeigen
+    dispatchToast(<Toast><ToastTitle>{title}</ToastTitle>{body && <ToastBody style={{ whiteSpace: 'pre-line' }}>{body}</ToastBody>}</Toast>,
+      { intent, timeout: intent === 'error' ? 8000 : 3000, toastId: `${intent}|${title}|${body ?? ''}` }),
     [dispatchToast])
   const undoable = useCallback((title: string, undo: () => Promise<void>) => {
+    // Einheitliches Rückgängig (Kennung undoall): Leiste an festem Platz, Strg+Z, Liste der letzten Schritte
+    if (undoAllOn()) { pushUndo(title, undo); return }
     const id = String(Date.now()) + Math.random()
     dispatchToast(<Toast><ToastTitle action={<FluentLink onClick={() => { dismissToast(id); undo().catch(e => notify(t('Fehler'), tError(e instanceof Error ? e.message : String(e)), 'error')) }}>{t('Rückgängig')}</FluentLink>}>{title}</ToastTitle></Toast>,
       { toastId: id, intent: 'success', timeout: 8000 })
   }, [dispatchToast, dismissToast, notify])
+  // E-Mail-Link oder Kalender-Abo, mit dem dmOffice geöffnet wurde (?handle=, Kennung linkhandler): erst, wenn die Programme da sind
+  const ready = !!state?.loggedIn && !!upd && !waiting
+  useEffect(() => { if (ready) processHandle(notify) }, [ready, notify])
   const fail = useCallback((e: unknown) => {
     // Server nicht erreichbar: im Hintergrund (Fenster verdeckt, Rechner schläft) nicht melden - beim Zurückkommen lädt alles neu
     if (e instanceof OfflineError && document.hidden) return
@@ -122,7 +152,8 @@ function Root() {
   if (!state) return <Center><Spinner /></Center>
   return (
     <>
-      <Toaster toasterId={toasterId} position="bottom-end" />
+      {/* Höchstens vier Meldungen übereinander; weitere warten, bis eine verschwindet */}
+      <Toaster toasterId={toasterId} position="bottom-end" limit={4} />
       <UpdateBar />
       {/* Schild mittig in der Titelleiste - ein eigener Streifen machte die Seite höher als das Fenster */}
       {state.demo && state.loggedIn && <div style={{ position: 'fixed', top: 6, left: '50%', transform: 'translateX(-50%)', zIndex: 1000, pointerEvents: 'none', maxWidth: '60vw',
@@ -134,8 +165,12 @@ function Root() {
         : !state.loggedIn || !state.user ? <Login onDone={load} demo={state.demo} ended={state.ended} oidc={state.oidc} oidcOnly={state.oidcOnly} />
         : (
           <Ctx.Provider value={{ me: state.user, notify, fail, refreshMe: load, undoable }}>
-            {!upd ? <Center><Spinner /></Center> : waiting ? <UpdateGate state={upd} /> : <WithPrefs key={round}>{isMailWindow() ? <MailWindow /> : <Shell />}</WithPrefs>}
-            {!waiting && upd?.attention && !isMailWindow() && <UpdateAttention />}
+            {!upd ? <Center><Spinner /></Center> : waiting ? <UpdateGate state={upd} /> : <WithPrefs key={round}>{isMailWindow() ? <MailWindow />
+              : <Shell />}</WithPrefs>}
+            {undoAllOn() && <UndoHost notify={notify} fail={fail} />}
+            {relogin && <Login onDone={reloginDone} again={state.user.login} oidc={state.oidc} oidcOnly={state.oidcOnly} />}
+            {!waiting && upd?.attention && !isMailWindow()
+              && <UpdateAttention />}
           </Ctx.Provider>
         )}
     </>
@@ -181,13 +216,15 @@ function CardFooter() {
   )
 }
 
-function Login({ onDone, demo, ended, oidc, oidcOnly }: { onDone: () => void; demo?: { login: string; password: string } | null; ended?: boolean
+function Login({ onDone, demo, ended, again, oidc, oidcOnly }: { onDone: () => void; demo?: { login: string; password: string } | null; ended?: boolean
+  /** Sitzung abgelaufen: Dialog über der Oberfläche, Anmeldename des bisherigen Kontos vorbelegt */
+  again?: string
   /** Anmeldung über einen Identitätsanbieter: Beschriftung, null wenn nicht eingerichtet */
   oidc?: string | null; oidcOnly?: boolean }) {
   const s = useStyles()
   const [pwForm, setPwForm] = useState(false)
   // Demo-Server: Zugangsdaten schon eingetragen
-  const [login, setLogin] = useState(demo?.login ?? '')
+  const [login, setLogin] = useState(again ?? demo?.login ?? '')
   const [password, setPassword] = useState(demo?.password ?? '')
   const [code, setCode] = useState('')
   // Zurück vom Identitätsanbieter, das Konto hat Zwei-Faktor: jetzt der Code (/?oidc2fa=1)
@@ -218,10 +255,12 @@ function Login({ onDone, demo, ended, oidc, oidcOnly }: { onDone: () => void; de
     }
   }
 
+  const Wrap = again ? Overlay : Center
   return (
-    <Center>
+    <Wrap>
       <form className={s.card} onSubmit={submit}>
         <Logo />
+        {again && <MessageBar intent="warning" layout="multiline"><MessageBarBody>{t('Deine Sitzung ist abgelaufen. Nach der Anmeldung geht es an derselben Stelle weiter.')}</MessageBarBody></MessageBar>}
         {ended && <MessageBar intent="warning" layout="multiline"><MessageBarBody>{t('Du wurdest abgemeldet. Das geschieht, wenn die Sitzung abläuft oder der Admin Passwort oder Rolle deines Kontos ändert. Bitte melde dich neu an.')}</MessageBarBody></MessageBar>}
         {demo && <MessageBar intent="info"><MessageBarBody>{t('Demo-Zugang: Anmeldename „{login}“, Passwort „{password}“. Alles ist erfunden und wird jede Nacht zurückgesetzt.', { login: demo.login, password: demo.password })}</MessageBarBody></MessageBar>}
         {/* Anmeldung nur über den Anbieter: zuerst der Knopf, Anmeldename und Passwort nur für Administratoren */}
@@ -252,10 +291,16 @@ function Login({ onDone, demo, ended, oidc, oidcOnly }: { onDone: () => void; de
         {/* Anmeldung über den Identitätsanbieter: ganze Seite zum Anbieter, zurück über /api/auth/oidc/callback */}
         {oidc && !needCode && <Button onClick={() => { e2eForget(); window.location.href = '/api/auth/oidc/start' }}>{t('Anmelden mit {name}', { name: oidc })}</Button>}
         </>}
-        <CardFooter />
+        {again ? <Text size={200}>{t('Mit einem anderen Konto lädt dmOffice neu.')}</Text> : <CardFooter />}
       </form>
-    </Center>
+    </Wrap>
   )
+}
+
+/** Abgedunkelte Fläche über der Oberfläche für die erneute Anmeldung. */
+function Overlay({ children }: { children: React.ReactNode }) {
+  return <div role="dialog" aria-modal="true" style={{ position: 'fixed', inset: 0, zIndex: 2000000, display: 'flex', alignItems: 'center', justifyContent: 'center',
+    background: 'rgba(0, 0, 0, 0.4)' }}>{children}</div>
 }
 
 function Setup({ onDone, needCode }: { onDone: () => void; needCode?: boolean }) {
@@ -335,7 +380,13 @@ function RestoreFromS3({ needCode, onBack }: { needCode?: boolean; onBack: () =>
   }
   const list = async () => {
     setBusy(true); setError(null)
-    try { const r = await api.post<{ name: string; created: string; bytes: number }[]>('/api/auth/restore/list', f); setStands(r); setPick(r[0]?.name ?? '') }
+    try {
+      // [feature:sftptrust]
+      if (f.target === 'webdav' && isSftp(f.webDavUrl) && !await ensureSftpTrust({ url: f.webDavUrl },
+        { admin: true, endpoints: { hostKey: '/api/auth/restore/host-key', trust: '/api/auth/restore/trust-host', extra: { code: f.code } } })) return
+      // [/feature:sftptrust]
+      const r = await api.post<{ name: string; created: string; bytes: number }[]>('/api/auth/restore/list', f); setStands(r); setPick(r[0]?.name ?? '')
+    }
     catch (e: any) { setError(e.message) } finally { setBusy(false) }
   }
   const run = async () => {

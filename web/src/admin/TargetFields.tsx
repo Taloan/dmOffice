@@ -58,7 +58,7 @@ export function TargetFields({ target, onTarget, v, onChange, hasSecret, hasWebD
       </Field>
     </>}
     {target === 'folder' && (
-      <Field label={t('Ordner')} hint={t('Die Platte muss in der Container-Vorlage unter /external eingebunden sein.')}>
+      <Field label={t('Ordner')} hint={t('Der Speicher muss in der Container-Vorlage unter /external eingebunden sein.')}>
         <Input value={v.folder} onChange={set('folder')} placeholder="/external/backup"
           contentAfter={<Button size="small" appearance="transparent" icon={<FolderOpen20Regular />} onClick={() => setBrowse(true)} aria-label={t('Ordner auf dem Server wählen')} title={t('Ordner auf dem Server wählen')} />} />
       </Field>

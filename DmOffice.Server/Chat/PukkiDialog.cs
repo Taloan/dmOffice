@@ -219,6 +219,19 @@ public static partial class Pukki
                 if (OnlyWhen(c, t)) { ClearAsk(mem); return Do(c.Services, c.Space, mem, "event", t + " " + pending, c.Now); }
                 return null;
             }
+            // Aufgabe ohne Uhrzeit angelegt: eine Uhrzeit danach macht daraus eine Erinnerung
+            case "retime":
+            {
+                var pending = mem.Pending ?? "";
+                if (no) { ClearAsk(mem); return "Okay."; }
+                if (PukkiParse.Parse(t, c.Now).Start == null || !OnlyWhen(c, t)) return null;
+                ClearAsk(mem);
+                var old = mem.LastMade?.Where(x => x.Kind == "task").ToList();
+                var reminder = RemindTask(c, t + " " + pending);
+                // Die Aufgabe ohne Uhrzeit ersetzt die Erinnerung
+                if (reminder != null && old is { Count: > 0 }) UndoItems(c.Services, old);
+                return reminder;
+            }
             case "when":
             {
                 var pending = mem.Pending ?? "";
@@ -665,9 +678,10 @@ public static partial class Pukki
         {
             // Ohne Uhrzeit: als Aufgabe - sie steht dann im Tagesüberblick am Morgen
             var task = Do(c.Services, c.Space, c.Mem, "task", text, c.Now);
-            return task.Actions?.Any(a => a.Key == "undo") == true
-                ? task with { Text = task.Text + " Zu einer bestimmten Uhrzeit erinnern kann ich dich nur mit Uhrzeit – so steht es morgens in deinem Tagesüberblick." }
-                : task;
+            if (task.Actions?.Any(a => a.Key == "undo") != true) return task;
+            // Die nächste Nachricht mit einer Uhrzeit („um 9 Uhr“) macht aus der Aufgabe eine Erinnerung
+            SetAsk(c.Mem, "retime", text, null);
+            return task with { Text = task.Text + " Zu einer bestimmten Uhrzeit erinnern kann ich dich nur mit Uhrzeit – schreib mir die Uhrzeit, dann mache ich eine Erinnerung daraus. Sonst steht es morgens in deinem Tagesüberblick." };
         }
         var title = CleanTitle(w.Title);
         if (title.Length == 0) return "Woran soll ich dich erinnern? Zum Beispiel: Erinnere mich morgen um 9 an den Müll.";

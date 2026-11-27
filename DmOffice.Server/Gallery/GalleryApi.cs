@@ -8,6 +8,7 @@ namespace DmOffice.Gallery;
 public static class GalleryApi
 {
     public record SourceBody(string Mount, string? Path, bool Watch = true, bool Sidecars = true, bool Proxies = false);
+    public record RelinkBody(string Mount, string? Path);
     public record WatchBody(bool? Watch, bool? Sidecars, bool? Proxies = null);
     public record DeleteBody(List<string> Ids);
     public record GallerySettingsBody(bool WriteXmp);
@@ -35,6 +36,8 @@ public static class GalleryApi
                     // Große Vorschauen dieses Ordners: wie viele da sind und wie viel Platz sie belegen (auch ohne „vorab“, vom Öffnen)
                     proxyCount = GalleryFolders.FolderProxyUsage(space, config, s) is var u ? u.Count : 0,
                     proxyBytes = u.Bytes,
+                    // Neu zugeordnet: Stand des Abgleichs (ohne die Liste der entfernten Dateien - die steht in der Aktivität)
+                    relink = Features.On(Features.Relink) && s.Relink is { } r ? new { r.At, r.Pending, r.Total, r.Found, r.RemovedCount, r.Error } : null,
                 }),
                 mounts,
             };
@@ -105,6 +108,27 @@ public static class GalleryApi
             return Results.Ok();
         });
 
+        // Ordner neu zuordnen: erst die Stichprobe am neuen Ort, dann umstellen (Index, Markierungen und Vorschauen bleiben)
+        api.MapPost("/sources/{id}/relink/probe", async (string id, RelinkBody body, HttpContext http, ServerConfig config, CancellationToken ct) =>
+        {
+            if (!Features.On(Features.Relink)) return Results.NotFound();
+            var space = http.Space();
+            if (GalleryFolders.Of(space.Db).FirstOrDefault(s => s.Id == id) is not { } src) return Results.NotFound();
+            var path = StoragePath.Clean(body.Path);
+            if (GalleryRelink.Problem(space, config, src, body.Mount, path) is { } problem) return Results.BadRequest(new { error = problem });
+            var probe = await GalleryRelink.ProbeAsync(space, config, src, body.Mount, path, ct);
+            return Results.Ok(new { @checked = probe.Checked, found = probe.Found, total = probe.Total });
+        });
+
+        api.MapPost("/sources/{id}/relink", (string id, RelinkBody body, HttpContext http, ServerConfig config, AlbumStore albums) =>
+        {
+            if (!Features.On(Features.Relink)) return Results.NotFound();
+            var space = http.Space();
+            if (!GalleryFolders.Of(space.Db).Any(s => s.Id == id)) return Results.NotFound();
+            return GalleryRelink.Apply(space, config, albums, id, body.Mount, StoragePath.Clean(body.Path)) is { } error
+                ? Results.BadRequest(new { error }) : Results.Ok();
+        });
+
         api.MapPost("/sources/{id}/scan", (string id, HttpContext http) =>
         {
             var space = http.Space();
@@ -154,6 +178,7 @@ public static class GalleryApi
 
         // Einstellungen → Galerie: Angaben in die Fotos schreiben (XMP) oder nur in die eigene Datenbank
         GallerySave.Map(api);
+        PhotoExport.Map(api); // [feature:photoexport]
         api.MapGet("/settings", (HttpContext http) => Results.Ok(new { writeXmp = http.Space().Settings.PhotoWriteXmp && !Demo.Enabled, demo = Demo.Enabled }));
         api.MapPut("/settings", (GallerySettingsBody body, HttpContext http) =>
         {
@@ -255,15 +280,19 @@ public static class GalleryApi
             var data = await GalleryFolders.ThumbAsync(http.Space(), config, id, ready is "1" or "true" ? Thumbs.Small : size ?? Thumbs.Small, ct, orig is "1" or "true");
             if (data == null) return Results.NotFound();
             http.Response.Headers.CacheControl = "private, max-age=86400";
-            return Results.File(data, "image/webp");
+            // Bearbeitet in voller Auflösung: JPEG, sonst WebP
+            return Results.File(data, DmOffice.Dav.PhotoEdit.IsJpeg(data) ? "image/jpeg" : "image/webp");
         });
 
         api.MapPut("/external/thumb", async (string id, HttpRequest request, HttpContext http, ServerConfig config, CancellationToken ct) =>
         {
-            using var m = new MemoryStream();
-            await request.Body.CopyToAsync(m, ct);
-            if (m.Length > 5_000_000) return Results.BadRequest();
-            GalleryFolders.StoreThumb(http.Space(), config, id, m.ToArray());
+            // Höchstens 5 MB - nicht erst alles lesen und dann prüfen
+            const long max = 5_000_000;
+            if (request.ContentLength > max) return Results.BadRequest();
+            byte[] data;
+            try { data = await DmOffice.Core.ReadLimit.ReadAllAsync(request.Body, max, ct); }
+            catch (DmOffice.Core.ReadLimit.TooLargeException) { return Results.BadRequest(); }
+            GalleryFolders.StoreThumb(http.Space(), config, id, data);
             return Results.Ok();
         }).DisableAntiforgery();
 

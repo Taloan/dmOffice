@@ -1,9 +1,9 @@
 import { useEffect, useRef } from 'react'
-import { api, CalEvent, MailItem, q } from '../api'
+import { api, CalEvent, featureOn, MailItem, q } from '../api'
 import { useApp } from '../App'
 import { usePrefs } from '../prefs'
 import { fmtTime } from './hooks'
-import { t } from '../i18n'
+import { locale, t } from '../i18n'
 import { loadCategories, silenced } from '../mail/Categories'
 
 /** Desktop-Benachrichtigungen gibt der Browser nur unter HTTPS oder localhost frei. */
@@ -65,8 +65,47 @@ export function Notifier({ status }: { status: any }) {
     }
   }, [status]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Ab 2.2 (Kennungen calremind ...): die Auslösezeiten rechnet der Server - wie Push und Pukki (mehrere je Termin,
+  // Kalender-Standard, ganztägig ab 0:00 Ortszeit statt 9:00)
+  useEffect(() => {
+    if (!['calremind', 'calremdefault', 'calbulkremind', 'calremtask'].some(featureOn)) return
+    type Due = { title: string; start: string; allDay: boolean; fire: string; minutes: number; calendar: number; uri: string }
+    let due: Due[] = []
+    const fired = new Set<string>(JSON.parse(sessionStorage.getItem('dmoffice.reminders') || '[]'))
+    const load = () => {
+      const from = new Date(Date.now() - 10 * 60000), to = new Date(Date.now() + 6 * 60000)
+      api.get<Due[]>('/api/pim/reminders?' + q({ from: from.toISOString(), to: to.toISOString() })).then(d => { due = d; check() }).catch(() => {})
+    }
+    const check = () => {
+      if (!(prefsRef.current.notifyCalendar ?? true)) return
+      const now = Date.now()
+      for (const d of due) {
+        const at = new Date(d.fire).getTime()
+        const key = d.calendar + '|' + d.uri + '|' + d.start + '|' + d.minutes
+        if (now >= at && now - at < 600000 && !fired.has(key)) {
+          fired.add(key)
+          sessionStorage.setItem('dmoffice.reminders', JSON.stringify([...fired]))
+          const when = d.allDay
+            ? new Date(d.start + 'T00:00').toLocaleDateString(locale, { weekday: 'short', day: 'numeric', month: 'short' }) + ' · ' + t('ganztägig')
+            : fmtTime(new Date(d.start))
+          show(t('Erinnerung: {title}', { title: d.title || t('Termin') }), when, () => { location.hash = '#/calendar' })
+        }
+      }
+    }
+    load()
+    // Jede Minute (Fenster bis +6 min) und gleich nach jedem Speichern eines Termins oder einer Aufgabe - sonst erschien
+    // eine Erinnerung, die kurz nach dem Laden fällig wurde, erst beim nächsten Laden
+    const t1 = setInterval(load, 60000)
+    const t2 = setInterval(check, 30000)
+    let soon: ReturnType<typeof setTimeout> | undefined
+    const saved = () => { clearTimeout(soon); soon = setTimeout(load, 500) }
+    window.addEventListener('dmoffice:pim-saved', saved)
+    return () => { clearInterval(t1); clearInterval(t2); clearTimeout(soon); window.removeEventListener('dmoffice:pim-saved', saved) }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
   // Terminerinnerungen: die naechsten acht Tage im Blick, jede Minute pruefen
   useEffect(() => {
+    if (['calremind', 'calremdefault', 'calbulkremind', 'calremtask'].some(featureOn)) return
     let events: CalEvent[] = []
     const fired = new Set<string>(JSON.parse(sessionStorage.getItem('dmoffice.reminders') || '[]'))
     const load = () => {
@@ -91,10 +130,14 @@ export function Notifier({ status }: { status: any }) {
       }
     }
     load()
-    const t1 = setInterval(load, 5 * 60000)
+    // Jede Minute (Fenster bis +6 min) und gleich nach jedem Speichern eines Termins oder einer Aufgabe - sonst erschien
+    // eine Erinnerung, die kurz nach dem Laden fällig wurde, erst beim nächsten Laden
+    const t1 = setInterval(load, 60000)
     const t2 = setInterval(check, 30000)
-    setTimeout(check, 3000)
-    return () => { clearInterval(t1); clearInterval(t2) }
+    let soon: ReturnType<typeof setTimeout> | undefined
+    const saved = () => { clearTimeout(soon); soon = setTimeout(load, 500) }
+    window.addEventListener('dmoffice:pim-saved', saved)
+    return () => { clearInterval(t1); clearInterval(t2); clearTimeout(soon); window.removeEventListener('dmoffice:pim-saved', saved) }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   return null

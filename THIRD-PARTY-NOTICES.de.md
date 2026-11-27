@@ -69,27 +69,29 @@ Die Symbole sind die Fluent UI System Icons, von Microsoft unter der MIT-Lizenz 
 
 | Bestandteil | Version | Lizenz | Quelle |
 |---|---|---|---|
-| AngleSharp | 1.7.2 | MIT | https://github.com/AngleSharp/AngleSharp |
-| AngleSharp.Css | 1.0.2 | MIT | https://github.com/AngleSharp/AngleSharp.Css |
+| AngleSharp | 1.10.0 | MIT | https://github.com/AngleSharp/AngleSharp |
+| AngleSharp.Css | 1.4.0 | MIT | https://github.com/AngleSharp/AngleSharp.Css |
 | Anthropic | 13.1.0 | Apache-2.0 | https://www.github.com/anthropics/anthropic-sdk-csharp |
 | AWSSDK.S3 (2 Pakete) | 4.0.104.6 … | Apache-2.0 | https://github.com/aws/aws-sdk-net/ |
 | bblanchon.PDFium.Linux (3 Pakete) | 152.0.7961 | Apache-2.0 | https://github.com/bblanchon/pdfium-binaries |
 | BouncyCastle.Cryptography | 2.7.0 | MIT | https://github.com/bcgit/bc-csharp |
+| DnsClient | 1.8.0 | Apache-2.0 | https://github.com/MichaCo/DnsClient.NET |
 | DocumentFormat.OpenXml (2 Pakete) | 3.5.1 | MIT | https://github.com/dotnet/Open-XML-SDK |
-| HtmlSanitizer | 9.2.1039 | MIT | https://github.com/mganss/HtmlSanitizer |
-| Ical.Net | 4.3.1 | MIT | https://github.com/ical-org/ical.net |
+| HtmlSanitizer | 11.0.26 | MIT | https://github.com/mganss/HtmlSanitizer |
+| Ical.Net | 5.2.4 | MIT | https://github.com/ical-org/ical.net |
 | Konscious.Security.Cryptography.Argon2 (2 Pakete) | 1.3.1 … | MIT | https://github.com/kmaragon/Konscious.Security.Cryptography |
-| MailKit | 4.18.1 | MIT | https://github.com/jstedfast/MailKit |
+| MailKit | 5.0.0 | MIT | https://github.com/jstedfast/MailKit |
 | MetadataExtractor | 2.8.1 | Apache-2.0 | https://github.com/drewnoakes/metadata-extractor-dotnet |
-| Microsoft.Data.Sqlite.Core (3 Pakete) | 10.0.0 … | MIT | https://github.com/dotnet/dotnet |
+| Microsoft.Data.Sqlite.Core (3 Pakete) | 11.0.0 … | MIT | https://github.com/dotnet/dotnet |
 | Microsoft.Extensions.AI.Abstractions | 10.5.1 | MIT | https://github.com/dotnet/extensions |
-| MimeKit | 4.18.1 | MIT | https://github.com/jstedfast/MimeKit |
-| NodaTime | 3.2.0 | Apache-2.0 | https://github.com/nodatime/nodatime |
+| MimeKit.Cryptography (2 Pakete) | 5.0.0 | MIT | https://github.com/jstedfast/MimeKit |
+| NodaTime | 3.2.2 | Apache-2.0 | https://github.com/nodatime/nodatime |
 | PdfPig | 0.1.16 | Apache-2.0 | https://github.com/UglyToad/PdfPig |
 | PDFtoImage | 5.4.0 | MIT | https://github.com/sungaila/PDFtoImage |
 | SharpCompress | 0.50.7 | MIT | https://github.com/adamhathcock/sharpcompress |
 | SkiaSharp (4 Pakete) | 4.150.1 | MIT | https://go.microsoft.com/fwlink/?linkid=868515 |
-| SQLitePCLRaw.bundle_e_sqlcipher (4 Pakete) | 2.1.11 | Apache-2.0 | https://github.com/ericsink/SQLitePCL.raw |
+| SQLite3MC.PCLRaw.bundle (3 Pakete) | 2.6.1 | MIT | https://github.com/utelle/SQLite3MultipleCiphers-NuGet |
+| SQLitePCLRaw.core | 3.0.5 | Apache-2.0 | https://github.com/ericsink/SQLitePCL.raw |
 | SSH.NET | 2026.0.0 | MIT | https://github.com/sshnet/SSH.NET |
 | Ude.NetStandard | 1.2.0 | MPL-1.1 OR GPL-2.0-or-later OR LGPL-2.1-or-later | https://github.com/yinyue200/ude |
 | XmpCore | 6.1.10.1 | BSD-3-Clause | https://github.com/drewnoakes/xmp-core-dotnet |
@@ -218,6 +220,7 @@ Die Programme kommen aus den Paketquellen des Basis-Images (Ubuntu 24.04) und we
 | NumPy – Rechnen in der Photo-Engine | 2.5.4 | BSD-3-Clause | https://numpy.org |
 | Pillow – Bilddateien in der Photo-Engine | 13.0.0 | MIT-CMU | https://python-pillow.org |
 | libjpeg-turbo, libtiff, libwebp, OpenJPEG, FreeType, HarfBuzz, Little CMS, libavif, libpng, Brotli, liblzma, Zstandard, libxcb (in Pillow) – eigene Bibliotheken der Pillow-Installation, Wortlaut in deren Lizenzdatei | – | BSD-2-Clause AND BSD-3-Clause AND FTL AND IJG AND libpng-2.0 AND libtiff AND MIT AND 0BSD AND Zlib | https://github.com/python-pillow/Pillow/tree/main/wheels/dependency_licenses |
+| YuNet – Gesichter finden in der Photo-Engine; Trainingsdaten: siehe photo-engine/models/README.md | – | MIT | https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet |
 | Haar-Kaskaden (OpenCV) – Gesichter finden in der Photo-Engine, wenn YuNet ausfällt | – | Intel-OpenCV | https://github.com/opencv/opencv/tree/4.x/data/haarcascades |
 
 ## Angebundene Dienste (eigene Container, nicht im Image)
@@ -247,4 +250,4 @@ Kein Code übernommen; das Format ist nach der veröffentlichten Dokumentation u
 
 ## Verträglichkeit mit der AGPL-3.0
 
-dmOffice selbst steht unter der GNU AGPL-3.0 (siehe `LICENSE`). Die Bibliotheken der Weboberfläche und des Servers stehen unter MIT-, Apache-2.0-, ISC-, 0BSD- oder BSD-artigen Lizenzen, der SIL Open Font License oder sind gemeinfrei; diese erlauben die Weitergabe als Teil eines Werks unter der AGPL-3.0, Apache-2.0 ist mit Version 3 der GPL/AGPL verträglich. Die Programme im Docker-Image (Poppler unter GPL, libheif unter LGPL-3.0, Ghostscript unter AGPL-3.0) werden nur als eigene Prozesse aufgerufen und unverändert mit den Lizenztexten ihrer Pakete ausgeliefert. Die Photo-Engine (AGPL-3.0 wie dmOffice) lädt ihre Bibliotheken in den eigenen Prozess; die Pakete bringen LibRaw, FFmpeg und libquadmath als eigene Bibliotheken unter der LGPL mit und enthalten die GPL-Zusatzpakete von LibRaw nicht.
+dmOffice selbst steht unter der GNU AGPL-3.0 (siehe `LICENSE`). Die Bibliotheken der Weboberfläche und des Servers stehen unter MIT-, Apache-2.0-, ISC-, 0BSD- oder BSD-artigen Lizenzen, der SIL Open Font License oder sind gemeinfrei; diese erlauben die Weitergabe als Teil eines Werks unter der AGPL-3.0, Apache-2.0 ist mit Version 3 der GPL/AGPL verträglich. Die Programme im Docker-Image (Poppler unter GPL, libheif unter LGPL-3.0, Ghostscript unter AGPL-3.0) werden nur als eigene Prozesse aufgerufen und unverändert mit den Lizenztexten ihrer Pakete ausgeliefert. Die Photo-Engine (AGPL-3.0 wie dmOffice) lädt ihre Bibliotheken in den eigenen Prozess; die Pakete bringen LibRaw, FFmpeg und libquadmath als eigene Bibliotheken unter der LGPL mit und enthalten die GPL-Zusatzpakete von LibRaw nicht. Die für YuNet genannte Lizenz ist die für die Modelldatei veröffentlichte. Sie erfasst die Trainingsdaten nicht; siehe `photo-engine/models/README.md`.

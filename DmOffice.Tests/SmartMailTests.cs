@@ -179,4 +179,18 @@ public class SmartMailTests
         PimStore.UpdateCollection(db, cal.Id, "Pakete", null, null);
         Assert.Equal("Pakete", SmartMail.CalendarFor(db).Name);
     }
+
+    [Fact]
+    public void JsonLd_Bloecke_linear_gefunden()
+    {
+        var html = "<p>x</p><script>var a=1;</script><SCRIPT type=\"application/ld+json\">{\"@type\":\"Order\"}</SCRIPT>"
+            + "<script type='application/ld+json'>[1]</script>";
+        Assert.Equal(["{\"@type\":\"Order\"}", "[1]"], SmartMail.JsonLdBlocks(html).ToList());
+
+        // Viele offene Bloecke ohne Ende: sofort fertig statt quadratisch
+        var many = string.Concat(Enumerable.Repeat("<script type=\"application/ld+json\">", 200_000));
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        Assert.Empty(SmartMail.JsonLdBlocks(many));
+        Assert.True(sw.ElapsedMilliseconds < 2000, $"{sw.ElapsedMilliseconds} ms");
+    }
 }

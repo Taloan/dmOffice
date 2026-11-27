@@ -71,15 +71,15 @@ public sealed class MailCleanup(Spaces spaces, ImapPool pool, MailSync sync, ILo
         try { await Task.Delay(TimeSpan.FromMinutes(2), stop); } catch (OperationCanceledException) { return; }
         while (!stop.IsCancellationRequested)
         {
-            foreach (var space in spaces.All())
+            foreach (var space in spaces.Working())
             {
                 if (!space.Settings.MailAccounts.Any(a => a.Slim)) continue;
                 using var activity = Activity.Start(space.User.Id, Activity.MailSlim);
                 try { if (Slim(space, log).Count > 0) sync.Touch(space.User.Id); }
                 catch (Exception e) { activity.Fail(e.Message); log.LogWarning("Schlank aufraeumen {User}: {Error}", space.User.Id, e.Message); }
             }
-            foreach (var space in spaces.All())
-                foreach (var account in space.Settings.MailAccounts.Where(a => a.TrashDays > 0 || a.JunkDays > 0).ToList())
+            foreach (var space in spaces.Working())
+                foreach (var account in space.Settings.ActiveMailAccounts().Where(a => a.TrashDays > 0 || a.JunkDays > 0).ToList())
                 {
                     using var activity = Activity.Start(space.User.Id, Activity.MailTrash, account.Email);
                     try

@@ -108,12 +108,7 @@ public sealed class ChatStore
     /// <summary>Fuer Tests: Datei und Schluessel direkt.</summary>
     public ChatStore(string path, byte[] key)
     {
-        _connectionString = new SqliteConnectionStringBuilder
-        {
-            DataSource = path,
-            Password = "x'" + Convert.ToHexString(key) + "'",
-            DefaultTimeout = 30
-        }.ToString();
+        _connectionString = DmOffice.Core.UserDb.ConnectionStringOf(path, key);
         Migrate();
     }
 
@@ -197,6 +192,12 @@ public sealed class ChatStore
             // Pukkis Stimmung je Nachricht (Pose in Web und App)
             UserDb.Exec(conn, "ALTER TABLE messages ADD COLUMN mood TEXT;");
             UserDb.Exec(conn, "PRAGMA user_version=7");
+        }
+        if (version < 8)
+        {
+            // Unterhaltung zu zweit ausblenden: nur fuer mich, bis die naechste Nachricht kommt
+            UserDb.Exec(conn, "ALTER TABLE members ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;");
+            UserDb.Exec(conn, "PRAGMA user_version=8");
         }
     }
 
@@ -335,6 +336,8 @@ CREATE TABLE user_seq (user TEXT PRIMARY KEY, seq INTEGER NOT NULL);
             // Wer gegangen war, sieht den Verlauf wieder - es ist seine eigene Unterhaltung zu zweit
             foreach (var u in new[] { me, other })
                 UserDb.Exec(conn, "INSERT OR IGNORE INTO members(room, user, joined) VALUES($r,$u,$j)", ("$r", id), ("$u", u), ("$j", Now()));
+            // Wer sie oeffnet, sieht sie wieder; beim Gegenueber bleibt sie ausgeblendet bis zur naechsten Nachricht
+            UserDb.Exec(conn, "UPDATE members SET hidden=0 WHERE room=$r AND user=$u", ("$r", id), ("$u", me));
             Touch(conn, id, seq);
             return (id, new[] { me, other });
         });
@@ -441,6 +444,49 @@ CREATE TABLE user_seq (user TEXT PRIMARY KEY, seq INTEGER NOT NULL);
         return before;
     }
 
+    /// <summary>Unterhaltung zu zweit ausblenden - nur fuer mich. Das Gegenueber merkt nichts, der Verlauf bleibt;
+    /// die naechste Nachricht (oder Oeffnen) bringt sie zurueck.</summary>
+    public void Hide(string me, long room)
+    {
+        Run(conn =>
+        {
+            RequireMember(conn, room, me);
+            if (RoomKind(conn, room) == Group) throw new InvalidOperationException("Gruppen verlässt du über „Gruppe verlassen“.");
+            UserDb.Exec(conn, "UPDATE members SET hidden=1 WHERE room=$r AND user=$u", ("$r", room), ("$u", me));
+            BumpUser(conn, me, NextSeq(conn));
+            return new[] { me };
+        });
+    }
+
+    /// <summary>
+    /// Einmalig: Unterhaltungen zu zweit, die jemand mit dem frueheren „Ausblenden“ verlassen hat, gehoeren ihm wieder -
+    /// ausgeblendet. Ohne das kaemen neue Nachrichten des Gegenuebers dort nie an. Geloeschte Benutzer bleiben draussen.
+    /// </summary>
+    public int RestoreHidden(Func<string, bool> exists)
+    {
+        if (GetKv("hidden.restored") != null) return 0;
+        var restored = Write(conn =>
+        {
+            var lone = UserDb.Query(conn, "SELECT r.id, r.pair, (SELECT user FROM members WHERE room=r.id) FROM rooms r " +
+                "WHERE r.kind='direct' AND r.pair IS NOT NULL AND (SELECT COUNT(*) FROM members WHERE room=r.id)=1",
+                r => (Id: r.GetInt64(0), Pair: r.GetString(1), Left: r.GetString(2)));
+            var wake = new List<string>();
+            var count = 0;
+            foreach (var (id, pair, left) in lone)
+            {
+                var gone = pair.Split('|').FirstOrDefault(u => u != left);
+                if (gone == null || !exists(gone)) continue;
+                UserDb.Exec(conn, "INSERT OR IGNORE INTO members(room, user, joined, last_read, hidden) VALUES($r,$u,$j,$l,1)",
+                    ("$r", id), ("$u", gone), ("$j", Now()), ("$l", LastMessageId(conn, id)));
+                wake.Add(gone);
+                count++;
+            }
+            UserDb.Exec(conn, "INSERT INTO kv(key, value) VALUES('hidden.restored', $v) ON CONFLICT(key) DO UPDATE SET value=excluded.value", ("$v", Now()));
+            return (count, wake);
+        });
+        return restored;
+    }
+
     /// <summary>Verwalten weitergeben oder abnehmen.</summary>
     public void SetAdmin(string me, long room, string user, bool admin)
     {
@@ -450,7 +496,7 @@ CREATE TABLE user_seq (user TEXT PRIMARY KEY, seq INTEGER NOT NULL);
             RequireMember(conn, room, user);
             if (!admin && Convert.ToInt64(UserDb.Query(conn, "SELECT COUNT(*) FROM members WHERE room=$r AND admin=1 AND user<>$u",
                     r => r.GetInt64(0), ("$r", room), ("$u", user)).First()) == 0)
-                throw new InvalidOperationException("Mindestens eine Person muss die Gruppe verwalten.");
+                throw new InvalidOperationException("Mindestens ein Benutzer muss die Gruppe verwalten.");
             UserDb.Exec(conn, "UPDATE members SET admin=$a WHERE room=$r AND user=$u", ("$a", admin ? 1 : 0), ("$r", room), ("$u", user));
             Touch(conn, room, NextSeq(conn));
             return MemberIds(conn, room);
@@ -531,6 +577,8 @@ CREATE TABLE user_seq (user TEXT PRIMARY KEY, seq INTEGER NOT NULL);
             UserDb.Exec(conn, "UPDATE rooms SET last_message=$m, seq=$s WHERE id=$r", ("$m", id), ("$s", seq), ("$r", room));
             // Eigene Nachricht ist gelesen
             UserDb.Exec(conn, "UPDATE members SET last_read=$m WHERE room=$r AND user=$u", ("$m", id), ("$r", room), ("$u", me));
+            // Ausgeblendet: die neue Nachricht bringt die Unterhaltung zurueck
+            UserDb.Exec(conn, "UPDATE members SET hidden=0 WHERE room=$r AND hidden=1", ("$r", room));
             // Stumm geschaltet bekommt trotzdem Bescheid, wer erwaehnt ist
             recipients = UserDb.Query(conn, "SELECT user FROM members WHERE room=$r AND user<>$u AND (muted=0 OR instr($n, ','||user||',')>0)",
                 r => r.GetString(0), ("$r", room), ("$u", me), ("$n", mentioned ?? ""));
@@ -760,8 +808,9 @@ CREATE TABLE user_seq (user TEXT PRIMARY KEY, seq INTEGER NOT NULL);
     /// </summary>
     public List<ChatMessage> Search(string me, string query, long? room = null, int limit = 50)
     {
-        var words = query.ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(w => w.Length >= 2).Select(Fold).ToList();
-        if (words.Count == 0) return new();
+        // Einzelne Zeichen zählen mit („Masse 3“), nur eine Suche allein aus einzelnen Zeichen träfe fast alles
+        var words = query.ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries).Select(Fold).ToList();
+        if (words.All(w => w.Length < 2)) return new();
         using var conn = Open();
         // Die letzten 20 000 sichtbaren Nachrichten reichen für eine Familie; gefiltert wird hier (SQLite kennt keine Umlaute)
         var candidates = UserDb.Query(conn, $"SELECT {MessageColumns} FROM messages m JOIN members b ON b.room=m.room AND b.user=$u " +
@@ -789,7 +838,7 @@ CREATE TABLE user_seq (user TEXT PRIMARY KEY, seq INTEGER NOT NULL);
     {
         using var conn = Open();
         var rooms = UserDb.Query(conn, @"SELECT r.id, r.kind, r.title, r.created, r.created_by, r.seq, r.last_message, b.since, b.last_read
-                                         FROM rooms r JOIN members b ON b.room=r.id AND b.user=$u",
+                                         FROM rooms r JOIN members b ON b.room=r.id AND b.user=$u AND b.hidden=0",
             r => (Id: r.GetInt64(0), Kind: r.GetString(1), Title: r.IsDBNull(2) ? null : r.GetString(2), Created: Time(r.GetString(3)),
                   By: r.GetString(4), Seq: r.GetInt64(5), Last: r.IsDBNull(6) ? 0 : r.GetInt64(6), Since: r.GetInt64(7), Read: r.GetInt64(8)), ("$u", me));
         var result = new List<ChatRoom>();
@@ -829,7 +878,7 @@ CREATE TABLE user_seq (user TEXT PRIMARY KEY, seq INTEGER NOT NULL);
     {
         using var conn = Open();
         return Convert.ToInt32(UserDb.Query(conn, @"SELECT COUNT(*) FROM messages m JOIN members b ON b.room=m.room AND b.user=$u
-                WHERE (b.muted=0 OR instr(m.mentions, ','||$u||',')>0) AND m.id>b.last_read AND m.id>b.since AND m.sender<>$u AND m.kind='text' AND m.deleted=0",
+                WHERE b.hidden=0 AND (b.muted=0 OR instr(m.mentions, ','||$u||',')>0) AND m.id>b.last_read AND m.id>b.since AND m.sender<>$u AND m.kind='text' AND m.deleted=0",
             r => r.GetInt64(0), ("$u", me)).First());
     }
 
@@ -845,7 +894,7 @@ CREATE TABLE user_seq (user TEXT PRIMARY KEY, seq INTEGER NOT NULL);
         using var conn = Open();
         var seq = SeqOf(conn, me);
         var messages = UserDb.Query(conn, $@"SELECT {MessageColumns} FROM messages m JOIN members b ON b.room=m.room AND b.user=$u
-                WHERE m.seq>$s AND m.id>b.since ORDER BY m.seq LIMIT $l",
+                WHERE m.seq>$s AND m.id>b.since AND b.hidden=0 ORDER BY m.seq LIMIT $l",
             ReadMessage, ("$u", me), ("$s", since), ("$l", limit + 1));
         var more = messages.Count > limit;
         if (more)
@@ -921,6 +970,15 @@ CREATE TABLE user_seq (user TEXT PRIMARY KEY, seq INTEGER NOT NULL);
     }
 
     public bool IsMember(long room, string user) { using var conn = Open(); return Member(conn, room, user) != null; }
+
+    /// <summary>Mitglied und nicht ausgeblendet.</summary>
+    public bool IsShown(long room, string user)
+    {
+        using var conn = Open();
+        return UserDb.Query(conn, "SELECT 1 FROM members WHERE room=$r AND user=$u AND hidden=0", r => 1, ("$r", room), ("$u", user)).Count > 0;
+    }
+
+    public bool IsGroup(long room) { using var conn = Open(); return RoomKind(conn, room) == Group; }
 
     /// <summary>Aufbewahrung: Nachrichten vor <paramref name="before"/> endgültig löschen, samt Reaktionen. Zahl der gelöschten.</summary>
     public int Purge(DateTime before)

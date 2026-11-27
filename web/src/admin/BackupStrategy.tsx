@@ -1,21 +1,35 @@
 import { Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Field, InfoLabel, Input, Link, MessageBar, MessageBarBody, ProgressBar, Radio, RadioGroup, Select, Switch, Text, tokens } from '@fluentui/react-components'
 import { useEffect, useMemo, useState } from 'react'
-import { ChevronDown16Regular, ChevronRight16Regular, Key20Regular } from '@fluentui/react-icons'
-import { api, fmtSize } from '../api'
+import { ChevronDown20Regular, ChevronRight20Regular, Key20Regular } from '@fluentui/react-icons'
+import { api, featureOn, fmtSize } from '../api'
+import { isSftp } from '../files/SftpFields' // [feature:sftptrust]
+import { ensureSftpTrust } from '../files/SftpTrust' // [feature:sftptrust]
 import { FormerTargets } from './FormerTargets'
+import { Schedule, SchedulePicker, Unit } from '../settings/SchedulePicker'
 import { useApp } from '../App'
 import { lang, locale, t, tError } from '../i18n'
 import { copyText, saveText } from '../shell/browser'
 import { AdminCol, AdminTable } from './AdminTable'
 import { AdminHeading } from './AdminHeading'
 import { Target, TargetFields, TargetValues, valuesOf } from './TargetFields'
+import { useShows, useAdminPart } from './AdminPage' // [feature:adminclean]
+import { TargetForm } from './TargetForm' // [feature:adminclean]
+import { RibbonActions, RibbonButton } from '../shell/Ribbon' // [feature:adminclean]
+import { ArrowSync20Regular, Play20Regular } from '@fluentui/react-icons' // [feature:adminclean]
+// [feature:savemode]
+import { useRef } from 'react'
+import { useAdminSave } from './draft'
+import { askConfirm } from '../shell/context'
+type CorePatch = Partial<{ enabled: boolean; at: string; keepCount: number; everyHours: number; scheduleKind: 'every' | 'cron'; everyCount: number; everyUnit: Unit; weekday: number; cron: string }>
+type FilesPatch = Partial<{ enabled: boolean; own: boolean; days: number; forever: boolean }>
+// [/feature:savemode]
 
 const docUrl = () => `https://github.com/Taloan/dmOffice/blob/master/docs/restore${lang === 'en' ? '' : '.de'}.md`
 
 interface CoreStatus { running: boolean; lastRun: string | null; lastError: string | null; lastName: string | null; lastBytes: number; otherServer?: string | null }
 interface FilesStatus { running: boolean; lastRun: string | null; lastError: string | null; uploaded: number; count: number; bytes: number; pending: number; completeSince: string | null; done: number; total: number }
 interface TargetState { target: Target; endpoint: string | null; region: string | null; bucket: string | null; prefix: string | null; accessKey: string | null; hasSecret: boolean; webDavUrl: string | null; webDavUser: string | null; hasWebDavPassword: boolean; folder: string | null; own: boolean; configured: boolean }
-interface CoreState extends TargetState { enabled: boolean; at: string; keepCount: number; everyHours: number; blocked: string | null; status: CoreStatus; overdue: boolean; holdDeletes: boolean; nextRun: string | null }
+interface CoreState extends TargetState { enabled: boolean; at: string; keepCount: number; everyHours: number; scheduleKind?: 'every' | 'cron' | null; everyCount?: number; everyUnit?: Unit; weekday?: number; cron?: string | null; blocked: string | null; status: CoreStatus; overdue: boolean; holdDeletes: boolean; nextRun: string | null }
 interface FilesState extends TargetState { enabled: boolean; wanted: boolean; minDays: number; days: number; effectiveDays: number | null; forever: boolean; status: FilesStatus; restore: { running: boolean; missing: number; restored: number; notThere: number; failed: number; error: string | null } | null }
 interface StorageState {
   target: Target; endpoint: string | null; bucket: string | null; prefix: string | null; webDavUrl: string | null; folder: string | null; mirror: boolean; configured: boolean
@@ -24,7 +38,13 @@ interface StorageState {
 interface Stand { name: string; created: string; bytes: number; files: boolean | null }
 
 const when = (v: string) => new Date(v).toLocaleString(locale)
-
+/** Zeitplan aus den Einstellungen - ohne neuen Zeitplan aus dem festen Abstand abgeleitet */
+const scheduleOf = (c: CoreState): Schedule => c.scheduleKind
+  ? { kind: c.scheduleKind, count: c.everyCount ?? 1, unit: c.everyUnit ?? 'd', weekday: c.weekday ?? 1, cron: c.cron ?? '0 3 * * *' }
+  : c.everyHours === 720 ? { kind: 'cron', count: 1, unit: 'd', weekday: 1, cron: `${Number(c.at.split(':')[1] ?? 0)} ${Number(c.at.split(':')[0] ?? 3)} 1 * *` }
+  : c.everyHours >= 168 ? { kind: 'every', count: 1, unit: 'w', weekday: 1, cron: '0 3 * * *' }
+  : c.everyHours >= 24 ? { kind: 'every', count: 1, unit: 'd', weekday: 1, cron: '0 3 * * *' }
+  : { kind: 'every', count: c.everyHours, unit: 'h', weekday: 1, cron: '0 3 * * *' }
 /** Wo ein Ziel liegt, ohne Zugangsdaten. */
 function placeOf(x: { target: Target; endpoint: string | null; bucket: string | null; prefix: string | null; webDavUrl: string | null; folder: string | null }) {
   if (x.target === 'folder') return t('Ordner') + ': ' + (x.folder ?? '')
@@ -55,6 +75,14 @@ export function BackupStrategy() {
   const [busy, setBusy] = useState(false)
   const [restoreOpen, setRestoreOpen] = useState(false)
   const [profile, setProfile] = useState<string | null>(null)
+  // [feature:adminclean]
+  // Kennung adminclean: je Reiter nur ein Teil (Übersicht, Core-Backup, Files-Backup), Aktionen im Menüband
+  const shows = useShows()
+  const tabbed = useAdminPart().part != null
+  // [feature:adminclean:else]
+  // const shows = (..._: string[]) => true
+  // const tabbed = false
+  // [/feature:adminclean]
 
   const take = (s: StorageState) => {
     setSt(s)
@@ -79,25 +107,73 @@ export function BackupStrategy() {
     { key: 'files', label: () => t('Dateien'), width: 0, sort: r => (r.files == null ? 2 : r.files ? 0 : 1), render: r => (r.files == null ? '–' : r.files ? t('Vollständig') : t('Unvollständig')) },
   ], [])
 
+  // [feature:savemode]
+  // Kennung savemode: Schalter, Zeitplan und Zahlen sammeln, „Speichern“ im Menüband; Ziele bleiben bei „Speichern und testen“
+  const [corePatch, setCorePatch] = useState<CorePatch>({})
+  const [filesPatch, setFilesPatch] = useState<FilesPatch>({})
+  const later = useRef<{ dirty: boolean; save: () => Promise<boolean> }>({ dirty: false, save: async () => true })
+  const drafting = useAdminSave({
+    get dirty() { return later.current.dirty },
+    save: () => later.current.save(),
+    discard: () => {
+      setCorePatch({}); setFilesPatch({})
+      if (st) { setAt(st.backup.at); setCount(String(st.backup.keepCount)); setDays(String(st.files.effectiveDays ?? st.files.minDays)) }
+    },
+  })
+  // [feature:savemode:else]
+  // const drafting = false
+  // [/feature:savemode]
   if (!st) return null
   const core = st.backup
   const files = st.files
+  // [feature:savemode]
+  const coreShown = drafting ? { ...core, ...corePatch } : core
+  const filesShown = drafting ? { ...files, ...(filesPatch.enabled !== undefined ? { wanted: filesPatch.enabled } : {}), ...(filesPatch.forever !== undefined ? { forever: filesPatch.forever } : {}) } : files
+  const keepN = Math.max(1, Math.round(Number(count)) || core.keepCount)
+  const daysN = Math.max(files.minDays, Math.round(Number(days)) || 0)
+  const coreAll: CorePatch = { ...corePatch, ...(at && at !== core.at ? { at } : {}), ...(keepN !== core.keepCount ? { keepCount: keepN } : {}) }
+  const filesAll: FilesPatch = { ...filesPatch, ...(!filesShown.forever && daysN !== files.effectiveDays ? { days: daysN } : {}) }
+  later.current = {
+    dirty: drafting && (Object.keys(coreAll).length > 0 || Object.keys(filesAll).length > 0),
+    save: async () => {
+      if (coreAll.enabled === false && core.enabled && !(await askConfirm(t('Core-Backup ausschalten?'), t('Es werden keine neuen Versionen mehr angelegt. Das Files-Backup setzt das Core-Backup voraus und ruht ebenfalls.'), t('Ausschalten')))) return false
+      if (filesAll.enabled === false && files.wanted && coreShown.enabled && !(await askConfirm(t('Files-Backup ausschalten?'), t('Es werden keine Dateien mehr in die Kopie übertragen.'), t('Ausschalten')))) return false
+      try {
+        if (Object.keys(coreAll).length) take(await api.put<StorageState>('/api/admin/storage/backup', { enabled: core.enabled, at: core.at, keepCount: core.keepCount, everyHours: core.everyHours, ...coreAll }))
+        if (Object.keys(filesAll).length) take(await api.put<StorageState>('/api/admin/storage/files-backup', { enabled: files.wanted, own: files.own, days: files.effectiveDays ?? files.minDays, forever: files.forever, target: filesTarget, ...filesValues, secretKey: filesValues.secretKey || null, webDavPassword: filesValues.webDavPassword || null, ...filesAll }))
+        setCorePatch({}); setFilesPatch({}); notify(t('Gespeichert')); return true
+      } catch (e) { fail(e); api.get<StorageState>('/api/admin/storage').then(take).catch(() => {}); return false }
+    },
+  }
+  // [feature:savemode:else]
+  // const coreShown = core
+  // const filesShown = files
+  // [/feature:savemode]
   const muted = { color: tokens.colorNeutralForeground3 }
   const storagePlace = st.configured ? placeOf(st) : null
 
-  const saveCore = async (patch: Partial<{ enabled: boolean; at: string; keepCount: number; everyHours: number }>) => {
+  const saveSchedule = (x: Schedule) => saveCore({ scheduleKind: x.kind, everyCount: x.count, everyUnit: x.unit, weekday: x.weekday, cron: x.cron })
+  const saveCore = async (patch: Partial<{ enabled: boolean; at: string; keepCount: number; everyHours: number; scheduleKind: string; everyCount: number; everyUnit: Unit; weekday: number; cron: string }>) => {
+    if (drafting) { setCorePatch(p => ({ ...p, ...patch } as CorePatch)); return } // [feature:savemode]
     try { take(await api.put<StorageState>('/api/admin/storage/backup', { enabled: core.enabled, at, keepCount: Number(count) || core.keepCount, everyHours: core.everyHours, ...patch })); notify(t('Gespeichert')) } catch (e) { fail(e) }
   }
   const saveCoreTarget = async (own: boolean, check: boolean) => {
     setBusy(true)
     try {
+      // [feature:sftptrust]
+      if (own && coreTarget === 'webdav' && isSftp(coreValues.webDavUrl) && !await ensureSftpTrust({ url: coreValues.webDavUrl }, { admin: true })) return
+      // [/feature:sftptrust]
       take(await api.put<StorageState>('/api/admin/storage/backup/target', { own, target: coreTarget, ...coreValues, secretKey: coreValues.secretKey || null, webDavPassword: coreValues.webDavPassword || null }))
       if (check) { await api.post('/api/admin/storage/backup/test'); setCoreTested(true) } else notify(t('Gespeichert'))
     } catch (e) { setCoreTested(false); fail(e) } finally { setBusy(false) }
   }
   const saveFiles = async (patch: Partial<{ enabled: boolean; own: boolean; days: number; forever: boolean }>, check = false) => {
+    if (drafting && !check && patch.own === undefined) { setFilesPatch(p => ({ ...p, ...patch })); return } // [feature:savemode]
     setBusy(true)
     try {
+      // [feature:sftptrust]
+      if ((patch.own ?? filesOwn) && filesTarget === 'webdav' && isSftp(filesValues.webDavUrl) && !await ensureSftpTrust({ url: filesValues.webDavUrl }, { admin: true })) return
+      // [/feature:sftptrust]
       take(await api.put<StorageState>('/api/admin/storage/files-backup', { enabled: files.wanted, own: filesOwn, days: Number(days) || 0, forever: files.forever, target: filesTarget, ...filesValues, secretKey: filesValues.secretKey || null, webDavPassword: filesValues.webDavPassword || null, ...patch }))
       if (check) { await api.post('/api/admin/storage/files-backup/test'); setFilesTested(true) } else notify(t('Gespeichert'))
     } catch (e) { setFilesTested(false); fail(e); api.get<StorageState>('/api/admin/storage').then(take).catch(() => {}) } finally { setBusy(false) }
@@ -144,12 +220,13 @@ export function BackupStrategy() {
   )
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 720 }}>
-      <FormerTargets purposes={['backup', 'files']} />
-      <AdminHeading first>{t('Übersicht')}</AdminHeading>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: tabbed ? undefined : 720 }}>
+      {shows('overview') && <FormerTargets purposes={['backup', 'files']} />}
+      {shows('overview') && <>
+      {!tabbed && <AdminHeading first>{t('Übersicht')}</AdminHeading>}
       {core.enabled && core.status.lastError && <MessageBar intent="warning" layout="multiline"><MessageBarBody>{t('Core-Backup gescheitert: {error}', { error: core.status.lastError })}</MessageBarBody></MessageBar>}
       {files.enabled && files.status.lastError && <MessageBar intent="warning" layout="multiline"><MessageBarBody>{t('Files-Backup gescheitert: {error}', { error: tError(files.status.lastError) })}</MessageBarBody></MessageBar>}
-      {core.status.otherServer && <MessageBar intent="warning" layout="multiline"><MessageBarBody>{t('Am Ziel des Core-Backups speichert noch ein anderer dmOffice-Server (zuletzt {when}). Solange löscht dieser Server dort keine alten Stände, die eingestellte Zahl gilt also nicht.', { when: new Date(core.status.otherServer).toLocaleString(locale) })}<div style={{ marginTop: 6 }}><Button size="small" onClick={forgetOther}>{t('Das war dieser Server vor einem Umzug')}</Button></div></MessageBarBody></MessageBar>}
+      {core.status.otherServer && <MessageBar intent="warning" layout="multiline"><MessageBarBody>{t('Am Ziel des Core-Backups speichert noch ein anderer dmOffice-Server (zuletzt {when}). Solange löscht dieser Server dort keine alten Stände, die eingestellte Zahl gilt also nicht.', { when: new Date(core.status.otherServer).toLocaleString(locale) })}{!tabbed && <div style={{ marginTop: 6 }}><Button size="small" onClick={forgetOther}>{t('Das war dieser Server vor einem Umzug')}</Button></div>}</MessageBarBody></MessageBar>}
       {core.holdDeletes && core.status.lastRun && <Text size={200}>{t('Das Löschen am Ziel ist pausiert, bis das Core-Backup wieder durchläuft.')}</Text>}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 10 }}>
         {tile(t('Core-Backup'), coreState, coreBad, [
@@ -173,29 +250,49 @@ export function BackupStrategy() {
         {row(t('Hauptschlüssel'), t('Beim Administrator'), true)}
         {row(t('Externe Ordner'), t('Nicht enthalten'), true)}
       </div>
-      <Text size={200}>{t('Ohne den DMOFFICE_MASTER_KEY aus der Container-Vorlage lässt sich kein Backup öffnen.')}</Text>
+      <MessageBar intent="warning" layout="multiline" style={{ maxWidth: 720 }}><MessageBarBody>{t('Ohne den DMOFFICE_MASTER_KEY aus der Container-Vorlage lässt sich kein Backup öffnen.')}</MessageBarBody></MessageBar>
+      {/* [feature:adminclean] */}
+      {tabbed && core.status.otherServer && <RibbonActions><RibbonButton icon={<ArrowSync20Regular />} label={t('Das war dieser Server vor einem Umzug')} onClick={forgetOther} /></RibbonActions>}
+      {/* [/feature:adminclean] */}
+      </>}
+      {shows('core') && <>
 
-      <AdminHeading><InfoLabel size="large" info={t('Sichert alles außer den Dateien selbst: Mails, Kalender, Kontakte, Aufgaben, Notizen, Chat, die Namen und Ordner der Dateien, Benutzer und Einstellungen. Jede Version ist vollständig.')}>{t('Core-Backup')}</InfoLabel></AdminHeading>
+      {/* [feature:journal] */}
+      <AdminHeading first={tabbed}><InfoLabel size="large" info={t('Sichert alles außer den Dateien selbst: Mails, Kalender, Kontakte, Aufgaben, Notizen, Tagebuch, Chat, die Namen und Ordner der Dateien, Benutzer und Einstellungen. Jede Version ist vollständig.')}>{t('Core-Backup')}</InfoLabel></AdminHeading>
+      {/* [feature:journal:else] */}
+      {/* <AdminHeading first={tabbed}><InfoLabel size="large" info={t('Sichert alles außer den Dateien selbst: Mails, Kalender, Kontakte, Aufgaben, Notizen, Chat, die Namen und Ordner der Dateien, Benutzer und Einstellungen. Jede Version ist vollständig.')}>{t('Core-Backup')}</InfoLabel></AdminHeading> */}
+      {/* [/feature:journal] */}
       {core.blocked && <Text size={200} style={muted}>{tError(core.blocked)}</Text>}
-      <Switch checked={core.enabled} disabled={!!core.blocked} onChange={(_, d) => saveCore({ enabled: d.checked })} label={core.enabled ? t('Core-Backup ist aktiviert') : t('Core-Backup einschalten')} />
-      {target(coreOwn, setCoreOwn, () => { setCoreTested(false); if (core.own) saveCoreTarget(false, false) }, t('Ziel'))}
-      {(coreOwn || !st.configured) && <>
+      <Switch checked={coreShown.enabled} disabled={!!core.blocked} onChange={(_, d) => saveCore({ enabled: d.checked })} label={coreShown.enabled ? t('Core-Backup ist aktiviert') : t('Core-Backup einschalten')} />
+      {/* [feature:adminclean] */}
+      {tabbed && <TargetForm mode={coreOwn ? 'own' : 'same'} samePlace={st.configured ? storagePlace : null}
+        onMode={m => { if (m === 'same') { setCoreOwn(false); setCoreTested(false); if (core.own) saveCoreTarget(false, false) } else setCoreOwn(true) }}
+        target={coreTarget} onTarget={x => { setCoreTested(false); setCoreTarget(x) }} v={coreValues} onChange={(k, v) => { setCoreTested(false); setCoreValues(x => ({ ...x, [k]: v })) }}
+        hasSecret={core.own && core.hasSecret} hasWebDavPassword={core.own && core.hasWebDavPassword} onTest={() => saveCoreTarget(true, true)} busy={busy} tested={coreTested} />}
+      {/* [/feature:adminclean] */}
+      {!tabbed && target(coreOwn, setCoreOwn, () => { setCoreTested(false); if (core.own) saveCoreTarget(false, false) }, t('Ziel'))}
+      {!tabbed && (coreOwn || !st.configured) && <>
         <TargetFields target={coreTarget} onTarget={x => { setCoreTested(false); setCoreTarget(x) }} v={coreValues} onChange={(k, v) => { setCoreTested(false); setCoreValues(x => ({ ...x, [k]: v })) }}
           hasSecret={core.own && core.hasSecret} hasWebDavPassword={core.own && core.hasWebDavPassword} />
         <div><Button appearance="primary" disabled={busy} onClick={() => saveCoreTarget(true, true)}>{busy ? t('Prüfe …') : t('Speichern und testen')}</Button></div>
         {coreTested && <MessageBar intent="success"><MessageBarBody>{t('Verbindung geprüft: dmOffice kann dort schreiben, lesen und löschen.')}</MessageBarBody></MessageBar>}
       </>}
+      {featureOn('backupcron') && <SchedulePicker preview="/api/admin/storage/backup/preview" value={scheduleOf(coreShown)} at={at} onAt={x => { setAt(x); if (x && x !== core.at) saveCore({ at: x }) }} onChange={saveSchedule} />}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-        <Field label={t('Wie oft')}>
-          <Select value={String(core.everyHours)} onChange={(_, d) => saveCore({ everyHours: Number(d.value) })}>
+        {!featureOn('backupcron') && <><Field label={t('Wie oft')}>
+          <Select value={String(coreShown.everyHours)} onChange={(_, d) => saveCore({ everyHours: Number(d.value) })}>
             {[1, 3, 6, 12, 24, 168, 720].map(h => <option key={h} value={h}>{h === 1 ? t('stündlich') : h === 24 ? t('täglich') : h === 168 ? t('wöchentlich') : h === 720 ? t('monatlich') : t('alle {n} Stunden', { n: h })}</option>)}
           </Select>
         </Field>
-        <Field label={core.everyHours < 24 ? t('ab Uhrzeit') : t('Uhrzeit')}><Input type="time" value={at} onChange={(_, d) => setAt(d.value)} onBlur={() => at !== core.at && saveCore({ at })} style={{ width: 120 }} /></Field>
+        <Field label={coreShown.everyHours < 24 ? t('ab Uhrzeit') : t('Uhrzeit')}><Input type="time" value={at} onChange={(_, d) => setAt(d.value)} onBlur={() => at !== core.at && saveCore({ at })} style={{ width: 120 }} /></Field></>}
         <Field label={t('Versionen aufbewahren')}><Input type="number" min={1} value={count} onChange={(_, d) => setCount(d.value)} onBlur={() => { const n = Math.max(1, Math.round(Number(count)) || core.keepCount); setCount(String(n)); if (n !== core.keepCount) saveCore({ keepCount: n }) }} style={{ width: 100 }} /></Field>
-        <Button disabled={!!core.blocked || core.status.running}
+        {!tabbed && <Button disabled={!!core.blocked || core.status.running}
           onClick={() => api.post('/api/admin/storage/backup/run').then(() => { notify(t('Backup gestartet')); setSt(o => (o ? { ...o, backup: { ...o.backup, status: { ...o.backup.status, running: true } } } : o)) }).catch(fail)}>
-          {core.status.running ? t('Sichert …') : t('Jetzt sichern')}</Button>
+          {core.status.running ? t('Sichert …') : t('Jetzt sichern')}</Button>}
+        {/* [feature:adminclean] */}
+        {tabbed && <RibbonActions><RibbonButton icon={<Play20Regular />} disabled={!!core.blocked || core.status.running} label={core.status.running ? t('Sichert …') : t('Jetzt sichern')}
+          onClick={() => api.post('/api/admin/storage/backup/run').then(() => { notify(t('Backup gestartet')); setSt(o => (o ? { ...o, backup: { ...o.backup, status: { ...o.backup.status, running: true } } } : o)) }).catch(fail)} /></RibbonActions>}
+        {/* [/feature:adminclean] */}
       </div>
       {stands && stands.length > 0 && <>
         <Text weight="semibold" size={300} style={{ marginTop: 6 }}>{t('Versionen')}</Text>
@@ -203,23 +300,33 @@ export function BackupStrategy() {
       </>}
       {core.configured && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
-          <Button appearance="transparent" size="small" icon={restoreOpen ? <ChevronDown16Regular /> : <ChevronRight16Regular />} style={{ alignSelf: 'flex-start', padding: 0, fontWeight: 600 }} onClick={() => setRestoreOpen(x => !x)}>{t('Wiederherstellung')}</Button>
-          {restoreOpen && <>
+          {tabbed ? <AdminHeading>{t('Wiederherstellung')}</AdminHeading> : <Button appearance="transparent" icon={restoreOpen ? <ChevronDown20Regular /> : <ChevronRight20Regular />} style={{ alignSelf: 'flex-start', padding: 0, minWidth: 0, fontWeight: tokens.fontWeightSemibold, fontSize: tokens.fontSizeBase500, lineHeight: tokens.lineHeightBase500 }} onClick={() => setRestoreOpen(x => !x)}>{t('Wiederherstellung')}</Button>}
+          {(restoreOpen || tabbed) && <>
             <Text size={200}>{t('Nur auf ein leeres dmOffice, mit dem Hauptschlüssel. Einzelne Dateien holt das Werkzeug restore-tool.')} <Link href={docUrl()} target="_blank" rel="noreferrer">{t('Anleitung')}</Link></Text>
             {!st.profile?.at ? <Text size={200} style={{ color: tokens.colorPaletteMarigoldForeground1 }}>{t('Noch kein Wiederherstellungsschlüssel erstellt.')}</Text>
               : st.profile.current ? <Text size={200} style={muted}>{t('Wiederherstellungsschlüssel erstellt am {when}.', { when: when(st.profile.at) })}</Text>
               : <Text size={200} style={{ color: tokens.colorPaletteMarigoldForeground1 }}>{t('Die Zugangsdaten zum Backup-Ziel haben sich seit dem {when} geändert – Wiederherstellungsschlüssel neu erstellen.', { when: when(st.profile.at) })}</Text>}
-            <div><Button icon={<Key20Regular />} onClick={makeProfile}>{t('Wiederherstellungsschlüssel erstellen')}</Button></div>
+            {!tabbed && <div><Button icon={<Key20Regular />} onClick={makeProfile}>{t('Wiederherstellungsschlüssel erstellen')}</Button></div>}
+            {/* [feature:adminclean] */}
+            {tabbed && <RibbonActions><RibbonButton icon={<Key20Regular />} label={t('Wiederherstellungsschlüssel erstellen')} onClick={makeProfile} /></RibbonActions>}
+            {/* [/feature:adminclean] */}
           </>}
         </div>
       )}
-
-      <AdminHeading><InfoLabel size="large" info={t('Legt eine eigene Kopie der Dateien an und überträgt vor jedem Core-Backup, was darin fehlt. Gelöschte Dateien bleiben für die Haltedauer in der Kopie. Jede Version des Core-Backups innerhalb der Haltedauer lässt sich damit vollständig wiederherstellen. Mit dem Ziel aus dem Storage Extender liegt die Kopie im Ordner files-backup.')}>{t('Files-Backup')}</InfoLabel></AdminHeading>
-      {!core.enabled && <Text size={200} style={muted}>{t('Setzt das Core-Backup voraus.')}</Text>}
-      <Switch checked={files.wanted && core.enabled} disabled={!core.enabled || busy} onChange={(_, d) => saveFiles({ enabled: d.checked })} label={files.enabled ? t('Files-Backup ist aktiviert') : t('Files-Backup einschalten')} />
-      {target(filesOwn, setFilesOwn, () => { setFilesTested(false); if (files.own) saveFiles({ own: false }) }, t('Ziel'))}
+      </>}
+      {shows('files') && <>
+      <AdminHeading first={tabbed}><InfoLabel size="large" info={t('Legt eine eigene Kopie der Dateien an und überträgt vor jedem Core-Backup, was darin fehlt. Gelöschte Dateien bleiben für die Haltedauer in der Kopie. Jede Version des Core-Backups innerhalb der Haltedauer lässt sich damit vollständig wiederherstellen. Mit dem Ziel aus dem Storage Extender liegt die Kopie im Ordner files-backup.')}>{t('Files-Backup')}</InfoLabel></AdminHeading>
+      {!coreShown.enabled && <Text size={200} style={muted}>{t('Setzt das Core-Backup voraus.')}</Text>}
+      <Switch checked={filesShown.wanted && coreShown.enabled} disabled={!coreShown.enabled || busy} onChange={(_, d) => saveFiles({ enabled: d.checked })} label={(drafting ? filesShown.wanted && coreShown.enabled : files.enabled) ? t('Files-Backup ist aktiviert') : t('Files-Backup einschalten')} />
+      {/* [feature:adminclean] */}
+      {tabbed && <TargetForm mode={filesOwn ? 'own' : 'same'} samePlace={st.configured ? storagePlace : null}
+        onMode={m => { if (m === 'same') { setFilesOwn(false); setFilesTested(false); if (files.own) saveFiles({ own: false }) } else setFilesOwn(true) }}
+        target={filesTarget} onTarget={x => { setFilesTested(false); setFilesTarget(x) }} v={filesValues} onChange={(k, v) => { setFilesTested(false); setFilesValues(x => ({ ...x, [k]: v })) }}
+        hasSecret={files.own && files.hasSecret} hasWebDavPassword={files.own && files.hasWebDavPassword} onTest={() => saveFiles({ own: true }, true)} busy={busy} tested={filesTested} />}
+      {/* [/feature:adminclean] */}
+      {!tabbed && target(filesOwn, setFilesOwn, () => { setFilesTested(false); if (files.own) saveFiles({ own: false }) }, t('Ziel'))}
       {!filesOwn && st.configured && !st.mirror && <Text size={200} style={muted}>{t('Dafür muss das Ziel im Storage Extender aktiviert sein.')}</Text>}
-      {(filesOwn || !st.configured) && <>
+      {!tabbed && (filesOwn || !st.configured) && <>
         <TargetFields target={filesTarget} onTarget={x => { setFilesTested(false); setFilesTarget(x) }} v={filesValues} onChange={(k, v) => { setFilesTested(false); setFilesValues(x => ({ ...x, [k]: v })) }}
           hasSecret={files.own && files.hasSecret} hasWebDavPassword={files.own && files.hasWebDavPassword} />
         <div><Button appearance="primary" disabled={busy} onClick={() => saveFiles({ own: true }, true)}>{busy ? t('Prüfe …') : t('Speichern und testen')}</Button></div>
@@ -227,12 +334,13 @@ export function BackupStrategy() {
       </>}
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
         <Field label={<InfoLabel info={t('Mindestens (Anzahl Versionen + 1) × Abstand. Für weggesicherte Versionen lässt sich mehr einstellen.')}>{t('Haltedauer in Tagen')}</InfoLabel>} hint={t('Mindestens {n} Tage', { n: files.minDays })}>
-          <Input type="number" min={files.minDays} disabled={files.forever} value={files.forever ? '' : days} onChange={(_, d) => setDays(d.value)}
+          <Input type="number" min={files.minDays} disabled={filesShown.forever} value={filesShown.forever ? '' : days} onChange={(_, d) => setDays(d.value)}
             onBlur={() => { const n = Math.max(files.minDays, Math.round(Number(days)) || 0); setDays(String(n)); if (n !== files.effectiveDays) saveFiles({ days: n }) }} style={{ width: 120 }} />
         </Field>
-        <Switch checked={files.forever} onChange={(_, d) => saveFiles({ forever: d.checked })} label={t('Unbegrenzt')} />
+        <Switch checked={filesShown.forever} onChange={(_, d) => saveFiles({ forever: d.checked })} label={t('Unbegrenzt')} />
       </div>
       {files.enabled && files.status.lastRun && <Text size={200} style={muted}>{t('Zuletzt {n} Dateien neu übertragen', { n: files.status.uploaded.toLocaleString(locale) })}</Text>}
+      </>}
 
       {profile && (
         <Dialog open onOpenChange={(_, d) => !d.open && setProfile(null)}>

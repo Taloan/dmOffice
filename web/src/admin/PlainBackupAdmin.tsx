@@ -4,6 +4,8 @@ import { api } from '../api'
 import { useApp } from '../App'
 import { locale, t } from '../i18n'
 import { ColDef, useGridColumns } from '../shell/GridColumns'
+import { askConfirm } from '../shell/context' // [feature:savemode]
+import { useAdminDraft } from './draft' // [feature:savemode]
 
 interface Row { login: string; displayName: string; on: boolean; lastRun: string | null; lastOk: string | null; lastError: string | null; fails: number; running: boolean }
 
@@ -18,7 +20,7 @@ const useStyles = makeStyles({
 })
 
 const COLS: Record<string, ColDef> = {
-  name: { label: () => t('Person'), width: 200, sort: 'name' },
+  name: { label: () => t('Benutzer'), width: 200, sort: 'name' },
   login: { label: () => t('Anmeldename'), width: 140, sort: 'login' },
   on: { label: () => t('Eingeschaltet'), width: 110, sort: 'on' },
   lastRun: { label: () => t('Zuletzt exportiert'), width: 150, sort: 'lastRun' },
@@ -40,6 +42,16 @@ export function PlainBackupAdmin() {
   const grid = useGridColumns('admin-plainbackup', COLS, DEFAULT, '')
   const load = () => api.get<{ allowed: boolean; users: Row[] }>('/api/admin/plainbackup').then(r => { setAllowed(r.allowed); setRows(r.users) }).catch(fail)
   useEffect(() => { load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  // [feature:savemode]
+  // Kennung savemode: Schalter sammeln; Sperren mit eingerichteten Datenexporten fragt beim Speichern nach
+  const draft = useAdminDraft(allowed, async v => {
+    try { await api.put('/api/admin/plainbackup', { allowed: v }); setAllowed(v); notify(t('Gespeichert')); return true } catch (e) { fail(e); return false }
+  }, async (from, to) => !(from && !to && rows.some(r => r.on))
+    || askConfirm(t('Datenexport sperren?'), t('{n} eingerichtete Datenexporte ruhen danach. Ihre Einstellungen und Ziele bleiben unberührt.', { n: rows.filter(r => r.on).length }), t('Sperren')))
+  const shown = draft.on ? draft.value : allowed
+  // [feature:savemode:else]
+  // const shown = allowed
+  // [/feature:savemode]
   if (allowed === null) return null
   const set = async (on: boolean) => {
     try { await api.put('/api/admin/plainbackup', { allowed: on }); setAllowed(on); notify(t('Gespeichert')) } catch (e) { fail(e) }
@@ -62,9 +74,13 @@ export function PlainBackupAdmin() {
   })
   return (
     <div className={s.root}>
-      <Text size={200} className={s.muted}>{t('Mit dem Datenexport legt jede Person ihre Daten entschlüsselt und lesbar an einem eigenen Ziel ab. Eingerichtet wird er unter Einstellungen → Konto → Datenexport.')}</Text>
-      <Switch checked={allowed} onChange={(_, d) => set(d.checked)} label={t('Benutzer dürfen den Datenexport einrichten')} />
-      {!allowed && <Text size={200} className={s.muted}>{t('Gesperrt: eingerichtete Datenexporte ruhen, ihre Einstellungen und Ziele bleiben unberührt.')}</Text>}
+      <Text size={200} className={s.muted}>{t('Mit dem Datenexport kann jeder Benutzer seine Daten entschlüsselt und lesbar an einem eigenen Ziel ablegen. Eingerichtet wird der Datenexport unter Einstellungen → Konto → Datenexport.')}</Text>
+      {/* [feature:savemode] */}
+      <Switch checked={!!shown} onChange={(_, d) => draft.on ? draft.set(d.checked) : set(d.checked)} label={t('Benutzer dürfen den Datenexport einrichten')} />
+      {/* [feature:savemode:else] */}
+      {/* <Switch checked={allowed} onChange={(_, d) => set(d.checked)} label={t('Benutzer dürfen den Datenexport einrichten')} /> */}
+      {/* [/feature:savemode] */}
+      {!shown && <Text size={200} className={s.muted}>{t('Gesperrt: eingerichtete Datenexporte ruhen, ihre Einstellungen und Ziele bleiben unberührt.')}</Text>}
       <div className={s.table}>
         <div className={`${s.row} ${s.head}`} style={{ gridTemplateColumns: grid.template, minWidth: 'max-content' }} onContextMenu={grid.openMenu}>{grid.cells}</div>
         {grid.columnMenu}
@@ -83,7 +99,7 @@ export function PlainBackupAdmin() {
             })}
           </div>
         ))}
-        {rows.length === 0 && <Text className={s.muted} style={{ padding: 10 }}>{t('Keine Personen.')}</Text>}
+        {rows.length === 0 && <Text className={s.muted} style={{ padding: 10 }}>{t('Keine Benutzer.')}</Text>}
       </div>
     </div>
   )

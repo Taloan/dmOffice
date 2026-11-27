@@ -8,6 +8,8 @@ const MAX = 40
 const TTL = 5 * 60 * 1000
 const cache = new Map<string, { at: number; message: Message }>()
 const pending = new Map<string, Promise<Message | null>>()
+/** Anfragen, die gerade laufen */
+let active = 0
 
 /** Zählt hoch, wenn der Speicher ungültig wird: Was vorher angefragt wurde, kommt danach nicht mehr hinein. */
 let generation = 0
@@ -37,21 +39,27 @@ export function clearAll() { cache.clear(); pending.clear(); generation++ }
 
 export function forget(item: Pick<MailItem, 'account' | 'folder' | 'uid'>) { cache.delete(keyOf(item)) }
 
-/** Im Hintergrund laden, immer nur wenige zugleich und nach der Reihe. */
-export function prefetch(items: MailItem[]) {
+/** Im Hintergrund laden, immer nur wenige zugleich und nach der Reihe. Erfüllt, wenn alle da (oder gescheitert) sind. */
+export function prefetch(items: MailItem[]): Promise<void> {
+  const jobs: Promise<unknown>[] = []
   for (const item of items) {
     const key = keyOf(item)
-    if (peek(item) || pending.has(key)) continue
+    if (peek(item)) continue
+    const running = pending.get(key)
+    if (running) { jobs.push(running); continue }
     const gen = generation
     const job = (async () => {
-      // hoechstens zwei gleichzeitig
-      while (pending.size > 2) await new Promise(r => setTimeout(r, 150))
+      // hoechstens drei gleichzeitig (wartende zaehlen nicht mit - sonst warteten ab drei wartenden alle aufeinander)
+      while (active >= 3) await new Promise(r => setTimeout(r, 100))
+      active++
       try {
         const m = await api.get<Message>(`/api/mail/${item.account}/message?` + q({ folder: item.folder, uid: item.uid, images: false, markSeen: false }))
         if (gen === generation) remember(item, m)
         return m
-      } catch { return null } finally { if (gen === generation) pending.delete(key) }
+      } catch { return null } finally { active--; if (gen === generation) pending.delete(key) }
     })()
     pending.set(key, job)
+    jobs.push(job)
   }
+  return Promise.all(jobs).then(() => {})
 }

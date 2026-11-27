@@ -127,11 +127,18 @@ public sealed class NotesDb : ISyncLocal
         Tags = r.IsDBNull(15) ? null : JsonSerializer.Deserialize<List<string>>(r.GetString(15))
     };
 
-    private List<NoteRow> QueryNotes(string where, params (string, object?)[] args)
+    /// <summary>Für Listen: Text nur so weit, wie Vorschauzeile und erstes Bild ihn brauchen (html nur mit eingebettetem Bild,
+    /// plain nur der Anfang). Bei Tausenden Notizen las die Liste sonst jeden vollständigen Text.</summary>
+    private const string ListColumns =
+        "id, sync_id, folder, title, custom_title, color, CASE WHEN instr(html, 'blob:') > 0 THEN html ELSE '' END, substr(plain, 1, 4000), modified, archived, deleted, images, attachments, important, created, tags";
+
+    private List<NoteRow> QueryNotes(string where, params (string, object?)[] args) => QueryNotes(NoteColumns, where, args);
+
+    private List<NoteRow> QueryNotes(string columns, string where, params (string, object?)[] args)
     {
         using var conn = Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = $"SELECT {NoteColumns} FROM notes n {where};";
+        cmd.CommandText = $"SELECT {columns} FROM notes n {where};";
         foreach (var (name, value) in args) cmd.Parameters.AddWithValue(name, value ?? DBNull.Value);
         using var r = cmd.ExecuteReader();
         var result = new List<NoteRow>();
@@ -147,6 +154,34 @@ public sealed class NotesDb : ISyncLocal
     /// <summary>Alle Notizen ausser Archiv und Papierkorb - fuer die Filter.</summary>
     public List<NoteRow> GetAllActive() =>
         QueryNotes("WHERE deleted IS NULL AND archived IS NULL ORDER BY modified DESC");
+
+    /// <summary>Wie <see cref="GetNotes"/>, <see cref="GetAllActive"/>, <see cref="GetArchived"/>, <see cref="GetTrashed"/>, aber nur mit
+    /// dem Anfang des Textes (Titel, Vorschauzeile, erstes Bild) - für die Liste der Oberfläche.</summary>
+    public List<NoteRow> ListNotes(string? folder) =>
+        QueryNotes(ListColumns, "WHERE deleted IS NULL AND archived IS NULL AND folder IS $f ORDER BY sort_order IS NULL, sort_order, modified DESC", ("$f", folder));
+    public List<NoteRow> ListAllActive(bool importantOnly = false) =>
+        QueryNotes(ListColumns, "WHERE deleted IS NULL AND archived IS NULL" + (importantOnly ? " AND important <> 0" : "") + " ORDER BY modified DESC");
+    public List<NoteRow> ListArchived() =>
+        QueryNotes(ListColumns, "WHERE deleted IS NULL AND archived IS NOT NULL ORDER BY archived DESC");
+    public List<NoteRow> ListTrashed() =>
+        QueryNotes(ListColumns, "WHERE deleted IS NOT NULL ORDER BY deleted DESC");
+
+    /// <summary>Aktive Notizen mit Kästchen (☐/☑) - nur diese können Aufgaben enthalten.</summary>
+    public List<NoteRow> GetActiveWithBoxes() =>
+        QueryNotes("WHERE deleted IS NULL AND archived IS NULL AND (instr(html, '☐') > 0 OR instr(html, '☑') > 0) ORDER BY modified DESC");
+
+    /// <summary>Schlagwörter aller aktiven Notizen (je Notiz eine Liste) - nur die Spalte tags.</summary>
+    public List<List<string>> ActiveTags()
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT tags FROM notes WHERE deleted IS NULL AND archived IS NULL AND tags IS NOT NULL AND tags <> '[]';";
+        using var r = cmd.ExecuteReader();
+        var result = new List<List<string>>();
+        while (r.Read())
+            if (JsonSerializer.Deserialize<List<string>>(r.GetString(0)) is { } t) result.Add(t);
+        return result;
+    }
 
     public List<NoteRow> GetArchived() =>
         QueryNotes("WHERE deleted IS NULL AND archived IS NOT NULL ORDER BY archived DESC");
@@ -275,6 +310,13 @@ public sealed class NotesDb : ISyncLocal
         return id;
     }
 
+    /// <summary>Gibt es auf derselben Ebene schon einen Ordner mit diesem Namen (ohne Groß-/Kleinschreibung)?</summary>
+    public bool FolderNameTaken(string name, string? parent, string? except = null) =>
+        GetFolders(parent).Any(f => f.SyncId != except && string.Equals(f.Name.Trim(), name.Trim(), StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Ebene eines Ordners (null: oberste Ebene oder unbekannt).</summary>
+    public string? FolderParent(string id) => _db.Scalar("SELECT parent FROM note_folders WHERE sync_id=$s", ("$s", id)) as string;
+
     public void RenameFolder(string id, string name) =>
         Exec("UPDATE note_folders SET name=$n, modified=$m, sync_rev=sync_rev+1 WHERE sync_id=$s", ("$n", name.Trim()), ("$m", Now()), ("$s", id));
 
@@ -325,7 +367,16 @@ public sealed class NotesDb : ISyncLocal
     /// gilt als "aus einem einfachen Editor" - der PC prueft dann, dass alle
     /// gesperrten Bloecke noch da sind (ProtectedBlocks).
     /// </summary>
-    public void SaveNote(long id, string html, string plain)
+    /// <param name="by">Wer schreibt (Versionen, Kennung notesversions); ohne Angabe dmOffice selbst (Pukki, Rezepte, Aufgaben).</param>
+    public void SaveNote(long id, string html, string plain, NoteVersions.Source? by = null)
+    {
+        if (Features.On(Features.NotesVersions) && GetNote(id) is { } before && before.Html != html)
+            NoteVersions.BeforeChange(_db, before.SyncId, new(before.Html, before.Plain, before.Title, before.Modified), html, plain,
+                by ?? NoteVersions.Source.DmOffice, DateTime.UtcNow);
+        WriteContent(id, html, plain);
+    }
+
+    private void WriteContent(long id, string html, string plain)
     {
         // Welche Bilder die Notiz braucht, steht im Text - auch frisch
         // gemalte. Was nicht mehr darin vorkommt, faellt heraus.
@@ -335,6 +386,29 @@ public sealed class NotesDb : ISyncLocal
                WHERE id=$id AND (html <> $h)",
              ("$h", html), ("$p", plain), ("$t", TitleOf(plain)), ("$m", Now()), ("$id", id),
              ("$im", JsonSerializer.Serialize(images)));
+    }
+
+    /// <summary>Frühere Versionen des Inhalts (Kennung notesversions), neueste zuerst.</summary>
+    public List<NoteVersions.Entry> Versions(long id) =>
+        NoteVersions.List(_db, (GetNote(id) ?? throw new KeyNotFoundException("Notiz nicht gefunden.")).SyncId);
+
+    public NoteVersions.Version? Version(long id, long version) =>
+        NoteVersions.Get(_db, (GetNote(id) ?? throw new KeyNotFoundException("Notiz nicht gefunden.")).SyncId, version);
+
+    /// <summary>
+    /// Eine frühere Version wiederherstellen: der jetzige Stand bleibt vorher als Version, dann gilt der Inhalt der Version
+    /// (neue Revision, geht beim nächsten Abgleich hinaus). Anhänge, Titel, Farbe und Ordner bleiben, wie sie sind.
+    /// </summary>
+    public bool RestoreVersion(long id, long version, NoteVersions.Source by)
+    {
+        var note = GetNote(id) ?? throw new KeyNotFoundException("Notiz nicht gefunden.");
+        var v = NoteVersions.Get(_db, note.SyncId, version);
+        if (v == null) return false;
+        if (v.Html == note.Html) return true;
+        NoteVersions.KeepNow(_db, note.SyncId, new(note.Html, note.Plain, note.Title, note.Modified), DateTime.UtcNow);
+        WriteContent(id, v.Html, v.Plain);
+        NoteVersions.SetHead(_db, note.SyncId, by);
+        return true;
     }
 
     /// <summary>
@@ -416,6 +490,7 @@ public sealed class NotesDb : ISyncLocal
         var note = GetNote(id);
         if (note == null) return;
         Exec("DELETE FROM notes WHERE id=$id;", ("$id", id));
+        if (Features.On(Features.NotesVersions)) NoteVersions.Forget(_db, note.SyncId);
         Exec("INSERT OR REPLACE INTO note_tombstones (sync_id, kind) VALUES ($s, 'note');", ("$s", note.SyncId));
     }
 
@@ -489,6 +564,9 @@ SELECT (SELECT COUNT(*) FROM notes n LEFT JOIN note_sync_state s ON s.sync_id = 
         using var conn = Open();
         if (secure) UserDb.Exec(conn, "PRAGMA secure_delete = ON");
         UserDb.Exec(conn, "DELETE FROM notes; DELETE FROM note_folders; DELETE FROM note_blobs; DELETE FROM note_sync_state; DELETE FROM note_tombstones;");
+        // Versionen gehören zu den Notizen (auch wenn die Kennung inzwischen aus ist)
+        UserDb.Exec(conn, NoteVersions.Schema);
+        UserDb.Exec(conn, "DELETE FROM note_versions; DELETE FROM note_version_head;");
     }
 
     // ==================================================================
@@ -679,6 +757,11 @@ SELECT (SELECT COUNT(*) FROM notes n LEFT JOIN note_sync_state s ON s.sync_id = 
             Exec("INSERT OR IGNORE INTO note_blobs (name, data) VALUES ($n, $d);", ("$n", name), ("$d", data));
         }
 
+        // Versionen (notesversions): der bisherige Stand hier, bevor der vom Gerät ihn ersetzt - eigene Tabellen, der Abgleich merkt nichts
+        if (Features.On(Features.NotesVersions) && QueryNotes("WHERE sync_id = $s", ("$s", item.Id)).FirstOrDefault() is { } here && here.Html != item.Html)
+            NoteVersions.BeforeChange(_db, item.Id, new(here.Html, here.Plain, here.Title, here.Modified), item.Html, item.Plain,
+                new NoteVersions.Source("notizi", string.IsNullOrWhiteSpace(item.Device) ? null : item.Device), DateTime.UtcNow);
+
         Exec(@"INSERT INTO notes (sync_id, sync_rev, folder, sort_order, title, custom_title, color, important, alarm, alarm_active,
                                   archived, deleted, created, modified, html, plain, editor, images, attachments, sources, tags)
                VALUES ($s, $r, $f, $o, $t, $ct, $c, $i, $a, $aa, $ar, $d, $cr, $m, $h, $p, $e, $im, $at, $so, $tg)
@@ -719,6 +802,7 @@ SELECT (SELECT COUNT(*) FROM notes n LEFT JOIN note_sync_state s ON s.sync_id = 
         else
         {
             Exec("DELETE FROM notes WHERE sync_id=$s;", ("$s", id));
+            if (Features.On(Features.NotesVersions)) NoteVersions.Forget(_db, id);
         }
     }
 
@@ -731,9 +815,18 @@ SELECT (SELECT COUNT(*) FROM notes n LEFT JOIN note_sync_state s ON s.sync_id = 
         return Convert.ToInt64(cmd.ExecuteScalar() ?? -1L);
     }
 
-    public void Rekey(string oldId, string newId, string kind) =>
+    public void Rekey(string oldId, string newId, string kind)
+    {
         Exec($"UPDATE {(kind == SyncItem.FolderKind ? "note_folders" : "notes")} SET sync_id=$n WHERE sync_id=$o;",
              ("$o", oldId), ("$n", newId));
+        // Versionen (notesversions) gehen mit
+        if (kind != SyncItem.FolderKind && Features.On(Features.NotesVersions))
+        {
+            NoteVersions.Ensure(_db);
+            Exec("UPDATE note_versions SET sync_id=$n WHERE sync_id=$o; UPDATE OR REPLACE note_version_head SET sync_id=$n WHERE sync_id=$o;",
+                 ("$o", oldId), ("$n", newId));
+        }
+    }
 
     // ==================================================================
 

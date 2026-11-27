@@ -201,6 +201,7 @@ public static class NotesApi
             // Unterordner in einem geteilten Ordner (mit Bearbeitungsrecht): in der Datenbank des Besitzers
             var scope = SharedNotes.ForFolder(http, body.Parent);
             if (scope.IsShared) scope.Writable();
+            if (scope.Db.FolderNameTaken(body.Name ?? "", body.Parent)) throw new ArgumentException("Diesen Ordner gibt es hier schon.");
             var id = scope.Db.CreateFolder(body.Name, body.Parent);
             sync.Kick(scope.Space.User.Id, TimeSpan.FromSeconds(5));
             return Results.Ok(new { id });
@@ -209,6 +210,7 @@ public static class NotesApi
         api.MapPut("/folders/{id}", (string id, FolderBody body, HttpContext http, NotesSync sync) =>
         {
             var scope = SharedNotes.Own(http);
+            if (scope.Db.FolderNameTaken(body.Name ?? "", scope.Db.FolderParent(id), id)) throw new ArgumentException("Diesen Ordner gibt es hier schon.");
             scope.Db.RenameFolder(id, body.Name);
             sync.Kick(scope.Space.User.Id, TimeSpan.FromSeconds(5));
             return Results.Ok();
@@ -233,8 +235,8 @@ public static class NotesApi
         });
 
         // Alle Schlagwoerter der eigenen Notizen mit Anzahl - fuer die Seitenleiste und die Vorschlaege beim Eintippen
-        api.MapGet("/tags", (HttpContext http) => SharedNotes.Own(http).Db.GetAllActive()
-            .SelectMany(n => n.Tags ?? []).GroupBy(t => t, StringComparer.OrdinalIgnoreCase)
+        api.MapGet("/tags", (HttpContext http) => SharedNotes.Own(http).Db.ActiveTags()
+            .SelectMany(t => t).GroupBy(t => t, StringComparer.OrdinalIgnoreCase)
             .Select(g => new { tag = g.First(), count = g.Count() }).OrderBy(x => x.tag, StringComparer.CurrentCultureIgnoreCase).ToList());
 
         api.MapGet("/", (string? folder, string? view, string? q, string? tag, HttpContext http) =>
@@ -244,19 +246,19 @@ public static class NotesApi
                 return new
                 {
                     archived = 0, trashed = 0,
-                    items = sc.Db.GetNotes(folder).Select(n => Item(n, sc)).ToList()
+                    items = sc.Db.ListNotes(folder).Select(n => Item(n, sc)).ToList()
                 };
             var own = SharedNotes.Own(http);
             var db = own.Db;
             List<NoteRow> notes = !string.IsNullOrWhiteSpace(q) ? db.Search(q)
                 : view switch
                 {
-                    "archive" => db.GetArchived(),
-                    "trash" => db.GetTrashed(),
-                    "all" => db.GetAllActive(),
-                    "important" => db.GetAllActive().Where(n => n.Important).ToList(),
-                    "tag" => db.GetAllActive().Where(n => n.Tags?.Contains(tag ?? "", StringComparer.OrdinalIgnoreCase) == true).ToList(),
-                    _ => db.GetNotes(string.IsNullOrEmpty(folder) ? null : folder)
+                    "archive" => db.ListArchived(),
+                    "trash" => db.ListTrashed(),
+                    "all" => db.ListAllActive(),
+                    "important" => db.ListAllActive(importantOnly: true),
+                    "tag" => db.ListAllActive().Where(n => n.Tags?.Contains(tag ?? "", StringComparer.OrdinalIgnoreCase) == true).ToList(),
+                    _ => db.ListNotes(string.IsNullOrEmpty(folder) ? null : folder)
                 };
             var counts = db.CountArchiveAndTrash();
             var items = notes.Select(n => Item(n, own)).ToList();
@@ -387,7 +389,7 @@ public static class NotesApi
             }
             var drafts = await RecipeScan.AiAsync(config, form["text"].ToString(), images, logs.CreateLogger("RecipeScan"), ct);
             return drafts == null ? Results.BadRequest(new { error = "Die KI hat kein Rezept geliefert." }) : Results.Ok(new { drafts });
-        }).DisableAntiforgery();
+        }).DisableAntiforgery().RequireRateLimiting("ai");
         // Anlegen: Formular mit draft (JSON), folder und image (Titelbild); je Rezept ein Aufruf
         api.MapPost("/recipes/scan/save", async (HttpRequest request, HttpContext http, NotesSync sync, CancellationToken ct) =>
         {
@@ -404,6 +406,9 @@ public static class NotesApi
                 Title = draft.Title ?? "", Yield = draft.Yield ?? "", PrepTime = draft.PrepTime ?? "", CookTime = draft.CookTime ?? "", TotalTime = draft.TotalTime ?? "",
                 Description = draft.Description ?? "", Ingredients = draft.Ingredients ?? "", Steps = draft.Steps ?? "", Tip = draft.Tip ?? "", Source = draft.Source ?? "",
             };
+            // Ohne Titel, Zutaten und Zubereitung entstünde ein leeres Rezept
+            if (string.IsNullOrWhiteSpace(draft.Title) && string.IsNullOrWhiteSpace(draft.Ingredients) && string.IsNullOrWhiteSpace(draft.Steps))
+                return Results.BadRequest(new { error = "Zum Anlegen Titel, Zutaten oder Zubereitung eintragen." });
             var folder = form["folder"].ToString() is { Length: > 0 } fo ? fo : null;
             var scope = SharedNotes.ForFolder(http, folder);
             if (scope.IsShared) scope.Writable();
@@ -444,7 +449,7 @@ public static class NotesApi
             var note = db.GetNote(nid) ?? throw new KeyNotFoundException("Notiz nicht gefunden.");
             var split = NoteMerge.Split(note.Html);
             var raw = split?.Blocks ?? new List<string> { note.Html };
-            var flags = split == null ? raw.Select(_ => true).ToList() : raw.Select(ProtectedBlocks.IsProtectedBlock).ToList();
+            var flags = split == null ? raw.Select(_ => true).ToList() : raw.Select(Locked).ToList();
             // Beim Ausliefern bereinigen: Inhalt aus dem Abgleich (notizi) laeuft sonst ungefiltert in die Seite
             // bzw. den WebView. Nur der Web-Editor bereinigt beim Speichern - der Abgleich tut es nicht.
             var blocks = raw.Select(Clean).ToList();
@@ -510,7 +515,7 @@ public static class NotesApi
                     if (!i.TryGetInt32(out var n) || n < 0 || n >= split.Blocks.Count) throw new ArgumentException("Block gibt es nicht.");
                     html.Append(Adjusted(split.Blocks[n], block));
                 }
-                else html.Append(Clean(block.GetProperty("html").GetString() ?? ""));
+                else html.Append(Clean(PlainDivs(block.GetProperty("html").GetString() ?? "")));
             }
             html.Append(split.Tail);
             var plain = plainEl.GetString() ?? "";
@@ -520,7 +525,7 @@ public static class NotesApi
                 return Results.BadRequest(new { error = "Gesperrte Blöcke wurden verändert - nicht gespeichert." });
             if (result != note.Html)
             {
-                db.SaveNote(id, result, plain.Replace("\r", "").Replace("\n", "\r\n"));
+                db.SaveNote(id, result, plain.Replace("\r", "").Replace("\n", "\r\n"), WebSource(http));
                 sync.Kick(space.User.Id, TimeSpan.FromSeconds(10));
             }
             // Neue Version und ihre Bloecke, damit der Editor seine Nummern nachfuehren kann
@@ -529,9 +534,36 @@ public static class NotesApi
             {
                 saved = result != note.Html,
                 version = Version(result),
-                @protected = after?.Blocks.Select(ProtectedBlocks.IsProtectedBlock).ToList()
+                @protected = after?.Blocks.Select(Locked).ToList()
             });
             }
+        });
+
+        // Frühere Versionen des Inhalts (notesversions): liegen beim Besitzer; sehen und wiederherstellen darf, wer schreiben darf
+        api.MapGet("/{wire:long}/versions", (long wire, HttpContext http) =>
+        {
+            var (scope, id) = VersionScope(http, wire);
+            return Results.Ok(scope.Db.Versions(id).Select(v => new { v.Id, v.At, v.Source, v.Device, v.Author, v.Title, v.Length }));
+        });
+        api.MapGet("/{wire:long}/versions/{version:long}", (long wire, long version, HttpContext http) =>
+        {
+            var (scope, id) = VersionScope(http, wire);
+            var v = scope.Db.Version(id, version);
+            if (v == null) return Results.NotFound(new { error = "Version nicht gefunden." });
+            // Wie beim Öffnen der Notiz bereinigt ausliefern
+            var blocks = (NoteMerge.Split(v.Html)?.Blocks ?? new List<string> { v.Html }).Select(Clean).ToList();
+            return Results.Ok(new { v.Id, v.At, v.Source, v.Device, v.Author, v.Title, blocks });
+        });
+        api.MapPost("/{wire:long}/versions/{version:long}/restore", (long wire, long version, HttpContext http, NotesSync sync) =>
+        {
+            var (scope, id) = VersionScope(http, wire);
+            var db = scope.Db;
+            lock (db)
+            {
+                if (!db.RestoreVersion(id, version, WebSource(http))) return Results.NotFound(new { error = "Version nicht gefunden." });
+            }
+            sync.Kick(scope.Space.User.Id, TimeSpan.FromSeconds(10));
+            return Results.Ok(new { version = Version(db.GetNote(id)!.Html) });
         });
 
         api.MapPut("/{wire:long}/meta", async (long wire, Meta body, HttpContext http, NotesSync sync, CancellationToken ct) =>
@@ -622,15 +654,28 @@ public static class NotesApi
             var (scope, id) = SharedNotes.ForNote(http, wire);
             scope.Writable();
             var space = scope.Space;
-            var form = await request.ReadFormAsync(ct);
-            CheckRoom(space, form.Files.Sum(f => f.Length), form.Files.Select(f => f.Length).DefaultIfEmpty(0).Max());
-            foreach (var file in form.Files)
+            async Task Add(string name, string? mime, Func<Stream, Task> copy)
             {
                 using var ms = new MemoryStream();
-                await file.CopyToAsync(ms, ct);
+                await copy(ms);
                 var data = ms.ToArray();
-                VirusScan.CheckBytes(data, space.User.Id, "Notizen/" + file.FileName);
-                scope.Db.AddAttachment(id, file.FileName, file.ContentType, data, await NotesSync.BlobNameAsync(space, data, ct, scope.Vault));
+                VirusScan.CheckBytes(data, space.User.Id, "Notizen/" + name);
+                scope.Db.AddAttachment(id, name, mime ?? "application/octet-stream", data, await NotesSync.BlobNameAsync(space, data, ct, scope.Vault));
+            }
+            // Fertige Uploads in Stuecken (?upload=ID): grosse Dateien kommen nicht als ein Rumpf; sie liegen in der eigenen Ablage
+            if (request.Query["upload"] is { Count: > 0 } ids)
+            {
+                var own = http.Space().Db;
+                var sizes = ids.Select(i => DmOffice.Dav.FilesApi.SessionSize(own, i ?? "")).ToList();
+                CheckRoom(space, sizes.Sum(), sizes.DefaultIfEmpty(0).Max());
+                await foreach (var file in DmOffice.Dav.FilesApi.SessionParts(own, ids, ct))
+                    await Add(file.FileName, file.ContentType, ms => file.Body.CopyToAsync(ms, ct));
+            }
+            else
+            {
+                var form = await request.ReadFormAsync(ct);
+                CheckRoom(space, form.Files.Sum(f => f.Length), form.Files.Select(f => f.Length).DefaultIfEmpty(0).Max());
+                foreach (var file in form.Files) await Add(file.FileName, file.ContentType, ms => file.CopyToAsync(ms, ct));
             }
             sync.Kick(space.User.Id, TimeSpan.FromSeconds(5));
             return Results.Ok();
@@ -668,6 +713,19 @@ public static class NotesApi
     /// <summary>Anhänge und Bilder einer Notiz: höchstens 50 MB je Datei (sie liegen ganz im Speicher und in der Notizen-Datenbank)
     /// und nur, solange die Grenze des Besitzers Platz lässt - wie beim Hochladen in die Dateiablage.</summary>
     internal const long MaxNoteFile = 50L * 1024 * 1024;
+    /// <summary>Versionen: Kennung an, Notiz beschreibbar (geteilte nur mit Schreibrecht, nicht „nur gezeigt“).</summary>
+    private static (NoteScope Scope, long Id) VersionScope(HttpContext http, long wire)
+    {
+        if (!Features.On(Features.NotesVersions)) throw new KeyNotFoundException();
+        var (scope, id) = SharedNotes.ForNote(http, wire);
+        scope.Writable().NotShowOnly();
+        return (scope, id);
+    }
+
+    /// <summary>Wer im Browser schreibt: Browser und Person (bei geteilten Notizen sehen die anderen, von wem eine Version stammt).</summary>
+    private static NoteVersions.Source WebSource(HttpContext http) =>
+        new("web", NoteVersions.BrowserOf(http.Request.Headers.UserAgent.ToString()) is { Length: > 0 } b ? b : null, http.Space().User.DisplayName);
+
     private static void CheckRoom(UserSpace space, long total, long largest)
     {
         if (largest > MaxNoteFile) throw new ArgumentException("Zu groß für eine Notiz (höchstens 50 MB je Datei). Größere Dateien gehören in die Dateiablage.");
@@ -747,7 +805,100 @@ public static class NotesApi
         Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(html)))[..16].ToLowerInvariant();
 
     /// <summary>Ein Block aus dem Editor: wohlgeformt, ohne Skript und Ereignisse - notizi liest XHTML.</summary>
-    private static string Clean(string html)
+    /// <summary>
+    /// Gesperrt im Web-Editor: was ProtectedBlocks schuetzt - ausser Bildbloecken (Kennung noteimg). Bei Bildern laesst
+    /// ProtectedBlocks.Kept Loeschen, Neu und damit auch Verschieben und eine andere Groesse zu; notizi nimmt die Version an.
+    /// </summary>
+    private static bool Locked(string block) =>
+        ProtectedBlocks.IsProtectedBlock(block)
+        // [feature:noteimg]
+        && !(Features.On(Features.NoteImages) && IsImageBlock(block))
+        // [/feature:noteimg]
+        ;
+
+    // [feature:noteimg]
+    /// <summary>Bildblock wie in ProtectedBlocks: Absatz mit Bild (kein Codeblock) oder die Huelle &lt;div data-block="image"&gt;, ohne Tabelle und Code.</summary>
+    private static bool IsImageBlock(string block)
+    {
+        try
+        {
+            var settings = new System.Xml.XmlReaderSettings { CheckCharacters = false, DtdProcessing = System.Xml.DtdProcessing.Ignore };
+            using var reader = System.Xml.XmlReader.Create(new StringReader(block.Replace("&nbsp;", "&#160;")), settings);
+            var e = System.Xml.Linq.XElement.Load(reader);
+            var name = e.Name.LocalName.ToLowerInvariant();
+            var style = (string?)e.Attribute("style") ?? "";
+            var code = name == "p" && (style.Contains("font-family:Consolas", StringComparison.OrdinalIgnoreCase) || style.Contains("font-family:Courier", StringComparison.OrdinalIgnoreCase));
+            return e.Descendants().Any(d => d.Name.LocalName == "img")
+                && !e.Descendants().Any(d => d.Name.LocalName is "table" or "pre")
+                && ((name == "p" && !code) || (name == "div" && (string?)e.Attribute("data-block") == "image"));
+        }
+        catch (System.Xml.XmlException) { return false; }
+    }
+    // [/feature:noteimg]
+
+    private static readonly HashSet<string> BlockTags = new(StringComparer.OrdinalIgnoreCase)
+        { "p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "blockquote", "pre", "table", "hr" };
+
+    /// <summary>
+    /// Einfache &lt;div&gt; aus dem Browser-Editor (Zeile nach Enter, eingefügtes HTML darin) als Absätze:
+    /// Ein &lt;div&gt; gilt in <see cref="ProtectedBlocks"/> als gesperrter Block, eine neue oder geänderte Zeile
+    /// würde sonst abgelehnt. Bildhülle (data-block) und &lt;div&gt; mit Bild, Tabelle oder Code bleiben, wie sie sind.
+    /// </summary>
+    internal static string PlainDivs(string html)
+    {
+        if (html.IndexOf("<div", StringComparison.OrdinalIgnoreCase) < 0) return html;
+        var parser = new AngleSharp.Html.Parser.HtmlParser();
+        var body = parser.ParseDocument("<body></body>").Body!;
+        var sb = new StringBuilder();
+        foreach (var n in parser.ParseFragment(html, body)) EmitPlain(n, sb);
+        return sb.ToString();
+    }
+
+    private static void EmitPlain(AngleSharp.Dom.INode n, StringBuilder sb)
+    {
+        if (n is not AngleSharp.Dom.IElement e || e.LocalName != "div" || e.HasAttribute("data-block")
+            || e.GetAttribute("contenteditable") == "false" || e.QuerySelector("img,table,pre") != null)
+        {
+            sb.Append(OuterOf(n));
+            return;
+        }
+        var inline = e.ChildNodes.All(c => c is not AngleSharp.Dom.IElement ce || !BlockTags.Contains(ce.LocalName));
+        if (inline)
+        {
+            // Eine Zeile: Ausrichtung und Schreibrichtung mitnehmen
+            sb.Append("<p");
+            foreach (var a in new[] { "style", "dir" })
+                if (e.GetAttribute(a) is { } v) sb.Append(' ').Append(a).Append("=\"").Append(System.Net.WebUtility.HtmlEncode(v)).Append('"');
+            sb.Append('>').Append(e.InnerHtml).Append("</p>");
+            return;
+        }
+        var run = new StringBuilder();
+        void Flush()
+        {
+            if (run.ToString().Trim().Length > 0) sb.Append("<p>").Append(run).Append("</p>");
+            run.Clear();
+        }
+        foreach (var c in e.ChildNodes)
+        {
+            if (c is AngleSharp.Dom.IElement ce && BlockTags.Contains(ce.LocalName)) { Flush(); EmitPlain(c, sb); }
+            else run.Append(OuterOf(c));
+        }
+        Flush();
+    }
+
+    private static string OuterOf(AngleSharp.Dom.INode n) => n switch
+    {
+        AngleSharp.Dom.IElement el => el.OuterHtml,
+        AngleSharp.Dom.IText t => System.Net.WebUtility.HtmlEncode(t.Data),
+        _ => "",
+    };
+
+    /// <summary>Eingabeelemente: eine Notiz braucht keine, und in einer geteilten Notiz taugen sie als Formular, das beim Klick etwas auslöst.</summary>
+    private static readonly string[] FormTags = ["form", "input", "button", "select", "option", "optgroup", "textarea", "datalist", "output", "keygen"];
+    /// <summary>Stilangaben, mit denen Inhalt die Notiz verlässt und sich über die Oberfläche legt.</summary>
+    private static readonly string[] LayoutCss = ["position", "top", "right", "bottom", "left", "inset", "z-index", "transform", "translate"];
+
+    internal static string Clean(string html)
     {
         var sanitizer = new Ganss.Xss.HtmlSanitizer();
         sanitizer.AllowedSchemes.Add("blob");
@@ -755,6 +906,26 @@ public static class NotesApi
         // Bildhuelle <div data-block="image"> aus dem Editor der App - ohne das Merkmal
         // haelt ProtectedBlocks.Kept ein neues Bild fuer eine fremde Aenderung
         sanitizer.AllowedAttributes.Add("data-block");
+        foreach (var tag in FormTags) sanitizer.AllowedTags.Remove(tag);
+        foreach (var css in LayoutCss) sanitizer.AllowedCssProperties.Remove(css);
+        sanitizer.AllowedAttributes.Remove("srcset");
+        // Bilder und Hintergründe nur aus der Notiz selbst (blob:, data:): eine fremde Adresse verriete, wann und von wo
+        // die Notiz geöffnet wird, eine eigene Adresse (/api/...) liefe mit der Anmeldung des Lesers. Links bleiben.
+        sanitizer.FilterUrl += (_, e) =>
+        {
+            if (e.Tag?.LocalName == "a" || e.SanitizedUrl is not { } url) return;
+            var u = url.TrimStart();
+            if (!u.StartsWith("blob:", StringComparison.OrdinalIgnoreCase) && !u.StartsWith("data:image/", StringComparison.OrdinalIgnoreCase))
+                e.SanitizedUrl = null;
+        };
+        sanitizer.PostProcessNode += (_, e) =>
+        {
+            if (e.Node is not AngleSharp.Dom.IElement el) return;
+            // data:- und blob:-Links sind nur fuer Bilder da - als Link koennten sie eine fremde Seite aufmachen
+            if (el.LocalName == "a" && el.GetAttribute("href")?.TrimStart() is { } href
+                && (href.StartsWith("data:", StringComparison.OrdinalIgnoreCase) || href.StartsWith("blob:", StringComparison.OrdinalIgnoreCase)))
+                el.RemoveAttribute("href");
+        };
         var clean = sanitizer.Sanitize(html);
         // XHTML: leere Elemente schliessen, &nbsp; als Zeichen
         clean = System.Text.RegularExpressions.Regex.Replace(clean, "<(br|img|hr)([^>]*?)(?<!/)>", "<$1$2 />");

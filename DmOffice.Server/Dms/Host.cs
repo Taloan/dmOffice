@@ -53,7 +53,8 @@ public interface IDmsAi
     bool Allowed(UserSpace space);
     /// <summary>Name des eingerichteten Dienstes (für den Hinweis in den Einstellungen).</summary>
     string? Service { get; }
-    Task<string?> WriteAsync(string system, string prompt, CancellationToken ct);
+    /// <param name="maxTokens">Höchstlänge der Antwort; Listen mit Begründung je Dokument brauchen mehr als der Standard.</param>
+    Task<string?> WriteAsync(string system, string prompt, CancellationToken ct, int maxTokens = 1024);
 }
 
 /// <summary>Ein Eintrag in einem überwachten Ordner.</summary>
@@ -231,7 +232,7 @@ public sealed class DmsHost(ServerConfig config) : IDmsFiles, IDmsText, IDmsAi, 
 
     public string? Service => config.Current.AiProvider == Chat.PukkiAi.OpenAi ? config.Current.AiEndpoint : "Claude (Anthropic)";
 
-    public Task<string?> WriteAsync(string system, string prompt, CancellationToken ct) => Chat.PukkiAi.Write(config, system, prompt, null, ct, search: false);
+    public Task<string?> WriteAsync(string system, string prompt, CancellationToken ct, int maxTokens = 1024) => Chat.PukkiAi.Write(config, system, prompt, null, ct, maxTokens, search: false);
 
     // ---------------- Überwachte Ordner ----------------
 
@@ -265,15 +266,20 @@ public sealed class DmsHost(ServerConfig config) : IDmsFiles, IDmsText, IDmsAi, 
     {
         if (string.IsNullOrEmpty(mount)) return FileStore.OpenRead(space.Db, path);
         var (driver, _) = ExternalFolders.Open(space, config, mount);
-        // Ganz lesen, dann den Treiber schließen (Dokumente sind klein genug)
+        // Ganz lesen, dann den Treiber schließen - höchstens so viel, wie das DMS ein Dokument groß sein lässt
         using (driver)
         {
             await using var s = await driver.OpenReadAsync(path, ct);
-            var ms = new MemoryStream();
-            await s.CopyToAsync(ms, ct);
-            ms.Position = 0;
-            return ms;
+            return new MemoryStream(await ReadDocumentAsync(s, ct));
         }
+    }
+
+    /// <summary>Dokument aus einem externen Ordner in den Speicher: die Größe nennt das Ziel, gelesen wird höchstens
+    /// <see cref="DmsImport.MaxBytes"/>.</summary>
+    internal static async Task<byte[]> ReadDocumentAsync(Stream s, CancellationToken ct, long max = DmsImport.MaxBytes)
+    {
+        try { return await ReadLimit.ReadAllAsync(s, max, ct); }
+        catch (ReadLimit.TooLargeException) { throw new ArgumentException($"Die Datei ist zu groß (höchstens {max / 1024 / 1024} MB)."); }
     }
 
     public async Task DeleteAsync(UserSpace space, string? mount, string path, CancellationToken ct)
@@ -361,9 +367,7 @@ public sealed class DmsHost(ServerConfig config) : IDmsFiles, IDmsText, IDmsAi, 
         using (d)
         {
             await using var s = await d.OpenReadAsync(StoragePath.Clean(path), ct);
-            using var ms = new MemoryStream();
-            await s.CopyToAsync(ms, ct);
-            return ms.ToArray();
+            return await ReadDocumentAsync(s, ct);
         }
     }
 

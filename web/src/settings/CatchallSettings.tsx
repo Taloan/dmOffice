@@ -1,17 +1,18 @@
 import {
-  Badge, Button, Dropdown, Field, Input, Menu, MenuItem, MenuList, MenuPopover, MenuTrigger, MessageBar, MessageBarBody, Option, Radio, RadioGroup,
+  Badge, Button, Dropdown, Field, Input, Menu, MenuDivider, MenuItem, MenuList, MenuPopover, MenuTrigger, MessageBar, MessageBarBody, Option, Radio, RadioGroup,
   Spinner, Switch, Text, Tooltip, makeStyles, tokens,
 } from '@fluentui/react-components'
 import { Add20Regular, Copy20Regular, Delete20Regular, Edit20Regular, HourglassHalf20Regular, LockClosed20Regular, LockOpen20Regular, MoreHorizontal20Regular, PersonAdd20Regular } from '@fluentui/react-icons'
 import { useEffect, useState } from 'react'
-import { api } from '../api'
+import { api, featureOn } from '../api'
 import { useApp } from '../App'
 import { t } from '../i18n'
 import { copyText } from '../shell/browser'
 import { fmtDate } from '../shell/hooks'
 import { AliasConfig, AliasItem, AliasState, NewAliasDialog } from '../mail/AliasDialog'
 import { AdoptAliasDialog, CATCHALL_CHANGED, catchallChanged, deleteAlias } from '../mail/CatchallFolders'
-import { Hint, PageTitle, Section } from './parts'
+import { Hint, Section } from './parts'
+import { ContextMenu, isTyping, useContextMenu } from '../shell/context'
 
 const useStyles = makeStyles({
   row: { display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 0', borderBottom: `1px solid ${tokens.colorNeutralStroke3}`, flexWrap: 'wrap' },
@@ -61,6 +62,9 @@ export function CatchallSettings() {
     try { await deleteAlias(a.address) } catch (e) { fail(e) }
   }
   const [adopt, setAdopt] = useState<string | null>(null)
+  // Rechtsklick auf einen Alias (Kennung ctxall): dieselben Aktionen wie Knöpfe und „Mehr“
+  const menu = useContextMenu<AliasItem>()
+  const ctxall = featureOn('ctxall')
   const toggle = async (a: AliasItem) => {
     if (open === a.address) { setOpen(null); return }
     setOpen(a.address); setSenders(null)
@@ -68,13 +72,12 @@ export function CatchallSettings() {
   }
   const copy = async (a: string) => { if (await copyText(a)) notify(t('{a} kopiert', { a })) }
 
-  if (!st) return <PageTitle>{t('Catchall-Aliase')}</PageTitle>
+  if (!st) return null
   const c = st.config
   const off = c.domains.length === 0 || !c.account
   const account = st.accounts.find(a => a.id === c.account)
   return (
     <>
-      <PageTitle>{t('Catchall-Aliase')}</PageTitle>
       <Section title={t('Domain und Postfach')} hint={t('Voraussetzung: Beim Hoster der Domain werden alle Adressen (Catch-all) an ein Postfach weitergeleitet, das dmOffice abruft. dmOffice legt im Postfach je Domain einen Ordner an, darunter einen je Alias. Die Ordner liegen auf dem Mailserver und erscheinen auch in anderen Mailprogrammen, die dieses Postfach abrufen.')}>
         <Field label={t('Domains')} hint={t('Mehrere mit Komma trennen, z. B. example.com')}>
           <Input value={domains} onChange={(_, d) => setDomains(d.value)} placeholder="example.com"
@@ -105,7 +108,7 @@ export function CatchallSettings() {
           ))}
         </div>}
       </Section>
-      <Section title={t('Sperren')} hint={t('Neue Mails an gesperrte Aliase gehen beim Eingang gleich weg; der Ordner mit den alten Mails bleibt. „Warum?“ an der Mail nennt den Grund.')}>
+      <Section title={t('Sperren')} hint={t('Neue Mails an einen gesperrten Alias werden beim Eingang sofort an den unten gewählten Ort verschoben. Mails, die schon im Ordner des Alias liegen, bleiben dort. An der verschobenen Mail zeigt „Warum?“ den Grund.')}>
         <RadioGroup value={c.blockAs} disabled={off} onChange={(_, d) => save({ blockAs: d.value as AliasConfig['blockAs'] })}>
           <Radio value="junk" label={t('In Junk verschieben')} />
           <Radio value="delete" label={t('Löschen (in den Papierkorb)')} />
@@ -121,8 +124,26 @@ export function CatchallSettings() {
         <div><Button icon={<Add20Regular />} disabled={off} onClick={() => setAdding(true)}>{t('Neuer Alias')}</Button></div>
         {!st.items.length && <Hint>{off ? t('Erst Domain und Postfach eintragen.') : t('Noch keine Aliase.')}</Hint>}
         <div>
+          {menu.ctx && (() => {
+            const a = menu.ctx.data
+            return (
+              <ContextMenu at={menu.ctx.at} onClose={menu.close}>
+                <MenuItem icon={<Edit20Regular />} onClick={() => setEditing({ address: a.address, note: a.note })}>{t('Notiz ändern …')}</MenuItem>
+                <MenuItem icon={<Copy20Regular />} onClick={() => copy(a.address)}>{t('Kopieren')}</MenuItem>
+                {a.blocked
+                  ? <MenuItem icon={<LockOpen20Regular />} onClick={() => update({ address: a.address, block: false })}>{t('Entsperren')}</MenuItem>
+                  : <>
+                    <MenuItem icon={<LockClosed20Regular />} onClick={() => update({ address: a.address, block: true, blockAs: 'junk' })}>{t('Sperren – in Junk')}</MenuItem>
+                    <MenuItem icon={<LockClosed20Regular />} onClick={() => update({ address: a.address, block: true, blockAs: 'delete' })}>{t('Sperren – löschen')}</MenuItem>
+                  </>}
+                <MenuItem icon={<HourglassHalf20Regular />} onClick={() => setTiming({ address: a.address, kind: a.expireKind ?? 'trash', days: String(a.expireDays ?? 30) })}>{t('Entfernen nach Zeit …')}</MenuItem>
+                <MenuDivider />
+                <MenuItem icon={<Delete20Regular />} onClick={() => remove(a)}>{t('Löschen …')}</MenuItem>
+              </ContextMenu>
+            )
+          })()}
           {st.items.map(a => (
-            <div key={a.address} className={s.row}>
+            <div key={a.address} className={s.row} onContextMenu={ctxall ? e => { if (!isTyping(e)) menu.open(e, a) } : undefined}>
               <div className={s.main} onClick={() => toggle(a)}>
                 <span style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                   <Text weight="semibold">{a.address}</Text>

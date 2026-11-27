@@ -30,6 +30,7 @@ public sealed class ServerSettings
     /// <summary>Speicher fuer Dateien (WebDAV, Dateien-Ansicht, notizi-Abgleich) je Benutzer in MB. 0: unbegrenzt. Vorgabe 100 GB.</summary>
     public long DefaultFileQuotaMb { get; set; } = 100 * 1024;
 
+
     /// <summary>Virenprüfung mit ClamAV (clamd über TCP). Aus, bis der Admin sie einschaltet (VirusScan).</summary>
     public bool ClamAv { get; set; }
     /// <summary>Rechner von clamd, etwa „clamav“ (Container im selben Netz) oder eine IP.</summary>
@@ -39,6 +40,12 @@ public sealed class ServerSettings
     public int ClamAvMaxMb { get; set; } = 100;
     /// <summary>Ohne erreichbaren Scanner nichts annehmen (sonst: weiter mit Eintrag im Protokoll).</summary>
     public bool ClamAvRequired { get; set; }
+
+    // [feature:publicurl]
+    /// <summary>Öffentliche Adresse des Servers (schema://host[:port]) für Links an Empfänger außerhalb der Browsersitzung
+    /// (PublicAddress). Leer: die Adresse der Anfrage. DMOFFICE_PUBLIC_URL hat Vorrang.</summary>
+    public string? PublicUrl { get; set; }
+    // [/feature:publicurl]
 
     /// <summary>Office-Server (Collabora/CODE, ONLYOFFICE) fuer das Bearbeiten im Browser, etwa https://office.example.org.
     /// Leer: abgeschaltet. dmOffice liest dort /hosting/discovery.</summary>
@@ -97,6 +104,12 @@ public sealed class ServerSettings
     /// <summary>Vom Admin ausgeschaltete Module (Features.Modules): weg aus der Leiste, API 404, Hintergrundarbeit ruht.
     /// null: noch nicht übernommen (ServerConfig setzt es beim Laden).</summary>
     public List<string>? ModulesOff { get; set; }
+
+    /// <summary>
+    /// Plugins (Verwaltung → Plugins): je Schlüssel an/aus und eigene Einstellungen als JSON. Einträge von Plugins, die hier gerade
+    /// fehlen, bleiben beim Speichern erhalten - so geht in einem Release ohne ein Plugin nichts verloren (docs/plugins-konzept.md 4.2).
+    /// </summary>
+    public Dictionary<string, DmOffice.Plugins.PluginSetting>? Plugins { get; set; }
     /// <summary>Gemeinsames Junk-Wissen: „Junk“-Klicks als Fingerabdrücke für alle (Mail/JunkPrints.cs) - aus, bis der Admin es einschaltet.</summary>
     public bool SharedJunk { get; set; }
     /// <summary>Zusätzliche Erkennungsregeln (Mail/SpamRules.cs) verwenden - aus, bis der Admin sie einschaltet.</summary>
@@ -139,6 +152,14 @@ public sealed class ServerSettings
     public int S3BackupKeepCount { get; set; }
     /// <summary>Wie oft gesichert wird, in Stunden: 1, 3, 6, 12, 24 (täglich, Vorgabe), 168 (wöchentlich) oder 720 (monatlich) - ab S3BackupAt.</summary>
     public int S3BackupEveryHours { get; set; } = 24;
+    /// <summary>Zeitplan (Kennung backupcron): every = alle N Stunden/Tage/Wochen, cron = eigene Regel; null = fester Abstand oben.</summary>
+    public string? S3BackupScheduleKind { get; set; }
+    public int S3BackupEveryCount { get; set; } = 1;
+    /// <summary>h, d oder w</summary>
+    public string S3BackupEveryUnit { get; set; } = "d";
+    /// <summary>Bei „alle N Wochen“: 0 = Sonntag … 6 = Samstag</summary>
+    public int S3BackupWeekday { get; set; } = 1;
+    public string? S3BackupCron { get; set; }
     /// <summary>
     /// Files-Backup (docs/datei-backup-konzept.md): haelt die Dateiinhalte fuer die Haltedauer vor - setzt das Core-Backup voraus.
     /// Ohne eigenes Ziel liegen sie im Storage Extender (Storage Extender), dort gilt dann die Haltedauer statt der Frist der Spiegelung.
@@ -213,6 +234,10 @@ public sealed class FileLimits
     public int LinkDays { get; set; } = 30;
     /// <summary>ZIP-Downloads (Downloadkorb, „Tresor herunterladen“) höchstens so groß; 0 = ohne Grenze. Vorgabe 5 GB.</summary>
     public int ZipMb { get; set; } = 5120;
+    // [feature:uploadlimit]
+    /// <summary>Über einen einzelnen Hochlade-Link höchstens so viel insgesamt (MB); 0 = keine eigene Grenze, nur das Kontingent.</summary>
+    public int LinkUploadMb { get; set; }
+    // [/feature:uploadlimit]
 }
 
 public sealed class ServerConfig
@@ -243,9 +268,13 @@ public sealed class ServerConfig
         lock (_lock)
         {
             change(_settings);
-            var tmp = _path + ".tmp";
-            File.WriteAllText(tmp, JsonSerializer.Serialize(_settings, Json));
-            File.Move(tmp, _path, overwrite: true);
+            // [feature:cfgseal]
+            ConfigSeal.Save(_path, JsonSerializer.Serialize(_settings, Json), _vault);
+            // [feature:cfgseal:else]
+            // var tmp = _path + ".tmp";
+            // File.WriteAllText(tmp, JsonSerializer.Serialize(_settings, Json));
+            // File.Move(tmp, _path, overwrite: true);
+            // [/feature:cfgseal]
         }
         Changed?.Invoke();
     }
@@ -328,6 +357,7 @@ public sealed class ServerConfig
 
     public void SetOfficeJwtSecret(string? secret) => Update(s => s.OfficeJwtSecret =
         string.IsNullOrEmpty(secret) || _vault == null ? null : _vault.Wrap(System.Text.Encoding.UTF8.GetBytes(secret)));
+
 
     /// <summary>Wirksame Grenze in Bytes, 0 = unbegrenzt: eigene des Benutzers oder die Vorgabe.</summary>
     public long FileQuotaBytes(UserRecord? u)

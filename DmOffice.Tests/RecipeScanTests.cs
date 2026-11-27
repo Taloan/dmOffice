@@ -348,7 +348,6 @@ public class RecipeScanTests : IClassFixture<ChatFixture>
         var (_, plain) = RecipeImport.ToNote(r, null);
         Assert.Contains("4 Portionen  ·  520 kcal je Portion", plain);
         Assert.Equal(520, Recipes.Kcal(plain));
-        Assert.Equal((4, false), RecipeNutrition.Servings(plain));
     }
 
     [Fact]
@@ -417,6 +416,23 @@ public class RecipeScanTests : IClassFixture<ChatFixture>
         Assert.Equal(0, note.GetProperty("attachments").GetArrayLength());
         var list = await client.GetFromJsonAsync<JsonElement>("/api/notes/recipes?q=Gescanntes");
         Assert.Single(list.EnumerateArray());
+    }
+
+    [Fact]
+    public async Task KI_Erkennung_je_Benutzer_gebremst()
+    {
+        var client = _fx.As("dora");
+        var codes = new List<HttpStatusCode>();
+        for (var i = 0; i < 15; i++)
+        {
+            using var form = new MultipartFormDataContent { { new StringContent("Rezept"), "text" } };
+            codes.Add((await client.PostAsync("/api/notes/recipes/scan/ai", form)).StatusCode);
+        }
+        Assert.Equal(HttpStatusCode.BadRequest, codes[0]);
+        Assert.Equal(HttpStatusCode.TooManyRequests, codes[^1]);
+        // Andere Benutzer sind davon nicht betroffen
+        using var other = new MultipartFormDataContent { { new StringContent("Rezept"), "text" } };
+        Assert.Equal(HttpStatusCode.BadRequest, (await _fx.As("cleo").PostAsync("/api/notes/recipes/scan/ai", other)).StatusCode);
     }
 
     [Fact]

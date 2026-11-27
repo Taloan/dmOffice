@@ -53,3 +53,14 @@ export function saveText(name: string, text: string) {
   a.remove()
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
+
+/** Datei vom Server herunterladen statt in einem neuen Tab öffnen (in der PWA bliebe sonst ein leeres App-Fenster).
+ * Den Namen nennt der Server (Content-Disposition). */
+export function saveUrl(url: string) {
+  const a = document.createElement('a')
+  a.href = url
+  a.setAttribute('download', '')
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+}

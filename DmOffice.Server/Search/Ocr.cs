@@ -11,6 +11,10 @@ namespace DmOffice.Search;
 /// </summary>
 public static class Ocr
 {
+    /// <summary>Meldung, wenn Poppler eine PDF-Seite nicht lesen kann (sein englischer Fehlertext hilft der Person nicht).</summary>
+    public const string Unreadable = "Die PDF-Datei ist beschädigt oder lässt sich nicht lesen.";
+    /// <summary>Dasselbe fuer HEIC-Bilder.</summary>
+    public const string UnreadableImage = "Das Bild ist beschädigt oder lässt sich nicht lesen.";
     public sealed record Tools(string? Tesseract, string? PdfToPpm, string? Heif, string Languages, string? Reason)
     {
         public bool Available => Tesseract != null && Reason == null;
@@ -75,7 +79,7 @@ public static class Ocr
                 if (tools.Heif == null) throw new NotSupportedException("HEIC lässt sich auf diesem Server nicht lesen.");
                 var png = Path.Combine(dir, "bild.png");
                 var (code, _, err) = Run(tools.Heif, new[] { file, png }, null, timeout, ct);
-                if (code != 0 || !File.Exists(png)) throw new InvalidOperationException("HEIC: " + Short(err));
+                if (code != 0 || !File.Exists(png)) throw new InvalidOperationException(UnreadableImage);
                 file = png;
             }
             return Tesseract(file, timeout, ct);
@@ -106,7 +110,7 @@ public static class Ocr
                 var png = prefix + ".png";
                 if (code != 0 || !File.Exists(png))
                 {
-                    if (page == 1) throw new InvalidOperationException("PDF-Seite rendern: " + Short(err));
+                    if (page == 1) throw new InvalidOperationException(Unreadable);  // Einzelheiten von Poppler (englisch) sagen der Person nichts
                     break;
                 }
                 text.AppendLine(Tesseract(png, timeoutPerPage, ct));
@@ -121,7 +125,7 @@ public static class Ocr
     /// Bild als TSV (je Wort Block, Absatz, Zeile, Position, Hoehe, Text) - fuer den Rezept-Scan, der Spalten und Schriftgroesse braucht.
     /// Das Bild muss aufrecht und in einem Format sein, das tesseract liest (PNG, JPG).
     /// </summary>
-    public static string ImageTsv(byte[] data, string ext, TimeSpan timeout, CancellationToken ct)
+    public static string ImageTsv(byte[] data, string ext, TimeSpan timeout, CancellationToken ct, string psm = "3")
     {
         var tools = Current;
         if (!tools.Available) throw new InvalidOperationException(tools.Reason ?? "Keine Texterkennung.");
@@ -130,10 +134,32 @@ public static class Ocr
         {
             var file = Path.Combine(dir, "bild" + ext);
             File.WriteAllBytes(file, data);
-            return Tesseract(file, timeout, ct, "tsv");
+            return Tesseract(file, timeout, ct, "tsv", psm);
         }
         finally { Clean(dir); }
     }
+
+    /// <summary>HEIC/HEIF als PNG (libheif); NotSupportedException, wenn das Werkzeug fehlt.</summary>
+    public static byte[] HeifToPng(byte[] data, TimeSpan timeout, CancellationToken ct)
+    {
+        var heif = Current.Heif ?? throw new NotSupportedException("HEIC lässt sich auf diesem Server nicht lesen.");
+        var dir = TempDir();
+        try
+        {
+            var file = Path.Combine(dir, "bild.heic");
+            var png = Path.Combine(dir, "bild.png");
+            File.WriteAllBytes(file, data);
+            var (code, _, err) = Run(heif, new[] { file, png }, null, timeout, ct);
+            if (code != 0 || !File.Exists(png)) throw new InvalidOperationException(UnreadableImage);
+            return File.ReadAllBytes(png);
+        }
+        finally { Clean(dir); }
+    }
+
+    /// <summary>Beginnt die Datei wie ein HEIC/HEIF-Bild (ISO-Box „ftyp“ mit heic, heix, mif1 …)?</summary>
+    public static bool IsHeif(byte[] d) =>
+        d.Length > 12 && d[4] == 'f' && d[5] == 't' && d[6] == 'y' && d[7] == 'p'
+        && System.Text.Encoding.ASCII.GetString(d, 8, 4) is "heic" or "heix" or "hevc" or "hevx" or "heim" or "heis" or "mif1" or "msf1" or "heif";
 
     /// <summary>PDF-Seiten als PNG (200 dpi), hoechstens so viele Seiten - fuer den Rezept-Scan.</summary>
     public static List<byte[]> PdfPages(byte[] data, int pages, TimeSpan timeoutPerPage, CancellationToken ct)
@@ -155,7 +181,7 @@ public static class Ocr
                 var png = prefix + ".png";
                 if (code != 0 || !File.Exists(png))
                 {
-                    if (page == 1) throw new InvalidOperationException("PDF-Seite rendern: " + Short(err));
+                    if (page == 1) throw new InvalidOperationException(Unreadable);  // Einzelheiten von Poppler (englisch) sagen der Person nichts
                     break;
                 }
                 result.Add(File.ReadAllBytes(png));

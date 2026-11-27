@@ -97,6 +97,9 @@ public static class DashboardApi
                 "pukki" => DashboardData.PukkiText(http, chat, users),
                 "weather" => await DashboardData.WeatherAsync(http, f, ct),
                 "news" => await DashboardData.NewsAsync(http, f, op, ct),
+                // [feature:journal]
+                "journal" => DashboardData.Journal(http, op),
+                // [/feature:journal]
                 "photos" => await DashboardData.PhotosAsync(http, config, op),
                 "notes" => DashboardData.Notes(http, op),
                 "files" => DashboardData.Files(http, op),

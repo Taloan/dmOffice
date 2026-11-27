@@ -86,6 +86,13 @@ public class SftpDriverTests
         SftpDriver.KnownHosts = Path.Combine(Directory.CreateTempSubdirectory("dmsftp").FullName, "hosts.json");
         try
         {
+            // [feature:sftptrust]
+            if (DmOffice.Core.Features.On(DmOffice.Core.Features.SftpTrust))
+            {
+                SftpDriver.TryParse(url, out var h, out var p, out _, out _);
+                SftpDriver.ConfirmHost(h, p, (await SftpDriver.ProbeHostAsync(h, p, null, default)).Fingerprint);
+            }
+            // [/feature:sftptrust]
             using var d = new SftpDriver(url, user, pass);
             var dir = "t" + Guid.NewGuid().ToString("N")[..8];
             await d.MkdirAsync(dir + "/a/b", default);
@@ -118,6 +125,16 @@ public class SftpDriverTests
             await Assert.ThrowsAsync<UnauthorizedAccessException>(() => wrong.ListAsync("", default));
         }
         finally { SftpDriver.KnownHosts = before; }
+    }
+
+    [Fact]
+    public void Nachfragen_beim_Ziel_gedrosselt()
+    {
+        // Weit zurückliegende Zeit: die übrigen Tests räumen diese Einträge beim nächsten Aufruf wieder weg
+        var t0 = new DateTime(2001, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+        for (var i = 0; i < SftpDriver.MaxProbes; i++) Assert.True(SftpDriver.MayProbe(t0.AddSeconds(i)));
+        Assert.False(SftpDriver.MayProbe(t0.AddMinutes(1)));
+        Assert.True(SftpDriver.MayProbe(t0 + SftpDriver.ProbeWindow + TimeSpan.FromMinutes(1)));
     }
 
     [Fact]

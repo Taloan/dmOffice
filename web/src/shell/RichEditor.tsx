@@ -2,7 +2,7 @@ import { Button, Divider, Menu, MenuItem, MenuList, MenuPopover, MenuTrigger, To
 import {
   TextBold20Regular, TextItalic20Regular, TextUnderline20Regular, TextStrikethrough20Regular, TextBulletListLtr20Regular,
   TextNumberListLtr20Regular, TextIndentIncreaseLtr20Regular, TextIndentDecreaseLtr20Regular, Link20Regular,
-  TextClearFormatting20Regular, TextColor20Regular, Highlight20Regular, Image20Regular, TextFontSize20Regular, TextQuote20Regular,
+  TextClearFormatting20Regular, TextColor20Regular, Highlight20Regular, Image20Regular, TextFontSize20Regular, TextQuote20Regular, TextHeader120Regular,
 } from '@fluentui/react-icons'
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
 import { t } from '../i18n'
@@ -46,6 +46,8 @@ interface Props {
   areaStyle?: React.CSSProperties
   /** Sprache fuer die Rechtschreibpruefung (Sprache des Kontos). */
   lang?: string
+  /** Ueberschriften anbieten (Notfalltext) */
+  headings?: boolean
   /** Eigene Formatleiste zeigen (Standard); aus, wenn die Befehle im Menüband stehen */
   toolbar?: boolean
 }
@@ -63,8 +65,49 @@ export async function smallImage(file: File): Promise<string> {
   } finally { URL.revokeObjectURL(url) }
 }
 
+/** Farbe in [r, g, b] (Schreibweisen wie der Browser sie versteht); null, wenn unbekannt oder durchsichtig. */
+function rgbOf(value: string): [number, number, number] | null {
+  const ctx = document.createElement('canvas').getContext('2d')
+  if (!ctx) return null
+  ctx.fillStyle = '#010203'
+  ctx.fillStyle = value.trim()
+  const v = String(ctx.fillStyle)
+  if (v === '#010203' && !/^#?010203$/i.test(value.trim())) return null
+  const hex = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(v)
+  if (hex) return [parseInt(hex[1], 16), parseInt(hex[2], 16), parseInt(hex[3], 16)]
+  const rgba = /^rgba\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)$/.exec(v)
+  if (rgba && Number(rgba[4]) > 0) return [Number(rgba[1]), Number(rgba[2]), Number(rgba[3])]
+  return null
+}
+
+/** Grau, Weiß oder Schwarz: Farbe des Designs der Quelle, keine gewählte Auszeichnung. */
+const neutral = (value: string) => {
+  const c = rgbOf(value)
+  return !c || Math.max(...c) - Math.min(...c) < 40
+}
+
+/**
+ * Eingefügtes HTML: Schrift- und Hintergrundfarben in Grau, Weiß oder Schwarz entfernen. Sie stammen aus dem Design
+ * der Quelle (eine dunkle Seite liefert hellgraue Schrift) und wären beim Empfänger auf Weiß kaum lesbar.
+ * Bunte Farben (rot, Markierungen) bleiben.
+ */
+export function cleanPasted(html: string): string {
+  const doc = new DOMParser().parseFromString(html, 'text/html')
+  doc.querySelectorAll('script,style,meta,link,title').forEach(n => n.remove())
+  doc.body.querySelectorAll<HTMLElement>('*').forEach(el => {
+    const st = el.style
+    if (st?.color && neutral(st.color)) st.removeProperty('color')
+    if (st?.backgroundColor && neutral(st.backgroundColor)) st.removeProperty('background-color')
+    if (st?.background && !st.backgroundImage && neutral(st.background)) st.removeProperty('background')
+    if (el.getAttribute('color') && neutral(el.getAttribute('color')!)) el.removeAttribute('color')
+    if (el.getAttribute('bgcolor') && neutral(el.getAttribute('bgcolor')!)) el.removeAttribute('bgcolor')
+    if (el.getAttribute('style') === '') el.removeAttribute('style')
+  })
+  return doc.body.innerHTML
+}
+
 /** Formatierter Text wie in Outlook: contentEditable mit den gaengigen Befehlen. */
-export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor({ initial, onChange, onImage, minimal, areaStyle, lang, toolbar = true }, ref) {
+export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor({ initial, onChange, onImage, minimal, areaStyle, lang, headings, toolbar = true }, ref) {
   const s = useStyles()
   const area = useRef<HTMLDivElement>(null)
   const fileInput = useRef<HTMLInputElement>(null)
@@ -128,7 +171,11 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
 
   const onPaste = (e: React.ClipboardEvent) => {
     const file = Array.from(e.clipboardData.files).find(f => f.type.startsWith('image/'))
-    if (file) { e.preventDefault(); image(file) }
+    if (file) { e.preventDefault(); image(file); return }
+    const html = e.clipboardData.getData('text/html')
+    if (!html) return
+    e.preventDefault()
+    exec('insertHTML', cleanPasted(html))
   }
 
   const btn = (label: string, icon: JSX.Element, cmd: string, value?: string) => (
@@ -140,6 +187,22 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
   return (
     <div className={s.wrap}>
       {toolbar && <Toolbar size="small" className={s.bar}>
+        {headings && (
+          <Menu>
+            <MenuTrigger disableButtonEnhancement>
+              <Tooltip content={t('Überschrift')} relationship="label">
+                <Button appearance="subtle" size="small" icon={<TextHeader120Regular />} onMouseDown={e => e.preventDefault()} />
+              </Tooltip>
+            </MenuTrigger>
+            <MenuPopover>
+              <MenuList>
+                {[[t('Überschrift'), 'h2'], [t('Unterüberschrift'), 'h3'], [t('Text'), 'div']].map(([l, v]) => (
+                  <MenuItem key={v} onMouseDown={e => e.preventDefault()} onClick={() => exec('formatBlock', v)}>{l}</MenuItem>
+                ))}
+              </MenuList>
+            </MenuPopover>
+          </Menu>
+        )}
         {btn(t('Fett (Strg+B)'), <TextBold20Regular />, 'bold')}
         {btn(t('Kursiv (Strg+I)'), <TextItalic20Regular />, 'italic')}
         {btn(t('Unterstrichen (Strg+U)'), <TextUnderline20Regular />, 'underline')}

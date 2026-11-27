@@ -36,6 +36,8 @@ public interface IStorageDriver : IDisposable
     Task<DriverSpace?> SpaceAsync(CancellationToken ct);
     /// <summary>Änderungszeit setzen (Übertragen behält die der Quelle), so gut der Speicher es kann; nicht jeder kann es.</summary>
     Task SetModifiedAsync(string path, DateTime utc, CancellationToken ct) => Task.CompletedTask;
+    /// <summary>Wie viele Lesevorgänge dieselbe Instanz gleichzeitig verträgt (SFTP: eingestellte Verbindungen); sonst einer nach dem anderen.</summary>
+    int Parallel => 1;
 }
 
 /// <summary>

@@ -53,7 +53,7 @@ public sealed partial class SecurityCenter
 
     internal SecurityCenter(string path, byte[] key)
     {
-        _connectionString = new SqliteConnectionStringBuilder { DataSource = path, Password = "x'" + Convert.ToHexString(key) + "'", DefaultTimeout = 30 }.ToString();
+        _connectionString = DmOffice.Core.UserDb.ConnectionStringOf(path, key);
         using (var conn = Open())
             UserDb.Exec(conn, @"
 CREATE TABLE IF NOT EXISTS blocks (key TEXT PRIMARY KEY, reason TEXT NOT NULL, since INTEGER NOT NULL, until INTEGER NULL, level INTEGER NOT NULL,
@@ -387,7 +387,8 @@ CREATE TABLE IF NOT EXISTS reputation (key TEXT PRIMARY KEY, score INTEGER NOT N
 
     /// <summary>Freigabelink mit unbekanntem Token (Raten von Links).</summary>
     private static bool IsShareToken(PathString path) =>
-        path.StartsWithSegments("/api/public") || path.StartsWithSegments("/api/public-album");
+        path.StartsWithSegments("/api/public") || path.StartsWithSegments("/api/public-album") || path.StartsWithSegments("/n")
+        ;
 
     /// <summary>Hinter UseAuthentication und vor der Bremse: Erlaubtes durch, Gesperrtes ab, Abtasten erkennen.</summary>
     public static void Use(WebApplication app) => app.Use(async (ctx, next) =>

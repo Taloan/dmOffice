@@ -30,6 +30,9 @@ public sealed class InviteFlowFixture : IDisposable
     {
         // Version 2: Benutzer eines Servers laden sich sonst über Pukki ein - hier geht es um Mail wie zwischen zwei Servern
         InternalInvites.ViaMail = true;
+        // Der Test-Mailserver läuft auf 127.0.0.1 - nur sein Port ist erlaubt
+        var refused = DmOffice.Mail.ImapPool.Refused;
+        DmOffice.Mail.ImapPool.Refused = (a, port) => port != Smtp.Port && refused(a, port);
         _data = Directory.CreateTempSubdirectory("dmflow");
         Environment.SetEnvironmentVariable("DMOFFICE_DATA", _data.FullName);
         Factory = new WebApplicationFactory<Program>();

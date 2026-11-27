@@ -60,7 +60,7 @@ export function PeopleList({ state, intro, addAs = 'read' }: { state: ReturnType
       )}
       {people && people.length > 0 && <Text>{intro}</Text>}
       {!people ? <Spinner size="tiny" /> : people.length > 0 && <>
-        <Field label={t('Person hinzufügen')}>
+        <Field label={t('Benutzer hinzufügen')}>
           <Combobox freeform placeholder={t('Name eingeben …')} value={query} selectedOptions={[]}
             onChange={e => setQuery((e.target as HTMLInputElement).value)}
             onOptionSelect={(_, d) => { if (d.optionValue) add(d.optionValue) }}>
@@ -71,7 +71,7 @@ export function PeopleList({ state, intro, addAs = 'read' }: { state: ReturnType
         </Field>
         <Text weight="semibold">{t('Zugriff haben')}</Text>
         {withAccess.length === 0
-          ? <Text style={{ color: tokens.colorNeutralForeground3 }}>{t('Noch niemand – füge oben eine Person hinzu.')}</Text>
+          ? <Text style={{ color: tokens.colorNeutralForeground3 }}>{t('Noch niemand. Oben kannst du einen Benutzer hinzufügen.')}</Text>
           : withAccess.map(p => (
             <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <Text style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p.login}>{p.displayName} ({p.login})</Text>
@@ -110,7 +110,11 @@ export function ShareDialog({ list, notesFolder, noteId, onClose }: {
   onClose: (changed: boolean) => void
 }) {
   const { fail } = useApp()
-  const kind = noteId ? 'note' : notesFolder ? 'notes' : list.components.includes('VEVENT') ? 'calendar' : 'list'
+  // [feature:journal]
+  const kind = noteId ? 'note' : notesFolder ? 'notes' : list.components.includes('VJOURNAL') ? 'journal' : list.components.includes('VEVENT') ? 'calendar' : 'list'
+  // [feature:journal:else]
+  // const kind = noteId ? 'note' : notesFolder ? 'notes' : list.components.includes('VEVENT') ? 'calendar' : 'list'
+  // [/feature:journal]
   const state = usePeople(Object.fromEntries((list.sharedWith ?? []).map(x => [x.id, rightOf(x)])))
   // Einzelne Notiz: wer sie hat, fragt der Dialog selbst
   useEffect(() => {
@@ -127,6 +131,10 @@ export function ShareDialog({ list, notesFolder, noteId, onClose }: {
     ? t('Wer hier Zugriff hat, sieht die Notiz bei sich unter „Mit mir geteilt“ – nur in dmOffice, nicht in notizi. Mit „Gemeinsam bearbeiten“ lässt sie sich bearbeiten; verschieben, archivieren und löschen kannst nur du.')
     : kind === 'notes'
     ? t('Wer hier Zugriff hat, sieht den Ordner samt Unterordnern bei sich unter „Mit mir geteilt“. Mit „Gemeinsam bearbeiten“ lassen sich Notizen anlegen, ändern und löschen; Änderungen erscheinen bei den anderen nach wenigen Sekunden. Verschieben aus dem Ordner heraus und endgültiges Löschen bleiben bei dir.')
+    // [feature:journal]
+    : kind === 'journal'
+    ? t('Wer hier Zugriff hat, sieht das Tagebuch bei sich im Tagebuch – Einträge, die du als privat markierst, nicht. Mit „Gemeinsam bearbeiten“ lassen sich Einträge schreiben und ändern; Fotos, die andere hinzufügen, landen in deiner Dateiablage.')
+    // [/feature:journal]
     : kind === 'calendar'
     ? t('Wer hier Zugriff hat, sieht den Kalender bei sich als „{name} (von dir)“ – mit „Ansehen und Kopie behalten“ und „Gemeinsam bearbeiten“ auch auf ihren Geräten, mit „Nur ansehen“ nur in dmOffice. Mit „Gemeinsam bearbeiten“ lassen sich Termine eintragen, ändern und löschen; Änderungen sind sofort für alle da.', { name: list.name })
     : t('Wer hier Zugriff hat, sieht die Liste bei sich unter „Mit mir geteilt“. Mit „Gemeinsam bearbeiten“ lassen sich Einträge hinzufügen, abhaken und ändern.')

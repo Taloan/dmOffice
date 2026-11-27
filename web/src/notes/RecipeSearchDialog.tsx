@@ -3,9 +3,10 @@ import {
   makeStyles, tokens,
 } from '@fluentui/react-components'
 import { useEffect, useState } from 'react'
-import { api, q } from '../api'
+import { api, featureOn, q } from '../api'
 import { useApp } from '../App'
 import { t } from '../i18n'
+import { FilterSelect } from '../shell/FilterSelect'
 
 interface Hit {
   url: string; name: string; source: string; image: string | null; yield: string; time: string; ingredients: string[]
@@ -104,10 +105,12 @@ export function RecipeSearchDialog({ targets, folder, dbName, onClose }: {
           </DialogContent>
           <DialogActions style={{ flexWrap: 'wrap' }}>
             <Text className={s.muted} style={{ marginRight: 'auto' }}>{dbName ? t('Datenbank: {name}', { name: dbName }) : ''}</Text>
+            {featureOn('filterpick') ? <FilterSelect value={target} none={t('Ohne Ordner')} onChange={setTarget} style={{ minWidth: 200 }} aria-label={t('Zielordner')}
+              items={targets.map(f => ({ id: f.id, label: f.label, depth: f.depth }))} /> :
             <Dropdown value={targetLabel} selectedOptions={[target]} onOptionSelect={(_, d) => setTarget(d.optionValue ?? '')} style={{ minWidth: 200 }} aria-label={t('Zielordner')}>
               <Option value="">{t('Ohne Ordner')}</Option>
               {targets.map(f => <Option key={f.id} value={f.id} text={f.label}><span style={{ paddingLeft: f.depth * 12 }}>{f.label}</span></Option>)}
-            </Dropdown>
+            </Dropdown>}
             <Button onClick={() => onClose(0)}>{t('Schließen')}</Button>
             <Button appearance="primary" disabled={!picked.size || importing} onClick={run}>
               {importing ? <Spinner size="tiny" /> : t('Importieren ({n})', { n: picked.size })}

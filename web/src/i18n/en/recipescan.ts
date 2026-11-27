@@ -33,4 +33,5 @@ export const recipescan: Record<string, string> = {
   'Findet die Erkennung keinen Titel, keine Zutaten oder keine Zubereitung, liest die eingerichtete KI die Seiten: die Fotos und den erkannten Text.': 'If recognition finds no title, ingredients or preparation, the configured AI reads the pages: the photos and the recognized text.',
   'Schwierige Seiten mit KI erkennen': 'Recognize difficult pages with AI',
   'KI ist für dieses Konto nicht freigegeben.': 'AI is not enabled for this account.',
+  'Jedes Rezept braucht einen Titel, Zutaten oder eine Zubereitung.': 'Every recipe needs a title, ingredients or preparation.',
 }

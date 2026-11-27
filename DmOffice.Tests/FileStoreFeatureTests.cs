@@ -393,6 +393,24 @@ public class FileStoreFeatureTests
     }
 
     [Fact]
+    public async Task Vorschaubild_auch_fuer_Foto_ueber_90_MB()
+    {
+        // 200-MP-Handyfotos haben über 90 MB (früher galt 80 MB als Grenze); hier ein JPEG mit angehängten Daten
+        var db = NewDb();
+        using var src = new SKBitmap(1200, 600);
+        using (var c = new SKCanvas(src)) c.Clear(SKColors.Green);
+        var jpg = SKImage.FromBitmap(src).Encode(SKEncodedImageFormat.Jpeg, 90).ToArray();
+        var data = new byte[96 * 1024 * 1024];
+        jpg.CopyTo(data, 0);
+        FileStore.Put(db, "gross.jpg", data, "image/jpeg");
+        var f = FileStore.Get(db, "gross.jpg")!;
+        Assert.True(Thumbs.Expected(f.Name, f.Mime, f.Size));
+        Assert.True(Thumbs.Available(db, f));
+        using var bmp = DecodeWebp((await Thumbs.Get(db, f, 256, default))!);
+        Assert.Equal((256, 128), (bmp.Width, bmp.Height));
+    }
+
+    [Fact]
     public async Task Vorschaubild_fuer_Bild_verkleinert_und_gecacht()
     {
         var db = NewDb();

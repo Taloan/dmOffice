@@ -16,9 +16,12 @@ export const imports: Record<string, string> = {
   'Jetzt einsortieren': 'Sort now',
   'Quelle': 'Source',
   'Ordner der eigenen Ablage oder externe Ordner, jeweils mit allen Unterordnern.': 'Folders of your own storage or external folders, each with all subfolders.',
+  // Kennung importsub
+  'Ordner der eigenen Ablage oder externe Ordner, nur die Dateien direkt darin.': 'Folders of your own storage or external folders, only the files directly inside.',
+  'Unterordner einbeziehen': 'Include subfolders',
   '{name} (nur zum Lesen)': '{name} (read-only)',
   'Ein Quellordner ist nur zum Lesen eingebunden. Daraus lässt sich nur kopieren.': 'A source folder is mounted read-only. Photos can only be copied from it.',
-  'Beim Verschieben aus einem externen Ordner wird die Quelle erst gelöscht, wenn die Datei am Ziel geprüft ist. Einen Papierkorb gibt es dort nicht.': 'When moving from an external folder, the source is deleted only after the file has been verified at the target. There is no trash there.',
+  'Beim Verschieben aus einem externen Ordner wird die Quelle erst gelöscht, wenn die Datei am Ziel geprüft ist.': 'When moving from an external folder, the source is deleted only after the file has been verified at the target.',
   'Quellordner entfernen': 'Remove source folder',
   'Quellordner hinzufügen': 'Add source folder',
   'Quellordner wählen': 'Choose source folder',

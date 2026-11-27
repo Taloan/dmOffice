@@ -24,10 +24,6 @@ public static class PimStore
 {
     public const string Calendar = "calendar", AddressBook = "addressbook";
 
-    /// <summary>Sammlung nur mit VJOURNAL-Objekten (ohne Termine): nutzt diese Version nicht (Testserver können sie mit früheren
-    /// Ständen angelegt haben) - sie bleibt in Listen, Freigaben, CalDAV und Datenexport außen vor und unangetastet.</summary>
-    public static bool IsReserved(Collection c) => c.Components.Split(',').Contains("VJOURNAL") && !c.Components.Contains("VEVENT");
-
     public static void EnsureDefaults(UserDb db)
     {
         if (db.Get("pim.defaults") != null) return;
@@ -35,7 +31,7 @@ public static class PimStore
         lock (DefaultsGate)
         {
             if (db.Get("pim.defaults") != null) return;
-            // Nur Termine zählen: Listen sind auch Kalender. Entstanden sie zuerst, fehlte dem Konto sonst dauerhaft ein Terminkalender
+            // Nur Termine zählen: Listen und reservierte Sammlungen sind auch Kalender. Entstanden sie zuerst, fehlte dem Konto sonst dauerhaft ein Terminkalender
             if (!Collections(db, Calendar).Any(c => c.Components.Contains("VEVENT")))
                 CreateCollection(db, Calendar, "personal", "Persönlich", "#0F6CBD", "VEVENT,VTODO");
             if (Collections(db, AddressBook).Count == 0)
@@ -52,6 +48,10 @@ public static class PimStore
 
     private static Collection ReadCollection(SqliteDataReader r) => new(r.GetInt64(0), r.GetString(1), r.GetString(2), r.GetString(3),
         r.IsDBNull(4) ? null : r.GetString(4), r.IsDBNull(5) ? null : r.GetString(5), r.GetString(6), r.GetInt32(7), r.GetInt64(8));
+
+    /// <summary>Sammlung nur mit VJOURNAL-Objekten (ohne Termine): gehört einem Modul, nicht dem Kalender - sie bleibt in Listen,
+    /// Freigaben, CalDAV und Datenexport außen vor und unangetastet, auch wenn das Modul fehlt oder ausgeschaltet ist.</summary>
+    public static bool IsReserved(Collection c) => c.Components.Split(',').Contains("VJOURNAL") && !c.Components.Contains("VEVENT");
 
     public static List<Collection> Collections(UserDb db, string kind) =>
         db.Query($"SELECT {CollectionColumns} FROM collections WHERE kind=$k ORDER BY sort_order, name", ReadCollection, ("$k", kind));
@@ -132,8 +132,9 @@ public static class PimStore
     {
         if (!ValidSegment(uri)) throw new ArgumentException("Ungültiger Name.");
         var info = Inspect(coll, data, zone ?? TimeZoneInfo.Utc);
-        using var conn = db.Open();
-        using var tx = conn.BeginTransaction();
+        using var w = db.BeginWrite();
+        var conn = w.Conn;
+        var tx = w.Tx;
         var etag = PutIn(conn, coll, uri, data, info, ifMatch, ifNoneMatch);
         tx.Commit();
         return etag;
@@ -147,8 +148,9 @@ public static class PimStore
     {
         if (!ValidSegment(toUri)) throw new ArgumentException("Ungültiger Name.");
         if (from.Id == to.Id && fromUri == toUri) throw new ArgumentException("Quelle und Ziel sind gleich.");
-        using var conn = db.Open();
-        using var tx = conn.BeginTransaction();
+        using var w = db.BeginWrite();
+        var conn = w.Conn;
+        var tx = w.Tx;
         var data = UserDb.Query(conn, "SELECT data FROM objects WHERE collection=$c AND uri=$u", r => r.GetString(0),
             ("$c", from.Id), ("$u", fromUri)).FirstOrDefault() ?? throw new KeyNotFoundException();
         var info = Inspect(to, data, zone ?? TimeZoneInfo.Utc);
@@ -197,8 +199,9 @@ public static class PimStore
 
     public static bool Delete(UserDb db, Collection coll, string uri, string? ifMatch = null)
     {
-        using var conn = db.Open();
-        using var tx = conn.BeginTransaction();
+        using var w = db.BeginWrite();
+        var conn = w.Conn;
+        var tx = w.Tx;
         if (!DeleteIn(conn, coll, uri, ifMatch)) return false;
         tx.Commit();
         return true;

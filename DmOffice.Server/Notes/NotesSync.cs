@@ -124,7 +124,7 @@ public sealed class NotesSync : BackgroundService
         while (!stop.IsCancellationRequested)
         {
             // Modul Notizen ausgeschaltet (Verwaltung): kein Abgleich
-            foreach (var space in Features.On(Features.Notes) ? _spaces.All() : Enumerable.Empty<UserSpace>())
+            foreach (var space in Features.On(Features.Notes) ? _spaces.Working() : Enumerable.Empty<UserSpace>())
             {
                 var n = space.Settings.Notizi;
                 if (!n.Enabled || string.IsNullOrEmpty(n.E2eePassword)) continue;

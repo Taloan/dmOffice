@@ -1,12 +1,13 @@
-import { Button, Text, makeStyles, tokens } from '@fluentui/react-components'
+import { Button, MenuDivider, MenuItem, Text, makeStyles, tokens } from '@fluentui/react-components'
 import { Add20Regular, Cloud20Regular, Delete20Regular, Edit20Regular, Globe20Regular, Server20Regular } from '@fluentui/react-icons'
 import { useCallback, useEffect, useState } from 'react'
-import { api } from '../api'
+import { api, featureOn } from '../api'
 import { useApp } from '../App'
 import { t } from '../i18n'
-import { askConfirm } from '../shell/context'
+import { ContextMenu, askConfirm, useContextMenu } from '../shell/context'
 import { AddExternalDialog, EditExternalDialog, ExternalMount } from '../files/ExternalView'
-import { Hint, PageTitle, Section } from './parts'
+import { Hint, Section } from './parts'
+import { dblOpen } from '../shell/rowOpen' // [feature:rowdblopen]
 
 const useStyles = makeStyles({
   page: { display: 'flex', flexDirection: 'column', gap: '20px' },
@@ -31,6 +32,9 @@ export function ExternalTargetsSettings() {
   const [data, setData] = useState<MountsResponse | null>(null)
   const [adding, setAdding] = useState(false)
   const [editing, setEditing] = useState<ExternalMount | null>(null)
+  // Rechtsklick auf ein externes Ziel (Kennung ctxall): dieselben Aktionen wie die Knöpfe
+  const menu = useContextMenu<ExternalMount>()
+  const ctxall = featureOn('ctxall')
   const load = useCallback(() => api.get<MountsResponse>('/api/files/external/mounts').then(setData).catch(fail), [fail])
   useEffect(() => { load() }, [load])
   const targets = data?.targets ?? []
@@ -44,13 +48,14 @@ export function ExternalTargetsSettings() {
   }
   return (
     <div className={s.page}>
-      <PageTitle>{t('Externe Ziele')}</PageTitle>
       <Text>{t('Zugänge zu eigenen Speichern bei WebDAV-Diensten, bei OneDrive oder pCloud. Zugangsdaten und Anmeldung liegen nur hier. In Dateien lässt sich ein externes Ziel samt Ordner darin einbinden; im Datenexport wählt man ein externes Ziel und den Ordner, in den exportiert wird.')}</Text>
       <Section title={t('Angelegt')} hint={data && !data.canAdd ? t('Auf diesem Server sind keine externen Ziele für Benutzer freigegeben (WebDAV, OneDrive, pCloud).') : kinds ? t('Freigegeben: {kinds}', { kinds }) : undefined}>
         <div className={s.list}>
           {data && targets.length === 0 && <Hint>{t('Noch kein externes Ziel angelegt.')}</Hint>}
           {targets.map(m => (
-            <div key={m.id} className={s.row}>
+            <div key={m.id} className={s.row} onContextMenu={ctxall ? e => menu.open(e, m) : undefined}
+              {...dblOpen(() => setEditing(m))} // [feature:rowdblopen]
+            >
               {m.sftp ? <Server20Regular /> : m.kind === 'webdav' ? <Globe20Regular /> : <Cloud20Regular />}
               <div className={s.name}>
                 <Text weight="semibold">{m.name}</Text>
@@ -64,6 +69,11 @@ export function ExternalTargetsSettings() {
             </div>
           ))}
         </div>
+        {menu.ctx && <ContextMenu at={menu.ctx.at} onClose={menu.close}>
+          <MenuItem icon={<Edit20Regular />} onClick={() => setEditing(menu.ctx!.data)}>{t('Bearbeiten')}</MenuItem>
+          <MenuDivider />
+          <MenuItem icon={<Delete20Regular />} onClick={() => remove(menu.ctx!.data)}>{t('Entfernen')}</MenuItem>
+        </ContextMenu>}
         {data?.canAdd && <div style={{ marginTop: 10 }}><Button icon={<Add20Regular />} onClick={() => setAdding(true)}>{t('Externes Ziel anlegen')}</Button></div>}
       </Section>
       {adding && data && <AddExternalDialog webDav={!!data.webDav} sftp={!!data.sftp} oneDrive={!!data.oneDrive} pCloud={!!data.pCloud} onClose={() => setAdding(false)}

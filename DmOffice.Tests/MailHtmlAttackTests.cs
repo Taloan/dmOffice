@@ -47,6 +47,9 @@ public class MailHtmlAttackTests
         var r = MailHtml.Sanitize(html, allowRemote: false, _ => null);
         Assert.True(r.HasRemoteImages);
         Assert.DoesNotContain("src=", r.Html.Replace("data-remote-src=", ""));
+        // Mit Tracker-Schutz greift die Pixel-Erkennung auch hier
+        var t = MailHtml.Sanitize(html.Replace(">", " width=\"1\" height=\"1\">"), allowRemote: true, _ => null, trackers: true);
+        Assert.Equal(1, t.Trackers);
     }
 
     [Fact]
@@ -59,9 +62,64 @@ public class MailHtmlAttackTests
     [Fact]
     public void Eigene_Bildadressen_bleiben()
     {
-        var r = MailHtml.Sanitize("<img src=\"/api/mail/a/part?uid=1\"><img src=\"data:image/png;base64,iVBORw0KGgo=\">", allowRemote: false, _ => null);
+        var r = MailHtml.Sanitize("<img src=\"cid:a1\"><img src=\"cid:a2\"><img src=\"data:image/png;base64,iVBORw0KGgo=\">", allowRemote: false,
+            cid => cid == "a1" ? "/api/mail/a/part?uid=1" : "/api/mail/a/part?folder=x&uid=1&index=2");
         Assert.False(r.HasRemoteImages);
         Assert.Contains("src=\"/api/mail/a/part?uid=1\"", r.Html);
+        Assert.Contains("src=\"/api/mail/a/part?folder=x&amp;uid=1&amp;index=2\"", r.Html);
         Assert.Contains("src=\"data:image/png", r.Html);
+    }
+
+    [Theory]
+    [InlineData("<img src=\"/api/admin/users/x/reset-2fa\">")]
+    [InlineData("<img src=\"api/files/list\">")]
+    [InlineData("<img src=\"ftp://host/x.gif\">")]
+    [InlineData("<img src=\"blob:https://host/x\">")]
+    public void Adressen_dieses_Servers_laden_kein_Bild(string html)
+    {
+        foreach (var allow in new[] { false, true })
+        {
+            var r = MailHtml.Sanitize(html, allowRemote: allow, _ => null);
+            Assert.DoesNotContain("src=", r.Html);
+        }
+    }
+
+    [Theory]
+    [InlineData("<p style=\"background:url(https:/tracker.test/a.gif)\">x</p>")]
+    [InlineData("<p style=\"background:url(https:tracker.test/a.gif)\">x</p>")]
+    [InlineData("<p style=\"background:url('/\\\\tracker.test/b.gif')\">x</p>")]
+    [InlineData("<p style=\"background-image:url(&quot;//tracker.test/c.gif&quot;)\">x</p>")]
+    [InlineData("<style>p{background:url(https:/tracker.test/d.gif)}</style><p>x</p>")]
+    public void Stil_laedt_nichts_aus_dem_Netz_wenn_gesperrt(string html)
+    {
+        var r = MailHtml.Sanitize(html, allowRemote: false, _ => null);
+        Assert.DoesNotContain("tracker.test", r.Html);
+        // Ob ein Hinweis zum Nachladen erscheint, hängt davon ab, wie der Stil die Adresse liest; geladen wird nichts
+    }
+
+    [Theory]
+    [InlineData("<p style=\"background:url(/api/probe/x.gif)\">x</p>")]
+    [InlineData("<p style=\"background:url('api/probe/x.gif')\">x</p>")]
+    [InlineData("<style>p{background:url(/api/probe/x.gif)}</style><p>x</p>")]
+    [InlineData("<table background=\"/api/probe/x.gif\"><tr><td>x</td></tr></table>")]
+    public void Stil_laedt_nichts_von_diesem_Server(string html)
+    {
+        foreach (var allow in new[] { false, true })
+            Assert.DoesNotContain("/api/probe", MailHtml.Sanitize(html, allowRemote: allow, _ => null).Html);
+    }
+
+    [Fact]
+    public void Erlaubte_Hintergrundbilder_bleiben()
+    {
+        var r = MailHtml.Sanitize("<p style=\"background:url(https://cdn.example/a.png)\">x</p><p style=\"background:url(data:image/png;base64,iVBORw0KGgo=)\">y</p>", allowRemote: true, _ => null);
+        Assert.Contains("cdn.example/a.png", r.Html);
+        Assert.Contains("data:image/png", r.Html);
+        Assert.Contains("url(", r.Html);
+    }
+
+    [Fact]
+    public void Text_mit_url_Klammer_bleibt()
+    {
+        Assert.Contains("url(/irgendwas)", MailHtml.Sanitize("<p>Schreib url(/irgendwas) in die Zeile</p>", allowRemote: false, _ => null).Html);
     }
 }

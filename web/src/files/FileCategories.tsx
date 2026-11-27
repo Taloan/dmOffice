@@ -7,7 +7,9 @@ import {
   Sparkle16Regular, Tag20Regular,
 } from '@fluentui/react-icons'
 import { useEffect, useMemo, useState } from 'react'
+import { useOnce } from '../shell/hooks'
 import { api, q } from '../api'
+import { useNavStyles } from '../shell/nav'
 import { useApp } from '../App'
 import { lang, t } from '../i18n'
 
@@ -91,7 +93,7 @@ export function Dot({ color, size = 10 }: { color: string | null; size?: number 
 }
 
 const useStyles = makeStyles({
-  head: { display: 'flex', alignItems: 'center', padding: '2px 8px', color: tokens.colorNeutralForeground3, fontSize: tokens.fontSizeBase200 },
+  head: { cursor: 'pointer', marginTop: '4px' },
   count: { marginLeft: 'auto', color: tokens.colorNeutralForeground3, fontSize: tokens.fontSizeBase100, paddingLeft: '6px' },
   pending: { marginLeft: 'auto', color: tokens.colorBrandForeground1, fontSize: tokens.fontSizeBase100, paddingLeft: '6px', fontWeight: tokens.fontWeightSemibold },
   tree: { display: 'flex', flexDirection: 'column', gap: '2px', maxHeight: '50vh', overflowY: 'auto', marginTop: '8px' },
@@ -114,6 +116,7 @@ export function CategoryNav({ cls, current, currentTag, onOpen, onOpenTag, onDro
   onDrop: (e: React.DragEvent, id: string) => void; accepts: (e: React.DragEvent) => boolean; onManage: () => void
 }) {
   const s = useStyles()
+  const nv = useNavStyles()
   const { cats, tags } = useFileCats()
   const [open, setOpen] = useState<Record<string, boolean>>(() => { try { return JSON.parse(localStorage.getItem('files.cats.open') ?? '{}') } catch { return {} } })
   // Ganzer Abschnitt eingeklappt (Kopf anklicken); bleibt im Browser gemerkt
@@ -125,7 +128,7 @@ export function CategoryNav({ cls, current, currentTag, onOpen, onOpenTag, onDro
   // Den Weg zur geöffneten Kategorie aufklappen
   useEffect(() => { if (current) setOpen(o => { const n = { ...o }; above(cats, current).forEach(p => { n[p] = true }); return n }) }, [current, cats])
   return <>
-    <div className={s.head} style={{ cursor: 'pointer' }} onClick={fold} title={folded ? t('Aufklappen') : t('Zuklappen')}>
+    <div className={mergeClasses(nv.section, s.head)} onClick={fold} title={folded ? t('Aufklappen') : t('Zuklappen')}>
       {folded ? <ChevronRight16Regular /> : <ChevronDown16Regular />}
       <span style={{ flex: 1, marginLeft: 4 }}>{t('Kategorien')}</span>
       <Button size="small" appearance="subtle" icon={<Settings16Regular />} aria-label={t('Kategorien verwalten')} title={t('Kategorien verwalten')} onClick={e => { e.stopPropagation(); onManage() }} />
@@ -208,14 +211,15 @@ export function LabelsDialog({ paths, onClose, onDone }: { paths: string[]; onCl
       onDone?.(); onClose()
     } catch (e) { fail(e) } finally { setBusy(false) }
   }
-  const addCat = async () => {
+  const [addingCat, onceCat] = useOnce()
+  const addCat = () => onceCat(async () => {
     if (!newCat?.name.trim()) return
     try {
       const c = await catsApi.create({ name: newCat.name.trim(), parent: newCat.parent, color: PALETTE[cats.length % PALETTE.length] })
       await reloadCats()
       setCat(x => ({ ...x, [c.id]: true })); setNewCat(null)
     } catch (e) { fail(e) }
-  }
+  })
   const addTag = (v: string) => {
     const x = v.trim().replace(/^#/, '')
     if (x) setTags(o => ({ ...o, [x]: true }))
@@ -247,7 +251,7 @@ export function LabelsDialog({ paths, onClose, onDone }: { paths: string[]; onCl
               {newCat ? <div className={s.row} style={{ marginTop: 6 }}>
                 <Input autoFocus size="small" placeholder={newCat.parent ? t('Unter „{name}“', { name: fullName(cats, newCat.parent) }) : t('Name der Kategorie')} value={newCat.name}
                   onChange={(_, d) => setNewCat({ ...newCat, name: d.value })} onKeyDown={e => { if (e.key === 'Enter') addCat(); if (e.key === 'Escape') setNewCat(null) }} style={{ flex: 1 }} />
-                <Button size="small" onClick={addCat}>{t('Anlegen')}</Button>
+                <Button size="small" disabled={addingCat} onClick={addCat}>{t('Anlegen')}</Button>
                 <Button size="small" appearance="subtle" icon={<Dismiss16Regular />} aria-label={t('Abbrechen')} onClick={() => setNewCat(null)} />
               </div> : <Button size="small" appearance="subtle" icon={<Add16Regular />} style={{ marginTop: 6 }} onClick={() => setNewCat({ parent: null, name: '' })}>{t('Neue Kategorie')}</Button>}
 
@@ -377,9 +381,10 @@ export function ManageCategories({ onClose }: { onClose: () => void }) {
   const [remove, setRemove] = useState<{ cat: FileCat | null; n: number } | null>(null)
   const unconfirmed = cats.reduce((n, c) => n + c.unconfirmed, 0)
   const run = async (f: () => Promise<unknown>) => { try { await f(); await reloadCats() } catch (e) { fail(e) } }
-  const add = () => adding?.name.trim() && run(async () => {
+  const [creating, once] = useOnce()
+  const add = () => adding?.name.trim() && once(() => run(async () => {
     await catsApi.create({ name: adding.name.trim(), parent: adding.parent, color: PALETTE[cats.length % PALETTE.length] }); setAdding(null)
-  })
+  }))
   const rename = (c: FileCat) => run(async () => { if (name.trim() && name.trim() !== c.name) await catsApi.update(c.id, { name: name.trim() }); setEdit(null) })
   const parentOptions = (c: FileCat) => flat(cats).filter(x => !below(cats, c.id).has(x.c.id))
   return (<>
@@ -437,7 +442,7 @@ export function ManageCategories({ onClose }: { onClose: () => void }) {
             {adding ? <div className={s.row} style={{ marginTop: 8 }}>
               <Input autoFocus size="small" placeholder={adding.parent ? t('Unter „{name}“', { name: fullName(cats, adding.parent) }) : t('Name der Kategorie')} value={adding.name}
                 onChange={(_, d) => setAdding({ ...adding, name: d.value })} onKeyDown={e => { if (e.key === 'Enter') add(); if (e.key === 'Escape') setAdding(null) }} style={{ flex: 1 }} />
-              <Button size="small" appearance="primary" onClick={add}>{t('Anlegen')}</Button>
+              <Button size="small" appearance="primary" disabled={creating} onClick={add}>{t('Anlegen')}</Button>
               <Button size="small" appearance="subtle" icon={<Dismiss16Regular />} aria-label={t('Abbrechen')} onClick={() => setAdding(null)} />
             </div> : <Button icon={<Add16Regular />} style={{ marginTop: 8 }} onClick={() => setAdding({ parent: null, name: '' })}>{t('Neue Kategorie')}</Button>}
           </DialogContent>

@@ -1,7 +1,9 @@
-import { Menu, MenuDivider, MenuItem, MenuItemCheckbox, MenuList, MenuPopover, Table, TableBody, TableCell, TableHeader, TableRow } from '@fluentui/react-components'
+import { Checkbox, Menu, MenuDivider, MenuItem, MenuItemCheckbox, MenuList, MenuPopover, Table, TableBody, TableCell, TableHeader, TableRow, tokens } from '@fluentui/react-components'
 import { useMemo, useState } from 'react'
 import { ColHead } from '../files/FileColumns'
+import { tableFrameLook } from '../shell/GridColumns'
 import { t, locale } from '../i18n'
+import { dblOpen } from '../shell/rowOpen' // [feature:rowdblopen]
 
 export interface AdminCol<R> {
   key: string
@@ -13,15 +15,57 @@ export interface AdminCol<R> {
   render: (r: R) => React.ReactNode
   /** Nicht ausblendbar (etwa die Aktionsspalte) */
   fixed?: boolean
+  /** Eigener Inhalt im Spaltenkopf statt der Beschriftung (etwa „alle auswählen“) */
+  head?: () => React.ReactNode
+}
+
+/**
+ * Auswahlspalte mit Kästchen je Zeile und „alle auswählen“ im Spaltenkopf (bezogen auf die übergebenen, also gefilterten Zeilen).
+ * can: nur diese Zeilen sind wählbar.
+ */
+export function selectCol<R, K extends string | number>({ rows, id, selected, onChange, can }: {
+  rows: R[]; id: (r: R) => K; selected: K[]; onChange: (next: K[]) => void; can?: (r: R) => boolean
+}): AdminCol<R> {
+  const ids = rows.filter(r => !can || can(r)).map(id)
+  const n = ids.filter(k => selected.includes(k)).length
+  return {
+    key: 'sel', label: () => t('Auswahl'), width: 40, fixed: true,
+    head: () => <Checkbox checked={ids.length > 0 && n === ids.length ? true : n > 0 ? 'mixed' : false} disabled={ids.length === 0} aria-label={t('Alle auswählen')}
+      onClick={e => e.stopPropagation()}
+      onChange={() => onChange(n === ids.length ? selected.filter(k => !ids.includes(k)) : [...selected, ...ids.filter(k => !selected.includes(k))])} />,
+    render: r => can && !can(r) ? null : <Checkbox checked={selected.includes(id(r))} aria-label={t('Auswählen')}
+      onChange={(_, d) => onChange(d.checked ? [...selected, id(r)] : selected.filter(k => k !== id(r)))} />,
+  }
+}
+
+/** Auswahlspalte für genau einen Eintrag (Bearbeiten, Löschen im Menüband); ohne Kästchen im Kopf. */
+export function pickCol<R, K extends string | number>({ id, selected, onChange }: {
+  id: (r: R) => K; selected: K | null | undefined; onChange: (next: K | null) => void
+}): AdminCol<R> {
+  return {
+    key: 'sel', label: () => t('Auswahl'), head: () => null, width: 40, fixed: true,
+    render: r => <Checkbox checked={selected === id(r)} aria-label={t('Auswählen')} onChange={() => onChange(selected === id(r) ? null : id(r))} />,
+  }
 }
 
 /**
  * Tabelle der Verwaltung wie im Explorer: Kopf anklicken sortiert, Kante ziehen ändert die Breite, Kopf ziehen ändert die
  * Reihenfolge, Rechtsklick auf den Kopf wählt die Spalten. Breiten, Reihenfolge und Auswahl merkt sich der Browser.
  */
-export function AdminTable<R>({ id, cols, rows, rowKey, initialSort, max = 1000 }: {
+export function AdminTable<R>({ id, cols, rows, rowKey, initialSort, max = 1000, onRowContextMenu, onRowClick, active,
+  onRowOpen, // [feature:rowdblopen]
+}: {
   id: string; cols: AdminCol<R>[]; rows: R[]; rowKey: (r: R) => string | number
   initialSort?: { col: string; desc: boolean }; max?: number
+  /** Rechtsklick auf eine Zeile (Kontextmenü der Zeile); ohne: Menü des Browsers */
+  onRowContextMenu?: (e: React.MouseEvent, r: R) => void
+  /** Klick in eine Zeile wählt sie aus (Aktionen im Menüband); [active] ist der Schlüssel der gewählten Zeile */
+  onRowClick?: (r: R) => void
+  active?: string | number | null
+  // [feature:rowdblopen]
+  /** Doppelklick auf eine Zeile löst ihre Öffnen-Aktion aus (wie „Öffnen“/„Bearbeiten“ im Menüband) */
+  onRowOpen?: (r: R) => void
+  // [/feature:rowdblopen]
 }) {
   const store = 'dmoffice.admin.table.' + id
   const defaults = cols.map(c => ({ key: c.key, width: c.width }))
@@ -56,14 +100,15 @@ export function AdminTable<R>({ id, cols, rows, rowKey, initialSort, max = 1000 
   return (
     <>
       {/* Breiter als der Platz: waagerecht scrollen statt die freie Spalte auf null zu drücken */}
-      <div style={{ overflowX: 'auto', maxWidth: '100%' }}>
+      {/* Rahmen wie in allen Tabellen (Vorbild Helpdesk/Finanzen) */}
+      <div style={{ overflowX: 'auto', maxWidth: '100%', ...tableFrameLook, flexShrink: 0 }}>
       <Table size="small" style={{ tableLayout: 'fixed', minWidth: layout.reduce((n, l) => n + (l.width || 220), 0) }}>
         <TableHeader onContextMenu={e => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY }) }}>
           <TableRow>
             {layout.map(l => {
               const c = byKey(l.key)
               return (
-                <ColHead<string> key={l.key} label={c.label()} width={l.width || undefined} minWidth={l.width ? undefined : 160}
+                <ColHead<string> key={l.key} label={c.head ? c.head() : c.label()} width={l.width || undefined} minWidth={l.width ? undefined : 160}
                   sortable={!!c.sort} sorted={sort.col === l.key} desc={sort.desc}
                   onSort={() => setSort(x => ({ col: l.key, desc: x.col === l.key ? !x.desc : false }))}
                   onWidth={w => setLayout(ls => ls.map(x => x.key === l.key ? { ...x, width: w } : x))}
@@ -79,7 +124,11 @@ export function AdminTable<R>({ id, cols, rows, rowKey, initialSort, max = 1000 
         </TableHeader>
         <TableBody>
           {shown.slice(0, max).map(r => (
-            <TableRow key={rowKey(r)}>{layout.map(l => <TableCell key={l.key} style={{ verticalAlign: 'top', wordBreak: 'break-word' }}>{byKey(l.key).render(r)}</TableCell>)}</TableRow>
+            <TableRow key={rowKey(r)} onContextMenu={onRowContextMenu ? e => onRowContextMenu(e, r) : undefined}
+              onClick={onRowClick ? () => onRowClick(r) : undefined}
+              {...(onRowOpen ? dblOpen(() => onRowOpen(r)) : {})} // [feature:rowdblopen]
+              aria-selected={active != null ? rowKey(r) === active : undefined}
+              style={active != null && rowKey(r) === active ? { backgroundColor: tokens.colorNeutralBackground1Selected } : undefined}>{layout.map(l => <TableCell key={l.key} style={{ verticalAlign: 'middle', wordBreak: 'break-word' }}>{byKey(l.key).render(r)}</TableCell>)}</TableRow>
           ))}
         </TableBody>
       </Table>

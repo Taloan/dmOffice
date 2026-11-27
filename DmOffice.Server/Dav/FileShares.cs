@@ -151,8 +151,8 @@ public sealed record FileLoc(UserSpace Space, string Path, FileMount? Mount, boo
     /// <summary>Pfad darunter (rel ohne fuehrenden Schraegstrich).</summary>
     public string Child(string rel) => rel.Length == 0 ? Path : Path.Length == 0 ? rel : Path + "/" + rel;
 
-    /// <summary>Der geschuetzte notizi-Ordner dessen, dem die Ablage gehoert, und der reservierte Systemordner.</summary>
-    public bool Protected(string path) => FileStore.InRoot(path, Space.Settings.Notizi.Root) || FileStore.InRoot(path, DmOffice.Dav.FileStore.ReservedRoot) || FileStore.InRoot(path, FileStore.SystemVault);
+    /// <summary>Der geschuetzte notizi-Ordner dessen, dem die Ablage gehoert, und der Systemordner des Tagebuchs.</summary>
+    public bool Protected(string path) => FileStore.InRoot(path, Space.Settings.Notizi.Root) || FileStore.InRoot(path, FileStore.ReservedRoot) || FileStore.InRoot(path, FileStore.SystemVault);
 }
 
 /// <summary>

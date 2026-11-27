@@ -20,6 +20,19 @@ public class DbHealthTests : IClassFixture<ChatFixture>
     }
 
     [Fact]
+    public void Geloeschte_Benutzerdatenbank_entsteht_nicht_leer_neu()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "dmo-gone-" + Guid.NewGuid().ToString("N") + ".db");
+        var db = new UserDb(path, RandomNumberGenerator.GetBytes(32), "u1");
+        db.Set("probe", "1");
+        SqliteConnection.ClearAllPools();
+        foreach (var f in new[] { "", "-wal", "-shm" }) File.Delete(path + f);
+        // Ein Dienst, der die Instanz noch hält, bekommt einen Fehler statt einer frischen leeren Datei
+        Assert.ThrowsAny<SqliteException>(() => db.Get("probe"));
+        Assert.False(File.Exists(path));
+    }
+
+    [Fact]
     public void Heile_Datenbank_ist_ok()
     {
         var (_, cs) = NewDb();

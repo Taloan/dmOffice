@@ -4,15 +4,15 @@
 
 **Website: [dmoffice.de](https://dmoffice.de)** (in German) – features, guides and news · **Source code and issues:** here on GitHub
 
-> ## 🎉 New in 2.1
-> - **Mail:** OpenPGP signatures, catch-all aliases on your own domain, timed removal, default mailbox, ribbon tab “Message” when composing, moving between mailboxes, optional automatic newsletter unsubscribe
-> - **Calendar:** search events without a time limit
-> - **Files and gallery:** categories and tags, SFTP folders, duplicates from storage and gallery folders stacked, “Save to storage” for photos from gallery folders
-> - **DMS:** subfolder names from sources, “Apply and close”, amount, editing in the list, drag to year or month, filing check and AI check
-> - **Sign-in via OIDC** (OpenID Connect), optional **virus scanning with ClamAV**, **SFTP** as storage target, `restore` command
+> ## 🎉 New in 2.0
+> - **Chat** with conversations, groups, voice messages and push – and **Pukki**, the assistant: events, tasks, shopping list, meal plan, reminders and timers from plain sentences
+> - **Gallery:** timeline, filters, RAW, server folders, map, albums and share links, ratings and colour labels, **photo editing**
+> - **Music:** your own music folders with covers, search and playlists
+> - **Vault:** a separately encrypted area per person (own password or passkey) for files and notes
+> - **Documents (DMS)**, **Overview** start page, **external folders**, **core backup** to S3/WebDAV, **data export**, smarter **spam filter**, **Microsoft accounts**
 > - Security audit performed
 >
-> **Update the server first, then the app.** [Release notes](https://github.com/Taloan/dmOffice/releases/tag/v2.1.0) · [Download the Android app](https://github.com/Taloan/dmOffice/releases/latest/download/dmOffice.apk)
+> **Update the server first, then the app.** [Release notes](https://github.com/Taloan/dmOffice/releases/tag/v2.0.0) · [Download the Android app](https://github.com/Taloan/dmOffice/releases/latest/download/dmOffice.apk)
 
 A self-hosted office suite in the browser: mail, calendar, contacts, tasks, notes and files – plus a server of its own. Everything lives in one container, with one encrypted database per user.
 
@@ -70,6 +70,7 @@ dmOffice is configured with environment variables. Only the master key is really
 | `DMOFFICE_BLOBS` | Optional: store the contents of the file storage here instead of in `<data>/blobs` (e.g. a separate volume on the array). Back it up together with the data directory |
 | `DMOFFICE_MS_CLIENT_ID` | Optional: client ID of your own Microsoft app registration for Outlook.com/Hotmail/Live accounts; empty uses the built-in registration, `off` disables Microsoft sign-in. See [Microsoft accounts](#outlookcom-hotmail-and-live) |
 | `DMOFFICE_TRUSTED_PROXIES` | Optional: comma-separated networks (CIDR) whose `X-Forwarded-*` headers are trusted, e.g. `203.0.113.0/24,2001:db8::/32`. Default: loopback and private networks |
+| `DMOFFICE_PUBLIC_URL` | Optional: public address of the server, e.g. `https://office.example.org`, for links that others open (newsletter unsubscribe links, share links, confirmation mails, invitations). Takes precedence over the setting under Admin → System → Public address. Default: the address dmOffice is opened at | <!-- [feature:publicurl] -->
 | `DMOFFICE_ANON_LIMIT` | Optional: rising limit for requests **without** login, per address (IPv6 per /64). Default: 300 at once, then 240 per minute; whoever exceeds it is blocked for 30 s, and every further violation doubles the block (up to 1 hour). Logged-in requests are never limited. A number sets the requests per minute, `off` turns the limit off |
 | `DMOFFICE_INDEX_THREADS` | Optional: parallelism of the full-text indexer and text recognition (1–8). Default 1, or 2 with four or more cores |
 | `DMOFFICE_FCM_CREDENTIALS` | Optional: path to a Firebase service-account key for push notifications to the Android app (default `<data>/keys/fcm.json`). See [apps/mobile/README.md](apps/mobile/README.md) |
@@ -92,7 +93,11 @@ The container listens on port **8080** (`ASPNETCORE_URLS`) and keeps its data in
 /data/*.json            server settings, shares, share links
 ```
 
-Each user database has its own random key. These keys are wrapped with the **master key**, which comes from the environment variable `DMOFFICE_MASTER_KEY`; in Unraid it is stored masked in the template on the USB flash drive, not in `appdata`. Anyone who copies `appdata` cannot read anything with it. If the variable is missing, dmOffice creates `master.key` in the data directory and warns in the admin area. If you set the variable later, the next start re-wraps all keys. The old file stays in place: it is only needed to restore a backup from before the switch. The admin area offers it for download and then removes it.
+<!-- [feature:masterkeyreq] -->
+Each user database has its own random key. These keys are wrapped with the **master key**, which comes from the environment variable `DMOFFICE_MASTER_KEY`; in Unraid it is stored masked in the template on the USB flash drive, not in `appdata`. Anyone who copies `appdata` cannot read anything with it. A new installation does not start without the variable; the log says what to set. Older installations that keep the key as `master.key` in the data directory keep running, and the admin area warns. If you set the variable later, the next start re-wraps all keys. The old file stays in place: it is only needed to restore a backup from before the switch. The admin area offers it for download and then removes it.
+<!-- [feature:masterkeyreq:else] -->
+<!-- Each user database has its own random key. These keys are wrapped with the **master key**, which comes from the environment variable `DMOFFICE_MASTER_KEY`; in Unraid it is stored masked in the template on the USB flash drive, not in `appdata`. Anyone who copies `appdata` cannot read anything with it. If the variable is missing, dmOffice creates `master.key` in the data directory and warns in the admin area. If you set the variable later, the next start re-wraps all keys. The old file stays in place: it is only needed to restore a backup from before the switch. The admin area offers it for download and then removes it. -->
+<!-- [/feature:masterkeyreq] -->
 
 Older installations kept file contents inside the database. After an update dmOffice moves them to `blobs/` in the background (interruptible; a restart continues). The space in the database is only released by *Settings* → *Storage & statistics* → *Compact database* – nothing starts that by itself. Before every data change dmOffice checks the free space and backs up the databases itself (`pre-update/`); if there is not enough space it changes nothing and says in the administration how much is missing. Details and the way back: [Updating](docs/updating.md). An image of the whole data directory is still the best insurance.
 

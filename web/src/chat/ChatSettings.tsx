@@ -6,7 +6,7 @@ import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { useApp } from '../App'
 import { t } from '../i18n'
-import { Hint, PageTitle, Section } from '../settings/parts'
+import { Hint, Section, SectionTabs, TabPart } from '../settings/parts'
 import { ChatMode, ChatRights, ChatSettings, chatSettings } from './store'
 import { ProfilePhoto } from './ProfilePhoto'
 import { PukkiFigureChoice } from './PukkiFigure'
@@ -14,6 +14,7 @@ import { PukkiLearnSection } from './PukkiLearn'
 import { PukkiBriefingSection } from './PukkiBriefing'
 import { askConfirm } from '../shell/context'
 import { WebPushSetting } from '../settings/WebPushSetting'
+import { useAdminDraft } from '../admin/draft' // [feature:savemode]
 
 const durations: { key: ChatSettings['showFor']; label: () => string }[] = [
   { key: 'forever', label: () => t('Dauerhaft') },
@@ -57,7 +58,7 @@ export type ChatSettingsPart = 'profile' | 'share' | 'privacy' | 'pukki'
  * Privatsphäre (Lesebestätigungen, Ruhezeiten, Standort) und Pukki (Überblick, Erinnerungen, Mails, Figur, Lernen).
  */
 export function ChatSettingsPage({ part }: { part: ChatSettingsPart }) {
-  if (part === 'profile') return <><PageTitle>{t('Profil')}</PageTitle><ProfilePhoto /></>
+  if (part === 'profile') return <ProfilePhoto />
   return <ChatSettingsForm part={part} />
 }
 
@@ -77,7 +78,6 @@ function ChatSettingsForm({ part }: { part: Exclude<ChatSettingsPart, 'profile'>
   }
   if (part === 'share') return (
     <>
-      <PageTitle>{t('Teilen')}</PageTitle>
       <Section title={t('Was der Empfänger mit Anhängen darf')}
         hint={t('Hier legst du für jede Art von Anhang die Vorgabe fest. Beim Verschicken kannst du das für jede Nachricht einzeln ändern.')}>
         <Field label={t('Fotos, Videos und Dateien von diesem Gerät')}><ModeChoice value={s.deviceMode} onChange={m => save({ deviceMode: m })} /></Field>
@@ -102,7 +102,6 @@ function ChatSettingsForm({ part }: { part: Exclude<ChatSettingsPart, 'profile'>
   )
   if (part === 'privacy') return (
     <>
-      <PageTitle>{t('Privatsphäre')}</PageTitle>
       {/* Benachrichtigungen im Browser (Web Push) - dieselbe Einstellung wie unter Allgemein → Benachrichtigungen */}
       <WebPushSetting />
       <Section title={t('Lesebestätigungen')}>
@@ -128,13 +127,12 @@ function ChatSettingsForm({ part }: { part: Exclude<ChatSettingsPart, 'profile'>
       </Section>
       <Section title={t('Standort')} last>
         <Switch label={t('Andere dürfen mich fragen, wo ich gerade bin')} checked={s.locationRequests} onChange={(_, d) => save({ locationRequests: d.checked })} />
-        <Hint>{t('Du entscheidest bei jeder Anfrage selbst, ob du deinen Standort schickst. Er geht dann einmal als Nachricht an die Person, die gefragt hat.')}</Hint>
+        <Hint>{t('Bei jeder Anfrage kannst du selbst entscheiden, ob du deinen Standort schickst. Er geht dann einmal als Nachricht an den Benutzer, der gefragt hat.')}</Hint>
       </Section>
     </>
   )
   return (
-    <>
-      <PageTitle>{t('Pukki')}</PageTitle>
+    <SectionTabs page="chat-pukki">
       <Section title={t('Assistent')}>
         <Switch label={t('Pukki schickt mir morgens einen Überblick über den Tag')} checked={s.pukkiDaily} onChange={(_, d) => save({ pukkiDaily: d.checked })} />
         {s.pukkiDaily && (
@@ -146,10 +144,10 @@ function ChatSettingsForm({ part }: { part: Exclude<ChatSettingsPart, 'profile'>
         <PukkiMailSwitch />
         <Hint>{t('Pukki ist dein Assistent im Chat. Den Überblick schickt er nur, wenn an dem Tag etwas ansteht. Erinnerungen bekommst du für Termine, bei denen du eine Erinnerung eingestellt hast. Schreib ihm „hilfe“, dann zeigt er dir, was er kann.')}</Hint>
       </Section>
-      {s.pukkiDaily && <PukkiBriefingSection />}
-      <PukkiFigureChoice />
-      <PukkiLearnSection />
-    </>
+      {s.pukkiDaily && <TabPart label={t('Wetter und Schlagzeilen im Morgenüberblick')}><PukkiBriefingSection /></TabPart>}
+      <TabPart label={t('So sieht Pukki aus')}><PukkiFigureChoice /></TabPart>
+      <TabPart label={t('Was Pukki von mir gelernt hat')}><PukkiLearnSection /></TabPart>
+    </SectionTabs>
   )
 }
 
@@ -162,19 +160,41 @@ export function ChatRightsAdmin() {
   const [retention, setRetention] = useState<string | null>(null)
   useEffect(() => { api.get<RightsRow[]>('/api/chat/admin/rights').then(setRows).catch(fail) }, [fail])
   useEffect(() => { api.get<{ value: string }>('/api/chat/admin/retention').then(r => setRetention(r.value)).catch(fail) }, [fail])
-  if (!rows || !retention) return <Spinner size="small" />
   // Aufbewahrung serverweit (Chat-Alltag)
   const keeps = [
     { key: 'forever', label: () => t('Immer') }, { key: '5y', label: () => t('5 Jahre') }, { key: '2y', label: () => t('2 Jahre') },
     { key: '1y', label: () => t('1 Jahr') }, { key: '6m', label: () => t('6 Monate') }, { key: '3m', label: () => t('3 Monate') },
   ]
+  // [feature:savemode]
+  // Kennung savemode (Verwaltung): Aufbewahrung und Rechte sammeln; kürzere Aufbewahrung fragt beim Speichern nach
+  const draft = useAdminDraft({ retention, rows }, async v => {
+    try {
+      if (v.retention && v.retention !== retention) { await api.put('/api/chat/admin/retention', { value: v.retention }); setRetention(v.retention) }
+      for (const r of v.rows ?? []) {
+        const old = rows?.find(x => x.id === r.id)
+        if (old && (old.expiring !== r.expiring || old.locationRequests !== r.locationRequests)) await api.put(`/api/chat/admin/rights/${r.id}`, { expiring: r.expiring, locationRequests: r.locationRequests })
+      }
+      setRows(v.rows)
+      return true
+    } catch (e) { fail(e); return false }
+  }, async (from, to) => to.retention === from.retention || to.retention === 'forever'
+    || askConfirm('', t('Chat-Nachrichten, die älter sind als {span}, werden für alle endgültig gelöscht. Weiter?', { span: keeps.find(k => k.key === to.retention)?.label() ?? to.retention ?? '' })))
+  const shownRetention = draft.on ? draft.value.retention : retention
+  const shownRows = draft.on ? draft.value.rows : rows
+  // [feature:savemode:else]
+  // const shownRetention = retention
+  // const shownRows = rows
+  // [/feature:savemode]
+  if (!rows || !retention || !shownRows || !shownRetention) return <Spinner size="small" />
   const keep = async (value: string) => {
+    if (draft.on) { draft.set({ ...draft.value, retention: value }); return } // [feature:savemode]
     const label = keeps.find(k => k.key === value)?.label() ?? value
     if (value !== 'forever' && !await askConfirm('', t('Chat-Nachrichten, die älter sind als {span}, werden für alle endgültig gelöscht. Weiter?', { span: label }))) return
     try { await api.put('/api/chat/admin/retention', { value }); setRetention(value) } catch (e) { fail(e) }
   }
   const set = async (r: RightsRow, change: Partial<RightsRow>) => {
     const next = { ...r, ...change }
+    if (draft.on) { draft.set({ ...draft.value, rows: shownRows.map(x => (x.id === r.id ? next : x)) }); return } // [feature:savemode]
     setRows(rows.map(x => (x.id === r.id ? next : x)))
     try { await api.put(`/api/chat/admin/rights/${r.id}`, { expiring: next.expiring, locationRequests: next.locationRequests }) }
     catch (e) { fail(e); setRows(rows) }
@@ -186,7 +206,7 @@ export function ChatRightsAdmin() {
       </MessageBar>
       <Field label={t('Chat-Nachrichten aufbewahren')} style={{ maxWidth: 760, marginTop: 12 }}
         hint={t('Gilt für alle Unterhaltungen auf dem Server. Ältere Nachrichten werden endgültig gelöscht; Dateien und Notizen bleiben bei ihren Besitzern.')}>
-        <Dropdown value={keeps.find(k => k.key === retention)?.label() ?? ''} selectedOptions={[retention]} onOptionSelect={(_, d) => d.optionValue && keep(d.optionValue)} style={{ maxWidth: 240 }}>
+        <Dropdown value={keeps.find(k => k.key === shownRetention)?.label() ?? ''} selectedOptions={[shownRetention]} onOptionSelect={(_, d) => d.optionValue && keep(d.optionValue)} style={{ maxWidth: 240 }}>
           {keeps.map(k => <Option key={k.key} value={k.key}>{k.label()}</Option>)}
         </Dropdown>
       </Field>
@@ -199,7 +219,7 @@ export function ChatRightsAdmin() {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {rows.map(r => (
+          {shownRows.map(r => (
             <TableRow key={r.id}>
               <TableCell><Text weight="semibold">{r.displayName}</Text> <Text size={200}>{r.login}</Text></TableCell>
               <TableCell><Switch checked={r.expiring} onChange={(_, d) => set(r, { expiring: d.checked })} label={r.expiring ? t('erlaubt') : t('nicht erlaubt')} /></TableCell>

@@ -12,13 +12,15 @@ public static class BackupRules
 
     /// <summary>Stunden eines Abstands zum Rechnen: Ein Monat zählt 31 Tage.</summary>
     private static int Span(int every) => every == Monthly ? 31 * 24 : every;
+    /// <summary>Abstand zum Rechnen - mit dem neuen Zeitplan aus diesem (BackupSchedule), sonst der feste Abstand.</summary>
+    private static int Span(ServerSettings s) => BackupSchedule.SpanHours(s, DateTime.Now) is var h && h > 0 ? h : Span(EveryHours(s));
 
     /// <summary>So viele Stände bleiben am Ziel; frühere Einstellungen in Tagen werden umgerechnet, mindestens 3.</summary>
     public static int KeepCount(ServerSettings s) => s.S3BackupKeepCount > 0 ? s.S3BackupKeepCount
-        : Math.Max(3, (int)Math.Ceiling(Math.Max(1, s.S3BackupKeepDays) * 24.0 / Span(EveryHours(s))));
+        : Math.Max(3, (int)Math.Ceiling(Math.Max(1, s.S3BackupKeepDays) * 24.0 / Span(s)));
 
     /// <summary>Mindesthaltedauer des Files-Backups in Tagen: (Anzahl Stände + 1) × Abstand, mindestens 1 Tag.</summary>
-    public static int MinHoldDays(ServerSettings s) => Math.Max(1, (int)Math.Ceiling((KeepCount(s) + 1) * Span(EveryHours(s)) / 24.0));
+    public static int MinHoldDays(ServerSettings s) => Math.Max(1, (int)Math.Ceiling((KeepCount(s) + 1) * Span(s) / 24.0));
 
     /// <summary>Das Files-Backup setzt das Core-Backup voraus.</summary>
     public static bool FilesOn(ServerSettings s) => s.S3Backup && s.FilesBackup;
@@ -28,7 +30,7 @@ public static class BackupRules
 
     /// <summary>Überfällig: seit dem letzten Lauf ist anderthalbmal der Abstand vergangen.</summary>
     public static bool Overdue(ServerSettings s, DateTime lastRunUtc, DateTime nowUtc) =>
-        nowUtc - lastRunUtc > TimeSpan.FromHours(Span(EveryHours(s)) * 1.5);
+        nowUtc - lastRunUtc > TimeSpan.FromHours(Span(s) * 1.5);
 }
 
 /// <summary>

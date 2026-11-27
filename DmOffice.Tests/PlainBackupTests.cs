@@ -251,14 +251,68 @@ public class PlainBackupTests
         Assert.Equal(1, (await c.Run()).Written);
     }
 
+    // [feature:journal]
+    [Fact]
+    public async Task Tagebuch_als_Markdown()
+    {
+        using var c = new Ctx();
+        var journal = DmOffice.Journal.JournalStore.Create(c.Db, "Reisen", null);
+        DmOffice.Journal.JournalStore.Save(c.Db, journal, new DmOffice.Journal.JournalInput
+        {
+            Journal = journal.Id, Date = new DateTime(2026, 8, 3, 18, 0, 0, DateTimeKind.Utc), Title = "Am Meer", Html = "<p>Sonne und <b>Wind</b></p>",
+        });
+        var r = await c.Run();
+        Assert.Null(r.Error);
+        var md = c.Text("Tagebuch/Reisen/2026/2026-08-03.md");
+        Assert.Contains("# Am Meer", md);
+        Assert.Contains("**Wind**", md);
+        // Kalender ohne Termine und leere Adressbücher: keine Datei
+        Assert.False(Directory.Exists(c.File("Kalender")));
+        Assert.False(Directory.Exists(c.File("Kontakte")));
+    }
+
+    [Fact]
+    public async Task Tagebuch_Medien_liegen_im_Tagebuchordner_und_Eintraege_verweisen_relativ()
+    {
+        using var c = new Ctx();
+        var journal = DmOffice.Journal.JournalStore.Create(c.Db, "Reisen", null);
+        Put(c.Db, "sys-dmoffice-journal/2026/08/meer.jpg", "bild");
+        Put(c.Db, "sys-dmoffice-journal/2026/08/verwaist.jpg", "kein Eintrag");
+        DmOffice.Journal.JournalStore.Save(c.Db, journal, new DmOffice.Journal.JournalInput
+        {
+            Journal = journal.Id, Date = new DateTime(2026, 8, 3, 18, 0, 0, DateTimeKind.Utc), Title = "Am Meer", Html = "<p>Sonne</p>",
+            Media = [new DmOffice.Journal.JournalMedia("sys-dmoffice-journal/2026/08/meer.jpg", "image/jpeg")],
+        });
+        var r = await c.Run();
+        Assert.Null(r.Error);
+        Assert.Equal("bild", c.Text("Tagebuch/Reisen/2026/Media/meer.jpg"));
+        Assert.Contains("![meer.jpg](<Media/meer.jpg>)", c.Text("Tagebuch/Reisen/2026/2026-08-03.md"));
+        // Nicht mehr unter „Dateien“, auch keine Medien ohne Eintrag
+        Assert.False(Directory.Exists(c.File("Dateien/sys-dmoffice-journal")));
+        Assert.False(System.IO.File.Exists(c.File("Tagebuch/Reisen/2026/Media/verwaist.jpg")));
+    }
+    // [/feature:journal]
+
     [Fact]
     public async Task Englische_Ordnernamen_wenn_beim_ersten_Lauf_Englisch()
     {
         using var c = new Ctx();
         c.S.Lang = "en";
         Put(c.Db, "Docs/a.txt", "a");
+        // [feature:journal]
+        var journal = DmOffice.Journal.JournalStore.Create(c.Db, "Travel", null);
+        Put(c.Db, "sys-dmoffice-journal/2026/08/sea.jpg", "img");
+        DmOffice.Journal.JournalStore.Save(c.Db, journal, new DmOffice.Journal.JournalInput
+        {
+            Journal = journal.Id, Date = new DateTime(2026, 8, 3, 18, 0, 0, DateTimeKind.Utc), Title = "Sea", Html = "<p>Sun</p>",
+            Media = [new DmOffice.Journal.JournalMedia("sys-dmoffice-journal/2026/08/sea.jpg", "image/jpeg")],
+        });
+        // [/feature:journal]
         Assert.Null((await c.Run()).Error);
         Assert.Equal("a", c.Text("Files/Docs/a.txt"));
+        // [feature:journal]
+        Assert.Equal("img", c.Text("Journal/Travel/2026/Media/sea.jpg"));
+        // [/feature:journal]
         var readMe = c.Text("README.txt");
         Assert.Contains("Files/", readMe);
         Assert.False(System.IO.File.Exists(c.File("LIESMICH.txt")));

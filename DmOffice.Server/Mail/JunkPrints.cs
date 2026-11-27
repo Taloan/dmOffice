@@ -33,7 +33,7 @@ public sealed partial class JunkPrints
     internal JunkPrints(string path, byte[] key, ServerConfig? config)
     {
         _config = config;
-        _connectionString = new SqliteConnectionStringBuilder { DataSource = path, Password = "x'" + Convert.ToHexString(key) + "'", DefaultTimeout = 30 }.ToString();
+        _connectionString = DmOffice.Core.UserDb.ConnectionStringOf(path, key);
         // Eigener Schlüssel für die Prüfsummen, aus dem der Datenbank abgeleitet
         _hmacKey = HKDF.DeriveKey(HashAlgorithmName.SHA256, key, 32, info: Encoding.UTF8.GetBytes("dmoffice-junkprints"));
         using var conn = Open();

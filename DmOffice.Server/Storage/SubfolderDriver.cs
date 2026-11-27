@@ -6,6 +6,8 @@ namespace DmOffice.Storage;
 /// </summary>
 public sealed class SubfolderDriver(IStorageDriver inner, string root) : IStorageDriver
 {
+    public int Parallel => inner.Parallel;
+
     private readonly string _root = StoragePath.Clean(root);
 
     private string Full(string path) => StoragePath.Join(_root, StoragePath.Clean(path));

@@ -8,6 +8,7 @@
     "build": "node ../tools/lizenzen/erzeugen.mjs && tsc --noEmit && vite build",
     "lizenzen": "node ../tools/lizenzen/erzeugen.mjs",
     "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
     "i18n-kollisionen": "node ../tools/i18n/kollisionen.mjs"
   },
   "dependencies": {

@@ -1,18 +1,19 @@
 import {
-  Button, Checkbox, Dialog, Divider, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Dropdown, Field, Input, MessageBar, MessageBarBody, Option, SpinButton, Switch, Text,
-  Tooltip, makeStyles, tokens,
+  Button, Checkbox, Dialog, Radio, RadioGroup, Divider, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Dropdown, Field, Input, MessageBar, MessageBarBody, Option, SpinButton, Switch, Text, Tooltip, makeStyles, tokens, MenuItem, MenuDivider, Tab, TabList,
 } from '@fluentui/react-components'
-import { Add20Regular, ArrowSync20Regular, Delete20Regular, Edit20Regular, Folder20Filled, FolderArrowRight20Regular, FolderLink20Filled, LockClosed20Filled } from '@fluentui/react-icons'
+import { Add20Regular, ArrowSync20Regular, Checkmark20Regular, Delete20Regular, Edit20Regular, Folder20Filled, FolderArrowRight20Regular, FolderLink20Filled, LockClosed20Filled } from '@fluentui/react-icons'
 import { useEffect, useState } from 'react'
 import { api, featureOn, q } from '../api'
 import { useApp } from '../App'
 import { BrowseDialog, PatternField } from '../files/ImportProfiles'
 import { lang, t } from '../i18n'
-import { askConfirm } from '../shell/context'
-import { Hint, PageTitle } from '../settings/parts'
+import { ContextMenu, askConfirm, useContextMenu } from '../shell/context'
+import { Hint, Section } from '../settings/parts'
 import { Entry, FolderRole, Mount, Profile, Source, State } from './model'
 import { DmsMailSourcesSettings } from './DmsMailSettings'
 import { EntrySelect } from './EntrySelect'
+import { RibbonActions, RibbonButton } from '../shell/Ribbon'
+import { dblOpen } from '../shell/rowOpen' // [feature:rowdblopen]
 
 const useStyles = makeStyles({
   row: { display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 0', borderBottom: `1px solid ${tokens.colorNeutralStroke2}` },
@@ -29,6 +30,9 @@ const useStyles = makeStyles({
 const show = (path: string) => path ? path.split('/').join(' › ') : t('Oberste Ebene')
 const FOLDER_TOKENS = ['correspondent', 'correspondent_path', 'doctype', 'doctype_path', 'tag', 'doc_year', 'doc_month', 'doc_month_name', 'import_year', 'import_month', 'source']
 const NAME_TOKENS = ['doc_date', 'correspondent', 'doctype', 'title', 'tags', 'tag', 'original_name', 'import_date', 'doc_year', 'doc_month', 'doc_day', 'sender']
+/** Alle Platzhalter, die der Server kennt (DmsFiling.Tokens) - andere meldet das Musterfeld als unbekannt */
+const KNOWN_TOKENS = ['correspondent', 'correspondent_path', 'doctype', 'doctype_path', 'tag', 'tags', 'title', 'doc_date', 'doc_year', 'doc_month',
+  'doc_month_name', 'doc_day', 'import_date', 'import_year', 'import_month', 'import_month_name', 'import_day', 'original_name', 'source', 'sender']
 
 // ---------------- Ablageprofile ----------------
 
@@ -38,6 +42,9 @@ export function DmsProfilesSettings() {
   const { fail, notify } = useApp()
   const [list, setList] = useState<Profile[] | null>(null)
   const [edit, setEdit] = useState<Profile | 'new' | null>(null)
+  // Rechtsklick auf ein Ablageprofil (Kennung ctxall): dieselben Aktionen wie die Knöpfe
+  const menu = useContextMenu<Profile>()
+  const ctxall = featureOn('ctxall')
   const load = () => api.get<Profile[]>('/api/dms/profiles?' + q({ lang })).then(setList).catch(fail)
   useEffect(() => { load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
   const [mounts, setMounts] = useState<Mount[]>([])
@@ -54,11 +61,12 @@ export function DmsProfilesSettings() {
   }
   return (
     <>
-      <PageTitle>{t('Ablageprofile')}</PageTitle>
       <Hint>{t('Ein Ablageprofil legt fest, in welchem Ordner und unter welchem Namen DMS ein Dokument ablegt: in der Dateiablage, im Tresor oder in einem externen Ordner. Jede Quelle wählt ein Ablageprofil; beim Hochladen ist das als Standard markierte vorbelegt. Zielordner von Ablageprofilen werden aus der Galerie ausgenommen.')}</Hint>
       <div className={s.list}>
         {list?.map(p => (
-          <div key={p.id} className={s.row}>
+          <div key={p.id} className={s.row} onContextMenu={ctxall ? e => menu.open(e, p) : undefined}
+            {...dblOpen(() => setEdit(p))} // [feature:rowdblopen]
+          >
             {/* Ziel auf einen Blick: Dateiablage, Tresor oder externer Ordner */}
             <Tooltip content={target(p)} relationship="label">
               {p.target === 'tresor' ? <LockClosed20Filled color={tokens.colorPaletteMarigoldForeground1} />
@@ -74,8 +82,15 @@ export function DmsProfilesSettings() {
           </div>
         ))}
       </div>
-      <div><Button icon={<Add20Regular />} onClick={() => setEdit('new')}>{t('Neues Ablageprofil')}</Button></div>
+      {menu.ctx && <ContextMenu at={menu.ctx.at} onClose={menu.close}>
+        <MenuItem icon={<Edit20Regular />} onClick={() => setEdit(menu.ctx!.data)}>{t('Bearbeiten')}</MenuItem>
+        <MenuItem icon={<FolderArrowRight20Regular />} onClick={() => refile(menu.ctx!.data)}>{t('Nach Vorgabe neu ablegen')}</MenuItem>
+        <MenuDivider />
+        <MenuItem icon={<Delete20Regular />} disabled={(list?.length ?? 0) <= 1} onClick={() => remove(menu.ctx!.data)}>{t('Löschen')}</MenuItem>
+      </ContextMenu>}
+      <RibbonActions><RibbonButton primary icon={<Add20Regular />} label={t('Neues Ablageprofil')} onClick={() => setEdit('new')} /></RibbonActions>
       {edit && <EditProfile profile={edit === 'new' ? null : edit} onClose={saved => { setEdit(null); if (saved) load() }} />}
+      {featureOn('dmsrolename') && <RoleInNameSetting />}
     </>
   )
 }
@@ -100,6 +115,10 @@ function EditProfile({ profile, onClose }: { profile: Profile | null; onClose: (
   const writable = mounts.filter(m => !m.readOnly)
   const targetName = f.target === 'tresor' ? t('Tresor') : f.target === 'external' ? t('Externer Ordner') : t('Dateiablage')
   const [busy, setBusy] = useState(false)
+  // Reiter statt eines langen Formulars (Kennung dialogtabs)
+  const tabs = featureOn('dialogtabs')
+  const [tab, setTab] = useState<'target' | 'name' | 'options'>('target')
+  const shows = (x: typeof tab) => !tabs || tab === x
   useEffect(() => {
     const h = setTimeout(() => {
       api.post<{ path?: string; inbox?: string; error?: string }>('/api/dms/profiles/preview?' + q({ lang }), { ...f, language: lang })
@@ -122,10 +141,15 @@ function EditProfile({ profile, onClose }: { profile: Profile | null; onClose: (
         <DialogSurface style={{ maxWidth: 760 }}>
           <DialogBody>
             <DialogTitle>{profile ? t('Ablageprofil bearbeiten') : t('Neues Ablageprofil')}</DialogTitle>
-            <DialogContent style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <Field label={t('Name')} required><Input value={f.name} onChange={(_, d) => set({ name: d.value })} /></Field>
-              <div className={s.section}>
-                <Text className={s.head}>{t('Zielordner')}</Text>
+            <DialogContent style={{ display: 'flex', flexDirection: 'column', gap: 12, ...(tabs ? { minHeight: 420 } : {}) }}>
+              {tabs && <TabList selectedValue={tab} onTabSelect={(_, d) => setTab(d.value as typeof tab)}>
+                <Tab value="target">{t('Zielordner')}</Tab>
+                <Tab value="name">{t('Dateiname')}</Tab>
+                <Tab value="options">{t('Optionen')}</Tab>
+              </TabList>}
+              {shows('target') && <Field label={t('Name')} required><Input value={f.name} onChange={(_, d) => set({ name: d.value })} /></Field>}
+              {shows('target') && <div className={s.section}>
+                {!tabs && <Text className={s.head}>{t('Zielordner')}</Text>}
                 <div className={s.line}>
                   <Dropdown className={s.grow} value={targetName} selectedOptions={[f.target]}
                     onOptionSelect={(_, d) => {
@@ -147,20 +171,24 @@ function EditProfile({ profile, onClose }: { profile: Profile | null; onClose: (
                   ? <Field label={t('Ordner im Tresor')}><Input value={f.folder} onChange={(_, d) => set({ folder: d.value })} /></Field>
                   : <Text>{show(f.folder)}</Text>}
                 {f.target === 'tresor' && <Text size={200} className={s.muted}>{t('Im Tresor: Texterkennung, Volltext und Einordnung nur bei offenem Tresor, nie mit KI. Ist er zu, wird Neues verschlüsselt abgelegt und beim nächsten Öffnen übernommen.')}</Text>}
-                {f.target === 'external' && <MessageBar intent="warning"><MessageBarBody>{t('Die Dokumente liegen im externen Ordner unverschlüsselt. Das Original einer Archivfassung liegt daneben im Unterordner „Original“. Versionen, Papierkorb und Freigabelinks der Dateiablage gibt es dort nicht; Löschen im DMS löscht dort endgültig.')}</MessageBarBody></MessageBar>}
-                <PatternField label={t('Ordnerstruktur-Muster')} value={f.folders} onChange={v => set({ folders: v })} tokens={FOLDER_TOKENS} preview={undefined} />
+                {f.target === 'external' && <MessageBar intent="warning"><MessageBarBody>{t('Die Dokumente liegen im externen Ordner unverschlüsselt. Das Original einer Archivfassung liegt daneben im Unterordner „Original“. Versionen und Freigabelinks der Dateiablage gibt es dort nicht.')}</MessageBarBody></MessageBar>}
+                <PatternField label={t('Ordnerstruktur-Muster')} value={f.folders} onChange={v => set({ folders: v })} tokens={FOLDER_TOKENS} preview={undefined} known={KNOWN_TOKENS} />
                 <Field label={t('Inbox-Ordner')} hint={t('Bis zum Bestätigen liegen Dokumente flach in diesem Ordner unter dem Zielordner, erst dann nach dem Ordnerstruktur-Muster.')}>
                   <Input value={f.inboxFolder ?? '.INBOX'} onChange={(_, d) => set({ inboxFolder: d.value })} />
                 </Field>
-              </div>
-              <div className={s.section}>
-                <Text className={s.head}>{t('Dateiname')}</Text>
-                <PatternField label={t('Dateinamen-Muster (ohne Dateiendung)')} value={f.names} onChange={v => set({ names: v })} tokens={NAME_TOKENS} preview={undefined} />
+              </div>}
+              {shows('name') && <div className={s.section}>
+                {!tabs && <Text className={s.head}>{t('Dateiname')}</Text>}
+                <PatternField label={t('Dateinamen-Muster (ohne Dateiendung)')} value={f.names} onChange={v => set({ names: v })} tokens={NAME_TOKENS} preview={undefined} known={KNOWN_TOKENS} />
                 <Field label={t('Text für leere Platzhalter')}><Input value={f.unknown} onChange={(_, d) => set({ unknown: d.value })} /></Field>
                 <Text size={200} className={s.muted}>{t('Gibt es den Namen schon, wird „ (2)“, „ (3)“ … angehängt.')}</Text>
-              </div>
+              </div>}
+              {/* Vorschau des Ergebnisses: auf den Reitern Zielordner und Dateiname */}
+              {!shows('options') || !tabs ? <>
               <Text className={s.muted}>{t('In der Inbox')} → {inboxPreview}</Text>
               <Text className={s.muted}>{t('Bestätigt')} → {preview}</Text>
+              </> : null}
+              {shows('options') && <>
               <Checkbox checked={f.follow} onChange={(_, d) => set({ follow: !!d.checked })}
                 label={t('Ablage folgt den Angaben: Ändern sich Korrespondent, Dokumenttyp, Titel, Tags oder Datum, wird die Datei nach dem Muster verschoben bzw. umbenannt. Von Hand verschobene Dateien bleiben, wo sie sind.')} />
               {f.target === 'external' && <Checkbox checked={f.writeMeta ?? true} onChange={(_, d) => set({ writeMeta: !!d.checked })}
@@ -168,6 +196,7 @@ function EditProfile({ profile, onClose }: { profile: Profile | null; onClose: (
               <Checkbox checked={f.default} onChange={(_, d) => set({ default: !!d.checked })} label={t('Standard beim Hochladen')} />
               {featureOn('dmshide') && f.target === 'files' && <Checkbox checked={f.hideInFiles !== false} onChange={(_, d) => set({ hideInFiles: !!d.checked })}
                 label={t('Zielordner unter Dateien ausblenden: Die Ordner darin legt das DMS selbst an. Über WebDAV und Synchronisierungsprogramme bleibt der Ordner sichtbar.')} />}
+              </>}
             </DialogContent>
             <DialogActions>
               <Button onClick={() => onClose(false)}>{t('Abbrechen')}</Button>
@@ -192,6 +221,9 @@ export function DmsSourcesSettings() {
   const [mounts, setMounts] = useState<{ id: string; name: string }[]>([])
   const [entries, setEntries] = useState<Entry[]>([])
   const [edit, setEdit] = useState<Source | 'new' | null>(null)
+  // Rechtsklick auf eine Quelle (Kennung ctxall): dieselben Aktionen wie die Knöpfe
+  const menu = useContextMenu<Source>()
+  const ctxall = featureOn('ctxall')
   const load = () => api.get<Source[]>('/api/dms/sources').then(setList).catch(fail)
   useEffect(() => {
     load()
@@ -211,19 +243,21 @@ export function DmsSourcesSettings() {
     if (await askConfirm(t('Quelle löschen'), t('Die Quelle „{name}“ wird gelöscht. Übernommene Dokumente bleiben.', { name: x.name }), t('Löschen')))
       act(() => api.del(`/api/dms/sources/${x.id}`))
   }
+  const runNow = (x: Source) => { if (!x.busy) { setList(l => l?.map(y => y.id === x.id ? { ...y, busy: true } : y) ?? l); act(() => api.post(`/api/dms/sources/${x.id}/run`)) } }
   const where = (x: Source) => (x.mount ? mounts.find(m => m.id === x.mount)?.name ?? x.mount : t('Eigene Ablage')) + ' › ' + show(x.folder)
   const status = (x: Source) => x.busy ? t('Wird geprüft …') : x.error ? t('Fehler: {error}', { error: t(x.error) })
     : x.lastRun ? t('Zuletzt geprüft {when}: {n} übernommen, {d} schon vorhanden, insgesamt {total}', { when: new Date(x.lastRun).toLocaleString(), n: x.lastCount, d: x.lastDuplicates, total: x.total })
     : t('Noch nicht geprüft.')
   return (
     <>
-      <PageTitle>{t('Quellen')}</PageTitle>
       <Hint>{t('Quellen legen, was sie finden, in die Warteschlange vom DMS; verarbeitet und abgelegt wird nach dem Ablageprofil der Quelle.')}</Hint>
       <Text size={400} weight="semibold">{t('Dateiordner')}</Text>
       <Hint>{t('Aus einem überwachten Ordner übernimmt das DMS neue Dateien selbst. Eine Datei wird übernommen, aus der eigenen Ablage sobald sie fertig gespeichert ist, aus externen Ordnern wenn sie zwei Minuten unverändert liegt. Danach wird sie im Ordner entfernt (in der eigenen Ablage: in den Papierkorb). Aus externen Ordnern nur zum Lesen wird sie nicht entfernt; das DMS merkt sich, was übernommen ist.')}</Hint>
       <div className={s.list}>
         {list?.map(x => (
-          <div key={x.id} className={s.row}>
+          <div key={x.id} className={s.row} onContextMenu={ctxall ? e => menu.open(e, x) : undefined}
+            {...dblOpen(() => setEdit(x))} // [feature:rowdblopen]
+          >
             <div className={s.name}>
               <Text weight="semibold">{x.name}</Text>
               <Text size={200} className={s.muted}>{where(x)} → {profiles.find(p => p.id === x.profile)?.name ?? ''}</Text>
@@ -233,14 +267,26 @@ export function DmsSourcesSettings() {
               <Switch checked={x.active} onChange={(_, d) => act(() => api.put(`/api/dms/sources/${x.id}`, { ...x, active: d.checked }))} />
             </Tooltip>
             <Tooltip content={x.busy ? t('Wird geprüft …') : t('Jetzt prüfen')} relationship="label"><Button appearance="subtle" icon={<ArrowSync20Regular className={x.busy ? s.busy : undefined} />}
-              onClick={() => { if (!x.busy) { setList(l => l?.map(y => y.id === x.id ? { ...y, busy: true } : y) ?? l); act(() => api.post(`/api/dms/sources/${x.id}/run`)) } }} /></Tooltip>
+              onClick={() => runNow(x)} /></Tooltip>
             <Tooltip content={t('Bearbeiten')} relationship="label"><Button appearance="subtle" icon={<Edit20Regular />} onClick={() => setEdit(x)} /></Tooltip>
             <Tooltip content={t('Löschen')} relationship="label"><Button appearance="subtle" icon={<Delete20Regular />} onClick={() => remove(x)} /></Tooltip>
           </div>
         ))}
         {list?.length === 0 && <Text className={s.muted}>{t('Noch keine Dateiordner.')}</Text>}
       </div>
-      <div><Button icon={<Add20Regular />} onClick={() => setEdit('new')}>{t('Neuer Dateiordner')}</Button></div>
+      {menu.ctx && (() => {
+        const x = menu.ctx.data
+        return (
+          <ContextMenu at={menu.ctx.at} onClose={menu.close}>
+            <MenuItem icon={<Edit20Regular />} onClick={() => setEdit(x)}>{t('Bearbeiten')}</MenuItem>
+            <MenuItem icon={<ArrowSync20Regular />} disabled={x.busy} onClick={() => runNow(x)}>{t('Jetzt prüfen')}</MenuItem>
+            <MenuItem icon={x.active ? <Checkmark20Regular /> : <span style={{ width: 20 }} />} onClick={() => act(() => api.put(`/api/dms/sources/${x.id}`, { ...x, active: !x.active }))}>{t('Im Hintergrund regelmäßig prüfen')}</MenuItem>
+            <MenuDivider />
+            <MenuItem icon={<Delete20Regular />} onClick={() => remove(x)}>{t('Löschen')}</MenuItem>
+          </ContextMenu>
+        )
+      })()}
+      <RibbonActions><RibbonButton primary icon={<Add20Regular />} label={t('Neuer Dateiordner')} onClick={() => setEdit('new')} /></RibbonActions>
       {edit && <EditSource source={edit === 'new' ? null : edit} profiles={profiles} mounts={mounts} entries={entries}
         onClose={saved => { setEdit(null); if (saved) load() }} />}
       <Divider />
@@ -261,6 +307,10 @@ function EditSource({ source, profiles, mounts, entries, onClose }: {
   const set = (patch: Partial<Source>) => setF(x => ({ ...x, ...patch }))
   const [pick, setPick] = useState(false)
   const [busy, setBusy] = useState(false)
+  // Reiter statt eines langen Formulars (Kennung dialogtabs)
+  const tabs = featureOn('dialogtabs')
+  const [tab, setTab] = useState<'folder' | 'file' | 'sub'>('folder')
+  const shows = (x: typeof tab) => !tabs || tab === x
   const save = async () => {
     setBusy(true)
     try {
@@ -277,10 +327,15 @@ function EditSource({ source, profiles, mounts, entries, onClose }: {
         <DialogSurface style={{ maxWidth: 680 }}>
           <DialogBody>
             <DialogTitle>{source ? t('Quelle bearbeiten') : t('Neue Quelle')}</DialogTitle>
-            <DialogContent style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <Field label={t('Name')} required><Input value={f.name} onChange={(_, d) => set({ name: d.value })} /></Field>
-              <div className={s.section}>
-                <Text className={s.head}>{t('Überwachter Ordner')}</Text>
+            <DialogContent style={{ display: 'flex', flexDirection: 'column', gap: 12, ...(tabs ? { minHeight: 400 } : {}) }}>
+              {tabs && <TabList selectedValue={tab} onTabSelect={(_, d) => setTab(d.value as typeof tab)}>
+                <Tab value="folder">{t('Überwachter Ordner')}</Tab>
+                <Tab value="file">{t('Ablage und Vorgaben')}</Tab>
+                {featureOn('dmsfolders') && <Tab value="sub">{t('Unterordner')}</Tab>}
+              </TabList>}
+              {shows('folder') && <Field label={t('Name')} required><Input value={f.name} onChange={(_, d) => set({ name: d.value })} /></Field>}
+              {shows('folder') && <div className={s.section}>
+                {!tabs && <Text className={s.head}>{t('Überwachter Ordner')}</Text>}
                 <div className={s.line}>
                   <Dropdown className={s.grow} value={f.mount ? mounts.find(m => m.id === f.mount)?.name ?? f.mount : t('Eigene Ablage')} selectedOptions={[f.mount]}
                     onOptionSelect={(_, d) => set({ mount: d.optionValue ?? '', folder: '' })}>
@@ -300,9 +355,9 @@ function EditSource({ source, profiles, mounts, entries, onClose }: {
                   <Text size={200} className={s.muted}>{t('Externe Ordner werden im eingestellten Abstand geprüft.')}</Text>
                 </> : <Text size={200} className={s.muted}>{t('Neue Dateien übernimmt das DMS sofort, sobald sie fertig gespeichert sind.')}</Text>}
                 <Checkbox checked={f.active} label={t('Überwachung aktiv')} onChange={(_, d) => set({ active: !!d.checked })} />
-              </div>
-              <div className={s.section}>
-                <Text className={s.head}>{t('Ablage und Vorgaben')}</Text>
+              </div>}
+              {shows('file') && <div className={s.section}>
+                {!tabs && <Text className={s.head}>{t('Ablage und Vorgaben')}</Text>}
                 <Field label={t('Ablageprofil')}>
                   <Dropdown value={profiles.find(p => p.id === f.profile)?.name ?? ''} selectedOptions={[f.profile ?? '']} onOptionSelect={(_, d) => set({ profile: d.optionValue ?? null })}>
                     {profiles.map(p => <Option key={p.id} value={p.id}>{p.name}</Option>)}
@@ -314,8 +369,8 @@ function EditSource({ source, profiles, mounts, entries, onClose }: {
                   <EntrySelect entries={entries} kind="tag" values={f.tags} placeholder={t('Keine Vorgabe')} onPickMany={ids => set({ tags: ids })} />
                 </Field>
                 <Text size={200} className={s.muted}>{t('Vorgaben gelten vor Regeln, KI und Gelerntem.')}</Text>
-              </div>
-              {featureOn('dmsfolders') && <SubfolderRoles source={f} onChange={set} />}
+              </div>}
+              {featureOn('dmsfolders') && shows('sub') && <SubfolderRoles source={f} onChange={set} />}
             </DialogContent>
             <DialogActions>
               <Button onClick={() => onClose(false)}>{t('Abbrechen')}</Button>
@@ -397,17 +452,48 @@ export function DmsAssignSettings() {
   }
   return (
     <>
-      <PageTitle>{t('Einordnung')}</PageTitle>
       <Hint>{t('Neue Dokumente bekommen Korrespondent, Dokumenttyp und Tags in dieser Reihenfolge: Vorgaben der Quelle, Regeln der Einträge, KI (wenn aktiviert), Gelerntes („Automatisch“). Gelernt wird aus geprüften Dokumenten: Bestätigen und Ändern in der Inbox.')}</Hint>
-      <PageTitle>{t('KI beim Import')}</PageTitle>
+      <Section title={t('KI beim Import')}>
       {state.aiAllowed ? <>
         <Switch checked={state.ai} label={t('Beim Import mit KI einordnen')} onChange={(_, d) => toggle(d.checked)} />
         <Hint>{t('Dabei gehen der erkannte Text (höchstens 8000 Zeichen), Dateiname, bei Mails Absender und Betreff sowie die Namen der Korrespondenten, Dokumenttypen und Tags an: {service}. Ausgenommen sind Dokumente, die in den Tresor abgelegt werden: Von ihnen geht nichts an {service}.', { service: state.aiService ?? '' })}</Hint>
       </> : <Hint>{t('Keine KI verfügbar: Sie muss in der Verwaltung eingerichtet und für dieses Konto freigegeben sein.')}</Hint>}
-      <PageTitle>{t('Texterkennung')}</PageTitle>
+      </Section>
+      <Section title={t('Texterkennung')} last>
       <Hint>{state.ocr
         ? (state.pdfa ? t('Scans und Bilder werden als durchsuchbare PDF/A abgelegt; das Original bleibt im DMS abrufbar.') : t('Scans und Bilder werden als durchsuchbare PDF abgelegt; PDF/A ist auf diesem Server nicht verfügbar (Ghostscript fehlt).'))
         : t('Text in Scans und Bildern wird auf diesem Server nicht erkannt. Das lässt sich in der Verwaltung einrichten.')}</Hint>
+      </Section>
     </>
+  )
+}
+
+/**
+ * Rolle im Dateinamen (Kennung dmsrolename): Das Dokument, das eine Rolle gerade innehat, trägt „[Rolle]“ vorn oder hinten im Namen -
+ * für alle Ablageprofile, in Ablage und Tresor. So findet man es auch außerhalb von dmOffice, etwa im Dateidialog.
+ */
+function RoleInNameSetting() {
+  const { fail, notify } = useApp()
+  const [at, setAt] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  useEffect(() => { api.get<{ at: string }>('/api/dms/rolename').then(r => setAt(r.at)).catch(fail) }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  const save = async (v: string) => {
+    setBusy(true)
+    try {
+      const r = await api.put<{ at: string; renamed: number; tresorLater: boolean }>('/api/dms/rolename', { at: v })
+      setAt(r.at)
+      notify(r.renamed === 1 ? t('1 Datei umbenannt') : t('{n} Dateien umbenannt', { n: r.renamed }),
+        r.tresorLater ? t('Dokumente im Tresor folgen, sobald der Tresor geöffnet ist.') : undefined)
+    } catch (e) { fail(e) } finally { setBusy(false) }
+  }
+  if (at === null) return null
+  return (
+    <Section title={t('Rolle im Dateinamen')} hint={t('Das Dokument, das eine Rolle gerade innehat, trägt den Namen der Rolle in eckigen Klammern im Dateinamen. Das gilt für alle Ablageprofile, in der Dateiablage und im Tresor. Bekommt ein anderes Dokument die Rolle, verliert das bisherige den Zusatz.')} last>
+      <RadioGroup value={at} disabled={busy} onChange={(_, d) => save(d.value)}>
+        <Radio value="off" label={t('Nicht anzeigen')} />
+        <Radio value="start" label={t('Am Anfang, etwa „[Elster Zertifikat] 2026-09-29 Bescheinigung.pfx“')} />
+        <Radio value="end" label={t('Am Ende, etwa „2026-09-29 Bescheinigung [Elster Zertifikat].pfx“')} />
+      </RadioGroup>
+    </Section>
   )
 }

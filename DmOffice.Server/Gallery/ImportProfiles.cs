@@ -7,7 +7,9 @@ using DmOffice.Dav;
 using DmOffice.Storage;
 using MetadataExtractor;
 using MetadataExtractor.Formats.Exif;
+using MetadataExtractor.Formats.Iptc;
 using MetadataExtractor.Formats.QuickTime;
+using MetadataExtractor.Formats.Xmp;
 
 namespace DmOffice.Gallery;
 
@@ -59,6 +61,11 @@ public sealed class ImportProfile
     /// <summary>Nur Fotos, die an diesem Tag oder später aufgenommen wurden.</summary>
     public DateOnly? Since { get; set; }
     public bool Active { get; set; } = true;
+    // [feature:importsub]
+    /// <summary>Unterordner der Quellordner mit einsortieren; aus: nur die Dateien direkt im Quellordner (etwa ein Kamera-Upload, der
+    /// alles in die oberste Ebene legt, neben eigenen Unterordnern).</summary>
+    public bool Subfolders { get; set; } = true;
+    // [/feature:importsub]
     /// <summary>Sprache der Oberfläche beim Speichern: „de“ oder „en“ (Monatsnamen).</summary>
     public string Language { get; set; } = "de";
     public DateTime? LastRun { get; set; }
@@ -92,11 +99,12 @@ public static class ImportProfiles
     private const long MaxJpegBytes = 100L * 1024 * 1024;
 
     public static readonly string[] FolderTokens = ["camera_make", "camera_model", "import_date", "import_year", "import_month", "import_month_name", "import_day",
-        "exif_date", "exif_year", "exif_month", "exif_month_name", "exif_day"];
-    public static readonly string[] NameTokens = ["original_name", "camera_make", "camera_model", "import_date", "exif_date", "exif_datetime", "exif_time", "sequence"];
+        "exif_date", "exif_year", "exif_month", "exif_month_name", "exif_day", "title", "description"];
+    public static readonly string[] NameTokens = ["original_name", "camera_make", "camera_model", "import_date", "exif_date", "exif_datetime", "exif_time", "sequence",
+        "title", "description"];
     /// <summary>Für Titel und Beschreibung: alle, in der Reihenfolge des CameraImporters.</summary>
     public static readonly string[] AllTokens = ["original_name", "camera_make", "camera_model", "exif_date", "exif_year", "exif_month", "exif_month_name", "exif_day",
-        "exif_datetime", "exif_time", "import_date", "import_year", "import_month", "import_month_name", "import_day", "sequence"];
+        "exif_datetime", "exif_time", "import_date", "import_year", "import_month", "import_month_name", "import_day", "sequence", "title", "description"];
 
     public static List<ImportProfile> Of(UserDb db) => db.GetJson<List<ImportProfile>>(Key);
     public static void Save(UserDb db, List<ImportProfile> list)
@@ -125,7 +133,8 @@ public static class ImportProfiles
     // ---------------- Muster ----------------
 
     /// <summary>Angaben zu einem Foto für die Platzhalter.</summary>
-    public sealed record Facts(DateTime Taken, bool FromExif, string? Make, string? Model, string OriginalName);
+    /// <summary>Angaben zu einem Foto für die Platzhalter; Titel und Beschreibung aus dem Foto (XMP, sonst IPTC) bzw. aus der Galerie.</summary>
+    public sealed record Facts(DateTime Taken, bool FromExif, string? Make, string? Model, string OriginalName, string? Title = null, string? Description = null);
 
     private static readonly Regex Token = new(@"\{([a-z_]+)\}", RegexOptions.Compiled);
 
@@ -139,6 +148,8 @@ public static class ImportProfiles
         "camera_make" => f.Make ?? "Unknown",
         "camera_model" => f.Model ?? "Unknown",
         "original_name" => f.OriginalName,
+        "title" => f.Title?.Trim() ?? "",
+        "description" => f.Description?.Trim() ?? "",
         "sequence" => sequence.ToString("D3", CultureInfo.InvariantCulture),
         "import_date" => import.ToString("yyyyMMdd", CultureInfo.InvariantCulture),
         "import_year" => import.ToString("yyyy", CultureInfo.InvariantCulture),
@@ -167,8 +178,17 @@ public static class ImportProfiles
         return s.Length == 0 ? "_" : s;
     }
 
+    /// <summary>Platzhalter dateisystemfest einsetzen. Titel und Beschreibung: Zeilenumbrüche zu Leerzeichen, ohne Titel leer, lange gekürzt.</summary>
     private static string Fill(string pattern, Facts f, DateTime import, int sequence, CultureInfo culture) =>
-        Token.Replace(pattern, m => Safe(Value(m.Groups[1].Value, f, import, sequence, culture)));
+        Token.Replace(pattern, m =>
+        {
+            var token = m.Groups[1].Value;
+            var v = Value(token, f, import, sequence, culture);
+            if (token is not ("title" or "description")) return Safe(v);
+            if (v.Length == 0) return "";
+            v = Safe(string.Join(' ', v.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)));
+            return v.Length > 100 ? v[..100].TrimEnd('.', ' ') : v;
+        });
 
     /// <summary>Ordnerstruktur: Platzhalter ersetzen; die Schrägstriche des Musters trennen die Ebenen.</summary>
     public static string RenderFolder(string pattern, Facts f, DateTime import, int sequence, CultureInfo culture)
@@ -178,16 +198,48 @@ public static class ImportProfiles
         return string.Join('/', parts);
     }
 
-    /// <summary>Dateiname ohne Endung.</summary>
+    /// <summary>Dateiname ohne Endung. Bleibt nichts übrig (etwa {title} bei einem Foto ohne Titel): der Originalname.</summary>
     public static string RenderName(string pattern, Facts f, DateTime import, int sequence, CultureInfo culture)
     {
-        var v = Safe(Fill(pattern, f, import, sequence, culture));
+        var raw = Fill(pattern, f, import, sequence, culture);
+        var v = Safe(raw);
+        if (v == "_" && !raw.Contains('_')) v = Safe(f.OriginalName);
         return v.Length > 150 ? v[..150] : v;
     }
 
     /// <summary>Titel und Beschreibung: Platzhalter ersetzen, sonst unverändert.</summary>
     public static string RenderText(string pattern, Facts f, DateTime import, int sequence, CultureInfo culture) =>
         Token.Replace(pattern, m => Value(m.Groups[1].Value, f, import, sequence, culture)).Trim();
+
+    /// <summary>
+    /// Die Muster eines Ablagesystems - Ordnerstruktur, Dateiname (ohne Endung), Titel, Beschreibung. Gemeinsam für Importprofile und
+    /// Foto-Export: dieselben Platzhalter, dieselbe Prüfung, dieselbe Auflösung.
+    /// </summary>
+    public sealed record Patterns(string Folders, string Names, string Title, string Description)
+    {
+        /// <summary>Fehlertext oder null (Reihenfolge der Prüfung wie beim Speichern eines Importprofils).</summary>
+        public string? Error()
+        {
+            if (Names.Trim().Length == 0) return "Das Dateinamen-Muster ist leer.";
+            if (Names.Contains('/') || Names.Contains('\\')) return "Das Dateinamen-Muster darf keinen Schrägstrich enthalten.";
+            if (Folders.Length > 500 || Names.Length > 300 || Title.Length > 500 || Description.Length > 4000) return "Ein Muster ist zu lang.";
+            var unknown = new[] { Folders, Names, Title, Description }.SelectMany(Unknown).Distinct().ToList();
+            return unknown.Count > 0 ? "Unbekannter Platzhalter: " + string.Join(", ", unknown.Select(u => "{" + u + "}")) : null;
+        }
+
+        /// <summary>Alle vier Muster für ein Foto auflösen.</summary>
+        public Placement Render(Facts f, DateTime import, int sequence, CultureInfo culture) => new(
+            RenderFolder(Folders, f, import, sequence, culture), RenderName(Names, f, import, sequence, culture),
+            RenderText(Title, f, import, sequence, culture), RenderText(Description, f, import, sequence, culture));
+    }
+
+    /// <summary>Aufgelöste Muster: Unterordner (relativ zum Zielordner), Dateiname ohne Endung, Titel, Beschreibung.</summary>
+    public sealed record Placement(string Folder, string Name, string Title, string Description)
+    {
+        /// <summary>Was in die Datei geschrieben wird; null, wenn Titel und Beschreibung leer sind.</summary>
+        public PhotoMeta.Fields? Fields => Title.Length > 0 || Description.Length > 0
+            ? new PhotoMeta.Fields(Title: Title.Length > 0 ? Title : null, Description: Description.Length > 0 ? Description : null) : null;
+    }
 
     /// <summary>Monatsnamen in der Sprache der Oberfläche, mit der das Profil gespeichert wurde.</summary>
     public static CultureInfo CultureOf(string? language) =>
@@ -200,10 +252,21 @@ public static class ImportProfiles
     public static Facts Read(Stream stream, string originalName, DateTime modifiedUtc, TimeZoneInfo zone)
     {
         DateTime? taken = null;
-        string? make = null, model = null;
+        string? make = null, model = null, title = null, description = null;
         try
         {
             var dirs = ImageMetadataReader.ReadMetadata(stream);
+            // Titel und Beschreibung wie beim Einlesen in die Galerie (FileMeta): XMP, sonst IPTC
+            if (dirs.OfType<XmpDirectory>().FirstOrDefault()?.GetXmpProperties() is { } xmp)
+            {
+                title = xmp.Where(p => p.Key.StartsWith("dc:title[", StringComparison.Ordinal)).Select(p => p.Value).FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
+                description = xmp.Where(p => p.Key.StartsWith("dc:description[", StringComparison.Ordinal)).Select(p => p.Value).FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
+            }
+            if (dirs.OfType<IptcDirectory>().FirstOrDefault() is { } iptc)
+            {
+                title ??= iptc.GetDescription(IptcDirectory.TagObjectName);
+                description ??= iptc.GetDescription(IptcDirectory.TagCaption);
+            }
             var ifd0 = dirs.OfType<ExifIfd0Directory>().FirstOrDefault();
             make = ifd0?.GetDescription(ExifDirectoryBase.TagMake)?.Trim();
             model = ifd0?.GetDescription(ExifDirectoryBase.TagModel)?.Trim();
@@ -217,11 +280,12 @@ public static class ImportProfiles
         catch (Exception e) when (e is ImageProcessingException or IOException or MetadataException or ArgumentException or NotSupportedException or IndexOutOfRangeException) { }
         var fromExif = taken != null;
         taken ??= TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(modifiedUtc, DateTimeKind.Utc), zone);
-        return new Facts(taken.Value, fromExif, string.IsNullOrEmpty(make) ? null : make, string.IsNullOrEmpty(model) ? null : model, originalName);
+        return new Facts(taken.Value, fromExif, string.IsNullOrEmpty(make) ? null : make, string.IsNullOrEmpty(model) ? null : model, originalName,
+            string.IsNullOrWhiteSpace(title) ? null : title, string.IsNullOrWhiteSpace(description) ? null : description);
     }
 
     /// <summary>Beispiel für die Vorschau, wenn in den Quellordnern noch kein Foto liegt.</summary>
-    public static readonly Facts Example = new(new DateTime(2026, 6, 14, 10, 30, 45), true, "FUJIFILM", "X100VI", "DSCF0042");
+    public static readonly Facts Example = new(new DateTime(2026, 6, 14, 10, 30, 45), true, "FUJIFILM", "X100VI", "DSCF0042", "Strand am Morgen", "Erster Urlaubstag");
 
     // ---------------- Orte: eigene Ablage oder externer Ordner ----------------
 
@@ -271,7 +335,12 @@ public static class ImportProfiles
         public override async Task WriteAsync(string path, Stream data, Item like, CancellationToken ct) =>
             await FileStore.PutAsync(db, path, data, like.Mime ?? MimeOf(like.Name), ifNoneMatch: "*", mtime: like.Modified, ct: ct);
         public override Task MkdirAsync(string dir, CancellationToken ct) { if (dir.Length > 0) FileStore.EnsureDir(db, dir); return Task.CompletedTask; }
-        public override Task DeleteAsync(string path, CancellationToken ct) { FileStore.Delete(db, path); return Task.CompletedTask; }
+        // Verschoben und am Ziel geprüft: endgültig, nicht in den Papierkorb (dort läge nur eine zweite Kopie)
+        public override Task DeleteAsync(string path, CancellationToken ct)
+        {
+            if (FileStore.Delete(db, path, out var trashId) && trashId > 0) FileStore.PurgeTrash(db, [trashId]);
+            return Task.CompletedTask;
+        }
         public override Task<long?> SizeAsync(string path, CancellationToken ct) => Task.FromResult(FileStore.Get(db, path) is { IsDir: false } f ? f.Size : (long?)null);
         public override async Task<string?> ShaAsync(string path, CancellationToken ct) =>
             db.Scalar("SELECT sha256 FROM files WHERE path = $p", ("$p", path)) is string s && s.Length == 64 ? s : await base.ShaAsync(path, ct);
@@ -335,6 +404,15 @@ public static class ImportProfiles
     private static string StemOf(string name) => Path.GetFileNameWithoutExtension(name);
 
     /// <summary>Dateien eines Orts zu Fotos zusammenfassen. „X.RAF.xmp“ und „X.xmp“ gehören zu „X.RAF“/„X.JPG“; Sidecar ohne Foto bleibt liegen.</summary>
+    // [feature:importsub]
+    /// <summary>Mit Unterordnern einsortieren (ohne den Schalter immer).</summary>
+    public static bool Deep(ImportProfile p) => p.Subfolders || !Features.On(Features.ImportSubfolders);
+    /// <summary>Liegt der Ordner in diesem Quellordner? Ohne Unterordner zählt nur der Quellordner selbst - ein Ziel in einem seiner
+    /// Unterordner wird dann nicht wieder eingelesen.</summary>
+    public static bool InSource(ImportSource s, string mount, string folder, bool subfolders) =>
+        s.Mount == mount && (folder == s.Path || subfolders && (s.Path.Length == 0 || FileStore.InRoot(folder, s.Path)));
+    // [/feature:importsub]
+
     public static List<Group> Groups(IEnumerable<Item> files, string mount = "")
     {
         var map = new Dictionary<string, Group>(StringComparer.OrdinalIgnoreCase);
@@ -389,6 +467,22 @@ public static class ImportProfiles
             db.Exec("INSERT OR REPLACE INTO gallery_import_seen(profile, path, etag) VALUES($p, $f, $e)", ("$p", profile), ("$f", SeenKey(g.Mount, f)), ("$e", f.Etag));
     }
 
+    /// <summary>
+    /// Profil geändert: Was die Merkliste festhält, galt für die alten Angaben (übersprungen wegen des Datums, beim Kopieren schon
+    /// einsortiert). Mit anderem Datum, anderen Quellen oder anderem Kopieren/Verschieben zählt das nicht mehr - sonst blieben etwa
+    /// Fotos, die ein früheres „Nur Fotos ab“ übersprungen hat, für immer liegen. Schon Einsortiertes erkennt der Lauf am Ziel wieder.
+    /// </summary>
+    public static bool Reconsider(UserDb db, ImportProfile before, ImportProfile after)
+    {
+        var same = before.Since == after.Since && before.Copy == after.Copy
+            && before.Sources.Select(s => s.Mount + ":" + s.Path).OrderBy(x => x, StringComparer.Ordinal)
+                .SequenceEqual(after.Sources.Select(s => s.Mount + ":" + s.Path).OrderBy(x => x, StringComparer.Ordinal));
+        if (same) return false;
+        Ensure(db);
+        db.Exec("DELETE FROM gallery_import_seen WHERE profile = $p", ("$p", before.Id));
+        return true;
+    }
+
     /// <summary>Profil gelöscht: seine Merkliste auch.</summary>
     public static void Forget(UserDb db, string profile)
     {
@@ -405,22 +499,32 @@ public static class ImportProfiles
 
     // ---------------- Einsortieren ----------------
 
-    /// <summary>Ziel oder Quelle nicht erreichbar: der Lauf endet, beim nächsten Intervall geht es normal weiter.</summary>
-    public sealed class TargetUnavailable(string message) : Exception(message);
+    /// <summary>
+    /// Der Lauf endet vorzeitig (Ablegen oder Lesen im externen Ordner schlug fehl), beim nächsten Intervall geht es normal weiter.
+    /// Die Meldung ist für die Oberfläche, der ursprüngliche Fehler (<see cref="Exception.InnerException"/>) fürs Protokoll.
+    /// </summary>
+    public class RunStopped(string message, Exception? inner = null) : Exception(message, inner);
+
+    /// <summary>Ziel oder Quelle wirklich nicht erreichbar (die Prüfung wie überall bei externen Ordnern schlägt fehl).</summary>
+    public sealed class TargetUnavailable(string message, Exception? inner = null) : RunStopped(message, inner);
+
+    /// <summary>„gerade nicht erreichbar“, mit dem Grund der letzten Prüfung, wenn es einen gibt.</summary>
+    private static string Unreachable(UserSpace space, string mount) =>
+        ExternalFolders.ReachError(space, mount) is { } why ? $"gerade nicht erreichbar ({why})" : "gerade nicht erreichbar";
 
     /// <summary>Einen externen Ordner öffnen; null mit Grund, wenn er gerade nicht geht.</summary>
     private static async Task<(ExtLoc? Loc, string? Why)> OpenExtAsync(UserSpace space, ServerConfig config, string mount, bool write)
     {
         try
         {
-            if (!await ExternalFolders.ReachableAsync(space, config, mount)) return (null, "gerade nicht erreichbar");
+            if (!await ExternalFolders.ReachableAsync(space, config, mount)) return (null, Unreachable(space, mount));
             var (d, ro) = ExternalFolders.Open(space, config, mount);
             if (ro && write) { d.Dispose(); return (null, "nur zum Lesen eingebunden"); }
             return (new ExtLoc(d, mount), null);
         }
         catch (KeyNotFoundException) { return (null, "nicht mehr vorhanden"); }
         // Erreichbarkeit ist kurz zwischengespeichert: die Freigabe kann inzwischen weg sein
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException or HttpRequestException) { return (null, "gerade nicht erreichbar"); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or HttpRequestException) { return (null, $"gerade nicht erreichbar ({ExternalFolders.Reason(e)})"); }
     }
 
     /// <summary>Ein Lauf eines Profils: bis zu <see cref="MaxPerRun"/> Fotos einsortieren. Gibt die Zahl der einsortierten zurück.</summary>
@@ -436,6 +540,7 @@ public static class ImportProfiles
         var locs = new Dictionary<string, Loc>(StringComparer.Ordinal) { [""] = new OwnLoc(db) };
         int done = 0, handled = 0, total = 0;
         string? error = null, sourceError = null;
+        var stopped = false;
         try
         {
             // Quellen auflisten; ein externer Quellordner, der gerade fehlt, wird übersprungen
@@ -452,7 +557,11 @@ public static class ImportProfiles
                     locs[src.Mount] = loc = ext;
                 }
                 List<Item> files;
-                try { files = await loc.TreeAsync(src.Path, ct); }
+                // [feature:importsub]
+                try { files = Deep(p) ? await loc.TreeAsync(src.Path, ct) : [.. (await loc.FilesAsync(src.Path, ct)).Values]; }
+                // [feature:importsub:else]
+                // try { files = await loc.TreeAsync(src.Path, ct); }
+                // [/feature:importsub]
                 catch (Exception e) when (e is IOException or UnauthorizedAccessException or HttpRequestException)
                 {
                     missing.Add(src.Mount);
@@ -487,6 +596,7 @@ public static class ImportProfiles
             {
                 if (handled >= MaxPerRun) break;
                 ct.ThrowIfCancellationRequested();
+                await JobControl.CheckAsync(space.User.Id, Activity.GalleryImport, ct);
                 handled++;
                 progress?.Invoke(handled, Math.Min(groups.Count, MaxPerRun));
                 try
@@ -495,16 +605,22 @@ public static class ImportProfiles
                     await using (var s = await from.HeadAsync(g.Primary, ct)) facts = Read(s, g.Stem, g.Earliest, zone);
                     if (p.Since is { } since && DateOnly.FromDateTime(facts.Taken) < since) { Remember(db, p.Id, g); continue; }
                     var next = sequence + 1;
-                    var folder = StoragePath.Join(p.Target, RenderFolder(p.Folders, facts, import, next, culture));
-                    var name = RenderName(p.Names, facts, import, next, culture);
-                    var title = RenderText(p.Title, facts, import, next, culture);
-                    var description = RenderText(p.Description, facts, import, next, culture);
-                    var fields = title.Length > 0 || description.Length > 0
-                        ? new PhotoMeta.Fields(Title: title.Length > 0 ? title : null, Description: description.Length > 0 ? description : null) : null;
+                    var placement = new Patterns(p.Folders, p.Names, p.Title, p.Description).Render(facts, import, next, culture);
+                    var folder = StoragePath.Join(p.Target, placement.Folder);
+                    var name = placement.Name;
+                    var fields = placement.Fields;
                     // Ein Muster, das zurück in einen Quellordner führt, sortierte dieselben Fotos immer wieder um
-                    if (p.Sources.Any(src => src.Mount == p.Mount && (src.Path.Length == 0 || folder == src.Path || FileStore.InRoot(folder, src.Path))))
+                    // [feature:importsub]
+                    if (p.Sources.Any(src => InSource(src, p.Mount, folder, Deep(p))))
+                    // [feature:importsub:else]
+                    // if (p.Sources.Any(src => src.Mount == p.Mount && (src.Path.Length == 0 || folder == src.Path || FileStore.InRoot(folder, src.Path))))
+                    // [/feature:importsub]
                         throw new InvalidOperationException("Der Zielordner liegt in einem Quellordner.");
-                    // Aus Bildangaben gebildete Ordner: nie in Systemordner der eigenen Ablage (notizi, System-Tresor)
+                    // [feature:journal]
+                    // Aus Bildangaben gebildete Ordner: nie in Systemordner der eigenen Ablage (Tagebuch-Medien, notizi, System-Tresor)
+                    // [feature:journal:else]
+                    // // Aus Bildangaben gebildete Ordner: nie in Systemordner der eigenen Ablage (notizi, System-Tresor)
+                    // [/feature:journal]
                     if (target is OwnLoc && FileStore.IsSystem(db, folder))
                         throw new InvalidOperationException("Der Zielordner ist ein Systemordner.");
                     // In einen externen Ordner, der Galerie-Ordner ist: gleich mit Bildangaben und Vorschaubild in die Galerie, aus der
@@ -533,8 +649,15 @@ public static class ImportProfiles
                 }
                 catch (Exception e) when (e is IOException or HttpRequestException && (target is ExtLoc || from is ExtLoc))
                 {
-                    // Freigabe weg: aufhören statt jede Datei einzeln scheitern zu lassen
-                    throw new TargetUnavailable(target is ExtLoc ? "Der Zielordner ist gerade nicht erreichbar." : "Ein Quellordner ist gerade nicht erreichbar.");
+                    // Aufhören statt jede Datei einzeln scheitern zu lassen. „Nicht erreichbar“ nur, wenn die Prüfung das jetzt bestätigt
+                    // (Freigabe weg, Server aus) - sonst der eigentliche Grund (Rechte, Platz, Server lehnt einen Befehl ab)
+                    if (target is ExtLoc to && !await ExternalFolders.ReachableAsync(space, config, to.Mount, fresh: true))
+                        throw new TargetUnavailable($"Der Zielordner ist {Unreachable(space, to.Mount)}.", e);
+                    if (from is ExtLoc fe && !await ExternalFolders.ReachableAsync(space, config, fe.Mount, fresh: true))
+                        throw new TargetUnavailable($"Ein Quellordner ist {Unreachable(space, fe.Mount)}.", e);
+                    throw new RunStopped(target is ExtLoc
+                        ? $"Ablegen im Zielordner fehlgeschlagen ({g.Primary.Name}): {ExternalFolders.Reason(e)}."
+                        : $"Lesen im Quellordner fehlgeschlagen ({g.Primary.Name}): {ExternalFolders.Reason(e)}.", e);
                 }
                 catch (Exception e) when (e is IOException or UnauthorizedAccessException or KeyNotFoundException or ArgumentException
                     or DavConflictException or QuotaExceededException or Pim.PreconditionFailedException or InvalidOperationException)
@@ -544,10 +667,17 @@ public static class ImportProfiles
                 }
             }
         }
+        catch (RunStopped e)
+        {
+            // Am Profil vermerken; bis zum nächsten Intervall warten, nicht jede Minute neu anklopfen
+            error = e.Message;
+            stopped = true;
+            throw;
+        }
         finally
         {
             foreach (var l in locs.Values) l.Dispose();
-            var pending = total - handled;
+            var pending = stopped ? 0 : total - handled;
             var message = error ?? sourceError;
             Update(db, p.Id, x =>
             {
@@ -623,7 +753,7 @@ public static class ImportProfiles
     /// <summary>
     /// Ein Foto von <paramref name="from"/> nach <paramref name="to"/>. Innerhalb der eigenen Ablage wird nur umbenannt (keine Kopie der
     /// Daten), innerhalb desselben externen Ordners verschoben; sonst gestreamt und am Ziel geprüft. Die Quelle wird erst gelöscht, wenn
-    /// alles am Ziel liegt - in der eigenen Ablage in den Papierkorb, in einem externen Ordner endgültig, deshalb dort erst nach dem
+    /// alles am Ziel liegt, und dann endgültig (auch in der eigenen Ablage nicht in den Papierkorb), deshalb erst nach dem
     /// Vergleich der Prüfsummen.
     /// </summary>
     private static async Task<bool> PlaceAsync(Loc from, Loc to, Group g, string folder, string name, bool copy, PhotoMeta.Fields? fields, CancellationToken ct,
@@ -686,7 +816,7 @@ public static class ImportProfiles
             }
             if (await to.SizeAsync(dest, ct) != expected) throw new InvalidOperationException("Die Datei kam nicht vollständig am Ziel an.");
             // Endgültig gelöscht wird nur, was am Ziel nachweislich gleich angekommen ist
-            if (!copy && from is ExtLoc && await to.ShaAsync(dest, ct) != hash) throw new InvalidOperationException("Die Datei kam nicht unverändert am Ziel an.");
+            if (!copy && await to.ShaAsync(dest, ct) != hash) throw new InvalidOperationException("Die Datei kam nicht unverändert am Ziel an.");
             done.Add(f);
             if (placed != null && !isSidecar) await placed(f, dest, data);
         }
@@ -771,6 +901,7 @@ public sealed class ImportProfileJob(Spaces spaces, ServerConfig config, ILogger
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
+        JobControl.Resumed += (_, kind) => { if (kind == Activity.GalleryImport) Kick.Release(); };
         WatchFolders();
         try { await Task.Delay(TimeSpan.FromSeconds(70), ct); } catch (OperationCanceledException) { return; }
         while (!ct.IsCancellationRequested)
@@ -785,10 +916,15 @@ public sealed class ImportProfileJob(Spaces spaces, ServerConfig config, ILogger
     public async Task RunOnceAsync(CancellationToken ct)
     {
         if (!Features.On(Features.ImportProfiles) || !Features.On(Features.Gallery)) { Wanted.Clear(); return; }
-        foreach (var space in spaces.All())
+        foreach (var space in spaces.Working())
         {
             ct.ThrowIfCancellationRequested();
             if (FileStore.FilesOff(space.Db)) continue;
+            // Angehalten oder übersprungen (jobcontrol): ein ausdrücklicher Auftrag hebt nur das Überspringen auf
+            var user = space.User.Id;
+            if (Wanted.Keys.Any(k => k.StartsWith(user + "/", StringComparison.Ordinal))) JobControl.ClearSkip(user, Activity.GalleryImport);
+            if (JobControl.Blocked(user, Activity.GalleryImport)) continue;
+            using var control = JobControl.Run(user, Activity.GalleryImport);
             var now = DateTime.UtcNow;
             foreach (var p in ImportProfiles.Of(space.Db))
             {
@@ -809,11 +945,13 @@ public sealed class ImportProfileJob(Spaces spaces, ServerConfig config, ILogger
                     using (FolderWatch.As(Watch)) n = await ImportProfiles.RunAsync(space, config, p.Id, ct, (d, t) => job.Progress(d, t, p.Name));
                     if (n > 0) log.LogInformation("Importprofil ({User}): {Count} Fotos einsortiert", space.User.Login, n);
                 }
-                catch (ImportProfiles.TargetUnavailable e)
+                catch (JobControl.Stopped) { break; }
+                catch (ImportProfiles.RunStopped e)
                 {
-                    // Bis zum nächsten Intervall warten, nicht jede Minute neu anklopfen
-                    ImportProfiles.Update(space.Db, p.Id, x => { x.LastRun = now; x.Error = e.Message; x.Pending = 0; });
+                    // Fehler und Wartezeit hat RunAsync schon am Profil vermerkt
                     job.Fail($"{p.Name}: {e.Message}");
+                    // Ganz ins Protokoll: die Meldung am Profil ist gekürzt
+                    log.LogWarning(e.InnerException, "Importprofil {Profile} ({User}): {Error}", p.Name, space.User.Login, e.Message);
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception e)

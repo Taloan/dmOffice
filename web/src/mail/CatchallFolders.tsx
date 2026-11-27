@@ -1,5 +1,5 @@
 import { Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Field, Input, Menu, MenuItem, MenuItemRadio, MenuList, MenuPopover, MenuTrigger, Text, makeStyles, mergeClasses, tokens } from '@fluentui/react-components'
-import { ChevronDown16Regular, ChevronRight16Regular, Copy20Regular, Delete20Regular, Edit20Regular, Globe20Regular, LockClosed20Regular, LockOpen20Regular, NumberSymbol20Regular, PersonMail20Regular } from '@fluentui/react-icons'
+import { ChevronDown16Regular, ChevronRight16Regular, Copy20Regular, Delete20Regular, Edit20Regular, Globe20Regular, LockClosed20Regular, MailRead20Regular, LockOpen20Regular, NumberSymbol20Regular, PersonMail20Regular } from '@fluentui/react-icons'
 import { useCallback, useEffect, useState } from 'react'
 import { api, Folder } from '../api'
 import { useApp } from '../App'
@@ -7,8 +7,9 @@ import { locale, t } from '../i18n'
 import { copyText } from '../shell/browser'
 import { askConfirm, askText } from '../shell/context'
 import { usePrefs } from '../prefs'
-import type { AliasItem, AliasState } from './AliasDialog'
+import { siteList, type AliasItem, type AliasState } from './AliasDialog'
 import type { Selection } from './MailView'
+import { fetchVirtualCounts, shownVirtual, usePreloadVersion, virtualCounts } from './preload'
 
 /** Nach jeder Änderung an Catchall-Aliasen (Sperren, Anlegen, Übernehmen): Seitenleiste, Liste und Einstellungen laden neu. */
 export const CATCHALL_CHANGED = 'dmoffice:catchall'
@@ -52,8 +53,8 @@ export async function adoptAlias(address: string, note = '') {
 
 /** Gehört dieser Ordner zu den Catchall-Aliasen (Domain-Ordner oder darunter)? Dann zeigt ihn nur der eigene Abschnitt. */
 export function isCatchallFolder(st: AliasState | null, account: string, f: Folder): boolean {
-  if (!st || st.config.account !== account) return false
-  return st.domains.some(d => !!d.folder && (f.path === d.folder || f.path.startsWith(d.folder + f.delimiter)))
+  if (!st) return false
+  return siteList(st).some(d => d.account === account && !!d.folder && (f.path === d.folder || f.path.startsWith(d.folder + f.delimiter)))
 }
 
 /** Name mit Notiz in Klammern: „shop (Notiz)“, ohne Notiz nur der Name. */
@@ -61,11 +62,25 @@ export const withNote = (name: string, note?: string | null) => note?.trim() ? `
 
 /** Titel über der Mailliste für einen Catchall-Ordner: beim Alias die Adresse mit Notiz, beim Domain-Ordner die Domain; sonst null. */
 export function catchallTitle(st: AliasState | null, account: string, path: string): string | null {
-  if (!st || st.config.account !== account) return null
+  if (!st) return null
+  // [feature:catchalldomains]
+  // Ansicht bei „Auch im Posteingang“: ca:@domain oder ca:alias@domain
+  if (path.startsWith(VIEW)) {
+    const key = path.slice(VIEW.length)
+    if (key.startsWith('@')) return key.slice(1)
+    const v = st.items.find(i => i.address === key)
+    return v ? withNote(v.address, v.note) : key
+  }
+  // [/feature:catchalldomains]
+  const sites = siteList(st).filter(d => d.account === account)
+  if (!sites.length) return null
   const a = st.items.find(i => i.folder === path)
   if (a) return withNote(a.address, a.note)
-  return st.domains.find(d => d.folder === path)?.domain ?? null
+  return sites.find(d => d.folder === path)?.domain ?? null
 }
+
+/** Virtueller Ordner der Ansicht „Catchall-Aliase“ bei „Auch im Posteingang“ (Mail/CatchallDomains.cs, ViewPrefix). */
+export const VIEW = 'ca:'
 
 const useStyles = makeStyles({
   head: {
@@ -84,20 +99,34 @@ const useStyles = makeStyles({
 })
 
 /** Abschnitt „Catchall-Aliase“ im Ordnerbereich (wie Kategorien): je Domain ihr Ordner, darunter je Alias seiner, gesperrte mit Schloss. */
-export function CatchallSection({ st, folders, selection, onSelect }: {
+export function CatchallSection({ st, folders, selection, onSelect, onChanged }: {
   st: AliasState | null; folders: Record<string, Folder[]>; selection: Selection | null; onSelect: (s: Selection) => void
+  /** Nach „Alle als gelesen markieren“: Ordner und Zähler neu laden */
+  onChanged?: () => void
 }) {
   const s = useStyles()
   const { notify, fail } = useApp()
   const { prefs, update } = usePrefs()
   // Kontextmenü: an einem Alias (a), an einer Domain oder am Abschnitt - key ist der Schlüssel der Ordneranzahl
-  const [menu, setMenu] = useState<{ a?: AliasItem; key: string; def: 'unread' | 'total'; x: number; y: number } | null>(null)
+  const [menu, setMenu] = useState<{ a?: AliasItem; f?: Folder; account: string; key: string; def: 'unread' | 'total'; x: number; y: number } | null>(null)
   const closed = prefs.virtualClosed ?? {}
   const toggle = (k: string) => update({ virtualClosed: { ...closed, [k]: !closed[k] } })
-  const account = st?.config.account
-  if (!st || !account || st.domains.length === 0) return null
-  const list = folders[account] || []
-  const folderOf = (p?: string | null) => (p ? list.find(f => f.path === p) : undefined)
+  const sites = st ? siteList(st).filter(d => !!d.account) : []
+  // Zähler der Ansichten bei „Auch im Posteingang“ (wie Suchordner, /api/mail/virtual-counts)
+  usePreloadVersion()
+  const views = virtualCounts()
+  const anyInbox = sites.some(d => d.inbox)
+  useEffect(() => {
+    if (anyInbox) fetchVirtualCounts()
+  }, [anyInbox, folders, st])
+  if (!st || sites.length === 0) return null
+  const first = sites[0].account!
+  const folderOf = (account: string, p?: string | null) => (p ? (folders[account] || []).find(f => f.path === p) : undefined)
+  // Ansicht als Ordner-Ersatz für Zähler und Auswahl
+  const viewOf = (key: string): Folder => {
+    const c = shownVirtual(first, key, views[key])
+    return { path: key, name: key, delimiter: '/', total: c?.total ?? 0, unread: c?.unread ?? 0, selectable: true } as unknown as Folder
+  }
 
   // Ordneranzahl wie bei allen Ordnern (Kontextmenü „Ordneranzahl ändern“): ungelesen oder gesamt, Schlüssel Konto|Pfad;
   // zugeklappt zählt eine Domain mit all ihren Aliasen, der zugeklappte Abschnitt alles
@@ -105,16 +134,16 @@ export function CatchallSection({ st, folders, selection, onSelect }: {
   const sum = (list: (Folder | undefined)[], mode: 'unread' | 'total') => list.reduce((n, f) => n + (f ? (mode === 'total' ? f.total : f.unread) : 0), 0)
   const badge = (n: number, mode: 'unread' | 'total', title?: string) => n > 0
     ? <span className={mode === 'total' ? s.muted : s.unread} style={{ fontSize: 12 }} title={title}>{n.toLocaleString(locale)}</span> : null
-  const openMenu = (e: React.MouseEvent, m: { a?: AliasItem; key: string; def: 'unread' | 'total' }) => {
+  const openMenu = (e: React.MouseEvent, m: { a?: AliasItem; f?: Folder; account: string; key: string; def: 'unread' | 'total' }) => {
     e.preventDefault(); e.stopPropagation(); setMenu({ ...m, x: e.clientX, y: e.clientY })
   }
 
-  const row = (key: string, folder: Folder | undefined, icon: JSX.Element, name: string, depth: number, count: React.ReactNode,
+  const row = (account: string, key: string, folder: Folder | undefined, icon: JSX.Element, name: string, depth: number, count: React.ReactNode,
     opts: { kids?: boolean; closedKey?: string; alias?: AliasItem; menu?: { key: string; def: 'unread' | 'total' } } = {}) => (
     <div key={key} className={mergeClasses('dm-frow', s.item, !!folder && selection?.account === account && selection.folder === folder.path && s.active)}
       style={{ paddingLeft: 4 + depth * 14 }} title={opts.alias?.note || undefined}
       onClick={() => folder && onSelect({ account, folder: folder.path })}
-      onContextMenu={opts.menu ? e => openMenu(e, { a: opts.alias, ...opts.menu! }) : undefined}>
+      onContextMenu={opts.menu ? e => openMenu(e, { a: opts.alias, f: folder?.path.startsWith(VIEW) ? undefined : folder, account, ...opts.menu! }) : undefined}>
       <span className={s.twisty} onClick={e => { if (opts.kids && opts.closedKey) { e.stopPropagation(); toggle(opts.closedKey) } }}>
         {opts.kids && (closed[opts.closedKey!] ? <ChevronRight16Regular /> : <ChevronDown16Regular />)}
       </span>
@@ -124,37 +153,50 @@ export function CatchallSection({ st, folders, selection, onSelect }: {
     </div>
   )
 
+  // Wie im Kontextmenü jedes Ordners: alle Mails im Ordner des Alias bzw. der Domain als gelesen
+  const markRead = async (account: string, f: Folder) => {
+    try { await api.post(`/api/mail/${account}/folders/read`, { path: f.path }); onChanged?.() } catch (e) { fail(e) }
+  }
+
   const note = async (a: AliasItem) => {
     const n = await askText(t('Notiz'), a.note ?? '', t('Notiz zu {a}:', { a: a.address }))
     if (n == null) return
     try { await api.put('/api/mail/aliases/item', { address: a.address, note: n }); catchallChanged() } catch (e) { fail(e) }
   }
 
+  // Je Domain ihr Ordner (bzw. bei „Auch im Posteingang“ die Ansicht) und die der Aliase
+  const nodes = sites.map(d => {
+    const account = d.account!
+    const items = st.items.filter(i => i.address.endsWith('@' + d.domain))
+    const df = d.inbox ? viewOf(VIEW + '@' + d.domain) : folderOf(account, d.folder)
+    const af = (a: AliasItem) => d.inbox ? viewOf(VIEW + a.address) : folderOf(account, a.folder)
+    return { d, account, items, df, af }
+  })
+
   return (
     <div className="dm-fsec" style={{ marginBottom: 10 }}>
-      <div className={mergeClasses('dm-fhead', s.head)} onClick={() => toggle('catchall')} onContextMenu={e => openMenu(e, { key: account + '|catchall', def: 'unread' })}>
+      <div className={mergeClasses('dm-fhead', s.head)} onClick={() => toggle('catchall')} onContextMenu={e => openMenu(e, { account: first, key: first + '|catchall', def: 'unread' })}>
         {closed.catchall ? <ChevronRight16Regular /> : <ChevronDown16Regular />}
         <Text weight="semibold" style={{ flex: 1 }}>{t('Catchall-Aliase')}</Text>
         {closed.catchall && (() => {
-          const m = modeOf(account + '|catchall', 'unread')
-          return badge(sum([...st.domains.map(d => folderOf(d.folder)), ...st.items.map(a => folderOf(a.folder))], m), m)
+          const m = modeOf(first + '|catchall', 'unread')
+          return badge(sum(nodes.flatMap(n => [n.df, ...n.items.map(n.af)]), m), m)
         })()}
       </div>
-      {!closed.catchall && st.domains.map(d => {
-        const items = st.items.filter(i => i.address.endsWith('@' + d.domain))
+      {!closed.catchall && nodes.map(({ d, account, items, df, af }) => {
         const k = 'catchall:' + d.domain
-        const df = folderOf(d.folder)
-        // Domain-Ordner: Mails an Adressen ohne Alias - wie bisher mit der Gesamtzahl, sofern nicht anders eingestellt
-        const dk = account + '|' + (d.folder ?? k), dm = modeOf(dk, 'total')
+        // Domain-Ordner: Mails an Adressen ohne Alias - wie bisher mit der Gesamtzahl, sofern nicht anders eingestellt.
+        // Bei „Auch im Posteingang“ zählt die Domain schon alle ihre Mails.
+        const dk = account + '|' + (d.inbox ? VIEW + '@' + d.domain : d.folder ?? k), dm = modeOf(dk, 'total')
         const shut = items.length > 0 && !!closed[k]
-        const dn = shut ? sum([df, ...items.map(a => folderOf(a.folder))], dm) : sum([df], dm)
+        const dn = shut && !d.inbox ? sum([df, ...items.map(af)], dm) : sum([df], dm)
         return (
           <div key={d.domain}>
-            {row(k, df, <Globe20Regular />, d.domain, 0, badge(dn, dm, shut ? undefined : t('Mails an Adressen ohne Alias')),
+            {row(account, k, df, <Globe20Regular />, d.domain, 0, badge(dn, dm, shut || d.inbox ? undefined : t('Mails an Adressen ohne Alias')),
               { kids: items.length > 0, closedKey: k, menu: { key: dk, def: 'total' } })}
             {!closed[k] && items.map(a => {
-              const f = folderOf(a.folder), ak = account + '|' + (a.folder ?? a.address), am = modeOf(ak, 'unread')
-              return row(a.address, f, a.blocked ? <LockClosed20Regular color={tokens.colorPaletteRedForeground1} /> : <PersonMail20Regular />,
+              const f = af(a), ak = account + '|' + (d.inbox ? VIEW + a.address : a.folder ?? a.address), am = modeOf(ak, 'unread')
+              return row(account, a.address, f, a.blocked ? <LockClosed20Regular color={tokens.colorPaletteRedForeground1} /> : <PersonMail20Regular />,
                 withNote(a.address.slice(0, a.address.lastIndexOf('@')), a.note), 1, badge(sum([f], am), am), { alias: a, menu: { key: ak, def: 'unread' } })
             })}
           </div>
@@ -176,6 +218,8 @@ export function CatchallSection({ st, folders, selection, onSelect }: {
                   </MenuList>
                 </MenuPopover>
               </Menu>
+              {menu.f && <MenuItem icon={<MailRead20Regular />} disabled={!menu.f.selectable || menu.f.unread === 0}
+                onClick={() => { markRead(menu.account, menu.f!); setMenu(null) }}>{t('Alle als gelesen markieren')}</MenuItem>}
               {menu.a && (() => {
                 const a = menu.a
                 return <>
@@ -195,10 +239,12 @@ export function CatchallSection({ st, folders, selection, onSelect }: {
 }
 
 /** „über alias@domain“ an einer Mail, mit Knopf: Sperren, Entsperren oder (unbekannte Adresse) Übernehmen. */
-export function AliasHint({ address, state, sender, className }: {
+export function AliasHint({ address, state, sender, className, compact }: {
   address: string; state?: 'open' | 'blocked' | 'unknown' | null
   /** Name des Absenders - Vorschlag für die Notiz beim Anlegen */
   sender?: string | null; className?: string
+  /** Alias steht schon in der Spalte „An“: nur Zustand und Aktion */
+  compact?: boolean
 }) {
   const { fail } = useApp()
   const [now, setNow] = useState(state ?? 'open')
@@ -218,7 +264,8 @@ export function AliasHint({ address, state, sender, className }: {
     <span className={className} title={t('An den Catchall-Alias {a}', { a: address })} style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}
       onClick={e => e.stopPropagation()}>
       {now === 'blocked' && <LockClosed20Regular style={{ width: 14, height: 14 }} color={tokens.colorPaletteRedForeground1} />}
-      <span>{now === 'unknown' ? t('An unbekannte Adresse {a}', { a: address }) : t('über {a}', { a: address })}</span>
+      {!compact && <span>{now === 'unknown' ? t('An unbekannte Adresse {a}', { a: address }) : t('über {a}', { a: address })}</span>}
+      {compact && now === 'unknown' && <span>{t('nicht angelegt')}</span>}
       <a role="button" href="#" onClick={e => { e.preventDefault(); if (!busy) act(e) }} style={{ color: tokens.colorBrandForegroundLink, textDecoration: 'none' }}>
         {now === 'unknown' ? t('Als Alias anlegen') : now === 'blocked' ? t('Entsperren') : t('Sperren')}
       </a>

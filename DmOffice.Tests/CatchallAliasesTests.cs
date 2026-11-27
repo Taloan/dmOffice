@@ -209,13 +209,19 @@ public class CatchallAliasesTests : IClassFixture<ChatFixture>
         Assert.Null(tagged[1].Alias);
         Assert.Null(tagged[2].Alias);
 
-        // Antworten mit dem Alias: nur eingeschaltet, aus dem Postfach der Domain, nur bekannte Adressen
-        Assert.False(CatchallAliases.CanSendAs(db, account, a.Address));
-        CatchallAliases.Save(db, new CatchallAliases.Config { Domains = ["alias.example"], Account = account.Id, ReplyAs = true }, space.Settings.MailAccounts);
-        Assert.True(CatchallAliases.CanSendAs(db, account, a.Address));
-        Assert.False(CatchallAliases.CanSendAs(db, account, "unbekannt@alias.example"));
-        Assert.False(CatchallAliases.CanSendAs(db, account, "bahn@mailbox.example"));
-        Assert.False(CatchallAliases.CanSendAs(db, new MailAccount { Id = "anders" }, a.Address));
+        // Antworten mit dem Alias (frühere Form, ohne catchalldomains): nur eingeschaltet, aus dem Postfach der Domain, nur bekannte Adressen
+        var before = Features.InReleaseOff.ToList();
+        try
+        {
+            Features.Set([.. before, Features.CatchallDomains]);
+            Assert.False(CatchallAliases.CanSendAs(db, account, a.Address));
+            CatchallAliases.Save(db, new CatchallAliases.Config { Domains = ["alias.example"], Account = account.Id, ReplyAs = true }, space.Settings.MailAccounts);
+            Assert.True(CatchallAliases.CanSendAs(db, account, a.Address));
+            Assert.False(CatchallAliases.CanSendAs(db, account, "unbekannt@alias.example"));
+            Assert.False(CatchallAliases.CanSendAs(db, account, "bahn@mailbox.example"));
+            Assert.False(CatchallAliases.CanSendAs(db, new MailAccount { Id = "anders" }, a.Address));
+        }
+        finally { Features.Set(before); }
         var sent = MailCompose.Build(account, new MailCompose.Draft { To = "info@bahn.example", Subject = "Re: Ticket", Html = "Danke", From = a.Address }, []);
         Assert.Equal(a.Address, sent.From.Mailboxes.Single().Address);
         // Die Message-ID verrät das eigentliche Postfach nicht

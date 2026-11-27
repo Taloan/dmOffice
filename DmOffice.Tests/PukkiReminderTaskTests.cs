@@ -41,6 +41,10 @@ public class PukkiReminderTaskTests : IClassFixture<ChatFixture>
         Assert.StartsWith("Okay, ich erinnere dich morgen um 09:00 Uhr an „Müll rausbringen“.", await Ask(who, "Erinnere mich morgen um 9 an Müll rausbringen"));
         Assert.StartsWith("Okay, ich erinnere dich morgen um 18:00 Uhr an „Blumen gießen“.", await Ask(who, "Erinnere mich morgen um 18 Uhr ans Blumen gießen"));
 
+        // Kurzform ohne „erinnere mich“
+        Assert.StartsWith("Okay, ich erinnere dich morgen um 20:00 Uhr an „Crusader kings“.", await Ask(who, "erinnerung morgen 20 uhr crusader kings"));
+        Assert.Equal("Die Erinnerung „Crusader kings“ ist gelöscht.", await Ask(who, "Erinnerung crusader löschen"));
+
         // Als Aufgabe mit Uhrzeit und Kategorie, nicht im Kalender
         var tasks = Pukki.ReminderTasks(space);
         Assert.Equal(2, tasks.Count);
@@ -61,5 +65,25 @@ public class PukkiReminderTaskTests : IClassFixture<ChatFixture>
         var at = Pukki.ReminderTasks(space).Single().AtUtc;
         Assert.Single(Pukki.DueReminderTasks(space, at.AddMinutes(-1), at));
         Assert.Empty(Pukki.DueReminderTasks(space, at, at.AddMinutes(1)));
+    }
+
+    [Fact]
+    public async Task Erinnerung_ohne_Uhrzeit_wird_mit_der_Uhrzeit_danach_zur_Erinnerung()
+    {
+        const string who = "anna";
+        var space = _fx.Space(who);
+        PimStore.EnsureDefaults(space.Db);
+        foreach (var r in Pukki.ReminderTasks(space)) PimStore.Delete(space.Db, r.List, r.Task.Uri);
+
+        // „stornieren“ ist hier Text der Erinnerung, kein Befehl zum Löschen
+        var first = await Ask(who, "erinnerung morgen früh Kirche stornieren");
+        Assert.True(!first.Contains("keine Erinnerung"), first);
+        Assert.Contains("Kirche stornieren", first);
+
+        // Die Uhrzeit danach macht aus der Aufgabe ohne Uhrzeit eine Erinnerung
+        Assert.StartsWith("Okay, ich erinnere dich morgen um 09:00 Uhr an „Kirche stornieren“.", await Ask(who, "um 9 uhr"));
+        var tasks = Pukki.ReminderTasks(space);
+        Assert.Single(tasks);
+        Assert.Equal("Kirche stornieren", tasks[0].Task.Title);
     }
 }

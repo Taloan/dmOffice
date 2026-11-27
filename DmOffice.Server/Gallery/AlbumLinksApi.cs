@@ -43,8 +43,9 @@ public static class AlbumLinksApi
         try { if (FileStore.FilesOff(http.RequestServices.GetRequiredService<Spaces>().Get(album.Owner).Db)) return (null, Gone("Diesen Link gibt es nicht (mehr).")); }
         catch (KeyNotFoundException) { return (null, Gone("Diesen Link gibt es nicht (mehr).")); }
         if (h.Link.Expired(DateTime.UtcNow)) return (null, Gone("Dieser Link ist abgelaufen.", 410));
+        // Vor dem Passwort nichts über das Album (Name, Besitzer, Fotos): nur, dass ein Passwort nötig ist
         if (needPassword && h.Password != null && !Unlocked(http, h.Link, h.Password))
-            return (null, Results.Json(new { error = "Passwort nötig.", needsPassword = true, name = album.Name }, statusCode: 401));
+            return (null, Results.Json(new { error = "Passwort nötig.", needsPassword = true }, statusCode: 401));
         return (new Access(h.Link, h.Password, album), null);
     }
 
@@ -101,7 +102,9 @@ public static class AlbumLinksApi
         // ---------------- Verwalten (Besitzer des Albums) ----------------
         var own = app.MapGroup("/api/gallery/albums/{id:long}/links").RequireAuthorization();
         Album Mine(HttpContext http, long id) =>
-            http.RequestServices.GetRequiredService<AlbumStore>().Get(id) is { } a && a.Owner == http.Space().User.Id ? a : throw new KeyNotFoundException("Album nicht gefunden.");
+            http.RequestServices.GetRequiredService<AlbumStore>().Get(id) is { } a && a.Owner == http.Space().User.Id
+                ? a.Kind == Album.Quick ? throw new ArgumentException("Die Schnellsammlung lässt sich nicht öffentlich zeigen.") : a
+                : throw new KeyNotFoundException("Album nicht gefunden.");
 
         own.MapGet("", (long id, HttpContext http, AlbumStore store) => { Mine(http, id); return Results.Ok(store.Links(id).Select(l => LinkDto(l, http))); });
         own.MapPost("", (long id, LinkBody body, HttpContext http, AlbumStore store) =>
@@ -148,12 +151,12 @@ public static class AlbumLinksApi
             var (a, error) = Resolve(http, token, needPassword: false);
             if (a == null) return error!;
             var key = "album-link:" + a.Link.Id;
-            if (Auth.Blocked(key) || Auth.Blocked(Ip(http))) return Gone("Zu viele Versuche. Bitte später noch einmal.", 429);
+            if (Auth.LinkBlocked(key, Ip(http))) return Gone("Zu viele Versuche. Bitte später noch einmal.", 429);
             if (a.Password == null) return Results.Ok();
             var ok = await Passwords.VerifyLimitedAsync(body.Password ?? "", a.Password, http.RequestAborted);
             if (ok == null) return Gone("Der Server ist gerade ausgelastet. Bitte gleich noch einmal versuchen.", 503);
-            if (ok == false) { Auth.Failed(key); Auth.Failed(Ip(http)); return Gone("Falsches Passwort.", 403); }
-            Auth.Succeeded(key);
+            if (ok == false) { Auth.LinkFailed(key, Ip(http)); return Gone("Falsches Passwort.", 403); }
+            Auth.LinkSucceeded(key, Ip(http));
             var until = DateTime.UtcNow.AddDays(1);
             http.Response.Cookies.Append(CookieName(a.Link), Protector(http).Protect($"{a.Link.Id}|{until.Ticks}|{Stamp(a.Password)}"), new CookieOptions
             {

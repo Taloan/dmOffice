@@ -1,7 +1,8 @@
 import { Badge, Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Dropdown, Field, MessageBar, MessageBarBody, Option, Spinner, Text, tokens } from '@fluentui/react-components'
 import { ArrowClockwise20Regular } from '@fluentui/react-icons'
 import { useEffect, useState } from 'react'
-import { api, fmtSize } from '../api'
+import { api, featureOn, fmtSize } from '../api'
+import { RibbonActions, RibbonButton } from '../shell/Ribbon'
 import { useApp } from '../App'
 import { t, locale } from '../i18n'
 import { askConfirm } from '../shell/context'
@@ -70,9 +71,11 @@ export function DbHealthAdmin() {
           {bad.length > 0 && <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>{t('Beide Wege betreffen nur die beschädigte Datenbank, alle anderen bleiben unverändert. Solange eine Datenbank beschädigt ist, löscht dmOffice keine alten Backup-Stände.')}</Text>}
         </>
       )}
-      <div>
+      {featureOn('adminribbon') ? <RibbonActions>
+        <RibbonButton primary icon={st.running ? <Spinner size="tiny" /> : <ArrowClockwise20Regular />} label={st.running ? t('Prüft …') : t('Jetzt prüfen')} disabled={st.running} onClick={run} />
+      </RibbonActions> : <div>
         <Button icon={st.running ? <Spinner size="tiny" /> : <ArrowClockwise20Regular />} disabled={st.running} onClick={run}>{st.running ? t('Prüft …') : t('Jetzt prüfen')}</Button>
-      </div>
+      </div>}
       {replace && <ReplaceDialog item={replace} onClose={() => setReplace(null)} onDone={msg => { setReplace(null); notify(t('Ersetzt'), msg); load() }} />}
     </div>
   )

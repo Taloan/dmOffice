@@ -110,6 +110,13 @@ public sealed class Spaces
             if (migrating) _update!.Succeeded(id);
             return new UserSpace(user, db);
         }));
+        // [feature:migrationprogress]
+        // Laeuft die Datenaenderung schon, nicht auf ihr Ende warten (Ladekreis, haengende Hintergrunddienste): sofort
+        // „laeuft gerade“ melden - die Oberflaeche zeigt den Fortschritt. Vor dem try, damit der laufende Umbau bleibt.
+        if (!lazy.IsValueCreated && Features.On(Features.MigrationProgress) && Activity.Get(userId, Activity.Migration) is { State: "running" } run)
+            throw new UpdatePendingException("Deine Daten werden gerade auf den neuen Stand gebracht" +
+                (run.Total is > 0 ? $" (Schritt {(run.Done ?? 0) + 1} von {run.Total})." : "."), "running");
+        // [/feature:migrationprogress]
         try { return lazy.Value; }
         catch
         {
@@ -136,6 +143,10 @@ public sealed class Spaces
             if (s != null) yield return s;
         }
     }
+
+    /// <summary>Alle Benutzer, für die Hintergrundarbeit läuft (Mailabruf, Abgleich, DMS-Quellen …): ohne gesperrte Konten.
+    /// Sicherungen und Aufräumarbeiten nehmen weiter <see cref="All"/> - die Daten gesperrter Konten bleiben.</summary>
+    public IEnumerable<UserSpace> Working() => All().Where(s => !s.User.LockedOut);
 
     public void Forget(string userId) => _open.TryRemove(userId, out _);
 

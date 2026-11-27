@@ -8,7 +8,7 @@ namespace DmOffice.Core;
 /// nennt je Kennung die Version, ab der sie gilt, oder „aus“ (in keiner Version); release.txt die Version dieses Stands.
 /// Kennungen, die nicht in der Liste stehen, gelten immer. Testserver schalten mit DMOFFICE_FEATURES mehr oder weniger
 /// frei: „all“ (alles), eine Versionsnummer wie „2.1“ (alles, was laut features.json bis dahin gilt) oder eine Liste wie
-/// „+vault,-pgp“ - auch gemischt: „2.1,+vault“.
+/// „+journal,-pgp“ - auch gemischt: „2.1,+journal“.
 /// Nicht Freigeschaltetes ist nur inaktiv: Die Pfade der API antworten mit 404, Web und App blenden es aus
 /// (/api/auth/state: featuresOff), Hintergrundarbeit und Querverbindungen fragen <see cref="On"/>.
 /// Dazu die Hauptschalter der Module (<see cref="Modules"/>): Was der Admin ausschaltet (ServerSettings.ModulesOff), gilt
@@ -16,19 +16,57 @@ namespace DmOffice.Core;
 /// </summary>
 public static class Features
 {
-    public const string Catchall = "catchall",
+    public const string Emergency = "emergency", Catchall = "catchall",
         MailExpiry = "mailexpiry", MailMove = "mailmove", Oidc = "oidc", Sftp = "sftp", Pgp = "pgp", FileCategories = "filecats", VirusScan = "clamav", Vault = "vault",
         ImportProfiles = "importprofiles", Audio = "audio", Gallery = "gallery", Notes = "notes", Tasks = "tasks", Office = "office",
-        Dms = "dms", DmsFolders = "dmsfolders", DmsHide = "dmshide", DmsYear = "dmsyear", DmsSave = "dmssave", DmsAmount = "dmsamount", DmsRelearn = "dmsrelearn", AutoUnsubscribe = "autounsub",
-        DefaultAccount = "defaultaccount", GalleryDupes = "galdupes", DmsMark = "dmsmark", DmsRework = "dmsrework", SaveToAblage = "ablagesave", UnifiedPick = "unifiedpick", DmsPlace = "dmsplace", DmsAiCheck = "dmsaicheck",
-        CalendarSearch = "calsearch", ExtenderUsage = "extenderusage";
+        Dms = "dms", DmsFolders = "dmsfolders", DmsHide = "dmshide", DmsYear = "dmsyear", DmsSave = "dmssave", DmsAmount = "dmsamount", DmsRelearn = "dmsrelearn", AutoUnsubscribe = "autounsub",                 DefaultAccount = "defaultaccount", GalleryDupes = "galdupes", DmsMark = "dmsmark", DmsRework = "dmsrework", SaveToAblage = "ablagesave", UnifiedPick = "unifiedpick", DmsPlace = "dmsplace", DmsAiCheck = "dmsaicheck",
+        CalendarSearch = "calsearch", ExtenderUsage = "extenderusage", RecentClear = "recentclear", FolderViews = "folderviews", NavTop = "navtop", TreeAuto = "treeauto", BackupCron = "backupcron", AddressBar = "addressbar", FolderProps = "folderprops", FKeys = "fkeys", ExportCron = "exportcron", SelectPattern = "selectpattern", CopyPath = "copypath", MailPlain = "mailplain", MailPreview = "mailpreview", DarkSwap = "darkswap", LimeAccent = "limeaccent", EnhanceButton = "enhancebtn", AiPhotos = "aiphotos", MailSearchHistory = "mailsearchhist", JunkRead = "junkread", AttachSave = "attsave", MosaicWeb = "mosaicweb", BulkRename = "bulkrename", F1Help = "f1help", DualPane = "dualpane", TypeAhead = "typeahead", FolderTabs = "foldertabs", DmsRoleName = "dmsrolename", MailTrackers = "mailtrackers", CalClip = "calclip", DmsHistory = "dmshistory", FilterPick = "filterpick", DialogTabs = "dialogtabs", UserLock = "userlock", MailPaneSize = "mailpanesize", ContextAll = "ctxall", DmsMerge = "dmsmerge", DmsKeys = "dmskeys", DmsFields = "dmsfields", GalleryUnread = "galunread", JobControl = "jobcontrol", NavGroups = "navgroups", DmsCopy = "dmscopy", DmsTreePick = "dmstreepick", NotesVersions = "notesversions", ExtTable = "exttable", TaskClip = "taskclip", PeopleSelect = "peoplesel", UndoAll = "undoall", ProxyTrust = "proxytrust", ToolIsolation = "tooliso", LinkHandler = "linkhandler", PickXmp = "pickxmp", MountDrivers = "mountdrivers", TileModes = "tilemodes", TileBar = "tilebar", QuickCollection = "quickcoll", Relink = "relink", PhishTrust = "phishtrust", TiffPreview = "tiffpreview", Plugins = "plugins", PluginRequires = "pluginreq", SyslogFile = "syslogfile", CalRemind = "calremind", CalRemDefault = "calremdefault", CalBulkRemind = "calbulkremind", CalRemTask = "calremtask", CalRemShared = "calremshared", UnifiedFav = "unifiedfav", SimilarMail = "similarmail", ContextGroups = "ctxgroups", AdminRibbon = "adminribbon", SaveMode = "savemode", RailSeparators = "railsep", MailDms = "maildms", RuleTabs = "ruletabs", RuleForward = "ruleforward", MailOwnAccounts = "mailownaccounts", MailServer = "mailserver", SpamStalwart = "spamstalwart", JunkRecheck = "junkrecheck",
+        // Nur die App fragt sie ab (Galerie: P/X/U filtern, Markierung und Farbe für mehrere Fotos, RAW aus Galerie-Ordnern; externe Ordner)
+        AppPick = "apppick", AppMarkMany = "appmarkmany", AppRaw = "appraw", AppExternal = "appext", AppUploadNet = "appuploadnet", AppTileRating = "tilerating", AppGalleryMosaic = "galmosaic";
+
+    // Kennungen späterer Versionen je auf eigener Zeile: tools/release-strip.mjs entfernt sie beim Release-Schnitt samt Zeile
+    public const string MailSnippets = "mailsnippets"; // [feature:mailsnippets]
+    public const string LensCorr = "lenscorr"; // [feature:lenscorr]
+    public const string LensLib = "lenslib"; // [feature:lenslib]
+    public const string AdminClean = "adminclean"; // [feature:adminclean]
+    public const string EditFull = "editfull"; // [feature:editfull]
+    public const string ImportSubfolders = "importsub"; // [feature:importsub]
+    public const string PhotoExport = "photoexport"; // [feature:photoexport]
+    public const string GalleryMedium = "galmedium"; // [feature:galmedium]
+    public const string MailAccountOff = "mailaccountoff"; // [feature:mailaccountoff]
+    public const string CatchallDomains = "catchalldomains"; // [feature:catchalldomains]
+    public const string MailSignatures = "mailsignatures"; // [feature:mailsignatures]
+    public const string MailToColumn = "mailtocolumn"; // [feature:mailtocolumn]
+    public const string NoteImages = "noteimg"; // [feature:noteimg]
+    public const string MailAvatarFilter = "mailavatarfilter"; // [feature:mailavatarfilter]
+    public const string MailThreads = "mailthreads"; // [feature:mailthreads]
+    public const string MailPrefetch = "mailprefetch"; // [feature:mailprefetch]
+    public const string MailPush = "mailpush"; // [feature:mailpush]
+    public const string MasterKeyRequired = "masterkeyreq"; // [feature:masterkeyreq]
+    public const string GallerySharedSkip = "galsharedskip"; // [feature:galsharedskip]
+    public const string ConfigSeal = "cfgseal"; // [feature:cfgseal]
+    public const string MailAiReply = "mailaireply"; // [feature:mailaireply]
+    public const string DmsTresorPlace = "dmstresorplace"; // [feature:dmstresorplace]
+    public const string Journal = "journal"; // [feature:journal]
+    public const string JunkLock = "junklock"; // [feature:junklock]
+    public const string GateKeeper = "gatekeeper"; // [feature:gatekeeper]
+    public const string DiaryRecallThumbs = "diaryrecallthumbs"; // [feature:diaryrecallthumbs]
+    public const string GkStats = "gkstats"; // [feature:gkstats]
+    public const string ProxyConfirm = "proxyconfirm"; // [feature:proxyconfirm]
+    public const string SftpTrust = "sftptrust"; // [feature:sftptrust]
+    public const string PublicUrl = "publicurl"; // [feature:publicurl]
+    public const string UploadLimit = "uploadlimit"; // [feature:uploadlimit]
+    public const string MigrationProgress = "migrationprogress"; // [feature:migrationprogress]
 
     /// <summary>
     /// Zusatzmodule, die der Admin serverweit aus- und einschaltet (Reihenfolge wie in der Leiste). Die Grundausstattung
     /// (Mail, Kalender, Kontakte, Aufgaben, Notizen, Dateien, Galerie, Chat) ist nicht abschaltbar - andere Bereiche bauen
     /// darauf auf. Früher gespeicherte Schalter dafür zählen nicht mehr (SetModulesOff).
     /// </summary>
-    public static readonly string[] Modules = [Audio, Dms];
+    public static readonly string[] Modules = [
+        Journal, // [feature:journal]
+        Audio, Dms,
+    ];
 
     /// <summary>Angezeigte Version: die höchste, deren Funktionen alle freigeschaltet sind (Testserver mit DMOFFICE_FEATURES
     /// zeigen so 2.1 statt 2.0). Steht vor _off, weil Load beides setzt.</summary>
@@ -36,6 +74,8 @@ public static class Features
     /// <summary>Darüber hinaus freigeschaltete Funktionen späterer Versionen oder solche, die in keiner Version gelten („aus“)</summary>
     public static IReadOnlyList<string> ShownExtra { get; private set; } = [];
 
+    // Alle Kennungen aus features.json (für „requires“ der Plugins); vor _off, weil Load es setzt
+    private static HashSet<string> _known = [];
     private static HashSet<string> _off = Load();
     // Vom Admin ausgeschaltete Module (ServerSettings.ModulesOff), gesetzt in Use und bei jeder Änderung der Einstellungen
     private static HashSet<string> _modulesOff = new();
@@ -46,13 +86,15 @@ public static class Features
     /// <summary>Ist die Funktion in dieser Version freigeschaltet (Hauptschalter des Admins außer Acht)?</summary>
     public static bool InRelease(string id) => !_off.Contains(id);
 
+    /// <summary>Steht die Kennung in features.json?</summary>
+    public static bool Known(string id) => _known.Contains(id);
+
     /// <summary>
     /// Kennungen von Funktionen, die dieser Stand gar nicht enthält. Clients, die sie kennen (die App), blenden sie nur aus, wenn
-    /// sie in <see cref="Off"/> stehen - darum meldet der Server sie immer als aus.
+    /// sie in <see cref="Off"/> stehen - darum meldet der Server sie immer als aus. Auf v2 leer; tools/release-strip.mjs trägt
+    /// beim Release-Schnitt die entfernten Kennungen ein.
     /// </summary>
-    internal static readonly string[] NotIncluded = ["journal", "coach", "emergency", "faces", "mailnudge", "helpdesk", "helpdeskoauth", "hdinline",
-        "finance", "finfiling", "zugferd", "finaccounts", "finassets", "einvoice", "finbankimport", "finbooking", "fints", "eurexport",
-        "recentclear", "folderviews", "navtop", "treeauto", "backupcron", "addressbar", "folderprops", "fkeys", "exportcron", "selectpattern", "copypath", "bulkrename", "f1help", "dualpane", "typeahead", "foldertabs", "mailplain", "mailpreview", "darkswap", "mailsearchhist", "dmsrolename", "mailtrackers", "calclip", "dmshistory"];
+    internal static readonly string[] NotIncluded = ["faces", "helpdesk", "pluginreq", "vereinpdf", "finbook", "vereinkasse", "coach", "finance", "finfiling", "zugferd", "finaccounts", "finassets", "einvoice", "finbankimport", "finbooking", "fints", "mailnudge", "navgroups", "fintsdebit", "webrich", "webimg", "webfetch", "webwp", "webpreview", "webmenu", "webblog", "webredirect", "webnav", "websearch", "webseo", "weblang", "webfonts", "webform", "webhero", "webanchor", "websearchicon", "webdblclick", "webcode", "webpreviewkeep", "webpreviewtoggle", "webaddsort", "webtagsplit", "webimguse", "webmenulang", "webleaveask", "webconsent", "webstage", "webhosts", "hdnoticket", "hdlook", "hdembed", "hdsuggest", "webhelpdesk", "mailownaccounts", "mailserver", "projects", "household", "hhdouble", "mailpw", "webspace", "webstyle", "realtabs", "sharechat", "helpdeskoauth", "hdinline", "hdlist", "hdformlang", "eurexport", "fincustomers", "finetag", "finiban", "finrecfrom"];
 
     /// <summary>Die nicht freigeschalteten, ausgeschalteten oder nicht enthaltenen Kennungen (für Web und App).</summary>
     public static IReadOnlyCollection<string> Off => _off.Union(_modulesOff).Union(NotIncluded).ToList();
@@ -75,6 +117,7 @@ public static class Features
         catch (IOException) { release = ""; }
         try { list = JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(Path.Combine(dir, "features.json"))) ?? new(); }
         catch (Exception e) when (e is IOException or JsonException) { list = new(); }
+        _known = list.Keys.ToHashSet();
         var off = Compute(release, list, Environment.GetEnvironmentVariable("DMOFFICE_FEATURES"));
         (Shown, var extra) = Display(release, list, off);
         ShownExtra = extra;
@@ -118,24 +161,55 @@ public static class Features
     // Pfade der API je Kennung - wer nicht freigeschaltet ist, bekommt 404
     private static readonly (Regex Path, string Id)[] Paths =
     [
+        (new(@"^/api/journal(/|$)", RegexOptions.IgnoreCase), Journal), // [feature:journal]
+        (new(@"^/api/(admin/)?gatekeeper(/|$)", RegexOptions.IgnoreCase), GateKeeper), // [feature:gatekeeper]
+        (new(@"^/api/admin/security/proxies(/|$)", RegexOptions.IgnoreCase), ProxyConfirm), // [feature:proxyconfirm]
+        (new(@"^/api/admin/public-url(/|$)", RegexOptions.IgnoreCase), PublicUrl), // [feature:publicurl]
+        (new(@"^/api/(sftp|auth/restore)/(host-key|trust-host)$", RegexOptions.IgnoreCase), SftpTrust), // [feature:sftptrust]
+        // Plugin-Rahmen: Liste und Verwaltung (Routen der Plugins selbst sperrt PluginHost)
+        (new(@"^/api/(admin/)?plugins(/|$)", RegexOptions.IgnoreCase), Plugins),
         (new(@"^/api/(auth|admin)/oidc(/|$)", RegexOptions.IgnoreCase), Oidc),
         (new(@"^/api/gallery/save(/|$)", RegexOptions.IgnoreCase), SaveToAblage),
+        (new(@"^/api/settings/forward-targets(/|$)", RegexOptions.IgnoreCase), RuleForward),
+        (new(@"^/forward-confirm(/|$)", RegexOptions.IgnoreCase), RuleForward),
+        (new(@"^/api/(auth/)?emergency(/|$)", RegexOptions.IgnoreCase), Emergency),
+        (new(@"^/n(/|$)", RegexOptions.IgnoreCase), Emergency),
         (new(@"^/api/mail/aliases(/|$)", RegexOptions.IgnoreCase), Catchall),
+        (new(@"^/api/mail/aliases/(sites|reply-from|senders)$", RegexOptions.IgnoreCase), CatchallDomains), // [feature:catchalldomains]
         (new(@"^/api/mail/(expiries$|[^/]+/expire(/|$))", RegexOptions.IgnoreCase), MailExpiry),
         (new(@"^/api/mail/(pgp(/|$)|[^/]+/signature$)", RegexOptions.IgnoreCase), Pgp),
+        (new(@"^/api/mail/snippets(/|$)", RegexOptions.IgnoreCase), MailSnippets), // [feature:mailsnippets]
+        (new(@"^/api/mail/signatures(/|$)", RegexOptions.IgnoreCase), MailSignatures), // [feature:mailsignatures]
         (new(@"^/api/files/(categories|tags/items)(/|$)", RegexOptions.IgnoreCase), FileCategories),
         (new(@"^/api/admin/virus(/|$)", RegexOptions.IgnoreCase), VirusScan),
+        // Systemprotokoll auf Dauer: frühere Tage aus <Daten>/logs
+        (new(@"^/api/admin/log/days?(/|$)", RegexOptions.IgnoreCase), SyslogFile),
+        (new(@"^/api/admin/users/[^/]+/(lock|unlock)$", RegexOptions.IgnoreCase), UserLock),
         (new(@"^/api/tresor(/|$)", RegexOptions.IgnoreCase), Vault),
         (new(@"^/api/gallery/imports(/|$)", RegexOptions.IgnoreCase), ImportProfiles),
+        (new(@"^/api/gallery/lens(/|$)", RegexOptions.IgnoreCase), LensCorr), // [feature:lenscorr]
+        (new(@"^/api/gallery/lens/lib(/|$)", RegexOptions.IgnoreCase), LensLib), // [feature:lenslib]
         (new(@"^/api/dms(/|$)", RegexOptions.IgnoreCase), Dms),
         (new(@"^/api/mail/[^/]+/to-dms$", RegexOptions.IgnoreCase), Dms),
+        // Kontoumsätze aus Kontoauszügen, ohne Verbindung zur Bank
+        // E-Rechnungen empfangen: Auswertung am DMS-Dokument und an Mail-Anhängen
+        // Einträge zusammenführen
+        (new(@"^/api/dms/lists/merge$", RegexOptions.IgnoreCase), DmsMerge),
+        // Bankzugang per FinTS: Person und Verwaltung, wie FinTsApi.On()
         (new(@"^/api/notes/(vault/|databases/[^/]+/(tresor|out)$)", RegexOptions.IgnoreCase), Vault),
+        (new(@"^/api/notes/(vault/[^/]+/)?-?\d+/versions(/|$)", RegexOptions.IgnoreCase), NotesVersions),
+        // Einheitliches Rückgängig: Mails zurückverschieben, gelöschten Tagebuch-Eintrag wiederherstellen
+        (new(@"^/api/mail/[^/]+/move-back$", RegexOptions.IgnoreCase), UndoAll),
+        (new(@"^/api/journal/entries/\d+/[^/]+/restore$", RegexOptions.IgnoreCase), UndoAll),
         // Module (Hauptschalter des Admins). Ein Pfad kann zu mehreren Kennungen gehören - aus ist er, wenn eine davon aus ist.
         (new(@"^/api/audio(/|$)", RegexOptions.IgnoreCase), Audio),
+        (new(@"^/api/gallery/export(/|$)", RegexOptions.IgnoreCase), PhotoExport), // [feature:photoexport]
         // Galerie: /api/gallery/info schreibt Bildangaben auch für die Dateien-Ansicht und bleibt erreichbar
         (new(@"^/api/(gallery(?!/info$)|public-album)(/|$)", RegexOptions.IgnoreCase), Gallery),
         (new(@"^/api/notes(/|$)", RegexOptions.IgnoreCase), Notes),
         (new(@"^/api/pim/(tasks|lists|list-people)(/|$)", RegexOptions.IgnoreCase), Tasks),
+        // Aufgaben: gelöschte direkt danach wiederherstellen („Rückgängig“)
+        (new(@"^/api/pim/tasks/\d+/[^/]+/restore$", RegexOptions.IgnoreCase), TaskClip),
         // Office: nur die Editor-Anbindung - Öffnen und Herunterladen in den Dateien bleibt
         (new(@"^/(api/office|wopi|onlyoffice)(/|$)", RegexOptions.IgnoreCase), Office),
     ];

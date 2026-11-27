@@ -62,8 +62,15 @@ public sealed class CryptomatorVault : IDisposable
 
     private static void WriteSync(IVaultFiles store, string rel, byte[] data) => store.WriteAsync(rel, new MemoryStream(data)).GetAwaiter().GetResult();
 
-    private static string[] Split(string path) =>
-        path.Split('/', StringSplitOptions.RemoveEmptyEntries).Select(p => p is "." or ".." ? throw new ArgumentException("Ungültiger Pfad.") : p).ToArray();
+    /// <summary>Höchste Ordnertiefe im Tresor: begrenzt die Arbeit beim Auflösen und alles, was Ordner rekursiv abläuft.</summary>
+    public const int MaxDepth = 256;
+
+    private static string[] Split(string path)
+    {
+        var parts = path.Split('/', StringSplitOptions.RemoveEmptyEntries).Select(p => p is "." or ".." ? throw new ArgumentException("Ungültiger Pfad.") : p).ToArray();
+        if (parts.Length > MaxDepth) throw new ArgumentException("Der Pfad ist zu tief verschachtelt.");
+        return parts;
+    }
 
     /// <summary>Ort eines Eintrags im Ordner der Kennung: Ordner bzw. Datei mit .c9r oder (lang) .c9s.</summary>
     private (string Node, string Encrypted, bool Short) NodeOf(string parentDirId, string name)
@@ -76,16 +83,24 @@ public sealed class CryptomatorVault : IDisposable
     private string ReadDirId(string node) => Encoding.UTF8.GetString(Store.ReadAll(node + "/" + VaultNames.DirFile)).Trim();
 
     /// <summary>Kennung eines Ordners; null, wenn es ihn nicht gibt.</summary>
-    public string? DirIdOf(string path)
+    public string? DirIdOf(string path) => Chain(path)?[^1];
+
+    /// <summary>
+    /// Kennungen von der Wurzel bis zu diesem Ordner; null, wenn es ihn nicht gibt. Verweist ein Ordner (veränderte dir.c9r) auf
+    /// die Kennung eines Ordners über ihm, gilt er als nicht vorhanden - sonst liefe alles, was Unterordner abläuft, endlos.
+    /// </summary>
+    private List<string>? Chain(string path)
     {
-        var id = VaultNames.RootDirId;
+        var ids = new List<string> { VaultNames.RootDirId };
         foreach (var part in Split(path))
         {
-            var (node, _, _) = NodeOf(id, part);
+            var (node, _, _) = NodeOf(ids[^1], part);
             if (!Store.FileExists(node + "/" + VaultNames.DirFile)) return null;
-            id = ReadDirId(node);
+            var id = ReadDirId(node);
+            if (ids.Contains(id)) return null;
+            ids.Add(id);
         }
-        return id;
+        return ids;
     }
 
     private (string ParentId, string Name) Parent(string path)
@@ -159,28 +174,19 @@ public sealed class CryptomatorVault : IDisposable
         {
             foreach (var (n, isDir, _, _) in Store.List(node)) if (!isDir) files.Add(node + "/" + n);
         }
-        var id = VaultNames.RootDirId;
-        foreach (var part in Split(path))
-        {
-            var (node, _, _) = NodeOf(id, part);
-            if (!Store.FileExists(node + "/" + VaultNames.DirFile)) return null;
-            Node(node);
-            id = ReadDirId(node);
-        }
-        var skip = skipAtRoot != null && Split(path).Length == 0 ? NodeOf(VaultNames.RootDirId, skipAtRoot).Node : null;
-        void Tree(string dirId)
-        {
-            var dir = VaultNames.DirPath(Key, dirId);
+        var chain = Chain(path);
+        if (chain == null) return null;
+        var parts = Split(path);
+        for (var i = 0; i < parts.Length; i++) Node(NodeOf(chain[i], parts[i]).Node);
+        var skip = skipAtRoot != null && parts.Length == 0 ? NodeOf(VaultNames.RootDirId, skipAtRoot).Node : null;
+        foreach (var dir in Subtree(chain))
             foreach (var (n, isDir, _, _) in Store.List(dir))
             {
                 var node = dir + "/" + n;
                 if (node == skip || n == VaultNames.DirIdBackup) continue;
                 if (!isDir) { files.Add(node); continue; }
                 Node(node);
-                if (Store.FileExists(node + "/" + VaultNames.DirFile)) Tree(ReadDirId(node));
             }
-        }
-        Tree(id);
         return files;
     }
 
@@ -240,17 +246,40 @@ public sealed class CryptomatorVault : IDisposable
     {
         var (parentId, name) = Parent(path);
         var (node, _, _) = NodeOf(parentId, name);
-        if (Store.FileExists(node + "/" + VaultNames.DirFile)) DeleteContent(ReadDirId(node));
+        if (Store.FileExists(node + "/" + VaultNames.DirFile))
+        {
+            var chain = Chain(string.Join('/', Split(path)[..^1]))!;
+            var id = ReadDirId(node);
+            // Inhalt nur, wenn die Kennung nicht auf einen Ordner darüber zeigt (sonst verschwände dessen Inhalt mit)
+            if (!chain.Contains(id))
+            {
+                chain.Add(id);
+                foreach (var dir in Subtree(chain).ToList()) Store.Delete(dir);
+            }
+        }
         Store.Delete(node);
     }
 
-    /// <summary>Inhalt eines Ordners (nach Kennung) samt Unterordnern entfernen.</summary>
-    private void DeleteContent(string dirId)
+    /// <summary>
+    /// Inhaltsordner (verschlüsselte Pfade) des letzten Ordners der Kette samt aller Unterordner, ohne Rekursion. Jede Kennung
+    /// nur einmal, die Kennungen der Kette darüber nie: veränderte dir.c9r-Dateien führen so weder in eine Schleife noch nach oben.
+    /// </summary>
+    private IEnumerable<string> Subtree(List<string> chain)
     {
-        var dir = VaultNames.DirPath(Key, dirId);
-        foreach (var (nodeName, isDirNode, _, _) in Store.List(dir))
-            if (isDirNode && Store.FileExists(dir + "/" + nodeName + "/" + VaultNames.DirFile)) DeleteContent(ReadDirId(dir + "/" + nodeName));
-        Store.Delete(dir);
+        var seen = new HashSet<string>(chain, StringComparer.Ordinal);
+        var todo = new Stack<string>();
+        todo.Push(chain[^1]);
+        while (todo.Count > 0)
+        {
+            var dir = VaultNames.DirPath(Key, todo.Pop());
+            yield return dir;
+            foreach (var (nodeName, isDirNode, _, _) in Store.List(dir))
+            {
+                if (!isDirNode || !Store.FileExists(dir + "/" + nodeName + "/" + VaultNames.DirFile)) continue;
+                var id = ReadDirId(dir + "/" + nodeName);
+                if (seen.Add(id)) todo.Push(id);
+            }
+        }
     }
 
     /// <summary>Umbenennen oder verschieben. Der Inhalt bleibt, nur der verschlüsselte Name wird neu (ein Ordner behält seine Kennung).</summary>

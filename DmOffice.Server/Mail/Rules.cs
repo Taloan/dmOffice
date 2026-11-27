@@ -12,13 +12,20 @@ public sealed class RuleOutcome
     /// <summary>Entfernen nach Zeit (MailExpiry): Tage ab Eingang; bei mehreren Regeln gilt die kuerzeste Frist.</summary>
     public int? TrashAfterDays, DestroyAfterDays;
     public List<string> CopyTo { get; } = new();
+    // [feature:rulecopyread]
+    /// <summary>Ziele aus <see cref="CopyTo"/>, deren Kopie als gelesen abgelegt wird.</summary>
+    public HashSet<string> CopyRead { get; } = new();
+    // [/feature:rulecopyread]
     public List<string> ForwardTo { get; } = new();
+    /// <summary>Umleiten (Kennung ruleforward): die Mail unverändert weiterschicken.</summary>
+    public List<string> RedirectTo { get; } = new();
     public List<string> Categories { get; } = new();
     public List<string> Applied { get; } = new();
 }
 
 public static class Rules
 {
+
     public static RuleOutcome Evaluate(IEnumerable<MailRule> rules, string accountId, MimeMessage m)
     {
         var outcome = new RuleOutcome();
@@ -33,7 +40,12 @@ public static class Rules
                 switch (a.Type)
                 {
                     case "move": outcome.MoveTo = a.Value; break;
-                    case "copy": outcome.CopyTo.Add(a.Value); break;
+                    case "copy":
+                        outcome.CopyTo.Add(a.Value);
+                        // [feature:rulecopyread]
+                        if (a.Read) outcome.CopyRead.Add(a.Value);
+                        // [/feature:rulecopyread]
+                        break;
                     case "markRead": outcome.MarkRead = true; break;
                     case "flag": outcome.Flag = true; break;
                     case "category": if (a.Value.Length > 0) outcome.Categories.Add(a.Value); break;
@@ -45,12 +57,30 @@ public static class Rules
                         if (m.Headers["X-dmOffice-Forwarded"] == null)
                             outcome.ForwardTo.AddRange(a.Value.Split(',', ';').Select(x => x.Trim()).Where(x => x.Contains('@')));
                         break;
+                    case "redirect":
+                        // Wie Weiterleiten: Umgeleitetes (es trägt das Kennzeichen) nicht noch einmal
+                        if (Features.On(Features.RuleForward) && m.Headers["X-dmOffice-Forwarded"] == null)
+                            outcome.RedirectTo.AddRange(a.Value.Split(',', ';').Select(x => x.Trim()).Where(x => x.Contains('@')));
+                        break;
                     case "stop": stop = true; break;
                 }
             }
             if (stop) break;
         }
         return outcome;
+    }
+
+    /// <summary>Was an den Aktionen einer Regel so nicht wirken kann (Zieladressen, Tage) - für das Speichern; sonst null.</summary>
+    public static string? Problem(MailRule r)
+    {
+        foreach (var a in r.Actions)
+        {
+            if (a.Type is "forward" or "redirect" && ForwardTargets.Invalid(a.Value) is { Count: > 0 } bad)
+                return $"Bitte gültige Mailadressen eingeben: {string.Join(", ", bad)}";
+            if (a.Type is "trashAfter" or "destroyAfter" && Days(a.Value) == null)
+                return $"Bitte eine Zahl von 1 bis 3650 Tagen eingeben, Regel: {r.Name}";
+        }
+        return null;
     }
 
     /// <summary>Tage fuer trashAfter/destroyAfter: 1 bis 3650.</summary>

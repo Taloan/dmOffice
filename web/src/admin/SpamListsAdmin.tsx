@@ -1,9 +1,13 @@
 import { Button, Field, Input, Switch, Text, tokens } from '@fluentui/react-components'
+import { Delete20Regular } from '@fluentui/react-icons' // [feature:adminclean]
+import { RibbonActions, RibbonButton } from '../shell/Ribbon' // [feature:adminclean]
+import { useAdminPart } from './AdminPage' // [feature:adminclean]
 import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { useApp } from '../App'
 import { t } from '../i18n'
 import { AdminHeading } from './AdminHeading'
+import { useAdminDraft, useAdminSave } from './draft' // [feature:savemode]
 
 /** Spamlisten: Spamhaus-Zugangsschlüssel für den ganzen Server (kommt nie zurück in die Oberfläche) und gemeinsames Junk-Wissen. */
 export function SpamListsAdmin() {
@@ -11,7 +15,30 @@ export function SpamListsAdmin() {
   const [hasKey, setHasKey] = useState<boolean | null>(null)
   const [key, setKey] = useState('')
   const [shared, setShared] = useState(false)
+  // [feature:adminclean]
+  const tabbed = useAdminPart().part != null
+  // [feature:adminclean:else]
+  // const tabbed = false
+  // [/feature:adminclean]
   useEffect(() => { api.get<{ hasKey: boolean; sharedJunk: boolean }>('/api/admin/spamlists').then(r => { setHasKey(r.hasKey); setShared(r.sharedJunk) }).catch(fail) }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  // [feature:savemode]
+  // Kennung savemode: neuer Schlüssel und Schalter gelten erst mit „Speichern“ im Menüband
+  const drafting = useAdminSave({
+    dirty: !!key.trim(),
+    save: async () => {
+      try { const r = await api.put<{ hasKey: boolean }>('/api/admin/spamlists', { key: key.trim() }); setHasKey(r.hasKey); setKey(''); notify(t('Gespeichert')); return true }
+      catch (e) { fail(e); return false }
+    },
+    discard: () => setKey(''),
+  })
+  const sharedDraft = useAdminDraft(shared, async on => {
+    try { const r = await api.put<{ sharedJunk: boolean }>('/api/admin/spamlists/shared', { on }); setShared(r.sharedJunk); notify(t('Gespeichert')); return true } catch (e) { fail(e); return false }
+  })
+  const sharedShown = drafting ? sharedDraft.value : shared
+  // [feature:savemode:else]
+  // const drafting = false
+  // const sharedShown = shared
+  // [/feature:savemode]
   if (hasKey === null) return null
   const save = async (value: string) => {
     try {
@@ -21,6 +48,7 @@ export function SpamListsAdmin() {
     } catch (e) { fail(e) }
   }
   const share = async (on: boolean) => {
+    if (drafting) { sharedDraft.set(on); return } // [feature:savemode]
     try { const r = await api.put<{ sharedJunk: boolean }>('/api/admin/spamlists/shared', { on }); setShared(r.sharedJunk); notify(t('Gespeichert')) } catch (e) { fail(e) }
   }
   return (
@@ -30,14 +58,19 @@ export function SpamListsAdmin() {
       <Field label={t('Spamhaus-Zugangsschlüssel')} hint={hasKey ? t('Ein Schlüssel ist hinterlegt.') : t('Kein Schlüssel hinterlegt.')}>
         <Input type="password" value={key} onChange={(_, d) => setKey(d.value)} placeholder={hasKey ? '••••••••' : ''} autoComplete="off" />
       </Field>
-      <div style={{ display: 'flex', gap: 8 }}>
-        <Button appearance="primary" disabled={!key.trim()} onClick={() => save(key.trim())}>{t('Speichern')}</Button>
+      {/* [feature:adminclean] */}
+      {tabbed && <RibbonActions>
+        {hasKey && <RibbonButton icon={<Delete20Regular />} label={t('Schlüssel entfernen')} onClick={() => save('')} />}
+      </RibbonActions>}
+      {/* [/feature:adminclean] */}
+      {!tabbed && (!drafting || hasKey) && <div style={{ display: 'flex', gap: 8 }}>
+        {!drafting && <Button appearance="primary" disabled={!key.trim()} onClick={() => save(key.trim())}>{t('Speichern')}</Button>}
         {hasKey && <Button onClick={() => save('')}>{t('Schlüssel entfernen')}</Button>}
-      </div>
+      </div>}
       <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>{t('Welche Listen gefragt werden, stellt jeder Benutzer unter Einstellungen → E-Mail → Junk-E-Mail ein.')}</Text>
       <AdminHeading>{t('Gemeinsames Junk-Wissen')}</AdminHeading>
       <Text>{t('Klickt jemand auf diesem Server „Junk“, merkt sich dmOffice unlesbare Prüfsummen von Betreff, Absenderdomain, Links und Textabschnitten. Kommt dieselbe Mail (auch leicht verändert) bei anderen an, gilt sie dort ab einer Meldung als unsicher, ab zwei als Junk. Meldungen gelten 30 Tage; jeder kann in seinen Junk-Einstellungen aussteigen.')}</Text>
-      <Switch label={t('Gemeinsames Junk-Wissen einschalten')} checked={shared} onChange={(_, d) => share(d.checked)} />
+      <Switch label={t('Gemeinsames Junk-Wissen einschalten')} checked={sharedShown} onChange={(_, d) => share(d.checked)} />
     </div>
   )
 }

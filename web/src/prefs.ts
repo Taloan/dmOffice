@@ -31,6 +31,20 @@ export interface UiPrefs {
   folderDensity?: 'compact' | 'normal' | 'roomy'     // Abstände der Ordnerliste
   listDensity?: 'compact' | 'normal' | 'roomy'       // Abstände der Nachrichtenliste
   showPreview?: boolean
+  /** Dateien: Ordner-Tabs je Fenster (Kennung foldertabs), links und rechts */
+  filesTabs0?: { list: unknown[]; i: number }
+  filesTabs1?: { list: unknown[]; i: number }
+  /** Dunkler Modus: Inhalte dunkel, Kopf und Leisten heller (Kennung darkswap) */
+  darkSwap?: boolean
+  /** Dunkler Modus: Helligkeit der helleren Fläche in Prozent (Vorgabe: getauscht 75, sonst 100) */
+  darkLight?: number
+  /** Mail: zuletzt gesuchte Begriffe (Kennung mailsearchhist), neueste zuerst; mailSearchHistoryOff schaltet das Merken ab */
+  mailSearchHistory?: string[]
+  mailSearchHistoryOff?: boolean
+  /** Mail: Zeilen Vorschautext in der Liste (Kennung mailpreview); ohne Angabe gilt showPreview (an = 1 Zeile) */
+  previewLines?: 0 | 1 | 2
+  /** Mail: größte Zeilenlänge reiner Text-Mails in Zeichen, 0 = volle Breite (Kennung mailplain) */
+  plainWidth?: number
   showAvatars?: boolean
   readingPane?: 'right' | 'bottom' | 'off'
   folderPane?: boolean
@@ -64,6 +78,9 @@ export interface UiPrefs {
   photoStack?: boolean
   /** Galerie: Kacheln eingepasst (ganzes Bild) statt ausgefüllt (zugeschnitten) */
   photoFit?: boolean
+  /** Galerie (Kennung tilehead): Kopfzeile der Kachel „Voll“, acht Vorlagen mit Platzhaltern (Z1 links, Z1 rechts, …); ohne: Vorgabe */
+  photoTileHead?: string[]
+  photoTileMode?: 'full' | 'image' | 'mosaic'                  // Galerie (Kennung tilemodes): Kachel „Voll“ (Kopfzeile, Leiste) oder „Nur Bild“; ohne: bisherige Kachel. Taste K
   /** Galerie: bis zu drei Angaben unter jedem Bild (TILE_INFOS) */
   photoTileInfo?: string[]
   photoTileLabel?: boolean                            // Galerie: Farbmarkierung als farbiger Rahmen um das Bild (zählt nicht zu den drei Bildinfos)
@@ -77,6 +94,8 @@ export interface UiPrefs {
   dmsTrees?: { name: string; levels: string[] }[]
   /** DMS: Dokumentliste als Liste oder Kacheln, Kachelgröße stufenlos (Regler wie in der Galerie) */
   dmsView?: 'list' | 'tiles'
+  /** DMS: Detailbereich rechts, unten oder ausgeblendet (dmskeys) */
+  dmsDetail?: 'right' | 'bottom' | 'off'
   /** Tabellen (GridColumns): Spalten mit Breite und Sortierung je Tabelle */
   tableCols?: Record<string, { key: string; width: number }[]>
   tableSort?: Record<string, { key: string; desc: boolean }>
@@ -97,11 +116,23 @@ export interface UiPrefs {
   fileCols?: { key: string; width: number }[]
   /** Detailansicht: Breite der Spalte Name (leer: was uebrig bleibt) */
   fileNameWidth?: number
-  /** Reihenfolge der Bereiche in der Leiste links (mit Umschalt/Strg verschoben); fehlende kommen hinten dran */
+  /** Reihenfolge der Bereiche in der Leiste links (mit Umschalt/Strg verschoben); fehlende kommen hinten dran. Mit Kennung railsep auch Trenner („sep:<id>“, shell/railsep.ts) */
   moduleOrder?: string[]
+  // [feature:navcolors]
+  /** Farben der Symbole in der Leiste links (Kennung navcolors, ab 2.2): Bereich bzw. „g:<Gruppe>“ → Farbe aus der Akzent-Palette; ohne Eintrag die Akzentfarbe */
+  navColors?: Record<string, string>
+  // [/feature:navcolors]
   /** Kachelgroesse in der Dateiablage */
   fileTile?: 'small' | 'medium' | 'large'
   fileTilePx?: number                                  // Kachelgröße stufenlos (Schieberegler wie in Lightroom); ohne: aus fileTile
+  /** Dateien: Einträge im oberen Bereich der Seitenleiste über „Meine Dateien“ (Kennung navtop); ohne: die Favoriten */
+  filesNavTop?: string[]
+  /** Dateien: Komfort ein/aus (Einstellungen → Dateien → Bedienung), siehe settings/FilesComfortSettings */
+  filesComfort?: { perFolder?: boolean; collapse?: boolean; highlight?: boolean; dragOpen?: boolean; dragDelay?: number; addressBar?: boolean; commander?: boolean; dualTree?: 'shared' | 'own'; typeAhead?: boolean; tabs?: boolean }
+  /** Dateien: zwei Dateilisten nebeneinander (Kennung dualpane); nicht auf dem Handy */
+  filesDual?: boolean
+  /** Ansicht je Ordner wie im Windows Explorer (Kennung folderviews): Darstellung, Sortierung, Gruppierung, Kachelgröße. Ohne Eintrag gelten die Vorgaben oben. */
+  folderViews?: Record<string, { view?: 'details' | 'tiles'; sort?: 'name' | 'modified' | 'size' | 'kind' | 'created' | 'ext' | 'taken'; desc?: boolean; group?: 'none' | 'kind' | 'date'; tilePx?: number }>
   /** Dateien: Namen mit führendem Punkt (.trash, .obsidian, .stfolder ...) zeigen; Vorgabe aus */
   fileHidden?: boolean
   /** Breiten der Bereiche (Ordnerleiste, Liste, Details …) je Tab, in px (shell/Splitter.tsx) */
@@ -118,7 +149,7 @@ export interface UiPrefs {
   workDays?: number[]
   slotMinutes?: number
   weekNumbers?: boolean
-  defaultReminder?: number | null
+  defaultReminder?: number | null               // Minuten; fehlt = 15, -1 (alt: null) = keine; App liest denselben Wert
   // Benachrichtigungen
   notifyMail?: boolean
   notifyCalendar?: boolean
@@ -129,7 +160,9 @@ export interface UiPrefs {
   searchDeleted?: boolean
   searchRelevance?: boolean
   searchSort?: 'newest' | 'oldest' | 'relevance' | 'from' | 'subject'   // Reihenfolge der Suchtreffer
-  listSort?: 'newest' | 'oldest' | 'from' | 'subject' | 'size' | 'attachment' | 'unread' | 'flagged'   // Reihenfolge der Mailliste
+  listSort?: 'newest' | 'oldest' | 'from' | 'subject' | 'size' | 'attachment' | 'unread' | 'flagged' | 'to'   // Reihenfolge der Mailliste
+  mailToColumn?: boolean   // Mailliste: Spalte „An“ (Kennung mailtocolumn), Vorgabe aus
+  mailThreads?: boolean   // Mailliste: Als Unterhaltungen anzeigen (Kennung mailthreads), Vorgabe aus
 }
 
 const KEY = 'dmoffice.ui'
@@ -156,23 +189,34 @@ export const usePrefs = () => useContext(PrefsContext)
 export function usePrefsState() {
   const [prefs, setPrefs] = useState<UiPrefs>(currentPrefs)
   const timer = useRef<number | undefined>(undefined)
+  // Nur geaenderte Felder schicken: ein anderer Tab mit altem Stand oder ein Speichern vor dem
+  // ersten Laden ueberschreibt so keine anderen Einstellungen (etwa die Mail-Favoriten).
+  const pending = useRef<Record<string, unknown>>({})
 
   useEffect(() => {
     api.get<UiPrefs>('/api/settings/ui').then(p => {
+      // vor dem Laden schon geaenderte Felder behalten
+      const local = Object.fromEntries(Object.entries(pending.current).map(([k, v]) => [k, v ?? undefined]))
+      const next = { ...p, ...local } as UiPrefs
+      setPrefs(next); publish(next)
       // Auf einem anderen Geraet die Sprache gewechselt: einmal neu laden
-      setPrefs(p); publish(p)
       if (p.language && p.language !== document.documentElement.lang) location.reload()
     }).catch(() => {})
   }, [])
 
   const update = useCallback((patch: Partial<UiPrefs>) => {
+    for (const [k, v] of Object.entries(patch)) pending.current[k] = v === undefined ? null : v
     setPrefs(prev => {
       const next = { ...prev, ...patch }
       publish(next)
-      clearTimeout(timer.current)
-      timer.current = window.setTimeout(() => { api.put('/api/settings/ui', next).catch(() => {}) }, 400)
       return next
     })
+    clearTimeout(timer.current)
+    timer.current = window.setTimeout(() => {
+      const send = pending.current
+      pending.current = {}
+      api.patch('/api/settings/ui', send).catch(() => {})
+    }, 400)
   }, [])
 
   return { prefs, update }
@@ -187,4 +231,10 @@ export function usePrefsVersion(): number {
     return () => window.removeEventListener('dmoffice:prefs', on)
   }, [])
   return n
+}
+
+/** Standard-Erinnerung für neue Termine in Minuten, null = keine. Fehlt der Wert, gilt 15. */
+export function defaultReminderOf(p: UiPrefs): number | null {
+  const v = p.defaultReminder
+  return v === undefined ? 15 : v == null || v < 0 ? null : v
 }

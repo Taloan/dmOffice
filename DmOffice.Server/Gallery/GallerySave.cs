@@ -45,17 +45,30 @@ public static class GallerySave
         return Safe(name);
     }
 
+    private static string Clean(string s) =>
+        new string(s.Select(c => Path.GetInvalidFileNameChars().Contains(c) || c is '/' or '\\' ? '_' : c).ToArray()).Trim(' ', '.');
+
     private static string Safe(string s)
     {
-        var clean = new string(s.Select(c => Path.GetInvalidFileNameChars().Contains(c) || c is '/' or '\\' ? '_' : c).ToArray()).Trim(' ', '.');
+        var clean = Clean(s);
         return clean.Length == 0 ? "Galerie" : clean;
     }
+
+    /// <summary>Zielordner aus der Eingabe: Teile aus nur Punkten oder Leerzeichen („..“, „ “) fallen weg,
+    /// bleibt nichts übrig, gilt der Vorgabeordner.</summary>
+    private static string FolderOf(string? input)
+    {
+        var parts = (input ?? "").Split('/', '\\').Select(Clean).Where(p => p.Length > 0).ToList();
+        return parts.Count == 0 ? DefaultFolder : string.Join('/', parts);
+    }
+
+    /// <summary>Höchstlänge eines Ordnernamens im Zielordner (Dateisysteme erlauben 255 Bytes je Name).</summary>
+    public const int MaxFolderPart = 100;
 
     /// <summary>Zielordner in der Ablage für ein Foto (ohne Dateinamen).</summary>
     public static string TargetDir(string folder, string order, string source, string relPath, DateTime taken)
     {
-        var root = string.Join('/', folder.Split('/', StringSplitOptions.RemoveEmptyEntries).Select(Safe));
-        if (root.Length == 0) root = DefaultFolder;
+        var root = FolderOf(folder);
         var y = taken.ToString("yyyy", CultureInfo.InvariantCulture);
         var m = taken.ToString("MM", CultureInfo.InvariantCulture);
         var relDir = relPath.Contains('/') ? relPath[..relPath.LastIndexOf('/')] : "";
@@ -84,10 +97,12 @@ public static class GallerySave
         api.MapPut("/save/settings", (SettingsBody b, HttpContext http) =>
         {
             if (b.Order != null && !Orders.Contains(b.Order)) throw new ArgumentException("Unbekannte Ordnung.");
-            var folder = string.Join('/', (b.Folder ?? "").Split('/', StringSplitOptions.RemoveEmptyEntries).Select(Safe));
+            var folder = FolderOf(b.Folder);
+            if (folder.Split('/').Any(p => p.Length > MaxFolderPart))
+                throw new ArgumentException("Ein Ordnername im Zielordner ist zu lang (höchstens 100 Zeichen).");
             http.Space().UpdateSettings(s =>
             {
-                s.SaveFolder = folder.Length == 0 ? DefaultFolder : folder;
+                s.SaveFolder = folder;
                 s.SaveOrder = b.Order ?? SourceMonth;
                 s.SaveSkipKnown = b.SkipKnown;
                 s.SaveHintSeen = b.HintSeen || s.SaveHintSeen;
@@ -100,7 +115,7 @@ public static class GallerySave
         {
             var space = http.Space();
             var ids = b.Ids.Select(i => i.StartsWith("ext:", StringComparison.Ordinal) ? i[4..] : i).Where(i => i.Contains('/')).Distinct().ToList();
-            if (ids.Count == 0) throw new ArgumentException("Bitte Fotos aus einem Galerie-Ordner auswählen - was schon in der Ablage liegt, muss nicht gesichert werden.");
+            if (ids.Count == 0) throw new ArgumentException("Bitte Fotos aus einem externen Galerie-Ordner auswählen - was schon in der Ablage liegt, muss nicht gesichert werden.");
             if (ids.Count > 5000) throw new ArgumentException("Höchstens 5000 Fotos auf einmal.");
             var s = space.Settings;
             var folder = string.IsNullOrWhiteSpace(s.SaveFolder) ? DefaultFolder : s.SaveFolder;

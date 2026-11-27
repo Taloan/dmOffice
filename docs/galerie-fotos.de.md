@@ -2,7 +2,7 @@
 
 **Deutsch** · [English](galerie-fotos.md)
 
-Stand: Version 2. Gilt für Fotos in der eigenen Ablage und in Galerie-Ordnern (externe Ordner, die in der Galerie stehen).
+Stand: Version 2. Gilt für Fotos in der eigenen Ablage und in externen Galerie-Ordnern (externe Ordner, die in der Galerie stehen).
 
 ## Wo die Angaben landen
 
@@ -16,8 +16,8 @@ dmOffice schreibt Angaben dorthin, wo andere Programme (Lightroom, darktable, di
 - Nach dem Schreiben liest dmOffice das Ergebnis zurück und prüft es (Bilddaten gleich, Aufnahmezeit und Kamera wie
   vorher, Ort wie gewollt). Schlägt die Prüfung fehl, bleibt die Datei unverändert.
 
-Galerie-Ordner müssen dafür beschreibbar eingebunden sein. Für RAW-Fotos in einem Galerie-Ordner müssen dort
-„XMP-Dateien“ eingeschaltet sein (*Galerie* → *Galerie-Ordner*), sonst läse die Galerie das Geschriebene nicht.
+Externe Galerie-Ordner müssen dafür beschreibbar eingebunden sein. Für RAW-Fotos in einem externen Galerie-Ordner müssen dort
+„XMP-Dateien“ eingeschaltet sein (*Galerie* → *Externe Galerie-Ordner*), sonst läse die Galerie das Geschriebene nicht.
 
 Beim Lesen geht eine XMP-Datei den Angaben im Foto vor, und XMP geht IPTC vor.
 

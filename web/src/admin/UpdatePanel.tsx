@@ -2,12 +2,15 @@ import {
   Badge, Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, MessageBar, MessageBarBody,
   ProgressBar, Select, Spinner, Table, TableBody, TableCell, TableHeader, TableHeaderCell, TableRow, Text, makeStyles, tokens,
 } from '@fluentui/react-components'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { ArrowClockwise20Regular, Delete20Regular, Eye20Regular, Pause20Regular, Play20Regular, Warning20Regular } from '@fluentui/react-icons'
+import { useCallback, useContext, useEffect, useRef, useState } from 'react'
+import { RibbonActions, RibbonButton, RibbonDivider, RibbonSlot } from '../shell/Ribbon'
 import { api, fmtSize } from '../api'
 import { useApp } from '../App'
 import { t, locale } from '../i18n'
 import { AdminHeading } from './AdminHeading'
 import { askConfirm } from '../shell/context'
+import { useAdminDraft } from './draft' // [feature:savemode]
 
 // Migrations-Assistent: was an Datenaenderungen ansteht oder laeuft, mit Platz, Fortschritt und den Schaltern
 // "Jetzt starten", "Pausieren", "Sicherung ansehen". Gleiche Daten wie GET /api/admin/update (UpdateCenter.Describe).
@@ -87,7 +90,17 @@ export function UpdatePanel({ gate = false }: { gate?: boolean }) {
   const { fail, notify } = useApp()
   const [info, , setInfo] = useUpdateInfo()
   const [viewing, setViewing] = useState<Backup | null>(null)
+  // In der Verwaltung mit Menüband stehen die Aktionen dort; auf der Sperrseite (gate) gibt es kein Menüband
+  const inRibbon = useContext(RibbonSlot) != null
+  const [selBackup, setSelBackup] = useState<string | null>(null)
   const [confirmNoBackup, setConfirmNoBackup] = useState(false)
+  // [feature:savemode]
+  // Kennung savemode: Aufbewahrung erst mit „Speichern“ im Menüband; kürzer heißt, ältere Sicherungen verschwinden
+  const keep = useAdminDraft(info?.keepDays ?? 0, async keepDays => {
+    try { setInfo(await api.put('/api/admin/update/settings', { keepDays })); return true } catch (e) { fail(e); return false }
+  }, async (from, to) => to === 0 || (from !== 0 && to >= from) || await askConfirm(t('Aufbewahrung verkürzen?'),
+    t('Sicherungen, die älter als {n} Tage sind, löscht dmOffice danach.', { n: to }), t('Verkürzen')))
+  // [/feature:savemode]
 
   if (!info) return <Spinner />
 
@@ -107,8 +120,11 @@ export function UpdatePanel({ gate = false }: { gate?: boolean }) {
   const blobsOpen = info.blobs.filter(b => b.report && b.report.state !== 'idle')
   const anyNoBackup = pendingUsers.some(u => u.plan.state === 'backup-space')
   const anyConsent = pendingUsers.some(u => u.plan.state === 'consent') || blobsOpen.some(b => b.report!.state === 'consent')
+  // „Startet gleich“ wartet nur, bis der laufende Umbau fertig ist - dafür braucht es kein „Jetzt starten“
+  const canStart = anyConsent || (pendingUsers.some(u => u.plan.state === 'ready') && !pendingUsers.some(u => u.plan.state === 'running'))
   const anyBlobRunning = blobsOpen.some(b => b.report!.state === 'running' || b.activity?.state === 'running')
   const nothing = pendingUsers.length === 0 && blobsOpen.length === 0
+  const pickedBackup = info.backups.find(b => b.name === selBackup) ?? null
 
   return (
     <div className={s.root}>
@@ -200,9 +216,18 @@ export function UpdatePanel({ gate = false }: { gate?: boolean }) {
         </div>
       ))}
 
-      {(!nothing || info.paused) && (
+      {inRibbon && <RibbonActions>
+        <RibbonButton primary icon={<Play20Regular />} label={t('Jetzt starten')} disabled={!canStart} onClick={() => start()} />
+        {anyNoBackup && <RibbonButton icon={<Warning20Regular />} label={t('Ohne Sicherung fortfahren')} onClick={() => setConfirmNoBackup(true)} />}
+        <RibbonButton icon={info.paused ? <Play20Regular /> : <Pause20Regular />} label={info.paused ? t('Fortsetzen') : t('Pausieren')} disabled={!(anyBlobRunning || info.paused)} onClick={() => pause(!info.paused)} />
+        <RibbonButton icon={<ArrowClockwise20Regular />} label={t('Erneut prüfen')} onClick={recheck} />
+        <RibbonDivider />
+        <RibbonButton icon={<Eye20Regular />} label={t('Sicherung ansehen')} disabled={!pickedBackup} onClick={() => pickedBackup && setViewing(pickedBackup)} />
+        <RibbonButton icon={<Delete20Regular />} label={t('Sicherung löschen')} disabled={!pickedBackup} onClick={() => pickedBackup && removeBackup(pickedBackup)} />
+      </RibbonActions>}
+      {!inRibbon && (!nothing || info.paused) && (
         <div className={s.buttons}>
-          {(anyConsent || pendingUsers.some(u => u.plan.state === 'ready')) && <Button appearance="primary" onClick={() => start()}>{t('Jetzt starten')}</Button>}
+          {canStart && <Button appearance="primary" onClick={() => start()}>{t('Jetzt starten')}</Button>}
           {anyNoBackup && <Button onClick={() => setConfirmNoBackup(true)}>{t('Ohne Sicherung fortfahren')}</Button>}
           {(anyBlobRunning || info.paused) && (
             <Button onClick={() => pause(!info.paused)}>{info.paused ? t('Fortsetzen') : t('Pausieren')}</Button>
@@ -220,7 +245,11 @@ export function UpdatePanel({ gate = false }: { gate?: boolean }) {
           </Text>
           <div className={s.head}>
             <Text>{t('Aufbewahren')}</Text>
-            <Select value={String(info.keepDays)} onChange={(_, d) => setKeep(Number(d.value))}>
+            {/* [feature:savemode] */}
+            <Select value={String(keep.on ? keep.value : info.keepDays)} onChange={(_, d) => keep.on ? keep.set(Number(d.value)) : setKeep(Number(d.value))}>
+            {/* [feature:savemode:else] */}
+            {/* <Select value={String(info.keepDays)} onChange={(_, d) => setKeep(Number(d.value))}> */}
+            {/* [/feature:savemode] */}
               {[...new Set([3, 7, 14, 30, 60, 90, info.keepDays])].sort((a, b) => a - b).map(v => <option key={v} value={String(v)}>{t('{n} Tage', { n: v })}</option>)}
               <option value="0">{t('nie löschen')}</option>
             </Select>
@@ -234,19 +263,21 @@ export function UpdatePanel({ gate = false }: { gate?: boolean }) {
                   <TableHeaderCell>{t('Angelegt')}</TableHeaderCell>
                   <TableHeaderCell>{t('Benutzer')}</TableHeaderCell>
                   <TableHeaderCell>{t('Größe')}</TableHeaderCell>
-                  <TableHeaderCell />
+                  {!inRibbon && <TableHeaderCell />}
                 </TableRow></TableHeader>
                 <TableBody>
                   {info.backups.map(b => (
-                    <TableRow key={b.name}>
+                    <TableRow key={b.name} aria-selected={inRibbon ? selBackup === b.name : undefined}
+                      onClick={inRibbon ? () => setSelBackup(b.name) : undefined} onDoubleClick={inRibbon ? () => setViewing(b) : undefined}
+                      style={inRibbon ? { cursor: 'default', background: selBackup === b.name ? tokens.colorNeutralBackground1Selected : undefined } : undefined}>
                       <TableCell>{b.name}</TableCell>
                       <TableCell>{new Date(b.created).toLocaleString(locale)}</TableCell>
                       <TableCell>{b.users.map(u => u.login).join(', ')}</TableCell>
                       <TableCell>{fmtSize(b.bytes)}</TableCell>
-                      <TableCell>
+                      {!inRibbon && <TableCell>
                         <Button size="small" onClick={() => setViewing(b)}>{t('Sicherung ansehen')}</Button>{' '}
                         <Button size="small" appearance="subtle" onClick={() => removeBackup(b)}>{t('Löschen')}</Button>
-                      </TableCell>
+                      </TableCell>}
                     </TableRow>
                   ))}
                 </TableBody>
@@ -310,6 +341,7 @@ export interface UpdateState {
   isAdmin: boolean
   mine: { pending: boolean; state: string; from: number; to: number; missingBytes: number; backupMissingBytes: number; needsConsent: boolean }
   attention: boolean
+  progress?: { done: number | null; total: number | null; detail: string | null; started: string | null } | null // [feature:migrationprogress]
 }
 
 export function UpdateGate({ state }: { state: UpdateState }) {
@@ -319,6 +351,15 @@ export function UpdateGate({ state }: { state: UpdateState }) {
     <div style={{ padding: '24px 32px', overflowY: 'auto', height: '100%', boxSizing: 'border-box' }}>
       <div className={s.root}>
         <Text size={700} weight="semibold">{t('Die Daten werden auf den neuen Stand gebracht')}</Text>
+        {/* [feature:migrationprogress] */}
+        {state.progress && <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <ProgressBar value={state.progress.total ? (state.progress.done ?? 0) / state.progress.total : undefined} thickness="large" />
+          <Text>{state.progress.total
+            ? t('Schritt {n} von {m}: {title}', { n: (state.progress.done ?? 0) + 1, m: state.progress.total, title: state.progress.detail ? t(state.progress.detail) : '' })
+            : state.progress.detail ? t(state.progress.detail) : t('läuft')}</Text>
+          <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>{t('Die Seite öffnet sich von selbst, sobald alles fertig ist.')}</Text>
+        </div>}
+        {/* [/feature:migrationprogress] */}
         {!me.isAdmin ? (
           <MessageBar intent="info"><MessageBarBody>
             {t('dmOffice wurde aktualisiert und bringt deine Daten gerade auf den neuen Stand. Das dauert oder wartet auf die Verwaltung (Platz, Freigabe). Nichts geht verloren – bitte später wieder öffnen.')}

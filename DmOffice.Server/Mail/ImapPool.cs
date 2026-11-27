@@ -53,6 +53,10 @@ public sealed class ImapPool : IDisposable
     public async Task<T> UseAsync<T>(MailAccount account, string lane, Func<ImapClient, Task<T>> work, CancellationToken ct = default)
     {
         RequireServer(account);
+        // [feature:mailaccountoff]
+        // Deaktiviert: auch keine schon offene Verbindung weiterverwenden
+        if (account.Off) throw new AuthenticationException("Dieses Mailkonto ist deaktiviert.");
+        // [/feature:mailaccountoff]
         var slot = _slots.GetOrAdd(account.Id + "|" + lane, _ => new Slot());
         await slot.Gate.WaitAsync(ct);
         try
@@ -121,7 +125,7 @@ public sealed class ImapPool : IDisposable
         try
         {
             if (account.AcceptAnyCertificate) client.ServerCertificateValidationCallback = (_, _, _, _) => true;
-            await client.ConnectAsync(account.ImapHost, account.ImapPort, Options(account.ImapSecurity), ct);
+            await ConnectCheckedAsync(client, account, account.ImapHost, account.ImapPort, account.ImapSecurity, ct);
             await LoginAsync(client, account, account.ImapUser, account.ImapPassword, ct);
         }
         catch
@@ -134,6 +138,47 @@ public sealed class ImapPool : IDisposable
         return client;
     }
 
+    /// <summary>
+    /// Verbinden mit genau den Adressen, die beim Verbinden geprüft wurden: der Name wird hier aufgelöst und nur an erlaubte
+    /// Adressen verbunden (nie der Server selbst, link-lokal, Multicast - wie beim Speichern des Kontos). Ein Name, der nach dem
+    /// Speichern auf 127.0.0.1 umgestellt wird, erreicht so nichts. Das Heimnetz bleibt erlaubt (selbst gehostete Mail).
+    /// </summary>
+    /// <summary>Gesperrte Ziele (Adresse, Port). Tests lassen ihren eigenen Mailserver auf 127.0.0.1 zu.</summary>
+    internal static Func<System.Net.IPAddress, int, bool> Refused { get; set; } = (a, _) => DmOffice.Storage.ExternalFolders.NeverAllowed(a);
+
+    /// <param name="keepAlive">TCP-Keepalive für lange stille Verbindungen (IDLE): eine unterwegs abgerissene Verbindung
+    /// (Router, NAT) fällt nach wenigen Minuten auf, statt bis zur nächsten Erneuerung als offen zu gelten.</param>
+    public static async Task ConnectCheckedAsync(MailService client, MailAccount account, string host, int port, Security security, CancellationToken ct, bool keepAlive = false)
+    {
+        bool anyAddress = false;
+        if (port <= 0) port = security == Security.Ssl ? (client is SmtpClient ? 465 : 993) : (client is SmtpClient ? 587 : 143);
+        var name = host.Trim().Trim('[', ']');
+        using var limit = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        limit.CancelAfter(client.Timeout > 0 ? client.Timeout : 60_000);
+        var addrs = System.Net.IPAddress.TryParse(name, out var literal) ? [literal] : await System.Net.Dns.GetHostAddressesAsync(name, limit.Token);
+        var ok = anyAddress ? addrs : addrs.Where(a => !Refused(a, port)).ToArray();
+        if (ok.Length == 0) throw new IOException("Dieser Server ist nicht erlaubt.");
+        var socket = new System.Net.Sockets.Socket(System.Net.Sockets.SocketType.Stream, System.Net.Sockets.ProtocolType.Tcp) { NoDelay = true };
+        try
+        {
+            if (keepAlive)
+            {
+                socket.SetSocketOption(System.Net.Sockets.SocketOptionLevel.Socket, System.Net.Sockets.SocketOptionName.KeepAlive, true);
+                try
+                {
+                    socket.SetSocketOption(System.Net.Sockets.SocketOptionLevel.Tcp, System.Net.Sockets.SocketOptionName.TcpKeepAliveTime, 120);
+                    socket.SetSocketOption(System.Net.Sockets.SocketOptionLevel.Tcp, System.Net.Sockets.SocketOptionName.TcpKeepAliveInterval, 30);
+                    socket.SetSocketOption(System.Net.Sockets.SocketOptionLevel.Tcp, System.Net.Sockets.SocketOptionName.TcpKeepAliveRetryCount, 4);
+                }
+                catch (System.Net.Sockets.SocketException) { /* System ohne diese Einstellungen: Vorgaben des Betriebssystems */ }
+            }
+            await socket.ConnectAsync(ok, port, limit.Token);
+            // MailKit übernimmt den Socket; der Name gilt für TLS (SNI, Zertifikat)
+            await client.ConnectAsync(socket, name, port, Options(security), ct);
+        }
+        catch { socket.Dispose(); throw; }
+    }
+
     public static SecureSocketOptions Options(Security s) => s switch
     {
         Security.Ssl => SecureSocketOptions.SslOnConnect,
@@ -144,6 +189,10 @@ public sealed class ImapPool : IDisposable
     /// <summary>Anmelden mit Passwort oder - bei Microsoft-Konten - XOAUTH2 mit frischem Access-Token.</summary>
     public static async Task LoginAsync(MailService client, MailAccount account, string user, string? password, CancellationToken ct)
     {
+        // [feature:mailaccountoff]
+        // Deaktiviertes Postfach: keine Verbindung zum Anbieter, weder IMAP noch SMTP
+        if (account.Off) throw new AuthenticationException("Dieses Mailkonto ist deaktiviert.");
+        // [/feature:mailaccountoff]
         if (account.Auth == MailAuth.Microsoft)
         {
             var oauth = OAuth ?? throw new AuthenticationException("Microsoft-Anmeldung ist auf diesem Server nicht eingerichtet (DMOFFICE_MS_CLIENT_ID).");
@@ -162,7 +211,7 @@ public sealed class ImapPool : IDisposable
         try
         {
             if (account.AcceptAnyCertificate) smtp.ServerCertificateValidationCallback = (_, _, _, _) => true;
-            await smtp.ConnectAsync(account.SmtpHost, account.SmtpPort, Options(account.SmtpSecurity), ct);
+            await ConnectCheckedAsync(smtp, account, account.SmtpHost, account.SmtpPort, account.SmtpSecurity, ct);
             var user = string.IsNullOrEmpty(account.SmtpUser) ? account.ImapUser : account.SmtpUser;
             var password = string.IsNullOrEmpty(account.SmtpPassword) ? account.ImapPassword : account.SmtpPassword;
             if (!string.IsNullOrEmpty(user)) await LoginAsync(smtp, account, user, password, ct);

@@ -702,4 +702,53 @@ public class GalleryFoldersTests : IClassFixture<ChatFixture>
         t = Size(Dav.Thumbs.FromRaw(Raw(Jpeg(300, 200), 3), 256));
         Assert.True(t.W > t.H, $"{t.W}x{t.H}");
     }
+// [feature:journal]
+
+    [Fact]
+    public async Task Tagebuch_Vorschlag_zeigt_Fotos_des_Tages_und_haengt_externe_an()
+    {
+        var services = _fx.Factory.Services;
+        var config = services.GetRequiredService<ServerConfig>();
+        var space = _fx.Space("cleo");
+        var root = Directory.CreateTempSubdirectory("dmgaltag").FullName;
+        var before = config.Current.ExternalFolders;
+        try
+        {
+            var bild = Jpeg(800, 600);
+            File.WriteAllBytes(Path.Combine(root, "ausflug.jpg"), bild);
+            // Dasselbe Foto noch einmal unter anderem Namen (z. B. vom Handy und von der Kamera-Sicherung): nur einmal vorschlagen
+            File.WriteAllBytes(Path.Combine(root, "IMG_1234.jpg"), bild);
+            File.WriteAllBytes(Path.Combine(root, "anderer-tag.jpg"), Jpeg(80, 60));
+            config.Update(s => s.ExternalFolders = [new ExternalFolderDef { Id = "galerie02", Name = "Fotos", Path = root }]);
+            var src = new GallerySource { Mount = "galerie02" };
+            GalleryFolders.Save(space.Db, [src]);
+            await new GalleryScanJob(services.GetRequiredService<Spaces>(), config, NullLogger<GalleryScanJob>.Instance).RunOnceAsync(CancellationToken.None);
+            // Aufnahmezeit setzen (die Testbilder haben kein EXIF): 12. Mai 2026, 14 Uhr Ortszeit
+            var day = new DateOnly(2026, 5, 12);
+            long At(DateOnly d) => new DateTimeOffset(TimeZoneInfo.ConvertTimeToUtc(d.ToDateTime(new TimeOnly(14, 0)), space.Zone)).ToUnixTimeMilliseconds();
+            space.Db.Exec("UPDATE gallery_ext SET taken = $t WHERE path IN ('ausflug.jpg', 'IMG_1234.jpg')", ("$t", At(day)));
+            space.Db.Exec("UPDATE gallery_ext SET taken = $t WHERE path = 'anderer-tag.jpg'", ("$t", At(day.AddDays(3))));
+
+            var c = _fx.As("cleo");
+            var r = await c.GetFromJsonAsync<JsonElement>("/api/journal/suggest/day?date=2026-05-12");
+            var photos = r.GetProperty("photos").EnumerateArray().ToList();
+            var one = Assert.Single(photos);
+            Assert.Equal("ext", one.GetProperty("kind").GetString());
+            Assert.Contains(one.GetProperty("name").GetString(), new[] { "ausflug.jpg", "IMG_1234.jpg" });
+
+            // Anhängen: als Kopie im Tagebuch, mit Aufnahmezeit aus dem Bild (hier keine) und Größe
+            var add = await c.PostAsJsonAsync("/api/journal/media/external", new { ids = new[] { one.GetProperty("path").GetString()![4..] } });
+            Assert.Equal(HttpStatusCode.OK, add.StatusCode);
+            var media = (await add.Content.ReadFromJsonAsync<JsonElement>())[0].GetProperty("media");
+            Assert.StartsWith("sys-dmoffice-journal/", media.GetProperty("path").GetString());
+            Assert.Equal(800, media.GetProperty("width").GetInt32());
+        }
+        finally
+        {
+            GalleryFolders.Save(space.Db, []);
+            config.Update(s => s.ExternalFolders = before);
+            Directory.Delete(root, recursive: true);
+        }
+    }
+// [/feature:journal]
 }

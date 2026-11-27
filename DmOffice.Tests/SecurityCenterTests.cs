@@ -88,6 +88,7 @@ public class SecurityCenterTests : IClassFixture<FilesServerFixture>
         Assert.Null(Sc.BlockOf(visitor));
     }
 
+
     [Fact]
     public async Task Schreibweisen_der_Anmeldeseite_und_Geraeteanfragen_sind_erlaubt()
     {

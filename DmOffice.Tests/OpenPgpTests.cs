@@ -255,6 +255,70 @@ public class OpenPgpTests
     }
 
     [Fact]
+    public void Fremder_Unterschluessel_neben_bestaetigtem_Hauptschluessel_gilt_nicht()
+    {
+        // Echter Schlüssel des Kontakts, von Hand importiert (bestätigt)
+        var victim = OpenPgpKeys.Generate(Db(), Account.Id, Account.DisplayName, Account.Email);
+        var me = Db();
+        OpenPgpKeys.ImportPublic(me, Encoding.ASCII.GetBytes(OpenPgpKeys.Armor(victim.Public)));
+        // Fremder legt einen eigenen Signier-Unterschlüssel (gebunden an SEINEN Hauptschlüssel) in den Ring des Kontakts
+        var (foreignSub, foreignSecret) = SigningSubkey(backSig: true);
+        var forged = PgpPublicKeyRing.InsertPublicKey(victim.Public, foreignSub);
+        var m = Mail();
+        m.Body = new Multipart("mixed") { new TextPart("plain") { Text = ClearSign(foreignSecret, "Bitte an IBAN DE00 überweisen.\n") }, KeyPart(forged) };
+        m = Roundtrip(m);
+        OpenPgpMail.Harvest(me, m);
+        Assert.Equal("unknown", OpenPgpMail.Verify(me, m)!.State);
+        Assert.Null(OpenPgpKeys.ByKeyId(me, foreignSub.KeyId));
+
+        // Auch ein schon früher so gespeicherter Ring (ohne Prüfung beim Speichern) zählt nicht
+        me.Exec("UPDATE pgp_keys SET ring=$r WHERE fingerprint=$f", ("$r", forged.GetEncoded()), ("$f", victim.Fingerprint));
+        me.Exec("INSERT OR IGNORE INTO pgp_key_ids(key_id, fingerprint) VALUES($k, $f)", ("$k", foreignSub.KeyId), ("$f", victim.Fingerprint));
+        Assert.Equal("unknown", OpenPgpMail.Verify(me, m)!.State);
+        // Der echte Hauptschlüssel prüft weiter
+        Assert.Equal("valid", OpenPgpMail.Verify(me, Roundtrip(SignedBy(victim)))!.State);
+    }
+
+    [Fact]
+    public void Gebundener_Signier_Unterschluessel_braucht_Gegensignatur()
+    {
+        var master = OpenPgpKeys.Generate(Db(), Account.Id, Account.DisplayName, Account.Email);
+        var masterSecret = master.Secret.GetSecretKey();
+        foreach (var back in new[] { true, false })
+        {
+            var (sub, subSecret) = SigningSubkey(back, masterSecret);
+            var ring = PgpPublicKeyRing.InsertPublicKey(master.Public, sub);
+            Assert.Equal(back, OpenPgpKeys.Bound(ring, ring.GetPublicKey(sub.KeyId)));
+            var me = Db();
+            OpenPgpKeys.ImportPublic(me, Encoding.ASCII.GetBytes(OpenPgpKeys.Armor(ring)));
+            var st = OpenPgpMail.Verify(me, Roundtrip(Mail(text: ClearSign(subSecret, "Hallo\n"))))!;
+            Assert.Equal(back ? "valid" : "unknown", st.State);
+        }
+        // Verschlüsselungs-Unterschlüssel ohne Signierrecht braucht keine Gegensignatur
+        Assert.All(master.Public.GetPublicKeys(), k => Assert.True(OpenPgpKeys.Bound(master.Public, k)));
+    }
+
+    [Fact]
+    public void Inline_PGP_neben_HTML_gilt_nur_fuer_einen_Teil()
+    {
+        var sender = Db();
+        var own = OpenPgpKeys.Generate(sender, Account.Id, Account.DisplayName, Account.Email);
+        var me = Db();
+        OpenPgpKeys.ImportPublic(me, Encoding.ASCII.GetBytes(OpenPgpKeys.Armor(own.Public)));
+        var block = ClearSign(OpenPgpKeys.SigningKey(own.Secret)!, "Alter Text\n");
+        // Nur der signierte Block: ganz geprüft
+        var plain = new MimeMessage();
+        plain.From.Add(new MailboxAddress("", Account.Email));
+        plain.Body = new TextPart("plain") { Text = block };
+        var st = OpenPgpMail.Verify(me, Roundtrip(plain))!;
+        Assert.Equal(("valid", false), (st.State, st.Partial));
+        // Mit beliebigem HTML-Teil daneben: nur ein Teil
+        var mixed = Mail(text: block);
+        st = OpenPgpMail.Verify(me, Roundtrip(mixed))!;
+        Assert.Equal(("valid", true), (st.State, st.Partial));
+    }
+
+    [Fact]
     public void Wkd_Adresse_wie_im_Entwurf()
     {
         // Beispiel aus draft-koch-openpgp-webkey-service
@@ -281,12 +345,70 @@ public class OpenPgpTests
 
     // ---------------- Hilfen ----------------
 
+    private static MimePart KeyPart(PgpPublicKeyRing ring) => OpenPgpMail.KeyAttachment(ring, Account.Email);
+
+    private static MimeMessage SignedBy(OpenPgpKeys.OwnKey key)
+    {
+        var m = new MimeMessage();
+        m.From.Add(new MailboxAddress("", Account.Email));
+        m.Body = new TextPart("plain") { Text = ClearSign(OpenPgpKeys.SigningKey(key.Secret)!, "Echt\n") };
+        return m;
+    }
+
+    /// <summary>Signier-Unterschlüssel, gebunden an <paramref name="master"/> (ohne Angabe: an einen neuen, fremden Hauptschlüssel),
+    /// mit oder ohne eingebettete Gegensignatur.</summary>
+    private static (PgpPublicKey Public, PgpPrivateKey Secret) SigningSubkey(bool backSig, PgpSecretKey? master = null)
+    {
+        var rnd = new SecureRandom();
+        PgpKeyPair Pair()
+        {
+            var ed = new Ed25519KeyPairGenerator();
+            ed.Init(new Ed25519KeyGenerationParameters(rnd));
+            return new PgpKeyPair(PublicKeyAlgorithmTag.EdDsa_Legacy, ed.GenerateKeyPair(), DateTime.UtcNow);
+        }
+        if (master == null)
+        {
+            var m = Pair();
+            var mf = new PgpSignatureSubpacketGenerator();
+            mf.SetKeyFlags(false, PgpKeyFlags.CanCertify);
+            master = new PgpKeyRingGenerator(PgpSignature.PositiveCertification, m, "Fremd <fremd@example.org>", SymmetricKeyAlgorithmTag.Null,
+                Array.Empty<char>(), true, mf.Generate(), null, rnd).GenerateSecretKeyRing().GetSecretKey();
+        }
+        var masterPriv = master.ExtractPrivateKey(Array.Empty<char>());
+        var sub = Pair();
+        var hashed = new PgpSignatureSubpacketGenerator();
+        hashed.SetKeyFlags(false, PgpKeyFlags.CanSign);
+        if (backSig)
+        {
+            var bg = new PgpSignatureGenerator(PublicKeyAlgorithmTag.EdDsa_Legacy, HashAlgorithmTag.Sha256);
+            bg.InitSign(PgpSignature.PrimaryKeyBinding, sub.PrivateKey);
+            hashed.SetEmbeddedSignature(false, bg.GenerateCertification(master.PublicKey, sub.PublicKey));
+        }
+        var sg = new PgpSignatureGenerator(master.PublicKey.Algorithm, HashAlgorithmTag.Sha256);
+        sg.InitSign(PgpSignature.SubkeyBinding, masterPriv);
+        sg.SetHashedSubpackets(hashed.Generate());
+        var binding = sg.GenerateCertification(master.PublicKey, sub.PublicKey);
+        // Als Unterschlüssel-Paket mit Bindungssignatur
+        var ms = new MemoryStream();
+        var bcpg = new BcpgOutputStream(ms);
+        master.PublicKey.Encode(bcpg);
+        var pk = sub.PublicKey.PublicKeyPacket;
+        new PublicSubkeyPacket(pk.Algorithm, pk.GetTime(), pk.Key).Encode(bcpg);
+        binding.Encode(bcpg);
+        bcpg.Flush();
+        var ring = new PgpPublicKeyRing(ms.ToArray());
+        var pub = ring.GetPublicKey(sub.KeyId);
+        return (pub, sub.PrivateKey);
+    }
+
     /// <summary>Klartext-Signatur, wie GnuPG sie mit --clearsign schreibt.</summary>
-    private static string ClearSign(PgpSecretKey key, string text)
+    private static string ClearSign(PgpSecretKey key, string text) => ClearSign(key.ExtractPrivateKey(Array.Empty<char>()), text, key.PublicKey.Algorithm);
+
+    private static string ClearSign(PgpPrivateKey key, string text, PublicKeyAlgorithmTag algorithm = PublicKeyAlgorithmTag.EdDsa_Legacy)
     {
         var lines = text.Replace("\r\n", "\n").TrimEnd('\n').Split('\n');
-        var gen = new PgpSignatureGenerator(key.PublicKey.Algorithm, HashAlgorithmTag.Sha256);
-        gen.InitSign(PgpSignature.CanonicalTextDocument, key.ExtractPrivateKey(Array.Empty<char>()));
+        var gen = new PgpSignatureGenerator(algorithm, HashAlgorithmTag.Sha256);
+        gen.InitSign(PgpSignature.CanonicalTextDocument, key);
         gen.Update(Encoding.UTF8.GetBytes(string.Join("\r\n", lines.Select(l => l.TrimEnd(' ', '\t')))));
         var ms = new MemoryStream();
         using (var armored = new ArmoredOutputStream(ms))

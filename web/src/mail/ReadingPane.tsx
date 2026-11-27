@@ -1,21 +1,24 @@
-import { DmsAttachmentButton, DmsFiledHint } from '../dms/MailToDms'
+import { saveUrl } from '../shell/browser'
+import { DmsAttachmentButton, DmsAttachmentMenuItem, DmsFiledHint } from '../dms/MailToDms'
 import {
-  Avatar, Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Link, MessageBar, MessageBarActions, MessageBarBody, Spinner, Text, Tooltip, makeStyles, tokens,
+  Avatar, Button, Checkbox, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Link, MessageBar, MessageBarActions, MessageBarBody, Spinner, Text, Tooltip, makeStyles, tokens,
   Menu, MenuItem, MenuList, MenuPopover, MenuTrigger, Slider,
 } from '@fluentui/react-components'
 import {
-  ArrowReply20Regular, ArrowReplyAll20Regular, ArrowForward20Regular, Attach16Regular, ArrowDownload16Regular, MoreHorizontal20Regular,
-  Code20Regular, Print20Regular, ShieldError16Regular, Delete20Regular, WeatherMoon16Regular, ZoomIn16Regular, ZoomOut16Regular,
+  Attach16Regular, ArrowDownload16Regular, LockClosed16Regular,
+  ShieldError16Regular, ZoomIn16Regular, ZoomOut16Regular, Open20Regular, ArrowDownload20Regular, Open16Regular, SaveArrowRight20Regular,
 } from '@fluentui/react-icons'
 import { useEffect, useRef, useState } from 'react'
-import { addrFull, api, fmtSize, MailItem, Message, q } from '../api'
+import { addrFull, api, featureOn, fmtSize, MailItem, Message, q } from '../api'
 import { clearAll, peek, remember } from './messageCache'
 import { useApp } from '../App'
 import { CategoryChips } from './Categories'
 import { AliasHint } from './CatchallFolders'
 import { InviteCard } from './InviteCard'
 import { PhishBar, phishWarns } from './PhishBar'
+import { checkTrust, TrustCheck } from './TrustOffer'
 import { PgpBar } from './Pgp'
+import { CheckArea } from './CheckArea'
 import { SpamWhy } from './SpamWhy'
 import { SmartCard } from './SmartCard'
 import { fmtLong } from '../shell/hooks'
@@ -25,8 +28,10 @@ import { t } from '../i18n'
 import { Viewer } from '../files/Viewer'
 import { Item, Source, viewKind } from '../files/common'
 import { OfficeEditor, officeMode, useOffice } from '../files/Office'
-import { askConfirm } from '../shell/context'
-import { cancelExpiry, ExpiryIcon, ExpiryMenuItems, expiryOf, expiryText, useExpiries } from './ExpiryMenu'
+import { FolderPicker } from '../files/FilesView'
+import { AttachHead, AttachRow, useAttachSettings } from './AttachSave'
+import { askConfirm, ContextMenu, useContextMenu } from '../shell/context'
+import { cancelExpiry, ExpiryIcon, expiryOf, expiryText, useExpiries } from './ExpiryMenu'
 
 const useStyles = makeStyles({
   root: { flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', backgroundColor: tokens.colorNeutralBackground2 },
@@ -36,7 +41,6 @@ const useStyles = makeStyles({
   sender: { display: 'flex', gap: '12px', alignItems: 'flex-start', flexWrap: 'wrap' },
   meta: { flex: 1, minWidth: '180px', display: 'flex', flexDirection: 'column', gap: '2px', overflowWrap: 'anywhere' },
   small: { fontSize: '12px', color: tokens.colorNeutralForeground3, wordBreak: 'break-word' },
-  actions: { display: 'flex', gap: '2px', flexShrink: 0 },
   atts: { display: 'flex', flexWrap: 'wrap', gap: '8px', padding: '0 20px' },
   att: {
     display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 10px', borderRadius: tokens.borderRadiusMedium,
@@ -57,25 +61,67 @@ const useStyles = makeStyles({
   imgBar: { display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 },
 })
 
+/** Hinweis „PDFs können Schadcode enthalten“ vor dem ersten Öffnen im Browser-Tab; einmal wegklickbar. */
+const pdfNoticeSeen = () => { try { return localStorage.getItem('dmoffice.mail.pdfNotice') === '1' } catch { return false } }
+const rememberPdfNotice = () => { try { localStorage.setItem('dmoffice.mail.pdfNotice', '1') } catch { /* nur Komfort */ } }
+
+/** Quelltext (.eml) der Mail speichern - Menüband „Mehr“ im Hauptfenster und im eigenen Fenster. */
+export function saveMailSource(item: Pick<MailItem, 'account' | 'folder' | 'uid'>) {
+  saveUrl(`/api/mail/${item.account}/source?` + q({ folder: item.folder, uid: item.uid }))
+}
+
+/** Einstellung „Als gelesen markieren“ (Sekunden; 0 = sofort, -1 = nie), einmal geholt; nach dem Speichern neu (Ereignis dmoffice:mailsettings) */
+let readDelay: Promise<number> | null = null
+let knownDelay: number | null = null
+export function markReadDelay(): Promise<number> {
+  const p: Promise<number> = readDelay ?? api.get('/api/settings/').then(r => {
+    const d: number = typeof r?.markReadDelay === 'number' ? r.markReadDelay : 2
+    knownDelay = d
+    return d
+  }).catch(() => { readDelay = null; return 2 })
+  readDelay = p
+  return p
+}
+window.addEventListener('dmoffice:mailsettings', () => { readDelay = null; knownDelay = null; markReadDelay() })
+
 interface Props {
   item: MailItem
   onLoaded: (m: Message) => void
+  /** Als gelesen markieren (nach der eingestellten Wartezeit): die Liste zeigt es sofort, die Anfrage läuft im Hintergrund.
+   *  Ohne: hier selbst an den Server schicken (eigenes Fenster). */
+  onMarkSeen?: (item: MailItem) => void
+  /** Nachfassen-Leiste: „Antworten“ */
   onReply: (all: boolean) => void
-  onForward: () => void
   onAct: (what: any) => void
+  /** „Kein Betrug“: Angebot „Diesem Absender immer vertrauen?“ erscheint über der Mailliste, nicht im Lesebereich (er würde den Text verschieben). */
+  onTrustOffer?: (check: TrustCheck, onTrusted: () => void) => void
   /** Klick auf einen Kategorie-Badge nimmt die Kategorie von der Mail (wie in der Liste). */
   onRemoveCategory?: (key: string) => void
+  /** Dunkelmodus: Mail umgefärbt (Vorgabe) oder in Original-Farben; umgeschaltet im Menüband (Ansicht). */
+  invert?: boolean
+  /** In der Unterhaltung: eine Karte unter anderen - ohne eigene Bildlaufleiste (Kennung mailthreads) */
+  embedded?: boolean // [feature:mailthreads]
 }
 
-export function ReadingPane({ item, onLoaded, onReply, onForward, onAct, onRemoveCategory }: Props) {
+export function ReadingPane({ item, onLoaded, onMarkSeen, onReply, onAct, onTrustOffer, onRemoveCategory, invert = true,
+  embedded, // [feature:mailthreads]
+}: Props) {
   const s = useStyles()
   const { fail, notify } = useApp()
+  const onMarkSeenRef = useRef(onMarkSeen); onMarkSeenRef.current = onMarkSeen
   const expiry = expiryOf(useExpiries(), item)
   const [unsubDone, setUnsubDone] = useState(false)
+  // „Kein Betrug“ an der Phishing-Warnung: Angebot, den Absender als sicher einzutragen; danach verschwindet die Warnung
+  const [safeDone, setSafeDone] = useState(false)
+  const itemKey = `${item.account}/${item.folder}/${item.uid}`
+  const keyNow = useRef(itemKey); keyNow.current = itemKey
+  // Andere Mail: wieder oben anfangen (der Bereich bleibt derselbe und behielt sonst die Scrollposition der vorigen)
+  const rootRef = useRef<HTMLDivElement>(null)
+  useEffect(() => { setSafeDone(false); rootRef.current?.scrollTo(0, 0) }, [item.account, item.folder, item.uid])
   // Anhänge in dmOffice ansehen: Bilder, PDF, Audio, Video, Text im Betrachter, Office-Dateien im Office-Server
   const [viewing, setViewing] = useState<{ items: Item[]; index: number } | null>(null)
   // PDFs können Schadcode enthalten: erst nach Rückfrage ansehen
-  const [askPdf, setAskPdf] = useState<{ index: number; name: string } | null>(null)
+  const [askPdf, setAskPdf] = useState<{ index: number; name: string; tab?: boolean } | null>(null)
   const [spamWhy, setSpamWhy] = useState(false)
   const [officeAtt, setOfficeAtt] = useState<{ index: number; name: string } | null>(null)
   const office = useOffice()
@@ -103,9 +149,36 @@ export function ReadingPane({ item, onLoaded, onReply, onForward, onAct, onRemov
   const [message, setMessage] = useState<Message | null>(null)
   useEffect(() => setUnsubDone(false), [message?.account, message?.folder, message?.uid])
   const [images, setImages] = useState(false)
-  const [invert, setInvert] = useState(true)
   const [showAllTo, setShowAllTo] = useState(false)
   const frame = useRef<HTMLIFrameElement>(null)
+
+  /** Drucken: Kopf (Betreff, Von, An, Cc, Datum, Anhänge) nur für den Ausdruck vor den Inhalt setzen, danach wieder weg. */
+  const printMail = () => {
+    const win = frame.current?.contentWindow, d = frame.current?.contentDocument
+    if (!win || !d?.body || !message) return
+    const esc = (v: string) => v.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!))
+    const row = (k: string, v: string) => v ? `<tr><td style="padding:1px 12px 1px 0;color:#555;vertical-align:top">${esc(k)}</td><td>${esc(v)}</td></tr>` : ''
+    const head = d.createElement('div')
+    head.style.cssText = 'font:13px Segoe UI,Arial,sans-serif;color:#000;background:#fff;border-bottom:1px solid #999;padding-bottom:8px;margin-bottom:12px'
+    head.innerHTML = `<div style="font-size:17px;font-weight:600;margin-bottom:6px">${esc(message.subject || t('(ohne Betreff)'))}</div><table style="border-collapse:collapse">`
+      + row(t('Von'), message.from ? addrFull(message.from) : '')
+      + row(t('An'), message.to.map(addrFull).join(', '))
+      + row(t('Cc'), message.cc.map(addrFull).join(', '))
+      + row(t('Datum'), fmtLong(message.date))
+      + row(t('Anhänge'), message.attachments.map(a => a.name).join(', '))
+      + '</table>'
+    d.body.insertBefore(head, d.body.firstChild)
+    const done = () => { head.remove(); win.removeEventListener('afterprint', done) }
+    win.addEventListener('afterprint', done)
+    win.focus(); win.print()
+    setTimeout(done, 60000)
+  }
+  // Menüband (Mehr → Drucken) druckt die angezeigte Mail
+  useEffect(() => {
+    const h = () => printMail()
+    window.addEventListener('dm-mail-print', h)
+    return () => window.removeEventListener('dm-mail-print', h)
+  })
 
   useEffect(() => { setImages(false); setShowAllTo(false) }, [item.id])
 
@@ -126,20 +199,44 @@ export function ReadingPane({ item, onLoaded, onReply, onForward, onAct, onRemov
         onLoaded(m)
       }).catch(e => alive && fail(e))
     }
-    // Gelesen nach einer kurzen Pause, wie in Outlook - wer nur durchblaettert, laesst sie ungelesen
-    const t = !item.seen ? setTimeout(() => {
+    // Gelesen nach der eingestellten Wartezeit (Vorgabe 2 s, wie in Outlook - wer nur durchblättert, lässt sie ungelesen), sofort oder nie
+    let t: ReturnType<typeof setTimeout> | undefined
+    const mark = () => {
+      if (!alive) return
+      if (onMarkSeenRef.current) {
+        onMarkSeenRef.current(item)
+        if (loaded) { remember(item, { ...loaded, seen: true }); onLoaded({ ...loaded, seen: true }) }
+        return
+      }
       api.post(`/api/mail/${item.account}/flags`, { folder: item.folder, uids: [item.uid], seen: true })
         .then(() => { if (loaded) remember(item, { ...loaded, seen: true }); if (alive && loaded) onLoaded({ ...loaded, seen: true }) })
         .catch(() => {})
-    }, 1500) : undefined
+    }
+    if (!item.seen) {
+      const start = (d: number) => { if (d === 0) mark(); else if (d > 0) t = setTimeout(mark, d * 1000) }
+      // Schon bekannt: ohne Umweg über ein Promise (sonst ein Bild später)
+      if (knownDelay != null) start(knownDelay)
+      else markReadDelay().then(start)
+    }
     return () => { alive = false; if (t) clearTimeout(t) }
   }, [item.id, images]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Hoehe des iframes an den Inhalt anpassen (gleiche Herkunft, keine Skripte darin)
   const fit = () => {
     const doc = frame.current?.contentDocument
-    if (!doc || !frame.current) return
-    frame.current.style.height = Math.max(200, doc.documentElement.scrollHeight + 4) + 'px'
+    // Während das iframe neu lädt, gibt es noch kein documentElement
+    if (!doc?.documentElement || !frame.current) return
+    // Manche Mails setzen html/body auf 100 % Höhe mit eigenem Rollen (etwa Versandmeldungen) - dann wäre der Rahmen nur so hoch
+    // wie vorher und die Mail rollte darin; direkt am Element und mit !important, damit es auch gegen !important der Mail gilt
+    const root = doc.documentElement, body = doc.body
+    for (const el of [root, body]) {
+      if (!el) continue
+      el.style.setProperty('height', 'auto', 'important')
+      el.style.setProperty('min-height', '0', 'important')
+      el.style.setProperty('max-height', 'none', 'important')
+      el.style.setProperty('overflow', 'visible', 'important')
+    }
+    frame.current.style.height = Math.max(200, root.scrollHeight + 4, (body?.scrollHeight ?? 0) + 4) + 'px'
   }
 
   // Bilder dieses Absenders oder dieser Domain immer laden (Einstellungen -> Junk-E-Mail)
@@ -147,21 +244,40 @@ export function ReadingPane({ item, onLoaded, onReply, onForward, onAct, onRemov
     try { await api.post('/api/settings/trusted-images', { entry }); clearAll(); setImages(true) } catch (e) { fail(e) }
   }
 
+  // Rechtsklick auf einen Anhang (Kennung ctxall): dieselben Aktionen wie Klick und Knöpfe
+  const attMenu = useContextMenu<{ index: number; name: string; size: number; mime: string }>()
+  // Hooks der Anhänge (attsave) vor dem frühen Return, sonst ändert sich ihre Zahl, sobald die Mail geladen ist
+  const { settings: attCfg, save: saveAttCfg } = useAttachSettings()
+  const [pickDir, setPickDir] = useState<number[] | null>(null)
+  const [noMore, setNoMore] = useState(false)
+  const [attInfo, setAttInfo] = useState<{ text: string; dir: string | null } | null>(null)
+  useEffect(() => { setAttInfo(null) }, [item.account, item.folder, item.uid])
   if (!message) return <Spinner style={{ margin: 'auto' }} />
 
-  const darkStyle = dark && invert
+  // Reine Text-Mails (Kennung mailplain): im Dunkeln nativ hell auf dunkel statt invertiert - invertierte Schrift wirkt deutlich dünner -
+  // und mit begrenzter Zeilenlänge wie in gängigen Mailprogrammen
+  // Ohne eigene Farben gestaltete HTML-Mails (nur Absätze, Fett, Listen …) gelten wie reine Text-Mails - auch sie werden nicht invertiert
+  const checks = featureOn('mailtrackers')
+  const plain = featureOn('mailplain') && (!!message.plain || !/(?:color\s*:|background|bgcolor|<font[^>]*color|<style)/i.test(message.html))
+  const plainWidth = prefs.plainWidth ?? 110
+  const plainStyle = plain
+    ? (plainWidth > 0 ? `body{max-width:${plainWidth}ch}` : '') + (dark && invert ? '@media screen{html{color-scheme:dark;background:transparent}body{background:transparent;color:#e6e6e6}a{color:#6cb8f6}}' : '')
+    : ''
+  const darkStyle = dark && invert && !plain
     // invertiert, ohne eigenen Hintergrund: durch den durchsichtigen Rahmen scheint die Fläche der Oberfläche (mit ihrem Farbstich), kein neutrales Grau
     // (gleiches Farbschema wie die Oberfläche, sonst malt der Browser den Rahmen weiß; Links ohne eigene Farbe wie im hellen Schema)
     // Nur am Bildschirm: gedruckt wird immer mit den Farben der Mail, unabhängig vom Design der Oberfläche
-    ? '@media screen{html{color-scheme:dark;filter:invert(1) hue-rotate(180deg);background:transparent}body{background:transparent}:where(a){color:#0b5cad}img,video,[style*="background-image"]{filter:invert(1) hue-rotate(180deg)}}'
+    // Bilder zurückdrehen nur am äußersten Element: ein Bild in einem Element mit Hintergrundbild würde sonst doppelt zurückgedreht (wieder invertiert)
+    ? '@media screen{html{color-scheme:dark;filter:invert(1) hue-rotate(180deg);background:transparent}body{background:transparent}:where(a){color:#0b5cad}:is(img,video,[style*="background-image"]):not(:is(img,video,[style*="background-image"]) *){filter:invert(1) hue-rotate(180deg)}}'
     : ''
   const doc = `<!doctype html><html><head><meta charset="utf-8"><base target="_blank">
 <style>body{margin:0;font-family:'Segoe UI',Calibri,Arial,sans-serif;font-size:14px;line-height:1.45;color:#242424;background:#fff;word-wrap:break-word;overflow-wrap:anywhere}
 img{max-width:100%;height:auto}pre{white-space:pre-wrap}blockquote{margin-left:8px;padding-left:10px;border-left:3px solid #ccc}
-img[data-remote-src]{display:inline-block;min-width:16px;min-height:16px;background:#f3f3f3}${darkStyle}</style></head><body>${message.html}</body></html>`
+img[data-remote-src]{display:inline-block;min-width:16px;min-height:16px;background:#f3f3f3}${darkStyle}${plainStyle}</style></head><body>${message.html}</body></html>`
 
   const recipients = [...message.to, ...message.cc]
   // Der Kalenderteil einer Einladung steckt in der Karte - nicht noch einmal als "Teil 1" zeigen; echte .ics-Dateien bleiben
+  const junkLock = featureOn('junklock') && !!message.junk // [feature:junklock]
   const shownAttachments = message.attachments.filter(a => !(/calendar/i.test(a.mime) && !/\.ics$/i.test(a.name)))
   const attUrl = (i: number, download = true) => `/api/mail/${item.account}/part?` + q({ folder: item.folder, uid: item.uid, index: i, download })
   // Für den Betrachter der Dateien: Anhänge als Einträge, Inhalt über die Anhang-Adresse
@@ -180,8 +296,56 @@ img[data-remote-src]{display:inline-block;min-width:16px;min-height:16px;backgro
     // Die installierte App (PWA) zeigt keine Download-Leiste - darum ein Hinweis
     notify(t('„{name}“ ist im Download-Ordner gespeichert.', { name: a.name }))
   }
+  // Im Tab nur, was der Server zum Ansehen ausliefert (Bild, PDF, Audio, Video; kein SVG, kein Text) - alles andere käme als Download,
+  // und das neue Fenster bliebe in der installierten App (PWA) leer
+  const inTab = (it: Item) => ['image', 'pdf', 'audio', 'video'].includes(viewKind(it) ?? '') && !it.name.toLowerCase().endsWith('.svg')
+  // In neuem Browser-Tab öffnen: dort zeigt der Browser PDFs, Bilder, Audio und Video mit seinem eigenen Betrachter (Suchen, Drucken, Speichern)
+  const openTab = (a: Att) => {
+    const it = attItem(a)
+    if (!inTab(it)) { download(a); return }
+    if (viewKind(it) === 'pdf' && !(attOn && pdfNoticeSeen())) setAskPdf({ index: a.index, name: a.name, tab: true })
+    else window.open(attUrl(a.index, false), '_blank', 'noopener')
+  }
+  // Speichern unter: die Person wählt den Ordner selbst (etwa den Desktop) - der Browser kann sonst nur in den Download-Ordner legen.
+  // Nur in Browsern mit Dateiauswahl zum Speichern (Chrome, Edge); sonst wie Herunterladen.
+  const canSaveAs = typeof (window as unknown as { showSaveFilePicker?: unknown }).showSaveFilePicker === 'function'
+  const saveAs = async (a: { index: number; name: string }) => {
+    try {
+      const picker = (window as unknown as { showSaveFilePicker: (o: object) => Promise<{ createWritable: () => Promise<{ write: (b: Blob) => Promise<void>; close: () => Promise<void> }> }> }).showSaveFilePicker
+      const handle = await picker({ suggestedName: a.name, startIn: 'desktop' })
+      const r = await fetch(attUrl(a.index), { credentials: 'same-origin' })
+      if (!r.ok) throw new Error(t('Der Anhang ließ sich nicht laden.'))
+      const w = await handle.createWritable(); await w.write(await r.blob()); await w.close()
+      notify(t('„{name}“ gespeichert.', { name: a.name }))
+    } catch (e) { if ((e as Error).name !== 'AbortError') fail(e) }
+  }
+  // Anhänge speichern (Kennung attsave): Ziel, Standardordner und Rückfrage kommen aus den E-Mail-Einstellungen
+  const attOn = featureOn('attsave')
+  const saveToAblage = async (indexes: number[], dir: string) => {
+    try {
+      let last = ''
+      for (const i of indexes) {
+        const r = await api.post<{ path: string; dir: string }>(`/api/mail/${item.account}/part/save`, { folder: item.folder, uid: item.uid, index: i, dir })
+        last = r.path
+      }
+      const where = dir || t('Dateien')
+      setAttInfo({ text: indexes.length === 1 ? t('„{name}“ gespeichert in {dir}.', { name: last.split('/').pop() ?? '', dir: where }) : t('{n} Anhänge gespeichert in {dir}.', { n: indexes.length, dir: where }), dir })
+    } catch (e) { fail(e) }
+  }
+  /** Hauptknopf: je nach Einstellung in die Ablage (mit Standardordner oder Ordnerwahl) oder Download des Browsers. */
+  const saveAtt = (indexes: number[], target = attCfg.attachSaveTarget) => {
+    if (target === 'browser') {
+      for (const i of indexes) { const a = shownAttachments.find(x => x.index === i); if (a) download(a) }
+      return
+    }
+    if (!attCfg.attachSaveFolder || attCfg.attachSaveAsk) setPickDir(indexes)
+    else saveToAblage(indexes, attCfg.attachSaveFolder)
+  }
   const openAtt = (a: Att) => {
     const it = attItem(a)
+    // PDFs im Betrachter von dmOffice (Seiten als Bilder, mit Herunterladen und „In neuem Tab öffnen“); mit attsave nach einem
+    // einmaligen Hinweis, sonst nach der Rückfrage. Ein neues Fenster bot in Vivaldi nur einen Download an.
+    if (attOn && viewKind(it) === 'pdf' && pdfNoticeSeen()) { setViewing({ items: [it], index: 0 }); return }
     if (viewKind(it) === 'pdf') setAskPdf({ index: a.index, name: a.name })
     else if (viewKind(it)) setViewing({ items: viewable.map(attItem), index: viewable.findIndex(v => v.index === a.index) })
     else if (officeMode(it, office)) setOfficeAtt({ index: a.index, name: a.name })
@@ -189,9 +353,15 @@ img[data-remote-src]{display:inline-block;min-width:16px;min-height:16px;backgro
   }
 
   return (
-    <div className={s.root}>
+    <div className={s.root} ref={rootRef}
+      style={embedded ? { flex: 'none', overflowY: 'visible', backgroundColor: 'transparent' } : undefined} // [feature:mailthreads]
+    >
       <div className={s.head}>
-        <div className={s.subject}>{message.subject || t('(ohne Betreff)')}</div>
+        {/* Prüfbereich rechts neben dem Betreff (mailtrackers): Signatur, Tracker-Schutz, DMS als Symbole statt Leisten */}
+        {checks ? <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+          <div className={s.subject} style={{ flex: 1, minWidth: 0 }}>{message.subject || t('(ohne Betreff)')}</div>
+          <CheckArea message={message} />
+        </div> : <div className={s.subject}>{message.subject || t('(ohne Betreff)')}</div>}
         {item.keywords?.length > 0 && <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}><CategoryChips keywords={item.keywords} onRemove={onRemoveCategory} /></div>}
         <div className={s.sender}>
           <Avatar name={message.from?.name || message.from?.address} size={40} color="colorful" />
@@ -204,31 +374,10 @@ img[data-remote-src]{display:inline-block;min-width:16px;min-height:16px;backgro
             {message.alias && <AliasHint className={s.small} address={message.alias} state={message.aliasState} sender={message.from?.name} />}
             <span className={s.small}>{fmtLong(message.date)}</span>
           </div>
-          <div className={s.actions}>
-            {/* Standardantwort (Einstellungen -> Verfassen) steht vorne */}
-            {(prefs.replyAll ? [true, false] : [false, true]).map(all => (
-              <Tooltip key={String(all)} content={all ? t('Allen antworten') : t('Antworten')} relationship="label">
-                <Button appearance="subtle" icon={all ? <ArrowReplyAll20Regular /> : <ArrowReply20Regular />} onClick={() => onReply(all)} />
-              </Tooltip>
-            ))}
-            <Tooltip content={t('Weiterleiten')} relationship="label"><Button appearance="subtle" icon={<ArrowForward20Regular />} onClick={onForward} /></Tooltip>
-            <Menu>
-              <MenuTrigger disableButtonEnhancement><Button appearance="subtle" icon={<MoreHorizontal20Regular />} aria-label={t('Mehr')} /></MenuTrigger>
-              <MenuPopover>
-                <MenuList>
-                  <MenuItem icon={<Delete20Regular />} onClick={() => onAct('delete')}>{t('Löschen')}</MenuItem>
-                  <ExpiryMenuItems targets={[item]} onError={fail}
-                    onDone={w => notify(w === 'set' ? t('Entfernen nach Zeit eingeplant') : t('Entfernen nach Zeit zurückgenommen'))} />
-                  <MenuItem icon={<Print20Regular />} onClick={() => frame.current?.contentWindow?.print()}>{t('Drucken')}</MenuItem>
-                  <MenuItem icon={<Code20Regular />} onClick={() => window.open(`/api/mail/${item.account}/source?` + q({ folder: item.folder, uid: item.uid }))}>{t('Quelltext (.eml)')}</MenuItem>
-                  {dark && <MenuItem icon={<WeatherMoon16Regular />} onClick={() => setInvert(v => !v)}>{invert ? t('Original-Farben') : t('Dunkel darstellen')}</MenuItem>}
-                </MenuList>
-              </MenuPopover>
-            </Menu>
-          </div>
         </div>
       </div>
 
+      {/* Nachfassen: fester Platz ganz oben; die Angabe kommt mit der Zeile der Liste, verschiebt also nichts nachträglich */}
       {expiry && (
         <MessageBar intent={expiry.kind === 'destroy' ? 'warning' : 'info'} className={s.bar} layout="singleline" icon={<ExpiryIcon />}>
           <MessageBarBody>{expiryText(expiry)}</MessageBarBody>
@@ -238,12 +387,27 @@ img[data-remote-src]{display:inline-block;min-width:16px;min-height:16px;backgro
         </MessageBar>
       )}
       {/* Phishing-Verdacht: Absenderpruefung, Linktext gegen Linkziel, aehnliche Domains, erstmaliger Absender */}
-      {message.pgp && <PgpBar message={message} className={s.bar} />}
-      {message.phish && <PhishBar found={message.phish} className={s.bar} onJunk={message.junk ? undefined : () => onAct('junk')} />}
+      {message.pgp && !checks && <PgpBar message={message} className={s.bar} />}
+      {message.phish && !safeDone && <PhishBar found={message.phish} className={s.bar} onJunk={message.junk ? undefined : () => onAct('junk')}
+        onSafe={message.junk || !featureOn('phishtrust') || !onTrustOffer ? undefined : async () => {
+          const k = itemKey
+          const done = () => { if (keyNow.current === k) setSafeDone(true) }
+          try {
+            // Die Warnung bleibt für diese Mail dauerhaft ausgeblendet; danach ggf. Angebot, den Absender als sicher einzutragen
+            await api.post(`/api/mail/${encodeURIComponent(item.account)}/notphish`, { folder: item.folder, uid: item.uid })
+            const c = await checkTrust(item.account, item.folder, item.uid)
+            done()
+            if (c.addressListed || (c.domainListed && !c.freemail)) notify(t('„{entry}“ ist bereits ein sicherer Absender.', { entry: c.addressListed ? c.address : '@' + c.domain }))
+            else if (!c.verified) notify(t('Die Warnung wird für diese Mail nicht mehr angezeigt.'), t('Als sicherer Absender lassen sich nur Absender mit bestätigter Herkunft eintragen.'))
+            else onTrustOffer(c, done)
+          } catch (e) { fail(e) }
+        }} />}
       {message.junk && (
         // Wie Outlook: in Junk keine Bilder und keine Links - erst "Kein Junk" gibt die Mail frei
         <MessageBar intent="error" className={s.bar} layout="multiline">
-          <MessageBarBody><ShieldError16Regular /> {t('Junk-E-Mail: Bilder und Links sind gesperrt. Zum Freigeben die Mail als „Kein Junk“ in den Posteingang verschieben.')}</MessageBarBody>
+          <MessageBarBody><ShieldError16Regular /> {junkLock
+            ? t('Junk-E-Mail: Bilder, Links und Anhänge sind gesperrt, ebenso Antworten, Weiterleiten und das Übernehmen in andere Bereiche. Mit „Kein Junk“ wird die Mail freigegeben.')
+            : t('Junk-E-Mail: Bilder und Links sind gesperrt. Zum Freigeben die Mail als „Kein Junk“ in den Posteingang verschieben.')}</MessageBarBody>
           <MessageBarActions>
             <Button size="small" onClick={() => onAct('notjunk')}>{t('Kein Junk')}</Button>
           </MessageBarActions>
@@ -253,8 +417,9 @@ img[data-remote-src]{display:inline-block;min-width:16px;min-height:16px;backgro
         <MessageBar intent="warning" className={s.bar} layout="multiline">
           <MessageBarBody><ShieldError16Regular /> {t('Der Spamfilter ist unsicher ({p} %).', { p: Math.round(message.spam * 100) })}{' '}<Link onClick={() => setSpamWhy(true)}>{t('Warum?')}</Link></MessageBarBody>
           <MessageBarActions>
-            <Button size="small" onClick={() => onAct('junk')}>{t('Junk')}</Button>
+            {/* Reihenfolge wie an der Phishing-Warnung: erst „Kein …“, dann „Junk“ */}
             <Button size="small" onClick={() => { onAct('notjunk'); setMessage(m => m && { ...m, spam: 0 }) }}>{t('Kein Junk')}</Button>
+            <Button size="small" onClick={() => onAct('junk')}>{t('Junk')}</Button>
           </MessageBarActions>
         </MessageBar>
       )}
@@ -293,23 +458,61 @@ img[data-remote-src]{display:inline-block;min-width:16px;min-height:16px;backgro
       )}
 
       {/* Lieferung oder Buchung (Paket, Flug, Hotel ...) */}
-      <SmartCard item={item} />
+      {!junkLock && <SmartCard item={item} />}
       {/* Einladung (text/calendar): Zusagen / Mit Vorbehalt / Absagen */}
-      {message.attachments.some(a => /calendar|ics/i.test(a.mime) || /\.ics$/i.test(a.name)) && <InviteCard item={item} />}
-      <DmsFiledHint account={item.account} messageId={message.messageId} />
-      {shownAttachments.length > 0 && (
+      {!junkLock && message.attachments.some(a => /calendar|ics/i.test(a.mime) || /\.ics$/i.test(a.name)) && <InviteCard item={item} />}
+      {!checks && <DmsFiledHint account={item.account} messageId={message.messageId} />}
+      {/* [feature:junklock] Junk: Anhänge nur mit Namen und Größe, ohne Öffnen, Herunterladen und Ablegen */}
+      {shownAttachments.length > 0 && junkLock && (
+        <div className={s.atts}>
+          {shownAttachments.map(a => (
+            <div key={a.index} className={s.att} style={{ cursor: 'default', opacity: 0.7 }} title={t('Anhänge von Junk-Mails sind gesperrt.')}>
+              <LockClosed16Regular />
+              <div style={{ minWidth: 0 }}>
+                <div className={s.attName}>{a.name}</div>
+                <div className={s.small}>{fmtSize(a.size)}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {/* [/feature:junklock] */}
+      {shownAttachments.length > 0 && attOn && !junkLock && (
+        <div className={s.atts} style={{ flexDirection: 'column', alignItems: 'stretch' }}>
+          <AttachHead count={shownAttachments.length} onAll={() => saveAtt(shownAttachments.map(a => a.index))} info={attInfo} onClose={() => setAttInfo(null)} />
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {shownAttachments.map(a => {
+              const it = attItem(a)
+              const invText = null
+              return <AttachRow key={a.index} name={a.name} target={attCfg.attachSaveTarget}
+                sub={<>{fmtSize(a.size)}{invText}</>}
+                onOpen={() => openAtt(a)} onSave={() => saveAtt([a.index])} onSaveOther={() => saveAtt([a.index], attCfg.attachSaveTarget === 'ablage' ? 'browser' : 'ablage')}
+                onSaveAs={canSaveAs ? () => saveAs(a) : undefined} onOpenTab={viewKind(it) ? () => openTab(a) : undefined}
+                onContext={featureOn('ctxall') ? e => attMenu.open(e, a) : undefined}
+                extra={<><DmsAttachmentMenuItem mail={item} index={a.index} name={a.name} onDone={() => {}} />
+                </>} />
+            })}
+          </div>
+        </div>
+      )}
+      {shownAttachments.length > 0 && !attOn && !junkLock && (
         <div className={s.atts}>
           {shownAttachments.map(a => {
             const it = attItem(a)
             const how = viewKind(it) ? 'view' : officeMode(it, office) ? 'office' : 'download'
             return (
               <div key={a.index} className={s.att} role="button" tabIndex={0} onClick={() => openAtt(a)} onKeyDown={e => { if (e.key === 'Enter') openAtt(a) }}
+                onContextMenu={featureOn('ctxall') ? e => attMenu.open(e, a) : undefined}
                 title={how === 'download' ? t('{name} – herunterladen', { name: a.name }) : t('{name} – ansehen', { name: a.name })}>
                 <Attach16Regular />
                 <div style={{ minWidth: 0 }}>
                   <div className={s.attName}>{a.name}</div>
                   <div className={s.small}>{fmtSize(a.size)}</div>
                 </div>
+                {inTab(it) && <a href={attUrl(a.index, false)} target="_blank" rel="noopener" onClick={e => { e.stopPropagation(); if (viewKind(it) === 'pdf') { e.preventDefault(); openTab(a) } }}
+                  title={t('In neuem Tab öffnen')} aria-label={t('{name} – in neuem Tab öffnen', { name: a.name })} style={{ display: 'inline-flex', color: 'inherit' }}>
+                  <Open16Regular />
+                </a>}
                 <a href={attUrl(a.index)} download={a.name} onClick={e => { e.stopPropagation(); notify(t('„{name}“ ist im Download-Ordner gespeichert.', { name: a.name })) }}
                   title={t('Herunterladen')} aria-label={t('{name} – herunterladen', { name: a.name })} style={{ display: 'inline-flex', color: 'inherit' }}>
                   <ArrowDownload16Regular />
@@ -321,10 +524,51 @@ img[data-remote-src]{display:inline-block;min-width:16px;min-height:16px;backgro
         </div>
       )}
 
+      {pickDir && <FolderPicker title={t('Anhang in der Ablage speichern')} exclude={[]} start={attCfg.attachSaveFolder ?? ''}
+        onPick={dir => {
+          const idx = pickDir; setPickDir(null)
+          // Noch kein Standardordner: den ersten gewählten merken
+          if (!attCfg.attachSaveFolder) saveAttCfg({ attachSaveFolder: dir }).catch(fail)
+          saveToAblage(idx, dir)
+        }} onClose={() => setPickDir(null)} />}
+      {attMenu.ctx && (() => {
+        const a = attMenu.ctx.data, it = attItem(a as Att)
+        return (
+          <ContextMenu at={attMenu.ctx.at} onClose={attMenu.close}>
+            <MenuItem icon={<Open20Regular />} onClick={() => { attMenu.close(); openAtt(a as Att) }}>
+              {viewKind(it) || officeMode(it, office) ? t('Öffnen') : t('Herunterladen')}</MenuItem>
+            {viewKind(it) && <MenuItem icon={<Open20Regular />} onClick={() => { attMenu.close(); openTab(a as Att) }}>{t('In neuem Tab öffnen')}</MenuItem>}
+            {(viewKind(it) || officeMode(it, office)) && <MenuItem icon={<ArrowDownload20Regular />} onClick={() => { attMenu.close(); download(a) }}>{t('Herunterladen')}</MenuItem>}
+            {canSaveAs && <MenuItem icon={<SaveArrowRight20Regular />} onClick={() => { attMenu.close(); saveAs(a) }}>{t('Speichern unter …')}</MenuItem>}
+            <DmsAttachmentMenuItem mail={item} index={a.index} name={a.name} onDone={attMenu.close} />
+          </ContextMenu>
+        )
+      })()}
       {viewing && viewing.items[viewing.index] && <Viewer items={viewing.items} index={viewing.index} source={attSource} onIndex={i => setViewing({ ...viewing, index: i })}
         onClose={() => setViewing(null)} onDownload={i => download({ index: Number(i.path.slice(4)), name: i.name })} />}
       {spamWhy && <SpamWhy item={item} onClose={() => setSpamWhy(false)} />}
-      {askPdf && <Dialog open onOpenChange={(_, d) => { if (!d.open) setAskPdf(null) }}>
+      {askPdf && attOn && <Dialog open onOpenChange={(_, d) => { if (!d.open) setAskPdf(null) }}>
+        <DialogSurface style={{ maxWidth: 440 }}>
+          <DialogBody>
+            <DialogTitle>{t('PDF aus einer Mail öffnen?')}</DialogTitle>
+            <DialogContent>
+              {((message.phish && phishWarns(message.phish)) || (message.spam != null && message.spam >= 0.2)) && <MessageBar intent="error" style={{ marginBottom: 8 }}><MessageBarBody>
+                {t('Diese Mail ist verdächtig. Öffne den Anhang besser nicht.')}</MessageBarBody></MessageBar>}
+              <div>{t('PDFs können Schadcode enthalten. Öffne „{name}“ nur, wenn du den Absender kennst und den Anhang erwartet hast.', { name: askPdf.name })}</div>
+              <Checkbox style={{ marginTop: 8 }} label={t('Diesen Hinweis nicht mehr anzeigen')} checked={noMore} onChange={(_, d) => setNoMore(!!d.checked)} />
+            </DialogContent>
+            <DialogActions>
+              <Button appearance="primary" onClick={() => {
+                const a = askPdf; setAskPdf(null); if (noMore) rememberPdfNotice()
+                if (a.tab) window.open(attUrl(a.index, false), '_blank', 'noopener')
+                else setViewing({ items: [attItem({ ...shownAttachments.find(x => x.index === a.index)! })], index: 0 })
+              }}>{t('Öffnen')}</Button>
+              <Button onClick={() => setAskPdf(null)}>{t('Abbrechen')}</Button>
+            </DialogActions>
+          </DialogBody>
+        </DialogSurface>
+      </Dialog>}
+      {askPdf && !attOn && <Dialog open onOpenChange={(_, d) => { if (!d.open) setAskPdf(null) }}>
         <DialogSurface style={{ maxWidth: 460 }}>
           <DialogBody>
             <DialogTitle>{t('PDF aus einer Mail öffnen?')}</DialogTitle>
@@ -334,7 +578,13 @@ img[data-remote-src]{display:inline-block;min-width:16px;min-height:16px;backgro
               {t('PDFs können Schadcode enthalten. Öffne „{name}“ nur, wenn du den Absender kennst und den Anhang erwartet hast.', { name: askPdf.name })}
             </DialogContent>
             <DialogActions>
-              <Button appearance="primary" onClick={() => { const a = askPdf; setAskPdf(null); setViewing({ items: [attItem({ ...shownAttachments.find(x => x.index === a.index)! })], index: 0 }) }}>{t('Ansehen')}</Button>
+              <Button appearance="primary" onClick={() => {
+                const a = askPdf; setAskPdf(null)
+                if (a.tab) window.open(attUrl(a.index, false), '_blank', 'noopener')
+                else setViewing({ items: [attItem({ ...shownAttachments.find(x => x.index === a.index)! })], index: 0 })
+              }}>{askPdf.tab ? t('In neuem Tab öffnen') : t('Ansehen')}</Button>
+              {!askPdf.tab && <Button onClick={() => { const a = askPdf; setAskPdf(null); window.open(attUrl(a.index, false), '_blank', 'noopener') }}>{t('In neuem Tab öffnen')}</Button>}
+              {canSaveAs && <Button onClick={() => { const a = askPdf; setAskPdf(null); saveAs(a) }}>{t('Speichern unter …')}</Button>}
               <Button onClick={() => { const a = askPdf; setAskPdf(null); download(a) }}>{t('Herunterladen')}</Button>
               <Button appearance="subtle" onClick={() => setAskPdf(null)}>{t('Abbrechen')}</Button>
             </DialogActions>

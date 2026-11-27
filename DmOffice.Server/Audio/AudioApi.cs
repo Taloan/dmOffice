@@ -8,6 +8,7 @@ public static class AudioApi
 {
     public record SourceBody(string Mount, string? Path, bool Watch = true);
     public record WatchBody(bool? Watch);
+    public record RelinkBody(string Mount, string? Path);
     public record PlayedBody(string Id, long Ms, string? Device, DateTime? At);
     public record PlaylistBody(string? Name, List<string>? Tracks);
     public record TracksBody(List<string> Tracks);
@@ -40,6 +41,7 @@ public static class AudioApi
                     s.Watch, s.LastScan, s.Error, s.Count,
                     scanning = AudioScanJob.IsRunning(space.User.Id, s.Id),
                     pending = AudioFolders.Pending(space.Db, s.Id),
+                    relink = Features.On(Features.Relink) && s.Relink is { } r ? new { r.At, r.Pending, r.Total, r.Found, r.RemovedCount, r.Error } : null,
                 }),
                 mounts,
             };
@@ -81,6 +83,27 @@ public static class AudioApi
             AudioFolders.Save(db, list);
             AudioFolders.Forget(db, id);
             return Results.Ok();
+        });
+
+        // Ordner neu zuordnen: Stichprobe am neuen Ort, dann umstellen (Titel, Hörverlauf und Wiedergabelisten bleiben)
+        api.MapPost("/sources/{id}/relink/probe", async (string id, RelinkBody body, HttpContext http, ServerConfig config, CancellationToken ct) =>
+        {
+            if (!Features.On(Features.Relink)) return Results.NotFound();
+            var space = http.Space();
+            if (AudioFolders.Of(space.Db).FirstOrDefault(s => s.Id == id) is not { } src) return Results.NotFound();
+            var path = StoragePath.Clean(body.Path);
+            if (AudioRelink.Problem(space, config, src, body.Mount, path) is { } problem) return Results.BadRequest(new { error = problem });
+            var probe = await AudioRelink.ProbeAsync(space, config, src, body.Mount, path, ct);
+            return Results.Ok(new { @checked = probe.Checked, found = probe.Found, total = probe.Total });
+        });
+
+        api.MapPost("/sources/{id}/relink", (string id, RelinkBody body, HttpContext http, ServerConfig config) =>
+        {
+            if (!Features.On(Features.Relink)) return Results.NotFound();
+            var space = http.Space();
+            if (!AudioFolders.Of(space.Db).Any(s => s.Id == id)) return Results.NotFound();
+            return AudioRelink.Apply(space, config, id, body.Mount, StoragePath.Clean(body.Path)) is { } error
+                ? Results.BadRequest(new { error }) : Results.Ok();
         });
 
         api.MapPost("/sources/{id}/scan", (string id, HttpContext http) =>
@@ -161,15 +184,21 @@ public static class AudioApi
             var space = http.Space();
             var (src, path) = AudioFolders.Resolve(space, config, id);
             if (AudioFolders.MimeOf(path) is not { } mime) return Results.NotFound();
+            // Als „kein Audio“ erkannt (Bild, Text, leer): eindeutige Antwort statt eines Fehlers beim Abspielen
+            if (AudioFolders.IsNotAudio(space.Db, src.Id, path)) return NoSound();
             if (!await ExternalFolders.ReachableAsync(space, config, src.Mount))
                 return Results.Json(new { error = "Der externe Ordner ist gerade nicht erreichbar." }, statusCode: StatusCodes.Status503ServiceUnavailable);
             var (driver, _) = ExternalFolders.Open(space, config, src.Mount);
             http.Response.RegisterForDispose(driver);
             if (await driver.StatAsync(path, ct) is not { IsDir: false } st) return Results.NotFound();
+            if (st.Size == 0) return NoSound();
             http.Response.Headers.ContentSecurityPolicy = "sandbox; default-src 'none'";
             http.Response.Headers.XContentTypeOptions = "nosniff";
             return Results.Stream(new DriverStream(driver, path, st.Size, 1024 * 1024), mime,
                 lastModified: new DateTimeOffset(DateTime.SpecifyKind(st.Modified, DateTimeKind.Utc)), enableRangeProcessing: true);
         });
     }
+
+    private static IResult NoSound() =>
+        Results.Json(new { error = "Diese Datei enthält keinen abspielbaren Ton." }, statusCode: StatusCodes.Status415UnsupportedMediaType);
 }

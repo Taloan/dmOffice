@@ -1,17 +1,20 @@
 // DMS: Mailordner als Quelle (Server: Dms/DmsMailSources.cs) - wie die E-Mail-Regeln von paperless, mit den Konten von dmOffice.
 import {
   Button, Checkbox, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Dropdown, Field, Input, Option, Radio, RadioGroup,
-  SpinButton, Switch, Text, Tooltip, makeStyles, tokens,
+  SpinButton, Switch, Text, Tooltip, makeStyles, tokens, MenuItem, MenuDivider, Tab, TabList,
 } from '@fluentui/react-components'
-import { Add20Regular, ArrowSync20Regular, Delete20Regular, Edit20Regular } from '@fluentui/react-icons'
+import { Add20Regular, ArrowSync20Regular, Checkmark20Regular, Delete20Regular, Edit20Regular } from '@fluentui/react-icons'
 import { useEffect, useState } from 'react'
-import { api, defaultAccount, q } from '../api'
+import { api, defaultAccount, featureOn, q } from '../api'
 import { useApp } from '../App'
 import { lang, t } from '../i18n'
-import { askConfirm } from '../shell/context'
-import { Hint, PageTitle } from '../settings/parts'
+import { ContextMenu, askConfirm, useContextMenu } from '../shell/context'
+import { Hint } from '../settings/parts'
 import { Entry, Profile } from './model'
 import { EntrySelect } from './EntrySelect'
+import { FilterSelect } from '../shell/FilterSelect'
+import { RibbonActions, RibbonButton } from '../shell/Ribbon'
+import { dblOpen } from '../shell/rowOpen' // [feature:rowdblopen]
 
 interface Account { id: string; name: string; folders: { path: string; name: string }[] }
 interface MailSource {
@@ -47,6 +50,9 @@ export function DmsMailSourcesSettings({ embedded }: { embedded?: boolean }) {
   const [profiles, setProfiles] = useState<Profile[]>([])
   const [entries, setEntries] = useState<Entry[]>([])
   const [edit, setEdit] = useState<MailSource | 'new' | null>(null)
+  // Rechtsklick auf eine Quelle (Kennung ctxall): dieselben Aktionen wie die Knöpfe
+  const menu = useContextMenu<MailSource>()
+  const ctxall = featureOn('ctxall')
   const load = () => api.get<MailSource[]>('/api/dms/mail-sources').then(setList).catch(fail)
   useEffect(() => {
     load()
@@ -64,12 +70,14 @@ export function DmsMailSourcesSettings({ embedded }: { embedded?: boolean }) {
     : t('Noch nicht geprüft.')
   return (
     <>
-      {embedded ? <Text size={400} weight="semibold">{t('Mailordner')}</Text> : <PageTitle>{t('Mailordner')}</PageTitle>}
+      <Text size={400} weight="semibold">{t('Mailordner')}</Text>
       <Hint>{t('DMS überwacht Ordner der in dmOffice eingerichteten Mailkonten und legt Anhänge oder ganze Mails ab, die zu den Filtern passen. Verarbeitete Mails merkt sich die Quelle; beim Ändern der Quelle wird das vergessen, schon Abgelegtes erkennt das DMS am Inhalt.')}</Hint>
       {accounts.length === 0 && <Text className={s.muted}>{t('Kein Mailkonto eingerichtet.')}</Text>}
       <div className={s.list}>
         {list?.sort((a, b) => a.order - b.order).map(x => (
-          <div key={x.id} className={s.row}>
+          <div key={x.id} className={s.row} onContextMenu={ctxall ? e => menu.open(e, x) : undefined}
+            {...dblOpen(() => setEdit(x))} // [feature:rowdblopen]
+          >
             <div className={s.name}>
               <Text weight="semibold">{x.name}</Text>
               <Text size={200} className={s.muted}>{accounts.find(a => a.id === x.account)?.name ?? x.account} › {t('Ordner „{folder}“', { folder: x.folder })} · {scopeLabel(x.scope)} · {x.action === 'move' && x.actionFolder
@@ -85,8 +93,20 @@ export function DmsMailSourcesSettings({ embedded }: { embedded?: boolean }) {
           </div>
         ))}
       </div>
+      {menu.ctx && (() => {
+        const x = menu.ctx.data
+        return (
+          <ContextMenu at={menu.ctx.at} onClose={menu.close}>
+            <MenuItem icon={<Edit20Regular />} onClick={() => setEdit(x)}>{t('Bearbeiten')}</MenuItem>
+            <MenuItem icon={<ArrowSync20Regular />} onClick={() => act(() => api.post(`/api/dms/mail-sources/${x.id}/run`))}>{t('Jetzt prüfen')}</MenuItem>
+            <MenuItem icon={x.active ? <Checkmark20Regular /> : <span style={{ width: 20 }} />} onClick={() => act(() => api.put(`/api/dms/mail-sources/${x.id}`, { ...x, active: !x.active }))}>{t('Im Hintergrund regelmäßig prüfen')}</MenuItem>
+            <MenuDivider />
+            <MenuItem icon={<Delete20Regular />} onClick={() => remove(x)}>{t('Löschen')}</MenuItem>
+          </ContextMenu>
+        )
+      })()}
       {list?.length === 0 && accounts.length > 0 && <Text className={s.muted}>{t('Noch keine Mailordner.')}</Text>}
-      <div><Button icon={<Add20Regular />} disabled={accounts.length === 0} onClick={() => setEdit('new')}>{t('Neuer Mailordner')}</Button></div>
+      <RibbonActions><RibbonButton icon={<Add20Regular />} label={t('Neuer Mailordner')} disabled={accounts.length === 0} onClick={() => setEdit('new')} /></RibbonActions>
       {edit && <EditMailSource source={edit === 'new' ? null : edit} accounts={accounts} profiles={profiles} entries={entries}
         onClose={saved => { setEdit(null); if (saved) load() }} />}
     </>
@@ -106,6 +126,10 @@ function EditMailSource({ source, accounts, profiles, entries, onClose }: {
   })
   const set = (patch: Partial<MailSource>) => setF(x => ({ ...x, ...patch }))
   const [busy, setBusy] = useState(false)
+  // Reiter statt eines langen Formulars (Kennung dialogtabs): die fünf Abschnitte
+  const tabs = featureOn('dialogtabs')
+  const [tab, setTab] = useState<'source' | 'filter' | 'what' | 'after' | 'file'>('source')
+  const shows = (x: typeof tab) => !tabs || tab === x
   const folders = accounts.find(a => a.id === f.account)?.folders ?? []
   const save = async () => {
     setBusy(true)
@@ -115,7 +139,9 @@ function EditMailSource({ source, accounts, profiles, entries, onClose }: {
       onClose(true)
     } catch (e) { fail(e) } finally { setBusy(false) }
   }
-  const folderPick = (value: string | null, onSel: (v: string) => void) => (
+  const folderPick = (value: string | null, onSel: (v: string) => void) => featureOn('filterpick') ? (
+    <FilterSelect value={value} unknown={value ?? ''} onChange={onSel} items={folders.map(x => ({ id: x.path, label: x.path }))} />
+  ) : (
     <Dropdown value={folders.find(x => x.path === value)?.name ?? value ?? ''} selectedOptions={[value ?? '']} onOptionSelect={(_, d) => onSel(d.optionValue ?? '')}>
       {folders.map(x => <Option key={x.path} value={x.path} text={x.name}>{x.path}</Option>)}
     </Dropdown>
@@ -127,13 +153,20 @@ function EditMailSource({ source, accounts, profiles, entries, onClose }: {
       <DialogSurface style={{ maxWidth: 760 }}>
         <DialogBody>
           <DialogTitle>{source ? t('Quelle bearbeiten') : t('Neue Quelle')}</DialogTitle>
-          <DialogContent style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <div className={s.grid}>
+          <DialogContent style={{ display: 'flex', flexDirection: 'column', gap: 12, ...(tabs ? { minHeight: 420 } : {}) }}>
+            {tabs && <TabList selectedValue={tab} onTabSelect={(_, d) => setTab(d.value as typeof tab)}>
+              <Tab value="source">{t('Mailordner')}</Tab>
+              <Tab value="filter">{t('Filter')}</Tab>
+              <Tab value="what">{t('Was abgelegt wird')}</Tab>
+              <Tab value="after">{t('Danach')}</Tab>
+              <Tab value="file">{t('Ablage')}</Tab>
+            </TabList>}
+            {shows('source') && <div className={s.grid}>
               <Field label={t('Name')} required><Input value={f.name} onChange={(_, d) => set({ name: d.value })} /></Field>
               <Field label={t('Reihenfolge')}><SpinButton min={0} max={10000} value={f.order} onChange={(_, d) => set({ order: d.value ?? (Number(d.displayValue) || f.order) })} /></Field>
-            </div>
-            <div className={s.section}>
-              <Text className={s.head}>{t('Mailordner')}</Text>
+            </div>}
+            {shows('source') && <div className={s.section}>
+              {!tabs && <Text className={s.head}>{t('Mailordner')}</Text>}
               <div className={s.grid}>
                 <Field label={t('Konto')}>
                   <Dropdown value={accounts.find(a => a.id === f.account)?.name ?? ''} selectedOptions={[f.account]} onOptionSelect={(_, d) => set({ account: d.optionValue ?? '', folder: 'INBOX', actionFolder: null })}>
@@ -146,8 +179,8 @@ function EditMailSource({ source, accounts, profiles, entries, onClose }: {
               </div>
               <Checkbox checked={f.active} label={t('Überwachung aktiv')} onChange={(_, d) => set({ active: !!d.checked })} />
               <Checkbox checked={f.stop} label={t('Weitere Quellen nicht mehr anwenden, wenn diese eine Mail verarbeitet hat')} onChange={(_, d) => set({ stop: !!d.checked })} />
-            </div>
-            <div className={s.section}>
+            </div>}
+            {shows('filter') && <div className={s.section}>
               <Text className={s.head}>{t('Filter (alle angegebenen müssen passen)')}</Text>
               <div className={s.grid}>
                 <Field label={t('Absender enthält')}><Input value={f.filterFrom ?? ''} onChange={(_, d) => set({ filterFrom: d.value })} /></Field>
@@ -155,9 +188,9 @@ function EditMailSource({ source, accounts, profiles, entries, onClose }: {
                 <Field label={t('Betreff enthält')}><Input value={f.filterSubject ?? ''} onChange={(_, d) => set({ filterSubject: d.value })} /></Field>
                 <Field label={t('Text enthält')}><Input value={f.filterBody ?? ''} onChange={(_, d) => set({ filterBody: d.value })} /></Field>
               </div>
-            </div>
-            <div className={s.section}>
-              <Text className={s.head}>{t('Was abgelegt wird')}</Text>
+            </div>}
+            {shows('what') && <div className={s.section}>
+              {!tabs && <Text className={s.head}>{t('Was abgelegt wird')}</Text>}
               <RadioGroup layout="horizontal" value={f.scope} onChange={(_, d) => set({ scope: d.value as MailSource['scope'] })}>
                 <Radio value="attachments" label={scopeLabel('attachments')} /><Radio value="mail" label={scopeLabel('mail')} /><Radio value="both" label={scopeLabel('both')} />
               </RadioGroup>
@@ -174,8 +207,8 @@ function EditMailSource({ source, accounts, profiles, entries, onClose }: {
                 </Field>
               </>}
               <Text size={200} className={s.muted}>{t('Die ganze Mail wird als PDF abgelegt (Kopf, Text, Liste der Anhänge, PDF-Anhänge angefügt); das .eml bleibt als Original im DMS.')}</Text>
-            </div>
-            <div className={s.section}>
+            </div>}
+            {shows('after') && <div className={s.section}>
               <Text className={s.head}>{t('Danach mit der Mail')}</Text>
               <div className={s.line}>
                 <Dropdown value={actionLabel(f.action)} selectedOptions={[f.action]} onOptionSelect={(_, d) => set({ action: d.optionValue as MailSource['action'] })}>
@@ -183,9 +216,9 @@ function EditMailSource({ source, accounts, profiles, entries, onClose }: {
                 </Dropdown>
                 {f.action === 'move' && folderPick(f.actionFolder, v => set({ actionFolder: v }))}
               </div>
-            </div>
-            <div className={s.section}>
-              <Text className={s.head}>{t('Ablage und Vorgaben')}</Text>
+            </div>}
+            {shows('file') && <div className={s.section}>
+              {!tabs && <Text className={s.head}>{t('Ablage und Vorgaben')}</Text>}
               <div className={s.grid}>
                 <Field label={t('Ablageprofil')}>
                   <Dropdown value={profiles.find(p => p.id === f.profile)?.name ?? ''} selectedOptions={[f.profile ?? '']} onOptionSelect={(_, d) => set({ profile: d.optionValue ?? null })}>
@@ -205,7 +238,7 @@ function EditMailSource({ source, accounts, profiles, entries, onClose }: {
                 </Field>
               </div>
               {f.correspondentMode === 'sender' && <Text size={200} className={s.muted}>{t('Gibt es zum Absender noch keinen Korrespondenten, legt das DMS einen mit der Zuweisung „Absender“ an.')}</Text>}
-            </div>
+            </div>}
           </DialogContent>
           <DialogActions>
             <Button onClick={() => onClose(false)}>{t('Abbrechen')}</Button>

@@ -27,21 +27,29 @@ public static class Thumbs
     /// <summary>PDFium verträgt keine gleichzeitigen Aufrufe - auch DMS (Seitenbilder) nimmt diese Sperre.</summary>
     internal static readonly object PdfLock = new();
 
-    private const long MaxImageBytes = 80L * 1024 * 1024, MaxPdfBytes = 100L * 1024 * 1024;
+    /// <summary>Fotos aus 200-MP-Handykameras haben 90 MB und mehr; dekodiert wird verkleinert (<see cref="Decode"/>), die Größe kostet kaum Speicher.</summary>
+    private const long MaxImageBytes = 250L * 1024 * 1024, MaxPdfBytes = 100L * 1024 * 1024;
     /// <summary>Groesser dekodiert wird nicht (Pixel nach dem verkleinerten Dekodieren) - gegen Dekompressionsbomben.</summary>
-    private const long MaxPixels = 60_000_000;
+    public const long MaxPixels = 60_000_000;
 
     private static readonly HashSet<string> ImageExt = [".jpg", ".jpeg", ".jfif", ".png", ".gif", ".webp", ".bmp", ".ico"];
     /// <summary>RAW-Fotos: Vorschaubild aus der eingebetteten JPEG-Vorschau (<see cref="EmbeddedJpeg"/>).</summary>
     public static readonly HashSet<string> RawExt = new(StringComparer.OrdinalIgnoreCase) { ".arw", ".cr2", ".cr3", ".nef", ".nrw", ".orf", ".rw2", ".raf", ".pef", ".dng", ".srw", ".3fr", ".erf" };
     public static bool IsRaw(string name) => RawExt.Contains(Path.GetExtension(name));
+    /// <summary>TIFF (Kennung tiffpreview): SkiaSharp liest es nicht - die Photo-Engine wandelt es in ein JPEG (<see cref="TiffJpegAsync"/>).</summary>
+    public static bool IsTiff(string name) => Path.GetExtension(name).ToLowerInvariant() is ".tif" or ".tiff" && Features.On(Features.TiffPreview);
+    /// <summary>TIFF aus Lightroom und Capture One (16 Bit) sind oft über 100 MB.</summary>
+    private const long MaxTiffBytes = 400L * 1024 * 1024;
+    private static long MaxBytes(Kind kind, string name) => kind == Kind.Pdf ? MaxPdfBytes : IsTiff(name) ? MaxTiffBytes : MaxImageBytes;
+    /// <summary>TIFF als JPEG in der Größe der großen Vorschau, daraus alle kleineren. Null: Engine aus oder nicht erreichbar; leer: nicht lesbar.</summary>
+    public static Task<byte[]?> TiffJpegAsync(byte[] tiff, CancellationToken ct) => PhotoEngine.PreviewAsync(tiff, Large, null, ct);
 
     public enum Kind { None, Image, Pdf, Video }
 
     public static Kind KindOf(string name, string? mime)
     {
         var ext = Path.GetExtension(name).ToLowerInvariant();
-        if (ImageExt.Contains(ext) || RawExt.Contains(ext)) return Kind.Image;
+        if (ImageExt.Contains(ext) || RawExt.Contains(ext) || IsTiff(name)) return Kind.Image;
         if (ext == ".pdf" || mime == "application/pdf") return Kind.Pdf;
         if (mime?.StartsWith("video/") == true || ext is ".mp4" or ".m4v" or ".webm" or ".mov" or ".ogv" or ".mkv") return Kind.Video;
         if (mime is "image/jpeg" or "image/png" or "image/gif" or "image/webp" or "image/bmp") return Kind.Image;
@@ -107,7 +115,7 @@ public static class Thumbs
     public static bool Expected(string name, string? mime, long size)
     {
         var kind = KindOf(name, mime);
-        return size > 0 && kind is Kind.Image or Kind.Pdf && size <= (kind == Kind.Pdf ? MaxPdfBytes : MaxImageBytes);
+        return size > 0 && kind is Kind.Image or Kind.Pdf && size <= MaxBytes(kind, name);
     }
 
     public static bool Available(UserDb db, FileEntry f)
@@ -117,7 +125,7 @@ public static class Thumbs
         if (kind == Kind.None) return false;
         var c = Cached(db, f.FileId, Small);
         if (kind == Kind.Video) return c is { } v && v.Etag == f.Etag && v.Data.Length > 0;
-        if (f.Size > (kind == Kind.Pdf ? MaxPdfBytes : MaxImageBytes)) return false;
+        if (f.Size > MaxBytes(kind, f.Name)) return false;
         return !(c is { } x && x.Etag == Stamp(f) && x.Data.Length == 0);
     }
 
@@ -153,6 +161,10 @@ public static class Thumbs
         if (!original && !f.IsDir && f.FileId > 0 && KindOf(f.Name, f.Mime) == Kind.Image && PhotoEdits.Get(db, PhotoEdits.KeyOf(f)) is { } edit)
             return await PhotoEdits.ThumbAsync(db.UserId, PhotoEdits.KeyOf(f), edit, Stamp(f), size, IsRaw(f.Name),
                 () => GetOriginal(db, f, Large, ct), () => Task.FromResult(FileStore.Data(db, f.Path) ?? throw new KeyNotFoundException("Datei nicht gefunden.")), null, ct);
+        // [feature:editfull]
+        // „Volle Auflösung“ gibt es nur für bearbeitete Fotos, sonst die große Vorschau
+        if (size == PhotoEdits.Full) size = Large;
+        // [/feature:editfull]
         return await GetOriginal(db, f, size, ct);
     }
 
@@ -186,7 +198,33 @@ public static class Thumbs
         // Videos: nur das Standbild aus dem Browser (Accept), auch fuer die grosse Ansicht
         if (kind == Kind.Video)
             return size > Small && Cached(db, f.FileId, Small) is { } v && v.Etag == f.Etag && v.Data.Length > 0 ? v.Data : null;
-        if (kind == Kind.None || f.Size == 0 || f.Size > (kind == Kind.Pdf ? MaxPdfBytes : MaxImageBytes)) return null;
+        if (kind == Kind.None || f.Size == 0 || f.Size > MaxBytes(kind, f.Name)) return null;
+        // TIFF: über die Photo-Engine; ohne Engine nichts merken - eingeschaltet kommt die Vorschau beim nächsten Aufruf
+        if (IsTiff(f.Name))
+        {
+            await Gate.WaitAsync(ct);
+            try
+            {
+                using var tiffActivity = Activity.Start(db.UserId, Activity.Thumbs);
+                // Aus der Ablage durchreichen: große TIFFs nicht ganz in den Speicher laden
+                Stream st;
+                try { st = FileStore.OpenRead(db, f.Path); }
+                catch (Exception ex) when (ex is not OperationCanceledException) { return null; }
+                byte[]? jpeg;
+                using (st)
+                {
+                    try { jpeg = await PhotoEngine.PreviewAsync(st, Large, null, ct); }
+                    catch (IOException) { return null; }
+                }
+                if (jpeg == null) return null;
+                var tiffBig = jpeg.Length == 0 ? null : FromBytes(jpeg, Large);
+                var want = size == Large ? tiffBig : jpeg.Length == 0 ? null : FromBytes(jpeg, size);
+                if (tiffBig != null && size != Large) Store(db, f.FileId, Large, Stamp(f), tiffBig);
+                Store(db, f.FileId, size, Stamp(f), want ?? []);
+                return want;
+            }
+            finally { Gate.Release(); }
+        }
         // Kleines Bild ist schon klein genug: die grosse Ansicht braucht keine eigene Version
         await Gate.WaitAsync(ct);
         byte[]? data;
@@ -495,7 +533,26 @@ public static class Thumbs
         return dst;
     }
 
-    private static byte[]? Encode(SKBitmap bmp, int size)
+    /// <summary>
+    /// Bild dekodieren, aufrecht drehen (EXIF) und hochwertig auf höchstens size Kante verkleinern (int.MaxValue: volle Größe).
+    /// Null, wenn es kein lesbares Bild ist.
+    /// </summary>
+    public static SKBitmap? DecodeUpright(byte[] image, int size)
+    {
+        try
+        {
+            using var stream = new MemoryStream(image);
+            var bmp = Decode(stream, size, out var origin);
+            if (bmp == null) return null;
+            return origin == SKEncodedOrigin.TopLeft && Math.Max(bmp.Width, bmp.Height) <= size ? bmp : Orient(bmp, origin, size);
+        }
+        catch (Exception e) when (e is not OutOfMemoryException) { return null; }
+    }
+
+    /// <summary>WebP in höchstens size Kante mit eigener Qualität (bearbeitete große Vorschau).</summary>
+    public static byte[]? Webp(SKBitmap bmp, int size, int quality) => Encode(bmp, size, quality);
+
+    private static byte[]? Encode(SKBitmap bmp, int size, int? quality = null)
     {
         // PDF-Seite: nach der Breite gerendert, hier noch in das Quadrat einpassen
         SKBitmap fit = bmp;
@@ -505,7 +562,7 @@ public static class Thumbs
             using var img = SKImage.FromBitmap(fit);
             // Große Vorschau (Galerie, 2048 px) mit 75: im Schnitt 190 statt 300 KB je Foto, am Bildschirm kein sichtbarer Unterschied;
             // die kleinen bleiben bei 85 (dort spart es kaum etwas, wirkt aber schneller weich)
-            using var data = img.Encode(SKEncodedImageFormat.Webp, size >= LegacyLarge ? 75 : 85);
+            using var data = img.Encode(SKEncodedImageFormat.Webp, quality ?? (size >= LegacyLarge ? 75 : 85));
             return data?.ToArray();
         }
         finally { if (!ReferenceEquals(fit, bmp)) fit.Dispose(); }

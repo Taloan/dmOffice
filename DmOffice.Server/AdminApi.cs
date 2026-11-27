@@ -12,11 +12,13 @@ public static class AdminApi
         : [];
 
     public record NewUser(string Login, string DisplayName, string Password, bool IsAdmin);
-    public record EditUser(string? DisplayName, string? Password, bool? IsAdmin, long? FileQuotaMb = null, bool DefaultFileQuota = false, bool? FilesOff = null, bool? AiAllowed = null);
+    public record EditUser(string? DisplayName, string? Password, bool? IsAdmin, long? FileQuotaMb = null, bool DefaultFileQuota = false, bool? FilesOff = null, bool? AiAllowed = null,
+        bool? MailOwnAccounts = null, bool DefaultMailOwnAccounts = false);
     /// <summary>Pukki mit KI. ApiKey: null = unveraendert, "" = loeschen.</summary>
     public record ExternalBody(List<DmOffice.Storage.ExternalFolderDef> Folders, bool WebDavForUsers, bool WebDavPrivate, bool? OneDriveForUsers = null,
         bool? PCloudForUsers = null, bool? SftpForUsers = null);
-    public record BackupBody(bool Enabled, string? At, int? KeepCount = null, int? EveryHours = null);
+    public record BackupBody(bool Enabled, string? At, int? KeepCount = null, int? EveryHours = null, string? ScheduleKind = null, int? EveryCount = null, string? EveryUnit = null, int? Weekday = null, string? Cron = null);
+    public record SchedulePreviewBody(string? ScheduleKind, string? At, int? EveryCount, string? EveryUnit, int? Weekday, string? Cron);
     public record FilesBackupBody(bool Enabled, bool Own, int Days, bool Forever, string? Target, string? Endpoint, string? Region, string? Bucket, string? Prefix, string? AccessKey, string? SecretKey,
         string? WebDavUrl, string? WebDavUser, string? WebDavPassword, string? Folder);
     public record BackupTargetBody(bool Own, string? Target, string? Endpoint, string? Region, string? Bucket, string? Prefix, string? AccessKey, string? SecretKey,
@@ -29,6 +31,7 @@ public static class AdminApi
     public record AiBody(string? Provider, string? Endpoint, string? Model, string? ApiKey, bool WebSearch = false, string? Location = null);
     public record ServerBody(long DefaultFileQuotaMb);
     public record SpamListsBody(string? Key);
+    public record PublicUrlBody(string? Value); // [feature:publicurl]
     public record SharedJunkBody(bool On);
     public record SpamRulesBody(bool On, List<SpamRule> Rules);
     public record SpamRuleCheckBody(SpamRule Rule, string? Sample);
@@ -52,7 +55,8 @@ public static class AdminApi
 
         api.MapPut("/settings", (ServerBody body, ServerConfig config) =>
         {
-            config.Update(s => s.DefaultFileQuotaMb = Math.Max(0, body.DefaultFileQuotaMb));
+            if (body.DefaultFileQuotaMb < 0) return Results.BadRequest(new { error = "Das Kontingent darf nicht negativ sein (0 = unbegrenzt)." });
+            config.Update(s => s.DefaultFileQuotaMb = body.DefaultFileQuotaMb);
             return Results.Ok();
         });
 
@@ -90,10 +94,32 @@ public static class AdminApi
                 TrashDays = Clamp(body.TrashDays, 3650), TrashMb = Clamp(body.TrashMb, 10_000_000),
                 LinkMaxDownloads = Clamp(body.LinkMaxDownloads, 10_000), LinkDays = Clamp(body.LinkDays, 3650),
                 ZipMb = Clamp(body.ZipMb, 10_000_000),
+                LinkUploadMb = Clamp(body.LinkUploadMb, 100_000_000), // [feature:uploadlimit]
             };
             app.Services.GetRequiredService<ServerConfig>().Update(s => s.FileLimits = l);
             return Results.Ok(l);
         });
+
+        // [feature:publicurl]
+        // Öffentliche Adresse für Links an Empfänger außerhalb der Browsersitzung (PublicAddress); DMOFFICE_PUBLIC_URL hat Vorrang
+        static object PublicUrlState(HttpContext http, ServerConfig config)
+        {
+            var env = Environment.GetEnvironmentVariable(PublicAddress.EnvVar);
+            env = string.IsNullOrWhiteSpace(env) ? null : env.Trim();
+            return new { value = config.Current.PublicUrl ?? "", env, envValid = env != null && PublicAddress.FromEnv() != null,
+                effective = PublicAddress.Origin(http), request = PublicAddress.FromRequest(http) };
+        }
+        api.MapGet("/public-url", (HttpContext http, ServerConfig config) => Results.Ok(PublicUrlState(http, config)));
+        api.MapPut("/public-url", (PublicUrlBody body, HttpContext http, ServerConfig config) =>
+        {
+            if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(PublicAddress.EnvVar)))
+                return Results.BadRequest(new { error = "Die Adresse ist über DMOFFICE_PUBLIC_URL vorgegeben." });
+            var value = PublicAddress.Normalize(body.Value, out var error);
+            if (error != null) return Results.BadRequest(new { error });
+            config.Update(s => s.PublicUrl = value);
+            return Results.Ok(PublicUrlState(http, config));
+        });
+        // [/feature:publicurl]
 
         api.MapGet("/status", (Vault vault, DataPaths paths, ServerConfig config) => new
         {
@@ -124,6 +150,7 @@ public static class AdminApi
             fileQuotaMb = u.FileQuotaMb,
             filesOff = u.FilesOff,
             aiAllowed = u.AiAllowed,
+            locked = u.LockedOut,
             oidcLinked = u.OidcSubject != null, oidcExpected = Oidc.InviteUntil(u) == null ? u.OidcExpected : null, oidcInvite = Oidc.InviteUntil(u), noOwnPassword = u.NoOwnPassword,
             fileQuota = config.FileQuotaBytes(u),
             files = FilesUsed(spaces, u.Id)
@@ -147,7 +174,7 @@ public static class AdminApi
                     }
                 }
                 catch (Exception e) when (e is not OutOfMemoryException) { }
-            return new { folders = config.Current.ExternalFolders, webDavForUsers = config.Current.ExternalWebDavForUsers, webDavPrivate = config.Current.ExternalWebDavPrivate,
+            return new { folders = DmOffice.Storage.ServerMounts.Active(config.Current).Select(DmOffice.Storage.ServerMounts.View).ToList(), webDavForUsers = config.Current.ExternalWebDavForUsers, webDavPrivate = config.Current.ExternalWebDavPrivate,
                 oneDriveForUsers = config.Current.ExternalOneDriveForUsers, microsoft = DmOffice.Storage.ExternalFolders.OAuth?.Enabled == true,
                 pCloudForUsers = config.Current.ExternalPCloudForUsers, sftpForUsers = config.Current.ExternalSftpForUsers, mounts };
         });
@@ -165,7 +192,7 @@ public static class AdminApi
         DmOffice.Storage.ExternalFolderDef ServerMount(ServerConfig config, string id) =>
             config.Current.ExternalFolders.FirstOrDefault(f => f.Id == id) ?? throw new KeyNotFoundException("Diesen Server-Mount gibt es nicht.");
         api.MapGet("/external/index", (ServerConfig config, DmOffice.Storage.ExternalIndex index, DmOffice.Storage.ExternalIndexer indexer) =>
-            config.Current.ExternalFolders.Select(f => IndexInfo(f, index, indexer)).ToList());
+            DmOffice.Storage.ServerMounts.Active(config.Current).Select(f => IndexInfo(f, index, indexer)).ToList());
         api.MapPut("/external/index/{id}", (string id, SearchBody body, ServerConfig config, DmOffice.Storage.ExternalIndex index, DmOffice.Storage.ExternalIndexer indexer) =>
         {
             ServerMount(config, id);
@@ -199,12 +226,23 @@ public static class AdminApi
             indexer.Kick();
             return Results.Ok();
         });
-        api.MapPut("/external", (ExternalBody body, ServerConfig config, DataPaths paths, DmOffice.Storage.ExternalIndexer indexer) =>
+        api.MapPut("/external", async (ExternalBody body, HttpContext http, ServerConfig config, DataPaths paths, DmOffice.Storage.ExternalIndexer indexer, CancellationToken ct) =>
         {
+            var saved = config.Current.ExternalFolders;
+            var done = new List<Action>();
             foreach (var f in body.Folders)
             {
-                f.Name = f.Name.Trim(); f.Path = f.Path.Trim();
+                f.Name = (f.Name ?? "").Trim(); f.Path = (f.Path ?? "").Trim();
                 if (f.Name.Length == 0) return Results.BadRequest(new { error = "Jeder Ordner braucht einen Namen." });
+                // Andere Arten (WebDAV, SFTP, OneDrive, pCloud): Zugang prüfen, Geheimnisse vom gespeicherten Stand
+                var old = string.IsNullOrWhiteSpace(f.Id) ? null : saved.FirstOrDefault(x => x.Id == f.Id);
+                if (await DmOffice.Storage.ServerMounts.PrepareAsync(f, old, config, http.Space().User.Id, DmOffice.Storage.ExternalFolders.OAuth, done, ct) is { } problem)
+                    return Results.BadRequest(new { error = problem });
+                if (!DmOffice.Storage.ServerMounts.IsFolder(f))
+                {
+                    if (string.IsNullOrWhiteSpace(f.Id)) { f.Id = Guid.NewGuid().ToString("N")[..12]; f.SearchLevel ??= DmOffice.Storage.ExternalFolderDef.LevelNames; }
+                    continue;
+                }
                 if (!Path.IsPathFullyQualified(f.Path) || !Directory.Exists(f.Path))
                     return Results.BadRequest(new { error = $"„{f.Name}“: den Pfad {f.Path} gibt es auf dem Server nicht – im Container einbinden und den vollen Pfad angeben." });
                 var full = Path.GetFullPath(f.Path).TrimEnd(Path.DirectorySeparatorChar);
@@ -221,13 +259,18 @@ public static class AdminApi
                 // Nur Namen von Ordnern direkt darin, die es gibt
                 f.Include = (f.Include ?? []).Where(n => n.Length > 0 && n.IndexOfAny(['/', '\\']) < 0 && n is not ("." or "..") && Directory.Exists(Path.Combine(full, n))).Distinct().ToList();
             }
+            // Ohne den Schalter nicht angezeigt: andere Arten bleiben, wie sie sind
+            if (!Features.On(Features.MountDrivers))
+                body.Folders.AddRange(saved.Where(x => !DmOffice.Storage.ServerMounts.IsFolder(x) && body.Folders.All(f => f.Id != x.Id)));
             config.Update(s => { s.ExternalFolders = body.Folders; s.ExternalWebDavForUsers = body.WebDavForUsers; s.ExternalWebDavPrivate = body.WebDavPrivate; if (body.OneDriveForUsers is bool od) s.ExternalOneDriveForUsers = od;
                 if (body.PCloudForUsers is bool pc) s.ExternalPCloudForUsers = pc;
                 if (body.SftpForUsers is bool sf) s.ExternalSftpForUsers = sf; });
+            foreach (var d in done) d();
             // Suche geändert: gleich abgleichen statt erst in einer Minute
             indexer.Kick();
             return Results.Ok();
         });
+        DmOffice.Storage.ServerMounts.MapAdmin(api);
 
         // Datensicherung: freischalten oder sperren, Stand je Person
         DmOffice.Storage.PlainBackupService.MapAdmin(api);
@@ -268,7 +311,7 @@ public static class AdminApi
             {
                 if (Overlaps(body.Folder, paths.Root) || Overlaps(body.Folder, paths.Blobs))
                     return Results.BadRequest(new { error = "Das Datenverzeichnis von dmOffice taugt nicht als Storage Extender – einen eigenen Ordner wählen." });
-                if (cur.ExternalFolders.FirstOrDefault(f => Overlaps(body.Folder, f.Path)) is { } ext)
+                if (cur.ExternalFolders.FirstOrDefault(f => DmOffice.Storage.ServerMounts.IsFolder(f) && Overlaps(body.Folder, f.Path)) is { } ext)
                     return Results.BadRequest(new { error = $"Der Ordner überschneidet sich mit dem externen Ordner „{ext.Name}“ – darüber ließen sich die Inhalte löschen. Einen eigenen Ordner wählen." });
             }
             // Wohin (ohne Zugangsdaten) - der Präfix gilt bei jedem Ziel
@@ -288,7 +331,7 @@ public static class AdminApi
                 || (target == "webdav" && ((body.WebDavUser ?? "").Trim() != (cur.StorageWebDavUser ?? "") || body.WebDavPassword is { Length: > 0 }));
             if ((off || dropsKey || moves) && mirror.NotHome() is { Count: > 0 } away)
             {
-                var only = $"Noch {away.Count:N0} Dateiinhalte ({Size(away.Bytes)}) liegen nur im Storage Extender.";
+                var only = $"Noch {DmOffice.Core.Num.N(away.Count)} Dateiinhalte ({Size(away.Bytes)}) liegen nur im Storage Extender.";
                 if (off || dropsKey)
                     return Results.Json(new { error = only + " Der Storage Extender lässt sich erst ausschalten und die Zugangsdaten lassen sich erst löschen, wenn alle Dateien auch im lokalen Speicherpool liegen. Bei genügend Speicherplatz lädt dmOffice sie automatisch nach." }, statusCode: 409);
                 long notThere;
@@ -303,7 +346,7 @@ public static class AdminApi
                     return Results.Json(new { error = only + $" Mit den neuen Angaben ist er nicht zu erreichen ({S3Remote.Describe(e)}) – nichts geändert." }, statusCode: 409);
                 }
                 if (notThere > 0)
-                    return Results.Json(new { error = only + $" Unter den neuen Angaben fehlen davon {notThere:N0} – nichts geändert." }, statusCode: 409);
+                    return Results.Json(new { error = only + $" Unter den neuen Angaben fehlen davon {DmOffice.Core.Num.N(notThere)} – nichts geändert." }, statusCode: 409);
             }
             var storageBefore = S3Mirror.LocationOf(config.Current);
             var settingsBefore = config.Current;
@@ -360,8 +403,7 @@ public static class AdminApi
         api.MapPost("/storage/test", async (ServerConfig config, CancellationToken ct) =>
         {
             if (!S3Mirror.Configured(config.Current, config.S3SecretKey())) return Results.BadRequest(new { error = "Das Speicherziel ist noch nicht vollständig eingerichtet." });
-            try { using var remote = S3Mirror.RemoteOf(config); await S3Mirror.ProbeAsync(remote, config.Current.S3Prefix, ct); return Results.Ok(); }
-            catch (Exception e) when (e is not OperationCanceledException) { return Results.BadRequest(new { error = "Verbindung fehlgeschlagen: " + S3Remote.Describe(e) }); }
+            return await ProbeTarget(() => S3Mirror.RemoteOf(config), config.Current.S3Prefix, ct);
         });
         // Zugangsdaten für den Notfall: eine mit dem Hauptschlüssel verschlüsselte Zeile (wie die Wiederherstellungscodes bei 2FA)
         api.MapPost("/storage/profile", (ServerConfig config, Vault vault) =>
@@ -380,6 +422,17 @@ public static class AdminApi
         api.MapGet("/health", (DbHealth health) => new { running = health.Running, report = health.Last });
         // Systemprotokoll: Warnungen und Fehler seit dem Start, neueste zuerst
         api.MapGet("/log", () => new { since = System.Diagnostics.Process.GetCurrentProcess().StartTime.ToUniversalTime(), entries = SystemLog.All() });
+        // Systemprotokoll früherer Tage (Kennung syslogfile): Liste der Tagesdateien, Inhalt eines Tages, Datei herunterladen.
+        // Der Tag kommt nur als JJJJ-MM-TT an; der Dateiname wird daraus neu gebildet (SystemLogFile.PathFor).
+        api.MapGet("/log/days", () => SystemLogFile.Current is { } f
+            ? Results.Ok(f.Days().Select(d => new { day = d.Day, bytes = d.Bytes }))
+            : Results.Ok(Array.Empty<object>()));
+        api.MapGet("/log/day/{day}", (string day) =>
+            SystemLogFile.Current?.Read(day) is { } r ? Results.Ok(new { entries = Enumerable.Reverse(r.Entries), total = r.Total }) : Results.NotFound());
+        api.MapGet("/log/day/{day}/download", (string day) =>
+            SystemLogFile.Current?.OpenRead(day) is { } s
+                ? Results.File(s, "text/plain; charset=utf-8", $"dmoffice-{SystemLogFile.ParseDay(day):yyyy-MM-dd}.log")
+                : Results.NotFound());
         api.MapPost("/health/run", (DbHealth health) => { health.RunNow(); return Results.Ok(); });
         // Hilfe für eine beschädigte Datenbank: nur diese eine reparieren oder aus einem Core-Stand ersetzen
         api.MapGet("/health/stands", async (DbRescue rescue, CancellationToken ct) =>
@@ -397,12 +450,36 @@ public static class AdminApi
             return r.Ok ? Results.Ok(r) : Results.BadRequest(new { error = r.Message });
         });
         api.MapPost("/storage/restore", (S3Mirror mirror) => { mirror.RequestRestore(); return Results.Ok(); });
+        // Vorschau des Zeitplans: die nächsten drei Läufe, ohne etwas zu speichern
+        api.MapPost("/storage/backup/preview", (SchedulePreviewBody body) =>
+        {
+            if (body.ScheduleKind == BackupSchedule.KindCron && !Cron.TryParse(body.Cron, out _, out var error)) return Results.BadRequest(new { error });
+            var s = new ServerSettings { S3BackupScheduleKind = body.ScheduleKind, S3BackupAt = body.At ?? "03:00", S3BackupEveryCount = Math.Clamp(body.EveryCount ?? 1, 1, 999),
+                S3BackupEveryUnit = body.EveryUnit is "h" or "d" or "w" ? body.EveryUnit : "d", S3BackupWeekday = Math.Clamp(body.Weekday ?? 1, 0, 6), S3BackupCron = body.Cron };
+            return Results.Ok(new { next = BackupSchedule.Next(s, DateTime.Now, 3) });
+        });
         api.MapPut("/storage/backup", (BackupBody body, ServerConfig config, S3Mirror mirror, S3Backup backup, FilesBackup files) =>
         {
             if (!TimeOnly.TryParse(body.At ?? "03:00", System.Globalization.CultureInfo.InvariantCulture, out var at)) return Results.BadRequest(new { error = "Ungültige Uhrzeit." });
             if (body.Enabled && backup.Blocked() is { } why) return Results.BadRequest(new { error = why });
             if (body.EveryHours is int h && !S3Backup.Intervals.Contains(h)) return Results.BadRequest(new { error = "Ungültiger Abstand." });
-            config.Update(s => { s.S3Backup = body.Enabled; s.S3BackupAt = at.ToString("HH:mm"); if (body.KeepCount is int keep) s.S3BackupKeepCount = Math.Clamp(keep, 1, 1000); if (body.EveryHours is int every) s.S3BackupEveryHours = every; });
+            if (body.ScheduleKind == BackupSchedule.KindCron && !Cron.TryParse(body.Cron, out _, out var cronError)) return Results.BadRequest(new { error = cronError });
+            if (body.EveryUnit is { } unit && unit is not ("h" or "d" or "w")) return Results.BadRequest(new { error = "Ungültige Einheit." });
+            config.Update(s =>
+            {
+                s.S3Backup = body.Enabled; s.S3BackupAt = at.ToString("HH:mm");
+                if (body.KeepCount is int keep) s.S3BackupKeepCount = Math.Clamp(keep, 1, 1000);
+                if (body.EveryHours is int every) s.S3BackupEveryHours = every;
+                // Zeitplan (Kennung backupcron)
+                if (Features.On(Features.BackupCron) && body.ScheduleKind != null)
+                {
+                    s.S3BackupScheduleKind = body.ScheduleKind is BackupSchedule.KindEvery or BackupSchedule.KindCron ? body.ScheduleKind : null;
+                    if (body.EveryCount is int n) s.S3BackupEveryCount = Math.Clamp(n, 1, 999);
+                    if (body.EveryUnit != null) s.S3BackupEveryUnit = body.EveryUnit;
+                    if (body.Weekday is int wd) s.S3BackupWeekday = Math.Clamp(wd, 0, 6);
+                    if (body.Cron != null) s.S3BackupCron = body.Cron.Trim();
+                }
+            });
             return Results.Ok(StorageState(config, mirror, backup, files));
         });
         api.MapPut("/storage/mode", (CacheBody body, ServerConfig config, S3Mirror mirror, S3Backup backup, FilesBackup files) =>
@@ -488,14 +565,12 @@ public static class AdminApi
         api.MapPost("/storage/files-backup/test", async (ServerConfig config, CancellationToken ct) =>
         {
             if (!FilesBackup.Configured(config)) return Results.BadRequest(new { error = "Das Ziel des Files-Backups ist noch nicht vollständig eingerichtet." });
-            try { using var remote = FilesBackup.RemoteOf(config); await S3Mirror.ProbeAsync(remote, FilesBackup.PrefixOf(config.Current), ct); return Results.Ok(); }
-            catch (Exception e) when (e is not OperationCanceledException) { return Results.BadRequest(new { error = "Verbindung fehlgeschlagen: " + S3Remote.Describe(e) }); }
+            return await ProbeTarget(() => FilesBackup.RemoteOf(config), FilesBackup.PrefixOf(config.Current), ct);
         });
         api.MapPost("/storage/backup/test", async (ServerConfig config, CancellationToken ct) =>
         {
             if (!S3Backup.TargetConfigured(config)) return Results.BadRequest(new { error = "Das Ziel des Core-Backups ist noch nicht vollständig eingerichtet." });
-            try { using var remote = S3Backup.RemoteOf(config); await S3Mirror.ProbeAsync(remote, S3Backup.PrefixOf(config.Current), ct); return Results.Ok(); }
-            catch (Exception e) when (e is not OperationCanceledException) { return Results.BadRequest(new { error = "Verbindung fehlgeschlagen: " + S3Remote.Describe(e) }); }
+            return await ProbeTarget(() => S3Backup.RemoteOf(config), S3Backup.PrefixOf(config.Current), ct);
         });
         api.MapPost("/storage/backup/run", (S3Backup backup, FilesBackup files) =>
         {
@@ -627,6 +702,10 @@ public static class AdminApi
             if (body.IsAdmin == false && id == http.User.FindFirstValue(ClaimTypes.NameIdentifier))
                 return Results.BadRequest(new { error = "Sich selbst die Verwaltungsrechte entziehen geht nicht." });
             if (body.Password is { Length: > 0 and < 8 }) return Results.BadRequest(new { error = "Passwort: mindestens 8 Zeichen." });
+            if (body.Password is { Length: > 0 } np && UserStore.PasswordProblem(np) is { } weak) return Results.BadRequest(new { error = weak });
+            if (body.FileQuotaMb is < 0) return Results.BadRequest(new { error = "Das Kontingent darf nicht negativ sein (0 = unbegrenzt)." });
+            if (body.DisplayName?.Trim().Length > UserStore.MaxDisplayName)
+                return Results.BadRequest(new { error = $"Der Anzeigename ist zu lang (höchstens {UserStore.MaxDisplayName} Zeichen)." });
             var before = users.ById(id);
             users.Update(id, u =>
             {
@@ -634,7 +713,7 @@ public static class AdminApi
                 if (!string.IsNullOrEmpty(body.Password)) { u.PasswordHash = Passwords.Hash(body.Password); u.NoOwnPassword = false; u.NewStamp(); }
                 if (body.IsAdmin is bool a && a != u.IsAdmin) { u.IsAdmin = a; u.NewStamp(); }
                 if (body.DefaultFileQuota) u.FileQuotaMb = null;
-                else if (body.FileQuotaMb is long q) u.FileQuotaMb = Math.Max(0, q);
+                else if (body.FileQuotaMb is long q) u.FileQuotaMb = q;
                 if (body.FilesOff is bool off) u.FilesOff = off;
                 if (body.AiAllowed is bool ai) u.AiAllowed = ai;
             });
@@ -656,13 +735,74 @@ public static class AdminApi
             return Results.Ok();
         });
 
-        api.MapDelete("/users/{id}", (string id, HttpContext http) =>
+        // Sperren (Vorstufe zum Löschen): keine Anmeldung, Sitzungen und App-Passwörter enden, Hintergrundarbeit ruht, die Daten bleiben
+        api.MapPost("/users/{id}/lock", (string id, HttpContext http, UserStore users, Spaces spaces, ILoggerFactory logs) =>
+        {
+            var adminId = http.User.FindFirstValue(ClaimTypes.NameIdentifier) ?? "";
+            if (id == adminId) return Results.BadRequest(new { error = "Das eigene Konto lässt sich nicht sperren." });
+            if (users.ById(id) is not { } u) return Results.NotFound(new { error = "Benutzer gibt es nicht." });
+            Lock(http.RequestServices, users, spaces, id);
+            SecurityNotice.Own(http.RequestServices, id, "Konto von der Verwaltung gesperrt");
+            logs.CreateLogger("DmOffice.Security").LogWarning("Sicherheit: Konto {User} gesperrt durch {Admin}", u.Login, users.ById(adminId)?.Login ?? adminId);
+            return Results.Ok();
+        });
+        api.MapPost("/users/{id}/unlock", (string id, HttpContext http, UserStore users) =>
+        {
+            if (users.ById(id) is null) return Results.NotFound(new { error = "Benutzer gibt es nicht." });
+            users.Update(id, x => x.Locked = false);
+            SecurityNotice.ByAdmin(http.RequestServices, id, http.User.FindFirstValue(ClaimTypes.NameIdentifier) ?? "", "Konto entsperrt");
+            return Results.Ok();
+        });
+
+        api.MapDelete("/users/{id}", async (string id, HttpContext http, CancellationToken ct) =>
         {
             if (id == http.User.FindFirstValue(ClaimTypes.NameIdentifier))
                 return Results.BadRequest(new { error = "Das eigene Konto lässt sich hier nicht löschen." });
             DeleteUser(http.RequestServices, id);
             return Results.Ok();
         });
+
+    }
+
+    /// <summary>Speicherziel prüfen (schreiben, lesen, löschen) mit fester Zeitgrenze: ein nicht erreichbares Ziel
+    /// hielt den Test sonst bis zur Zeitgrenze der Weiterleitung (100 s) fest und endete mit einem internen Fehler.</summary>
+    private static async Task<IResult> ProbeTarget(Func<IBlobRemote> remoteOf, string? prefix, CancellationToken ct)
+    {
+        using var limit = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        limit.CancelAfter(TimeSpan.FromSeconds(20));
+        try
+        {
+            using var remote = remoteOf();
+            await S3Mirror.ProbeAsync(remote, prefix, limit.Token);
+            return Results.Ok();
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            return Results.BadRequest(new { error = "Verbindung fehlgeschlagen: Das Ziel antwortet nicht innerhalb von 20 Sekunden." });
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            return Results.BadRequest(new { error = "Verbindung fehlgeschlagen: " + S3Remote.Describe(e) });
+        }
+    }
+
+
+
+    /// <summary>Konto sperren: neuer Stempel (alle Browser-Sitzungen und Tickets ungültig), Sitzungsliste leer, App-Passwörter
+    /// gelöscht, Tresor und Cryptomator-Tresore zu. Die Anmeldung weisen Auth und AppPasswordHandler ab (<see cref="UserRecord.LockedOut"/>),
+    /// die Hintergrundarbeit überspringt das Konto (<see cref="Spaces.Working"/>).</summary>
+    internal static void Lock(IServiceProvider services, UserStore users, Spaces spaces, string id)
+    {
+        users.Update(id, x => { x.Locked = true; x.NewStamp(); });
+        CookieSessions.EndAll(services, id);
+        Tresor.CloseAll(id);
+        CryptomatorPaths.LockAll(id);
+        try
+        {
+            var db = spaces.Get(id).Db;
+            foreach (var a in AppPasswords.List(db)) AppPasswords.Delete(db, a.Id);
+        }
+        catch (UpdatePendingException) { /* Datenbank wartet auf ihre Datenänderung - die Sperre greift trotzdem bei jeder Anmeldung */ }
     }
 
     /// <summary>Benutzer samt Datenbank, Dateien und allen Freigaben loeschen.</summary>
@@ -681,11 +821,14 @@ public static class AdminApi
         var paths = services.GetRequiredService<DataPaths>();
         services.GetRequiredService<DmOffice.Pim.ShareStore>().Forget(id);
         services.GetRequiredService<DmOffice.Dav.FolderShareStore>().Forget(id);
+        services.GetRequiredService<DmOffice.Emergency.EmergencyStore>().Forget(id);
         services.GetRequiredService<DmOffice.Gallery.AlbumStore>().Forget(id);
         services.GetRequiredService<DmOffice.Chat.ChatStore>().Forget(id);
         services.GetRequiredService<DmOffice.Notes.NoteShareStore>().Forget(id);
         services.GetRequiredService<DmOffice.Core.WebPush>().Forget(id);
         services.GetRequiredService<DmOffice.Dav.LinkIndex>().Forget(id);
+        services.GetRequiredService<DmOffice.GateKeeper.GateKeeperStore>().Forget(id); // [feature:gatekeeper]
+        services.GetRequiredService<DmOffice.Mail.ForwardConfirmIndex>().Forget(id);
         services.GetRequiredService<MailSync>().Forget(id);
         services.GetRequiredService<Spaces>().Forget(id);
         // Der Tresor geht mit (übergeben lässt er sich nicht)
@@ -729,7 +872,7 @@ public static class AdminApi
                 return "Den Ordner gibt es auf dem Server nicht – im Container einbinden (etwa /external/backup) und den vollen Pfad angeben.";
             if (Overlaps(folder, paths.Root) || Overlaps(folder, paths.Blobs))
                 return "Das Datenverzeichnis von dmOffice taugt nicht als Ziel – einen eigenen Ordner wählen.";
-            if (config.Current.ExternalFolders.FirstOrDefault(f => Overlaps(folder, f.Path)) is { } ext)
+            if (config.Current.ExternalFolders.FirstOrDefault(f => DmOffice.Storage.ServerMounts.IsFolder(f) && Overlaps(folder, f.Path)) is { } ext)
                 return $"Der Ordner überschneidet sich mit dem externen Ordner „{ext.Name}“ – darüber ließen sich die Sicherungen löschen. Einen eigenen Ordner wählen.";
         }
         return null;
@@ -741,7 +884,7 @@ public static class AdminApi
         return new { mirror = s.S3Mirror, endpoint = s.S3Endpoint, region = s.S3Region, bucket = s.S3Bucket, prefix = s.S3Prefix, accessKey = s.S3AccessKey,
             target = s.StorageTarget, webDavUrl = s.StorageWebDavUrl, webDavUser = s.StorageWebDavUser, hasWebDavPassword = !string.IsNullOrEmpty(config.StorageWebDavPassword()), folder = s.StorageFolder,
             hasSecret = !string.IsNullOrEmpty(config.S3SecretKey()), configured = S3Mirror.Configured(s, config.S3SecretKey()), status = mirror.Status, notHome = mirror.NotHomeRecent() is var (count, bytes) ? new { count, bytes } : null,
-            backup = new { enabled = s.S3Backup, at = s.S3BackupAt ?? "03:00", keepCount = BackupRules.KeepCount(s), everyHours = s.S3BackupEveryHours, blocked = backup.Blocked(), status = backup.Status,
+            backup = new { enabled = s.S3Backup, at = s.S3BackupAt ?? "03:00", keepCount = BackupRules.KeepCount(s), everyHours = s.S3BackupEveryHours, scheduleKind = s.S3BackupScheduleKind, everyCount = s.S3BackupEveryCount, everyUnit = s.S3BackupEveryUnit, weekday = s.S3BackupWeekday, cron = s.S3BackupCron, blocked = backup.Blocked(), status = backup.Status,
                 overdue = s.S3Backup && backup.Status.LastRun is { } ran && BackupRules.Overdue(s, ran, DateTime.UtcNow), holdDeletes = S3Backup.HoldDeletes(s, paths: files.Paths, DateTime.UtcNow), nextRun = s.S3Backup ? S3Backup.NextRun(s, DateTime.Now, backup.Status.LastRun) : (DateTime?)null,
                 own = s.BackupOwnTarget, target = s.BackupTarget, endpoint = s.BackupS3Endpoint, region = s.BackupS3Region, bucket = s.BackupS3Bucket, prefix = s.BackupS3Prefix,
                 accessKey = s.BackupS3AccessKey, hasSecret = !string.IsNullOrEmpty(config.BackupS3SecretKey()), webDavUrl = s.BackupWebDavUrl, webDavUser = s.BackupWebDavUser,

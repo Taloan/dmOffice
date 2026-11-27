@@ -117,6 +117,29 @@ public class PhishCheckTests
         Assert.True(Assert.Single(Check(Mail("news@shop.example", html, unsub))).Strong);
     }
 
+    [Fact]
+    public void Sicherer_Absender_mit_bestaetigter_Domain_bekommt_keinen_Linkhinweis()
+    {
+        var html = "<a href=\"https://click.versand.example/abc\">www.shop.example</a>";
+        var dkim = ("Authentication-Results", "mx.beispiel.de; dkim=pass header.d=shop.example");
+        var known = new PhishCheck.Context { KnownDomains = Ctx.KnownDomains, OwnHosts = Ctx.OwnHosts, KnownSender = true };
+        Assert.Empty(Check(Mail("news@shop.example", html, dkim), known));
+        // Ohne Bestätigung der Domain bleibt der Hinweis
+        Assert.Single(Check(Mail("news@shop.example", html), known));
+    }
+
+    [Fact]
+    public void Link_zur_bestaetigten_Domain_eines_bekannten_Absenders_ist_kein_Merkmal()
+    {
+        // paypal.com (bekannt, bestätigt) zeigt „www.paypal.de“ an und führt zu paypal.com
+        var html = "<a href=\"https://www.paypal.com/de/x\">www.paypal.de</a>";
+        var dmarcPass = ("Authentication-Results", "mx.beispiel.de; dmarc=pass header.from=paypal.com");
+        Assert.Empty(Check(Mail("service@paypal.com", html, dmarcPass)));
+        // Unbekannte Domain mit eigenem DMARC, Linktext einer Marke: das ist die Täuschung
+        var boese = "<a href=\"https://boese.example/x\">www.paypal.com</a>";
+        Assert.True(Assert.Single(Check(Mail("info@boese.example", boese, ("Authentication-Results", "mx.beispiel.de; dmarc=pass header.from=boese.example")))).Strong);
+    }
+
     // ---------------- Aehnliche Domains ----------------
 
     [Theory]
@@ -174,6 +197,22 @@ public class PhishCheckTests
         Assert.Empty(Check(Mail("a@hilfe.example", html), new PhishCheck.Context { WroteBefore = () => true, KnownDomains = Ctx.KnownDomains }));
         // Ohne Anmeldelink kein Merkmal
         Assert.Empty(Check(Mail("a@hilfe.example", "<a href=\"https://hilfe.example/rezept\">Zum Rezept</a>")));
+    }
+
+    [Fact]
+    public void Angeforderter_Anmeldelink_mit_DMARC_ist_keine_Warnung()
+    {
+        // Wie ein Anmeldelink per Mail: neuer Absender (zufälliger Name je Mail), Link auf eine andere Domain des Dienstes, die
+        // eigene Adresse als Base64 im Link. DMARC bestanden: nur der Hinweis auf den neuen Absender, keine Warnung (ab zwei Merkmalen)
+        var html = "<a href=\"https://dienst.example/magic-link?e=" + Convert.ToBase64String("ich@beispiel.de"u8.ToArray()) + "\">Anmelden</a>";
+        var ctx = new PhishCheck.Context { KnownDomains = Ctx.KnownDomains, OwnHosts = Ctx.OwnHosts, OwnAddresses = ["ich@beispiel.de"] };
+        var found = Check(Mail("no-reply-x7k2@mail.anbieter.example", html, ("Authentication-Results",
+            "beispiel.de; dkim=pass header.d=anbieter.example; spf=pass smtp.mailfrom=mail.anbieter.example; dmarc=pass header.from=mail.anbieter.example")), ctx);
+        Assert.Equal(["newsender"], found.Select(f => f.Kind));
+        // Ohne DMARC bleibt die versteckte Adresse ein Merkmal
+        found = Check(Mail("no-reply-x7k2@mail.anbieter.example", html, ("Authentication-Results",
+            "beispiel.de; dkim=pass header.d=anbieter.example; spf=pass smtp.mailfrom=mail.anbieter.example; dmarc=none header.from=mail.anbieter.example")), ctx);
+        Assert.Equal(["newsender", "myaddress"], found.Select(f => f.Kind));
     }
 
     // ---------------- Cloud-Speicher, versteckte Adresse, Drohung ----------------

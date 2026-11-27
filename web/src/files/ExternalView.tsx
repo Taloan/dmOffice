@@ -1,17 +1,23 @@
+import { sendFiles } from './chunked'
+import { useUploadTask } from './UploadBar'
 import {
   Breadcrumb, BreadcrumbButton, BreadcrumbDivider, BreadcrumbItem, Button, Checkbox, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle,
   Field, Input, makeStyles, Radio, RadioGroup, Select, Menu, MenuDivider, MenuItem, MenuList, MenuPopover, MenuTrigger, mergeClasses, MessageBar, MessageBarBody, Spinner, Table, TableBody, TableCell,
-  TableCellLayout, TableHeader, TableHeaderCell, TableRow, Text, tokens, Toolbar, ToolbarButton,
+  TableCellLayout, TableHeader, TableHeaderCell, TableRow, Text, tokens,
 } from '@fluentui/react-components'
 import {
-  ArrowClockwise20Regular, ArrowDownload20Regular, Copy20Regular, Dismiss20Regular, Folder20Regular, FolderArrowRight20Regular, Search20Regular, ArrowUpload20Regular, Delete20Regular, FolderAdd20Regular, MoreHorizontal20Regular, Rename20Regular,
+  ArrowClockwise20Regular, ArrowDownload20Regular, Copy20Regular, Folder20Regular, FolderArrowRight20Regular, Search20Regular, ArrowUpload20Regular, Delete20Regular, FolderAdd20Regular, MoreHorizontal20Regular, Rename20Regular,
 } from '@fluentui/react-icons'
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, featureOn, fmtSize, q } from '../api'
 import { SftpFields, isSftp } from './SftpFields'
+import { ensureSftpTrust, sftpHostOf, sftpHostText, SftpTrustButton, type SftpHost } from './SftpTrust' // [feature:sftptrust]
 import { useApp } from '../App'
 import { t, tError } from '../i18n'
-import { fmtWhen, KindIcon, kindOf } from './common'
+import { extOf, fmtWhen, type Item, KindIcon, kindLabel, kindOf, type Source, viewKind } from './common'
+import { COLS, ColHead, type ColKey, type ColPref, ColumnMenu, cleanCols } from './FileColumns'
+import { entriesOf, readEntries, type Upload } from './FilesView'
+import { Viewer } from './Viewer'
 import { usePrefs } from '../prefs'
 import { TopFolderChoice } from './TopFolderChoice'
 import { BrowseDialog } from './ImportProfiles'
@@ -21,7 +27,7 @@ import { locale } from '../i18n'
 import { askConfirm, ContextMenu, useContextMenu } from '../shell/context'
 import { useFileClip } from './clip'
 import { useTransfer } from './TransferDialog'
-import { ClipboardPaste20Regular, Cut20Regular, FolderOpen20Regular } from '@fluentui/react-icons'
+import { ClipboardPaste20Regular, Cut20Regular, FolderArrowUp20Regular, FolderOpen20Regular } from '@fluentui/react-icons'
 import { MicrosoftSignIn } from '../settings/AccountsSettings'
 
 /** available: gerade erreichbar (der Server prüft es beim Laden der Liste) */
@@ -52,23 +58,38 @@ const useStyles = makeStyles({
 
 const join = (a: string, b: string) => (a ? a + '/' + b : b)
 
+// Kennung exttable: Spalten der Tabelle wie in der Dateiliste (FileColumns), gemerkt unter tableCols['files-external'];
+// ein Eintrag „name“ darin hält die Breite der Namensspalte
+const EXT_TABLE = 'files-external'
+const EXT_KEYS: ColKey[] = ['modified', 'size', 'kind', 'ext']
+const EXT_DEFAULT: ColPref[] = [{ key: 'modified', width: 160 }, { key: 'size', width: 100 }]
+export type ExtSort = 'name' | 'modified' | 'size' | 'kind' | 'ext'
+
 /**
  * Ein externer Ordner (Ordner auf dem Server oder WebDAV): blaettern, herunterladen, hochladen, Ordner anlegen,
  * umbenennen, loeschen. Die Dateien gehoeren dem fremden Speicher - keine Versionen, kein Papierkorb, keine Freigaben.
  */
 /** Befehle eines externen Ordners für das Menüband des Dateibereichs (Stand der Auswahl und Aktionen). */
 export interface ExtRibbon {
-  count: number; anyFile: boolean; one: boolean; readOnly: boolean; busy: boolean; canPaste: boolean
-  newFolder: () => void; uploadFiles: () => void; open: () => void; download: () => void; rename: () => void; remove: () => void
-  cut: () => void; copy: () => void; paste: () => void; moveTo: () => void
+  count: number; anyFile: boolean; one: boolean; readOnly: boolean; busy: boolean; canPaste: boolean; canUploadDir: boolean
+  newFolder: () => void; uploadFiles: () => void; uploadDir: () => void; open: () => void; download: () => void; rename: () => void; remove: () => void
+  cut: () => void; copy: () => void; paste: () => void; moveTo: () => void; refresh: () => void
 }
 
-export function ExternalView({ mount, path, onPath, vaultPanel, onVaultOpen, ribbon, onRibbonState }: {
+export function ExternalView({ mount, path, onPath, vaultPanel, onVaultOpen, look, onLook, paneKey, focusReq, ribbon, onRibbonState }: {
   mount: ExternalMount; path: string; onPath: (p: string) => void
-  /** Menüband des Dateibereichs: hier stehen die Befehle; die eigene Leiste im Inhalt entfällt dann */
-  ribbon?: React.MutableRefObject<ExtRibbon | null>
+  /** Menüband des Dateibereichs: hier stehen alle Befehle (Hochladen, Neuer Ordner, Aktualisieren …), im Inhalt keine Knöpfe */
+  ribbon: React.MutableRefObject<ExtRibbon | null>
   /** Ändert sich die Auswahl oder was möglich ist: Menüband neu zeichnen */
   onRibbonState?: (key: string) => void
+  /** Ansicht, wie sie der Dateibereich für diesen Ordner bestimmt (mit „Ansicht je Ordner“ je Ordner, sonst die Vorgaben) */
+  look?: { view: 'details' | 'tiles'; sort: string; desc: boolean; tilePx: string }
+  /** Sortierung über die Spaltenköpfe ändern: an den Dateibereich, damit sie dort gilt, wo das Menüband sie liest */
+  onLook?: (sort: ExtSort, desc: boolean) => void
+  /** Tasten der zwei Fenster (Tab, F10, Alt+I …): true, wenn der Dateibereich sie behandelt hat */
+  paneKey?: (e: React.KeyboardEvent) => boolean
+  /** Ändert sich der Wert, bekommt die Liste den Fokus (Tab aus dem anderen Fenster) */
+  focusReq?: number
   /** Cryptomator-Tresor in diesem Ordner, gesperrt: Passwortfeld (raw: verschlüsselte Dateien zeigen) */
   vaultPanel?: (root: string, raw: () => void) => React.ReactNode
   /** … schon offen: dorthin */
@@ -76,7 +97,18 @@ export function ExternalView({ mount, path, onPath, vaultPanel, onVaultOpen, rib
 }) {
   const s = useStyles()
   const { fail, notify } = useApp()
+  const { me } = useApp() // [feature:sftptrust]
+  // Kennung exttable: Explorer-Tabelle, Vorschau, Tastatur, Ordner hochladen, Ladefehler an Ort und Stelle
+  const table = featureOn('exttable')
   const [items, setItems] = useState<Entry[] | null>(null)
+  const [loadErr, setLoadErr] = useState<string | null>(null)
+  const [loadHost, setLoadHost] = useState<SftpHost | null>(null) // [feature:sftptrust]
+  const [viewer, setViewer] = useState<{ list: Item[]; index: number } | null>(null)
+  const rootRef = useRef<HTMLDivElement>(null)
+  useEffect(() => { if (focusReq) rootRef.current?.focus() }, [focusReq])
+  const dirInput = useRef<HTMLInputElement>(null)
+  // Tastatur: Stelle, an der die Pfeiltasten weitergehen (anchor bleibt der Anfang eines Bereichs mit Umschalt)
+  const cursor = useRef<string | null>(null)
   const [vault, setVault] = useState<{ root: string; unlocked: boolean } | null>(null)
   const [raw, setRaw] = useState(false)
   const [readOnly, setReadOnly] = useState(mount.readOnly)
@@ -100,25 +132,39 @@ export function ExternalView({ mount, path, onPath, vaultPanel, onVaultOpen, rib
   useEffect(() => setFind(''), [mount.id])
 
   // Wie die Dateiablage: Details oder Kacheln, Sortierung, Ordner oben, versteckte Dateien, Kachelgröße (Menüband „Ansicht“)
-  const { prefs } = usePrefs()
-  const tiles = prefs.fileView === 'tiles'
-  const sort = prefs.fileSort ?? 'name'
-  const desc = prefs.fileSortDesc ?? false
-  const tilePx = prefs.fileTile === 'small' ? '96px' : prefs.fileTile === 'large' ? '220px' : '132px'
+  const { prefs, update } = usePrefs()
+  const tiles = (look?.view ?? prefs.fileView) === 'tiles'
+  const sortPref = look?.sort ?? prefs.fileSort ?? 'name'
+  // Art und Dateiendung nur mit der Tabelle (exttable); sonst wie bisher: alles andere nach Name
+  const sort: ExtSort = sortPref === 'modified' || sortPref === 'size' || (table && (sortPref === 'kind' || sortPref === 'ext')) ? sortPref : 'name'
+  const desc = look?.desc ?? prefs.fileSortDesc ?? false
+  const tilePx = look?.tilePx ?? (prefs.fileTile === 'small' ? '96px' : prefs.fileTile === 'large' ? '220px' : '132px')
   // Liste kommt aus dem Zwischenspeicher des Servers; „Aktualisieren“ holt sie am Speicher frisch
   const load = useCallback((fresh = false) => {
     if (fresh) setItems(null)
     api.get<{ readOnly: boolean; items: Entry[]; vault?: { root: string; unlocked: boolean } | null }>('/api/files/external/list?' + q({ mount: mount.id, path, fresh: fresh || undefined }))
-      .then(r => { setItems(r.items); setVault(r.vault ?? null); setReadOnly(r.readOnly); setSelected(sel => sel.filter(n => r.items.some(i => i.name === n))) })
-      .catch(e => { fail(e); setItems([]) })
-  }, [mount.id, path, fail])
-  useEffect(() => { setItems(null); setVault(null); setRaw(false) }, [mount.id, path])
+      .then(r => { setLoadErr(null); setItems(r.items); setVault(r.vault ?? null); setReadOnly(r.readOnly); setSelected(sel => sel.filter(n => r.items.some(i => i.name === n))) })
+      // [feature:sftptrust]
+      .catch(e => {
+        // Fingerabdruck nicht bestätigt: eigener Text und Knopf zum Bestätigen an der Meldung
+        const h = sftpHostOf(e)
+        setLoadHost(h)
+        if (table) setLoadErr(h ? sftpHostText(h) : tError(e instanceof Error ? e.message : String(e))); else fail(e)
+        setItems([])
+      })
+      // [feature:sftptrust:else]
+      // .catch(e => { if (table) setLoadErr(tError(e instanceof Error ? e.message : String(e))); else fail(e); setItems([]) })
+      // [/feature:sftptrust]
+  }, [mount.id, path, fail, table])
+  useEffect(() => { setItems(null); setVault(null); setRaw(false); setLoadErr(null); cursor.current = null }, [mount.id, path])
   useEffect(() => { if (vault?.unlocked && !raw) onVaultOpen?.(vault.root) }, [vault, raw]) // eslint-disable-line react-hooks/exhaustive-deps
   const shown = useMemo(() => {
     const dir = desc ? -1 : 1
     return (items ?? []).filter(i => prefs.fileHidden || !i.name.startsWith('.'))
       .sort((a, b) => (prefs.fileFolderTop !== false ? Number(b.isDir) - Number(a.isDir) : 0) || dir * (
         sort === 'modified' ? (a.modified ?? '').localeCompare(b.modified ?? '') : sort === 'size' ? a.size - b.size
+          : sort === 'kind' ? kindLabel(kindOf(a)).localeCompare(kindLabel(kindOf(b)), locale) || a.name.localeCompare(b.name, locale, { sensitivity: 'base', numeric: true })
+          : sort === 'ext' ? extOf(a.isDir ? '' : a.name).localeCompare(extOf(b.isDir ? '' : b.name)) || a.name.localeCompare(b.name, locale, { sensitivity: 'base', numeric: true })
           : a.name.localeCompare(b.name, locale, { sensitivity: 'base', numeric: true })))
   }, [items, prefs.fileHidden, prefs.fileFolderTop, sort, desc])
   const sel = shown.filter(i => selected.includes(i.name))
@@ -136,9 +182,58 @@ export function ExternalView({ mount, path, onPath, vaultPanel, onVaultOpen, rib
     }
     if (ctrl) toggle(i)
     else { anchor.current = i.name; setSelected([i.name]) }
+    cursor.current = i.name
   }
   const plain = (e: React.MouseEvent) => !e.ctrlKey && !e.metaKey && !e.shiftKey
   const thumbOf = (i: Entry) => '/api/files/external/thumb?' + q({ mount: mount.id, path: join(path, i.name), v: i.modified ?? '' })
+
+  // ---------------- Spalten (exttable) ----------------
+  const stored = prefs.tableCols?.[EXT_TABLE]
+  const savedCols = cleanCols((stored?.filter(c => c.key !== 'name') ?? EXT_DEFAULT) as ColPref[]).filter(c => EXT_KEYS.includes(c.key))
+  const savedName = stored?.find(c => c.key === 'name')?.width || undefined
+  // Beim Ziehen erst nur hier, beim Loslassen gespeichert
+  const [liveCols, setLiveCols] = useState<{ cols: ColPref[]; name?: number } | null>(null)
+  const [colMenu, setColMenu] = useState<{ x: number; y: number } | null>(null)
+  const colCfg = liveCols?.cols ?? savedCols
+  const nameWidth = liveCols ? liveCols.name : savedName
+  const saveCols = (c: ColPref[], name = savedName) => {
+    setLiveCols(null)
+    update({ tableCols: { ...prefs.tableCols, [EXT_TABLE]: [...(name ? [{ key: 'name', width: name }] : []), ...c] } })
+  }
+  const setWidth = (k: ColKey | 'name', w: number) => setLiveCols({
+    cols: k === 'name' ? savedCols : savedCols.map(c => (c.key === k ? { ...c, width: w || COLS[k].width } : c)),
+    name: k === 'name' ? w || undefined : savedName,
+  })
+  // Loslassen (Doppelklick auf die Kante: 0 = Standardbreite)
+  const commitWidth = (k: ColKey | 'name', w: number) => k === 'name' ? saveCols(savedCols, w || undefined)
+    : saveCols(savedCols.map(c => (c.key === k ? { ...c, width: w || COLS[k].width } : c)))
+  const moveCol = (from: ColKey, to: ColKey, after: boolean) => {
+    const f = colCfg.find(c => c.key === from), rest = colCfg.filter(c => c.key !== from)
+    const at = rest.findIndex(c => c.key === to) + (after ? 1 : 0)
+    if (f && rest.some(c => c.key === to)) saveCols([...rest.slice(0, at), f, ...rest.slice(at)])
+  }
+  // Klick auf den Kopf: wie in der Dateiliste (gleiche Einstellung fileSort), noch einmal: umgekehrt
+  const sortHead = (k: ExtSort) => {
+    const d = k === sort ? !desc : k === 'modified' || k === 'size'
+    if (onLook) onLook(k, d); else update({ fileSort: k, fileSortDesc: d })
+  }
+  const cellOf = (k: ColKey, i: Entry): ReactNode => k === 'modified' ? (i.modified ? fmtWhen(i.modified, locale) : '')
+    : k === 'size' ? (i.isDir ? '' : fmtSize(i.size)) : k === 'kind' ? kindLabel(kindOf(i)) : k === 'ext' ? (i.isDir ? '' : extOf(i.name)) : ''
+
+  // ---------------- Öffnen (exttable: Vorschau statt Herunterladen) ----------------
+  const source: Source = useMemo(() => {
+    const dl = (i: Item, inline?: boolean) => '/api/files/external/download?' + q({ mount: mount.id, path: i.path, show: inline || undefined })
+    // Der Server macht nur kleine Vorschaubilder (256 px); größer: das Bild selbst
+    return { download: dl, thumb: (i: Item, size = 256) => size > 256 ? dl(i, true) : '/api/files/external/thumb?' + q({ mount: mount.id, path: i.path, v: i.etag ?? '' }) }
+  }, [mount.id])
+  const asItem = (i: Entry): Item => ({ path: join(path, i.name), name: i.name, isDir: i.isDir, size: i.size, mime: null, modified: i.modified ?? '', etag: i.modified ?? '' })
+  const open = (i: Entry) => {
+    if (i.isDir) { onPath(join(path, i.name)); return }
+    const it = asItem(i)
+    if (!table || !viewKind(it)) { download(i); return }
+    const list = shown.filter(x => !x.isDir).map(asItem).filter(x => viewKind(x))
+    setViewer({ list, index: Math.max(0, list.findIndex(x => x.path === it.path)) })
+  }
   const menu = (i: Entry) => (
     <Menu>
       <MenuTrigger disableButtonEnhancement><Button appearance="subtle" size="small" icon={<MoreHorizontal20Regular />} aria-label={t('Mehr')} onClick={e => e.stopPropagation()} /></MenuTrigger>
@@ -153,16 +248,39 @@ export function ExternalView({ mount, path, onPath, vaultPanel, onVaultOpen, rib
   )
   useEffect(() => { load() }, [load])
 
+  // Große Dateien in Teilen (sendFiles), mit Fortschritt und Abbrechen
+  const up = useUploadTask()
   const upload = async (files: FileList | File[]) => {
-    if (!files.length) return
+    if (!files.length || up.busy) return
     setBusy(true)
     try {
-      const form = new FormData()
-      for (const f of Array.from(files)) form.append('file', f, f.name)
-      await api.form('/api/files/external/upload?' + q({ mount: mount.id, path }), form)
-      notify(t('Hochgeladen'))
-      load()
-    } catch (e) { fail(e) } finally { setBusy(false) }
+      if (await up.run((onProgress, signal) => sendFiles('/api/files/external/upload?' + q({ mount: mount.id, path }), Array.from(files).map(file => ({ file })), onProgress, signal)) !== undefined)
+        notify(t('Hochgeladen'))
+    } catch (e) { fail(e) } finally { setBusy(false); load() }
+  }
+  // Ordner hochladen (exttable): je Unterordner ein Aufruf; der Speicher legt fehlende Ordner beim Schreiben an
+  const uploadTree = async (list: Upload[]) => {
+    if (!list.length || up.busy) return
+    setBusy(true)
+    try {
+      const byDir = new Map<string, File[]>()
+      for (const u of list) {
+        const at = u.rel.lastIndexOf('/'), dir = at < 0 ? '' : u.rel.slice(0, at)
+        byDir.set(dir, [...(byDir.get(dir) ?? []), u.file])
+      }
+      // Wie upload: große Dateien in Teilen; Fortschritt über alle Ordner zusammen
+      const total = list.reduce((n, u) => n + u.file.size, 0)
+      const ok = await up.run(async (onProgress, signal) => {
+        let before = 0, done = 0
+        for (const [dir, files] of byDir) {
+          await sendFiles('/api/files/external/upload?' + q({ mount: mount.id, path: dir ? join(path, dir) : path }), files.map(file => ({ file })),
+            p => onProgress({ bytes: before + p.bytes, total, done: done + p.done, count: list.length, name: p.name }), signal)
+          before += files.reduce((n, f) => n + f.size, 0); done += files.length
+        }
+        return true
+      })
+      if (ok) notify(t('Hochgeladen'))
+    } catch (e) { fail(e) } finally { setBusy(false); load() }
   }
   const download = (i: Entry) => {
     const a = document.createElement('a')
@@ -216,8 +334,47 @@ export function ExternalView({ mount, path, onPath, vaultPanel, onVaultOpen, rib
     }
     xfer.start({ fromMount: c.mount, paths: c.paths, toMount: mount.id, to: target, move: c.cut })
   }
+  // Tastatur in der Liste (exttable): Pfeile, Pos1/Ende, Enter, F2, Rücktaste, F5
+  const columns = () => {
+    const kids = Array.from(rootRef.current?.querySelector('[data-tiles]')?.children ?? []) as HTMLElement[]
+    return Math.max(1, kids.filter(k => k.offsetTop === kids[0]?.offsetTop).length)
+  }
+  const moveFocus = (n: number, extend: boolean) => {
+    if (!shown.length) return
+    const names = shown.map(x => x.name)
+    const at = names.indexOf(cursor.current ?? anchor.current ?? '')
+    const to = names[Math.max(0, Math.min(names.length - 1, at < 0 ? (n > 0 ? 0 : names.length - 1) : at + n))]
+    const from = names.indexOf(anchor.current ?? '')
+    if (extend && from >= 0) { const b = names.indexOf(to); setSelected(names.slice(Math.min(from, b), Math.max(from, b) + 1)) }
+    else { anchor.current = to; setSelected([to]) }
+    cursor.current = to
+    rootRef.current?.querySelector(`[data-name="${CSS.escape(to)}"]`)?.scrollIntoView({ block: 'nearest' })
+  }
+  const tableKeys = (e: React.KeyboardEvent): boolean => {
+    if (e.ctrlKey || e.metaKey) return false
+    const one = sel.length === 1 ? sel[0] : null
+    const step = tiles ? columns() : 1
+    if (e.key === 'ArrowUp' && e.altKey) { if (!path) return false; onPath(parts.slice(0, -1).join('/')) }
+    else if (e.key === 'ArrowDown') moveFocus(step, e.shiftKey)
+    else if (e.key === 'ArrowUp') moveFocus(-step, e.shiftKey)
+    else if (e.key === 'ArrowRight' && tiles) moveFocus(1, e.shiftKey)
+    else if (e.key === 'ArrowLeft' && tiles) moveFocus(-1, e.shiftKey)
+    else if (e.key === 'Home') moveFocus(-shown.length, e.shiftKey)
+    else if (e.key === 'End') moveFocus(shown.length, e.shiftKey)
+    else if (e.key === 'Enter' && one) open(one)
+    else if (e.key === 'F2' && one && !readOnly) { setName(one.name); setAsk({ kind: 'rename', item: one }) }
+    else if (e.key === 'Backspace' && path) onPath(parts.slice(0, -1).join('/'))
+    else if (e.key === 'F5') load(true)
+    else return false
+    e.preventDefault()
+    return true
+  }
   const keys = (e: React.KeyboardEvent) => {
     if ((e.target as HTMLElement).closest('input, textarea')) return
+    // Menüs und Dialoge (Kontextmenü, Ordnerwahl) haben ihre eigenen Tasten
+    if (table && (e.target as HTMLElement).closest('[role="menu"], [role="dialog"]')) return
+    if (paneKey?.(e)) return
+    if (table && tableKeys(e)) return
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c' && sel.length) { e.preventDefault(); toClip(sel, false); return }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'x' && sel.length && !readOnly) { e.preventDefault(); toClip(sel, true); return }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v' && clip && !readOnly) { e.preventDefault(); paste(path); return }
@@ -236,29 +393,40 @@ export function ExternalView({ mount, path, onPath, vaultPanel, onVaultOpen, rib
   }
   const parts = path ? path.split('/') : []
   // Befehle für das Menüband (bei jedem Zeichnen aktuell); neu gezeichnet wird es nur, wenn sich der Stand ändert
-  if (ribbon) ribbon.current = {
-    count: sel.length, anyFile: sel.some(i => !i.isDir), one: sel.length === 1, readOnly, busy, canPaste: !!clip && !readOnly,
+  ribbon.current = {
+    count: sel.length, anyFile: sel.some(i => !i.isDir), one: sel.length === 1, readOnly, busy, canPaste: !!clip && !readOnly, canUploadDir: table,
     newFolder: () => { setName(''); setAsk({ kind: 'mkdir' }) },
     uploadFiles: () => file.current?.click(),
-    open: () => { const i = sel[0]; if (sel.length === 1) { if (i.isDir) onPath(join(path, i.name)); else download(i) } },
+    uploadDir: () => dirInput.current?.click(),
+    open: () => { if (sel.length === 1) open(sel[0]) },
     download: () => downloadAll(sel),
     rename: () => { if (sel.length === 1) { setName(sel[0].name); setAsk({ kind: 'rename', item: sel[0] }) } },
     remove: () => { if (sel.length) remove(sel) },
     cut: () => toClip(sel, true), copy: () => toClip(sel, false), paste: () => paste(path),
     moveTo: () => { if (sel.length) setPicker('move') },
+    refresh: () => load(true),
   }
   const ribbonKey = [sel.length, sel.some(i => !i.isDir), readOnly, busy, !!clip].join('|')
   useEffect(() => { onRibbonState?.(ribbonKey) }, [ribbonKey]) // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => () => { if (ribbon) ribbon.current = null; onRibbonState?.('') }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => { ribbon.current = null; onRibbonState?.('') }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  const drop = (e: React.DragEvent) => {
+    e.preventDefault(); setDragging(false)
+    if (readOnly) return
+    // Ordner vom Desktop (exttable): die Einträge noch im drop-Ereignis abholen
+    const entries = table ? entriesOf(e.dataTransfer) : []
+    if (entries.length) readEntries(entries).then(uploadTree).catch(fail)
+    else upload(e.dataTransfer.files)
+  }
 
   // Cryptomator-Tresor in diesem Ordner: wie in „Meine Dateien“ erst das Passwort
   if (vault && !vault.unlocked && !raw && vaultPanel) return <>{vaultPanel(vault.root, () => setRaw(true))}</>
 
   return (
-    <div className={mergeClasses(s.root, dragging && s.drop)} tabIndex={-1} style={{ outline: 'none' }} onKeyDown={keys}
+    <>
+    <div ref={rootRef} className={mergeClasses(s.root, dragging && s.drop)} tabIndex={table ? 0 : -1} style={{ outline: 'none' }} onKeyDown={keys}
       onDragOver={e => { if (!readOnly && e.dataTransfer.types.includes('Files')) { e.preventDefault(); setDragging(true) } }}
       onDragLeave={e => { if (e.currentTarget === e.target) setDragging(false) }}
-      onDrop={e => { e.preventDefault(); setDragging(false); if (!readOnly) upload(e.dataTransfer.files) }}>
+      onDrop={drop}>
       <div className={s.head}>
         {/* Lange Pfade rollen; der aktuelle Ort bleibt rechts sichtbar (wie in Dateien) */}
         <div className={s.crumbs} ref={el => { if (el) el.scrollLeft = el.scrollWidth }}>
@@ -276,31 +444,28 @@ export function ExternalView({ mount, path, onPath, vaultPanel, onVaultOpen, rib
         {mount.search && <Input size="small" value={find} onChange={(_, d) => setFind(d.value)} contentBefore={<Search20Regular />} style={{ width: 220 }}
           placeholder={path ? t('In „{name}“ suchen', { name: parts[parts.length - 1] }) : t('In „{name}“ suchen', { name: mount.name })} aria-label={t('Im Ordner suchen')}
           onKeyDown={e => { if (e.key === 'Escape') setFind('') }} />}
-        <Toolbar size="small" style={{ flexWrap: 'wrap', minWidth: 0, maxWidth: '100%' }}>
-          {!ribbon && sel.length > 0 && <>
-            <Text size={200} className={s.count}>{t('{n} ausgewählt', { n: sel.length })}</Text>
-            <ToolbarButton icon={<ArrowDownload20Regular />} disabled={!sel.some(i => !i.isDir)} onClick={() => downloadAll(sel)} aria-label={t('Herunterladen')} title={t('Herunterladen')} />
-            {!readOnly && <>
-              <ToolbarButton icon={<FolderArrowRight20Regular />} disabled={busy} onClick={() => setPicker('move')} aria-label={t('Verschieben nach …')} title={t('Verschieben nach …')} />
-              <ToolbarButton icon={<Copy20Regular />} disabled={busy} onClick={() => setPicker('copy')} aria-label={t('Kopieren nach …')} title={t('Kopieren nach …')} />
-              <ToolbarButton icon={<Delete20Regular />} disabled={busy} onClick={() => remove(sel)} aria-label={t('Löschen')} title={t('Löschen')} />
-            </>}
-            <ToolbarButton icon={<Dismiss20Regular />} onClick={() => setSelected([])} aria-label={t('Auswahl aufheben')} title={t('Auswahl aufheben')} />
-          </>}
-          {!ribbon && !readOnly && <ToolbarButton icon={<ArrowUpload20Regular />} disabled={busy} onClick={() => file.current?.click()}>{t('Hochladen')}</ToolbarButton>}
-          {!ribbon && !readOnly && <ToolbarButton icon={<FolderAdd20Regular />} onClick={() => { setName(''); setAsk({ kind: 'mkdir' }) }}>{t('Neuer Ordner')}</ToolbarButton>}
-          <ToolbarButton icon={<ArrowClockwise20Regular />} onClick={() => load(true)} aria-label={t('Aktualisieren')} title={t('Aktualisieren')} />
-        </Toolbar>
         <input ref={file} type="file" multiple hidden onChange={e => { if (e.target.files) upload(e.target.files); e.target.value = '' }} />
+        {/* @ts-expect-error webkitdirectory: ganzen Ordner samt Unterordnern hochladen */}
+        {table && <input ref={dirInput} type="file" multiple hidden webkitdirectory="" onChange={e => { if (e.target.files) uploadTree(Array.from(e.target.files).map(f => ({ file: f, rel: (f as any).webkitRelativePath || f.name }))); e.target.value = '' }} />}
       </div>
       <div className={s.list} onContextMenu={e => { if (!(e.target as HTMLElement).closest('[data-entry]')) cm.open(e, null) }}>
         {term ? <ExternalHits term={term} mount={mount.id} path={path} onOpen={(_, dir) => { setFind(''); onPath(dir) }} />
-          : items == null ? <Spinner style={{ marginTop: 24 }} /> : shown.length === 0 ? <Text className={s.muted} style={{ display: 'block', padding: 16 }}>{readOnly ? t('Leer.') : t('Leer. Dateien hierher ziehen oder „Hochladen“.')}</Text> : tiles ? (
-          <div className={s.tiles} style={{ ['--tile' as any]: tilePx }}>
+          : items == null ? <Spinner style={{ marginTop: 24 }} />
+          : loadErr ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-start', paddingTop: 12 }}>
+              <MessageBar intent="error"><MessageBarBody>{t('Der Ordner lässt sich gerade nicht lesen.')} {loadErr}</MessageBarBody></MessageBar>
+              <Button icon={<ArrowClockwise20Regular />} onClick={() => load(true)}>{t('Erneut versuchen')}</Button>
+              {/* [feature:sftptrust] */}
+              {/* Server-Mounts bestätigt ein Admin; eigene Ordner die Person selbst */}
+              {loadHost && (me.isAdmin || mount.kind !== 'folder') && <SftpTrustButton refTo={{ mount: mount.id }} onTrusted={() => load(true)} />}
+              {/* [/feature:sftptrust] */}
+            </div>
+          ) : shown.length === 0 ? <Text className={s.muted} style={{ display: 'block', padding: 16 }}>{readOnly ? t('Leer.') : t('Leer. Dateien hierher ziehen oder „Hochladen“.')}</Text> : tiles ? (
+          <div className={s.tiles} data-tiles style={{ ['--tile' as any]: tilePx }}>
             {shown.map(i => (
-              <div key={i.name} data-entry className={mergeClasses(s.tile, selected.includes(i.name) && s.tileSel)} title={i.name} aria-selected={selected.includes(i.name)}
+              <div key={i.name} data-entry data-name={i.name} className={mergeClasses(s.tile, selected.includes(i.name) && s.tileSel)} title={i.name} aria-selected={selected.includes(i.name)}
                 onContextMenu={e => { if (!selected.includes(i.name)) setSelected([i.name]); cm.open(e, i) }}
-                onDoubleClick={() => (i.isDir ? onPath(join(path, i.name)) : download(i))}
+                onDoubleClick={() => open(i)}
                 onClick={e => { if (i.isDir && plain(e) && !selected.length) onPath(join(path, i.name)); else click(e, i) }}>
                 <span className={s.tileCheck} onClick={e => { e.stopPropagation(); toggle(i) }} onDoubleClick={e => e.stopPropagation()}>
                   <Checkbox checked={selected.includes(i.name)} aria-label={t('Auswählen')} />
@@ -316,6 +481,54 @@ export function ExternalView({ mount, path, onPath, vaultPanel, onVaultOpen, rib
               </div>
             ))}
           </div>
+        ) : table ? (
+          <>
+          <Table size="small" aria-label={mount.name} style={{ minWidth: 36 + (nameWidth ?? 220) + colCfg.reduce((n, c) => n + c.width, 0) + 44 }}>
+            <TableHeader onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setColMenu({ x: e.clientX, y: e.clientY }) }}>
+              <TableRow>
+                <TableHeaderCell style={{ width: 36 }}>
+                  <Checkbox checked={sel.length === 0 ? false : sel.length === shown.length ? true : 'mixed'} aria-label={t('Alle auswählen')}
+                    onChange={() => setSelected(sel.length === shown.length ? [] : shown.map(i => i.name))} />
+                </TableHeaderCell>
+                <ColHead label={t('Name')} width={nameWidth} minWidth={220} sortable sorted={sort === 'name'} desc={desc} onSort={() => sortHead('name')}
+                  onWidth={w => setWidth('name', w)} onWidthDone={w => commitWidth('name', w)} />
+                {colCfg.map(c => {
+                  const k = COLS[c.key].sort as ExtSort | undefined
+                  return (
+                    <ColHead key={c.key} label={COLS[c.key].label()} width={c.width} sortable={!!k} sorted={!!k && sort === k} desc={desc} onSort={() => k && sortHead(k)}
+                      onWidth={w => setWidth(c.key, w)} onWidthDone={w => commitWidth(c.key, w)} moveKey={c.key} onMove={moveCol} />
+                  )
+                })}
+                {/* Hat auch „Name“ eine feste Breite, nimmt diese leere Spalte den Rest auf */}
+                {!!nameWidth && <TableHeaderCell aria-hidden />}
+                <TableHeaderCell style={{ width: 44 }} />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {shown.map(i => (
+                <TableRow key={i.name} data-entry data-name={i.name} className={s.row} appearance={selected.includes(i.name) ? 'brand' : 'none'} aria-selected={selected.includes(i.name)}
+                  onContextMenu={e => { if (!selected.includes(i.name)) setSelected([i.name]); cm.open(e, i) }}
+                  onClick={e => click(e, i)} onDoubleClick={() => open(i)}>
+                  <TableCell onClick={e => { e.stopPropagation(); toggle(i) }} onDoubleClick={e => e.stopPropagation()}>
+                    <Checkbox checked={selected.includes(i.name)} aria-label={t('Auswählen')} />
+                  </TableCell>
+                  <TableCell style={{ minWidth: 0, overflow: 'hidden' }}>
+                    <TableCellLayout truncate title={i.name} media={<KindIcon item={{ name: i.name, isDir: i.isDir }} />}>
+                      {i.isDir ? <a href="#" onClick={e => { e.preventDefault(); if (!plain(e)) return; e.stopPropagation(); onPath(join(path, i.name)) }} style={{ color: 'inherit', textDecoration: 'none' }}>{i.name}</a> : i.name}
+                    </TableCellLayout>
+                  </TableCell>
+                  {colCfg.map(c => (
+                    <TableCell key={c.key} className={c.key === 'kind' || c.key === 'ext' ? s.muted : undefined}
+                      style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{cellOf(c.key, i)}</TableCell>
+                  ))}
+                  {!!nameWidth && <TableCell />}
+                  <TableCell onClick={e => e.stopPropagation()}>{menu(i)}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+          <ColumnMenu cols={colCfg} onChange={c => saveCols(c)} at={colMenu} onClose={() => setColMenu(null)} keys={EXT_KEYS} defaults={EXT_DEFAULT} />
+          </>
         ) : (
           <Table size="small" aria-label={mount.name}>
             <TableHeader>
@@ -334,7 +547,7 @@ export function ExternalView({ mount, path, onPath, vaultPanel, onVaultOpen, rib
               {shown.map(i => (
                 <TableRow key={i.name} data-entry className={s.row} appearance={selected.includes(i.name) ? 'brand' : 'none'} aria-selected={selected.includes(i.name)}
                   onContextMenu={e => { if (!selected.includes(i.name)) setSelected([i.name]); cm.open(e, i) }}
-                  onClick={e => click(e, i)} onDoubleClick={() => (i.isDir ? onPath(join(path, i.name)) : download(i))}>
+                  onClick={e => click(e, i)} onDoubleClick={() => open(i)}>
                   <TableCell onClick={e => { e.stopPropagation(); toggle(i) }} onDoubleClick={e => e.stopPropagation()}>
                     <Checkbox checked={selected.includes(i.name)} aria-label={t('Auswählen')} />
                   </TableCell>
@@ -360,8 +573,11 @@ export function ExternalView({ mount, path, onPath, vaultPanel, onVaultOpen, rib
           const target = i?.isDir ? join(path, i.name) : path
           return <>
             {i?.isDir && <MenuItem icon={<FolderOpen20Regular />} onClick={() => onPath(join(path, i.name))}>{t('Öffnen')}</MenuItem>}
+            {table && i && !i.isDir && list.length === 1 && viewKind(asItem(i)) && <MenuItem icon={<FolderOpen20Regular />} onClick={() => open(i)}>{t('Öffnen')}</MenuItem>}
             {!i && !readOnly && <MenuItem icon={<FolderAdd20Regular />} onClick={() => { setName(''); setAsk({ kind: 'mkdir' }) }}>{t('Neuer Ordner')}</MenuItem>}
-            {list.length === 1 && !readOnly && <MenuItem icon={<Rename20Regular />} onClick={() => { setName(list[0].name); setAsk({ kind: 'rename', item: list[0] }) }}>{t('Umbenennen')}</MenuItem>}
+            {table && !i && !readOnly && <MenuItem icon={<ArrowUpload20Regular />} onClick={() => file.current?.click()}>{t('Dateien hochladen')}</MenuItem>}
+            {table && !i && !readOnly && <MenuItem icon={<FolderArrowUp20Regular />} onClick={() => dirInput.current?.click()}>{t('Ordner hochladen')}</MenuItem>}
+            {list.length === 1 && !readOnly && <MenuItem icon={<Rename20Regular />} secondaryContent={table ? 'F2' : undefined} onClick={() => { setName(list[0].name); setAsk({ kind: 'rename', item: list[0] }) }}>{t('Umbenennen')}</MenuItem>}
             {list.some(x => !x.isDir) && <MenuItem icon={<ArrowDownload20Regular />} onClick={() => downloadAll(list)}>{t('Herunterladen')}</MenuItem>}
             {list.length > 0 && !readOnly && <MenuItem icon={<Cut20Regular />} secondaryContent={t('Strg+X')} onClick={() => toClip(list, true)}>{t('Ausschneiden')}</MenuItem>}
             {list.length > 0 && <MenuItem icon={<Copy20Regular />} secondaryContent={t('Strg+C')} onClick={() => toClip(list, false)}>{t('Kopieren')}</MenuItem>}
@@ -377,6 +593,7 @@ export function ExternalView({ mount, path, onPath, vaultPanel, onVaultOpen, rib
       {picker && <BrowseDialog mount={mount.id} start={path}
         title={picker === 'move' ? t('{n} verschieben nach …', { n: sel.length }) : t('{n} kopieren nach …', { n: sel.length })}
         onClose={() => setPicker(null)} onPick={target => transfer(target, picker)} />}
+      {up.bar}
       <Dialog open={!!ask} onOpenChange={(_, d) => { if (!d.open) setAsk(null) }}>
         <DialogSurface>
           <form onSubmit={e => { e.preventDefault(); submit() }}>
@@ -392,6 +609,13 @@ export function ExternalView({ mount, path, onPath, vaultPanel, onVaultOpen, rib
         </DialogSurface>
       </Dialog>
     </div>
+    {/* Außerhalb der Liste: die Tasten der Vorschau sollen nicht in der Liste ankommen */}
+    {viewer && (
+      <Viewer items={viewer.list} index={viewer.index} source={source} onIndex={n => setViewer(v => v && { ...v, index: n })}
+        onClose={() => { setViewer(null); rootRef.current?.focus() }}
+        onDownload={it => { const e = shown.find(x => join(path, x.name) === it.path); if (e) download(e) }} />
+    )}
+    </>
   )
 }
 
@@ -407,9 +631,15 @@ export function AddExternalDialog({ webDav = true, sftp = false, oneDrive = fals
   // Fehler im Dialog zeigen: eine Meldung am Rand läge hinter dem abgedunkelten Hintergrund
   const [err, setErr] = useState<string | null>(null)
   const set = (k: keyof typeof f) => (_: unknown, d: { value: string }) => setF(x => ({ ...x, [k]: d.value }))
+  const { me } = useApp() // [feature:sftptrust]
   const add = async () => {
     setBusy(true); setErr(null)
-    try { onAdded(await api.post<ExternalMount>('/api/files/external/mounts', f)) } catch (e) { setErr(tError(e instanceof Error ? e.message : String(e))) } finally { setBusy(false) }
+    try {
+      // [feature:sftptrust]
+      if (kind === 'sftp' && !await ensureSftpTrust({ url: f.url }, { admin: me.isAdmin })) return
+      // [/feature:sftptrust]
+      onAdded(await api.post<ExternalMount>('/api/files/external/mounts', f))
+    } catch (e) { setErr(tError(e instanceof Error ? e.message : String(e))) } finally { setBusy(false) }
   }
   // Art nur zur Wahl, wenn mehrere erlaubt sind
   const choice = kinds.length > 1 ? (
@@ -461,6 +691,7 @@ export function AddExternalDialog({ webDav = true, sftp = false, oneDrive = fals
 export function EditExternalDialog({ target, onClose, onSaved }: { target: ExternalMount; onClose: () => void; onSaved: (m: ExternalMount) => void }) {
   const s = useStyles()
   const { fail } = useApp()
+  const { me } = useApp() // [feature:sftptrust]
   const [f, setF] = useState<{ name: string; url: string; user: string; password: string; passwordSet: boolean } | null>(null)
   const [signIn, setSignIn] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -475,6 +706,9 @@ export function EditExternalDialog({ target, onClose, onSaved }: { target: Exter
     if (!f) return
     setBusy(true); setErr(null)
     try {
+      // [feature:sftptrust]
+      if (webDav && isSftp(f.url) && !await ensureSftpTrust({ url: f.url }, { admin: me.isAdmin })) return
+      // [/feature:sftptrust]
       onSaved(await api.put<ExternalMount>('/api/files/external/mounts/' + encodeURIComponent(target.id),
         webDav ? { name: f.name, url: f.url, user: f.user, password: f.password } : { name: f.name }))
     } catch (e) { setErr(tError(e instanceof Error ? e.message : String(e))) } finally { setBusy(false) }
@@ -521,13 +755,22 @@ export function EditExternalDialog({ target, onClose, onSaved }: { target: Exter
   )
 }
 
+/** Anmeldung und gewählter Ordner, ohne einzubinden (Verwaltung → Server-Mounts speichert sie mit dem Mount). */
+export interface SignInPick { flow: string; name: string; item?: string; folder: string; account: string }
+
 interface DriveFolders { drive: { id: string; type: string; owner: string | null }; folders: { id: string; name: string }[] }
 
 /**
  * OneDrive einbinden: bei Microsoft anmelden (Gerätecode, Zugriff auf die Dateien), dann einen Ordner wählen.
  * Das Token bleibt auf dem Server; hier geht nur die Kennung der Anmeldung hin und her.
  */
-function AddOneDrive({ choice, replace, onClose, onAdded }: { choice: ReactNode; replace?: ExternalMount; onClose: () => void; onAdded: (m: ExternalMount) => void }) {
+export function AddOneDrive({ choice, replace, onClose, onAdded, base = '/api/files/external', onPick }: {
+  choice: ReactNode; replace?: ExternalMount; onClose: () => void; onAdded?: (m: ExternalMount) => void
+  /** Andere Endpunkte (Verwaltung) */
+  base?: string
+  /** Statt einzubinden: Anmeldung und Ordner zurückgeben */
+  onPick?: (p: SignInPick) => void
+}) {
   const s = useStyles()
   const { fail } = useApp()
   const [step, setStep] = useState<'start' | 'signin' | 'pick'>('start')
@@ -543,18 +786,20 @@ function AddOneDrive({ choice, replace, onClose, onAdded }: { choice: ReactNode;
     if (!flow) return
     let stop = false
     setData(null)
-    api.get<DriveFolders>('/api/files/external/onedrive/folders?' + q({ flow, item: here }))
+    api.get<DriveFolders>(base + '/onedrive/folders?' + q({ flow, item: here }))
       .then(r => { if (!stop) setData(r) }).catch(e => { if (!stop) fail(e) })
     return () => { stop = true }
-  }, [flow, here, fail])
+  }, [flow, here, fail, base])
   const go = (next: { id: string; name: string }[]) => {
     setTrail(next)
     if (!named) setName(next.length ? next[next.length - 1].name : 'OneDrive')
   }
   const add = async () => {
+    const path = trail.map(x => x.name).join('/')
+    if (onPick && flow) { onPick({ flow, name: name.trim(), item: here, folder: path, account: [data?.drive.owner, path ? 'OneDrive/' + path : 'OneDrive'].filter(Boolean).join(' · ') }); return }
     setBusy(true)
     try {
-      onAdded(await api.post<ExternalMount>('/api/files/external/onedrive', { flow, name: name.trim(), item: here, path: trail.map(x => x.name).join('/'), replace: replace?.id }))
+      onAdded?.(await api.post<ExternalMount>('/api/files/external/onedrive', { flow, name: name.trim(), item: here, path, replace: replace?.id }))
     } catch (e) { fail(e) } finally { setBusy(false) }
   }
   const type = data?.drive.type === 'business' ? t('geschäftlich') : data?.drive.type === 'personal' ? t('privat') : data?.drive.type
@@ -568,7 +813,7 @@ function AddOneDrive({ choice, replace, onClose, onAdded }: { choice: ReactNode;
           <Text size={200} className={s.muted}>{t('Bei geschäftlichen Konten kann die Organisation verlangen, dass ihr Administrator zustimmt.')}</Text>
           <div><Button appearance="primary" onClick={() => setStep('signin')}>{t('Mit Microsoft anmelden')}</Button></div>
         </>}
-        {step === 'signin' && <MicrosoftSignIn startUrl="/api/files/external/onedrive/start"
+        {step === 'signin' && <MicrosoftSignIn startUrl={base + '/onedrive/start'}
           onDone={f => { setFlow(f); setStep('pick') }} onCancel={() => setStep('start')} />}
         {step === 'pick' && <>
           <Text size={200} className={s.muted}>
@@ -598,7 +843,7 @@ function AddOneDrive({ choice, replace, onClose, onAdded }: { choice: ReactNode;
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose}>{t('Abbrechen')}</Button>
-        {step === 'pick' && <Button appearance="primary" disabled={busy || !data || !name.trim()} onClick={add}>{busy ? t('Verbinde …') : replace ? t('Speichern') : t('Einbinden')}</Button>}
+        {step === 'pick' && <Button appearance="primary" disabled={busy || !data || !name.trim()} onClick={add}>{busy ? t('Verbinde …') : replace ? t('Speichern') : onPick ? t('Übernehmen') : t('Einbinden')}</Button>}
       </DialogActions>
     </DialogBody>
   )
@@ -608,7 +853,13 @@ function AddOneDrive({ choice, replace, onClose, onAdded }: { choice: ReactNode;
  * pCloud einbinden: in einem eigenen Fenster bei pCloud anmelden (OAuth), hier warten, bis der Server den Rücksprung hat,
  * dann einen Ordner wählen. Das Token bleibt auf dem Server; hier geht nur die Kennung der Anmeldung hin und her.
  */
-function AddPCloud({ choice, replace, onClose, onAdded }: { choice: ReactNode; replace?: ExternalMount; onClose: () => void; onAdded: (m: ExternalMount) => void }) {
+export function AddPCloud({ choice, replace, onClose, onAdded, base = '/api/files/external', onPick }: {
+  choice: ReactNode; replace?: ExternalMount; onClose: () => void; onAdded?: (m: ExternalMount) => void
+  /** Andere Endpunkte (Verwaltung) */
+  base?: string
+  /** Statt einzubinden: Anmeldung und Ordner zurückgeben */
+  onPick?: (p: SignInPick) => void
+}) {
   const s = useStyles()
   const { fail, notify } = useApp()
   const [step, setStep] = useState<'start' | 'signin' | 'pick'>('start')
@@ -626,9 +877,9 @@ function AddPCloud({ choice, replace, onClose, onAdded }: { choice: ReactNode; r
   // Eigene App bei pCloud: Client-ID und Secret (das gespeicherte Secret kommt nicht zurück, nur ob es eins gibt)
   const [app, setApp] = useState<{ clientId: string; secret: string; secretSet: boolean; redirect: string } | null>(null)
   useEffect(() => {
-    api.get<{ clientId: string; secretSet: boolean; redirect: string }>('/api/files/external/pcloud/app')
+    api.get<{ clientId: string; secretSet: boolean; redirect: string }>(base + '/pcloud/app')
       .then(r => setApp({ ...r, secret: '' })).catch(fail)
-  }, [fail])
+  }, [fail, base])
   const appReady = !!app && !!app.clientId.trim() && (app.secretSet || !!app.secret.trim())
 
   const signIn = async () => {
@@ -637,7 +888,7 @@ function AddPCloud({ choice, replace, onClose, onAdded }: { choice: ReactNode; r
     const w = window.open('', 'dmoffice-pcloud', 'width=560,height=720')
     popup.current = w
     try {
-      const r = await api.post<{ flow: string; url: string }>('/api/files/external/pcloud/start', { clientId: app?.clientId ?? '', clientSecret: app?.secret ?? '' })
+      const r = await api.post<{ flow: string; url: string }>(base + '/pcloud/start', { clientId: app?.clientId ?? '', clientSecret: app?.secret ?? '' })
       setApp(a => a && ({ ...a, secret: '', secretSet: true }))
       if (w) { w.opener = null; w.location.href = r.url } else window.open(r.url, '_blank', 'noopener')
       setFlow(r.flow); setStep('signin')
@@ -647,7 +898,7 @@ function AddPCloud({ choice, replace, onClose, onAdded }: { choice: ReactNode; r
   useEffect(() => {
     if (step !== 'signin' || !flow) return
     const id = setInterval(() => {
-      api.get<{ state: 'pending' | 'ok' | 'error'; error: string | null; account: string | null }>('/api/files/external/pcloud/status?' + q({ flow }))
+      api.get<{ state: 'pending' | 'ok' | 'error'; error: string | null; account: string | null }>(base + '/pcloud/status?' + q({ flow }))
         .then(r => {
           if (r.state === 'pending') return
           clearInterval(id)
@@ -656,22 +907,23 @@ function AddPCloud({ choice, replace, onClose, onAdded }: { choice: ReactNode; r
         }).catch(e => { clearInterval(id); fail(e); setStep('start') })
     }, 2000)
     return () => clearInterval(id)
-  }, [step, flow, fail])
+  }, [step, flow, fail, base])
   useEffect(() => {
     if (step !== 'pick' || !flow) return
     let stop = false
     setFolders(null)
-    api.get<{ folders: string[] }>('/api/files/external/pcloud/folders?' + q({ flow, path }))
+    api.get<{ folders: string[] }>(base + '/pcloud/folders?' + q({ flow, path }))
       .then(r => { if (!stop) setFolders(r.folders) }).catch(e => { if (!stop) fail(e) })
     return () => { stop = true }
-  }, [step, flow, path, fail])
+  }, [step, flow, path, fail, base])
   const go = (next: string[]) => {
     setTrail(next)
     if (!named) setName(next.length ? next[next.length - 1] : 'pCloud')
   }
   const add = async () => {
+    if (onPick && flow) { onPick({ flow, name: name.trim(), folder: path, account: [account, path ? 'pCloud/' + path : 'pCloud'].filter(Boolean).join(' · ') }); return }
     setBusy(true)
-    try { onAdded(await api.post<ExternalMount>('/api/files/external/pcloud', { flow, name: name.trim(), path, replace: replace?.id })) } catch (e) { fail(e) } finally { setBusy(false) }
+    try { onAdded?.(await api.post<ExternalMount>('/api/files/external/pcloud', { flow, name: name.trim(), path, replace: replace?.id })) } catch (e) { fail(e) } finally { setBusy(false) }
   }
   return (
     <DialogBody>
@@ -730,7 +982,7 @@ function AddPCloud({ choice, replace, onClose, onAdded }: { choice: ReactNode; r
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose}>{t('Abbrechen')}</Button>
-        {step === 'pick' && <Button appearance="primary" disabled={busy || !folders || !name.trim()} onClick={add}>{busy ? t('Verbinde …') : replace ? t('Speichern') : t('Einbinden')}</Button>}
+        {step === 'pick' && <Button appearance="primary" disabled={busy || !folders || !name.trim()} onClick={add}>{busy ? t('Verbinde …') : replace ? t('Speichern') : onPick ? t('Übernehmen') : t('Einbinden')}</Button>}
       </DialogActions>
     </DialogBody>
   )

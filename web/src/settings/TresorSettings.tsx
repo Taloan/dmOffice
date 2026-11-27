@@ -13,6 +13,7 @@ import { askConfirm } from '../shell/context'
 import { copyText, saveText } from '../shell/browser'
 import { OPEN_COLOR, TRESOR_EVENT, TresorState, addTresorPasskey, closeTresor, deviceName, forgetThisDevice, passkeysPossible, requestTresorOpen, tresorChanged, tresorState } from '../tresor/tresor'
 import { Section } from './parts'
+import { printHtml } from '../print'
 
 const useStyles = makeStyles({
   form: { display: 'flex', flexDirection: 'column', gap: '12px', maxWidth: '440px' },
@@ -37,15 +38,9 @@ function sheet(codes: string[] | null, key: string | null) {
 }
 
 function printSheet(text: string) {
-  const w = window.open('', '_blank', 'width=600,height=700')
-  if (!w) return
-  const pre = w.document.createElement('pre')
-  pre.style.cssText = 'font: 15px Consolas, monospace; white-space: pre-wrap; padding: 24px'
-  pre.textContent = text
-  w.document.title = t('Tresor – Wiederherstellung')
-  w.document.body.appendChild(pre)
-  w.focus()
-  w.print()
+  const esc = (v: string) => v.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]!))
+  void printHtml(`<!doctype html><meta charset="utf-8"><title>${esc(t('Tresor – Wiederherstellung'))}</title>`
+    + `<body style="margin:0"><pre style="font: 15px Consolas, monospace; white-space: pre-wrap; padding: 24px">${esc(text)}</pre></body>`)
 }
 
 /** Codes und Schlüssel anzeigen: kopieren, speichern, drucken. */
@@ -84,15 +79,13 @@ export function TresorSettings() {
   }, [load])
   if (!st) return null
 
-  const title = <Text size={600} weight="semibold">{t('Tresor')}</Text>
   const intro = <Text>{t('Dateien und notizi-Datenbanken im Tresor werden mit einem eigenen Tresor-Passwort verschlüsselt. Der Schlüssel wird nicht auf dem Server gespeichert. Zugang zum Inhalt ermöglichen ausschließlich das Tresor-Passwort, ein Wiederherstellungscode oder der Wiederherstellungsschlüssel; das gilt auch für Administratoren des Servers.')}</Text>
 
-  if (!st.exists) return <>{title}{intro}<Setup onDone={(codes, key) => { setShown({ codes, key }); load(); tresorChanged() }} /></>
+  if (!st.exists) return <>{intro}<Setup onDone={(codes, key) => { setShown({ codes, key }); load(); tresorChanged() }} /></>
 
   // Gerade eingerichtet oder neue Codes: einmal zeigen
   if (shown) return (
     <>
-      {title}
       <MessageBar intent="warning"><MessageBarBody>{t('Bitte jetzt ausdrucken oder sicher ablegen. Ohne Tresor-Passwort, Codes und Wiederherstellungsschlüssel ist der Inhalt verloren.')}</MessageBarBody></MessageBar>
       <RecoverySheet codes={shown.codes} recoveryKey={shown.key} />
       <div><Button appearance="primary" onClick={() => setShown(null)}>{t('Erledigt')}</Button></div>
@@ -108,7 +101,6 @@ export function TresorSettings() {
 
   return (
     <>
-      {title}
       {intro}
       <div className={s.row}>
         {open

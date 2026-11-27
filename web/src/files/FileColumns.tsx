@@ -1,6 +1,7 @@
 import { makeStyles, Menu, MenuDivider, MenuItem, MenuItemCheckbox, MenuList, MenuPopover, mergeClasses, TableHeaderCell, tokens } from '@fluentui/react-components'
 import { ArrowDown16Regular, ArrowUp16Regular } from '@fluentui/react-icons'
 import { useRef, useState } from 'react'
+import { tableHeadLook } from '../shell/GridColumns'
 import { t } from '../i18n'
 
 /**
@@ -43,7 +44,9 @@ export const cleanCols = (cols: ColPref[] | undefined): ColPref[] =>
 
 const useStyles = makeStyles({
   // Schmale Spalte: Überschrift mit „…“ statt in die nächste hinein
-  head: { position: 'relative', userSelect: 'none', overflow: 'hidden', whiteSpace: 'nowrap', '& .fui-TableHeaderCell__button': { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' } },
+  // Kopf wie in allen Tabellen (Vorbild Helpdesk/Finanzen): grauer Hintergrund, halbfett
+  head: { position: 'relative', userSelect: 'none', overflow: 'hidden', whiteSpace: 'nowrap', ...tableHeadLook,
+    '& .fui-TableHeaderCell__button': { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', fontWeight: tokens.fontWeightSemibold } },
   sortable: { cursor: 'pointer' },
   dragging: { opacity: 0.5 },
   over: { boxShadow: `inset 2px 0 0 ${tokens.colorBrandStroke1}` },
@@ -56,7 +59,7 @@ const useStyles = makeStyles({
 
 /** Ein Spaltenkopf: sortieren per Klick, Breite an der rechten Kante, Reihenfolge per Ziehen (wenn moveable). */
 export function ColHead<K extends string = ColKey>({ label, width, minWidth, sortable, sorted, desc, onSort, onWidth, onWidthDone, moveKey, onMove }: {
-  label: string; width?: number; minWidth?: number; sortable?: boolean; sorted?: boolean; desc?: boolean; onSort?: () => void
+  label: React.ReactNode; width?: number; minWidth?: number; sortable?: boolean; sorted?: boolean; desc?: boolean; onSort?: () => void
   onWidth: (w: number) => void; onWidthDone: (w: number) => void
   /** after: rechts von der Spalte `to` abgelegt - so geht auch die letzte Stelle */
   moveKey?: K; onMove?: (from: K, to: K, after: boolean) => void
@@ -97,21 +100,25 @@ export function ColHead<K extends string = ColKey>({ label, width, minWidth, sor
 }
 
 /** Auswahl der Spalten: als Menue an einer Stelle (Rechtsklick auf die Kopfzeile) oder an einem Knopf (Menueband). */
-export function ColumnMenu({ cols, onChange, at, onClose, trigger, labels }: {
+export function ColumnMenu({ cols, onChange, at, onClose, trigger, labels, keys, defaults = DEFAULT_COLS }: {
   cols: ColPref[]; onChange: (c: ColPref[]) => void
   at?: { x: number; y: number } | null; onClose?: () => void; trigger?: JSX.Element
   /** Abweichende Namen je Ansicht, wie im Spaltenkopf */
   labels?: Partial<Record<ColKey, string>>
+  /** Nur diese Spalten zur Wahl (etwa externe Ordner ohne Aufnahmedaten); ohne: alle */
+  keys?: ColKey[]
+  /** „Standard wiederherstellen“ */
+  defaults?: ColPref[]
 }) {
   const shown = cols.map(c => c.key)
   const toggle = (k: ColKey) => onChange(shown.includes(k) ? cols.filter(c => c.key !== k) : [...cols, { key: k, width: COLS[k].width }])
   const list = (
     <MenuList checkedValues={{ cols: shown }}>
-      {(Object.keys(COLS) as ColKey[]).map(k => (
+      {(keys ?? Object.keys(COLS) as ColKey[]).map(k => (
         <MenuItemCheckbox key={k} name="cols" value={k} onClick={() => toggle(k)}>{labels?.[k] ?? COLS[k].label()}</MenuItemCheckbox>
       ))}
       <MenuDivider />
-      <MenuItem onClick={() => onChange(DEFAULT_COLS)}>{t('Standard wiederherstellen')}</MenuItem>
+      <MenuItem onClick={() => onChange(defaults)}>{t('Standard wiederherstellen')}</MenuItem>
     </MenuList>
   )
   if (trigger) return <Menu>{trigger}<MenuPopover>{list}</MenuPopover></Menu>

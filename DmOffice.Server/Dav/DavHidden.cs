@@ -36,6 +36,9 @@ public static class DavHidden
         return paths.Length > 0 && paths.Any(p => FileStore.InRoot(path, p));
     }
 
+    /// <summary>Liegt unterhalb des Pfads ein ausgeblendeter Ordner? (Eine Kopie bekäme neue Dateinummern und wäre sichtbar.)</summary>
+    public static bool Within(UserDb db, string path) => PathsOf(db).Any(p => FileStore.Contains(path, p));
+
     private static string[] PathsOf(UserDb db)
     {
         if (Cache.TryGetValue(db, out var c) && DateTime.UtcNow - c.At < Fresh) return c.Paths;

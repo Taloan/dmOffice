@@ -22,6 +22,8 @@ export function useIsMobile(): boolean {
 }
 
 const useStyles = makeStyles({
+  // Abschnittsleiste am Desktop: Trennlinie zum Inhalt in jedem Bereich gleich (nicht je Bereich selbst setzen)
+  edge: { borderRight: `1px solid ${tokens.colorNeutralStroke2}`, flexShrink: 0, boxSizing: 'border-box' },
   // Schwebt ueber dem Inhalt; der Bereich darunter (position: relative) begrenzt sie
   drawer: {
     position: 'absolute', top: 0, bottom: 0, left: 0, zIndex: 20, width: 'min(86vw, 320px)', maxWidth: 'none',
@@ -55,7 +57,7 @@ export function SidePane({ open, onClose, className, children, as = 'div', style
   const Tag = as
   if (!mobile) return (
     <>
-      <Tag className={className} style={open ? (width ? { ...style, width: pane.width } : style) : { ...style, display: 'none' }}>{children}</Tag>
+      <Tag className={mergeClasses(s.edge, className)} style={open ? (width ? { ...style, width: pane.width } : style) : { ...style, display: 'none' }}>{children}</Tag>
       {open && width && pane.handle('right')}
     </>
   )

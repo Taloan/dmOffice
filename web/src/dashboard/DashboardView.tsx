@@ -18,6 +18,7 @@ import { Background, Device, Layout, Widget, WidgetType, dashboardApi, newId, da
 import { WIDGET_INFO, WidgetBody } from './widgets'
 import { Box, dims, firstFree, place, settle, withBoxes } from './placement'
 import { askConfirm } from '../shell/context'
+import { FilterSelect } from '../shell/FilterSelect'
 
 const useStyles = makeStyles({
   // flex: 1 - <main> ist eine Flex-Zeile, ohne wäre das Dashboard nur so breit wie sein Inhalt
@@ -44,7 +45,7 @@ const useStyles = makeStyles({
   del: { position: 'absolute', top: '-9px', left: '-9px', zIndex: 2, minWidth: 0, width: '26px', height: '26px', borderRadius: '50%', padding: 0, backgroundColor: tokens.colorPaletteRedBackground3, color: '#fff', border: `2px solid ${tokens.colorNeutralBackground1}`, ':hover': { backgroundColor: tokens.colorPaletteRedForeground1 } },
   sizes: { position: 'absolute', top: '8px', right: '8px', zIndex: 2, display: 'flex', gap: '2px', backgroundColor: tokens.colorNeutralBackground3, borderRadius: '8px', padding: '2px' },
   sizeBtn: { minWidth: 0, padding: '2px 7px', fontSize: '11px', height: 'auto', borderRadius: '6px' },
-  sizeOn: { backgroundColor: tokens.colorBrandBackground, color: '#fff', ':hover': { backgroundColor: tokens.colorBrandBackgroundHover, color: '#fff' } },
+  sizeOn: { backgroundColor: tokens.colorBrandBackground, color: tokens.colorNeutralForegroundOnBrand, ':hover': { backgroundColor: tokens.colorBrandBackgroundHover, color: tokens.colorNeutralForegroundOnBrand } },
   gear: { position: 'absolute', bottom: '8px', right: '8px', zIndex: 2 },
   stackNav: { position: 'absolute', bottom: '6px', left: 0, right: 0, display: 'flex', justifyContent: 'center', gap: '5px', pointerEvents: 'none' },
   dot: { width: '6px', height: '6px', borderRadius: '3px', backgroundColor: tokens.colorNeutralForeground3, opacity: 0.5 },
@@ -61,10 +62,18 @@ const COL_MIN = 230, COL_LEAST = 170, ROW = 196, GAP = 16
 const spanOf = (size: number, _mobile: boolean) => size === 1 ? { gridColumn: 'span 1', gridRow: 'span 1' } : size === 2 ? { gridColumn: 'span 2', gridRow: 'span 1' }
   : size === 4 ? { gridColumn: 'span 1', gridRow: 'span 2' } : { gridColumn: 'span 2', gridRow: 'span 2' }
 
-/** Stapel: je nach Tageszeit das passende Widget vorn - morgens Wetter und Termine, mittags Aufgaben, abends Fotos. */
+// [feature:journal]
+/** Stapel: je nach Tageszeit das passende Widget vorn - morgens Wetter und Termine, mittags Aufgaben, abends Tagebuch. */
+// [feature:journal:else]
+// /** Stapel: je nach Tageszeit das passende Widget vorn - morgens Wetter und Termine, mittags Aufgaben, abends Fotos. */
+// [/feature:journal]
 function smartOrder(list: Widget[]): Widget[] {
   const h = new Date().getHours()
-  const prio: WidgetType[] = h < 11 ? ['weather', 'today', 'events', 'news', 'tasks'] : h < 17 ? ['tasks', 'events', 'mail', 'shopping', 'chat'] : ['photos', 'meals', 'events', 'chat']
+  // [feature:journal]
+  const prio: WidgetType[] = h < 11 ? ['weather', 'today', 'events', 'news', 'tasks'] : h < 17 ? ['tasks', 'events', 'mail', 'shopping', 'chat'] : ['journal', 'photos', 'meals', 'events', 'chat']
+  // [feature:journal:else]
+  // const prio: WidgetType[] = h < 11 ? ['weather', 'today', 'events', 'news', 'tasks'] : h < 17 ? ['tasks', 'events', 'mail', 'shopping', 'chat'] : ['photos', 'meals', 'events', 'chat']
+  // [/feature:journal]
   return [...list].sort((a, b) => (prio.indexOf(a.type) < 0 ? 99 : prio.indexOf(a.type)) - (prio.indexOf(b.type) < 0 ? 99 : prio.indexOf(b.type)))
 }
 
@@ -336,8 +345,10 @@ export default function DashboardView() {
 function AddDialog({ admin, into, onPick, onClose }: { admin: boolean; into?: string; onPick: (t: WidgetType) => void; onClose: () => void }) {
   const s = useStyles()
   const [query, setQuery] = useState('')
-  // Hauptschalter: Aufgaben, Notizen, Fotos nur mit ihrem Bereich
-  const released = (x: WidgetType) => x === 'tasks' || x === 'shopping' ? featureOn('tasks') : x === 'notes' ? featureOn('notes') : x === 'photos' ? featureOn('gallery') : true
+  // Release-Liste und Hauptschalter: Tagebuch-Rückblick, Coach und Wasser, Aufgaben, Notizen, Fotos nur mit ihrem Bereich
+  const released = (x: WidgetType) =>
+    x === 'journal' ? featureOn('journal') : // [feature:journal]
+    x === 'tasks' || x === 'shopping' ? featureOn('tasks') : x === 'notes' ? featureOn('notes') : x === 'photos' ? featureOn('gallery') : true
   const types = (Object.keys(WIDGET_INFO) as WidgetType[]).filter(x => (x !== 'system' || admin) && (x !== 'stack' || !into) && released(x))
     .filter(x => !query || WIDGET_INFO[x].label().toLowerCase().includes(query.toLowerCase()) || WIDGET_INFO[x].hint().toLowerCase().includes(query.toLowerCase()))
   return (
@@ -361,10 +372,15 @@ function AddDialog({ admin, into, onPick, onClose }: { admin: boolean; into?: st
 // ---------------- Einstellungen je Widget ----------------
 
 type Setting =
-  | { kind: 'multi'; label: string; from: 'calendars' | 'lists' | 'plans' | 'accounts'; source: WidgetType }
-  | { kind: 'one'; label: string; from: 'plans' | 'lists'; source: WidgetType; none?: string }
+  // [feature:journal]
+  | { kind: 'multi'; label: string; from: 'calendars' | 'lists' | 'plans' | 'journals' | 'accounts'; source: WidgetType }
+  | { kind: 'one'; label: string; from: 'plans' | 'lists' | 'journals'; source: WidgetType; none?: string }
+  // [feature:journal:else]
+  // | { kind: 'multi'; label: string; from: 'calendars' | 'lists' | 'plans' | 'accounts'; source: WidgetType }
+  // | { kind: 'one'; label: string; from: 'plans' | 'lists'; source: WidgetType; none?: string }
+  // [/feature:journal]
   | { kind: 'choice'; label: string; options: [string, string][]; def?: string; vertical?: boolean }
-  | { kind: 'bool'; label: string }
+  | { kind: 'bool'; label: string; feature?: string }
   | { kind: 'int'; label: string; min: number; max: number }
   | { kind: 'text'; label: string; hint?: string }
   | { kind: 'mailMode'; label: string }
@@ -378,6 +394,13 @@ const SETTINGS: Partial<Record<WidgetType, Record<string, Setting>>> = {
   mail: { accounts: { kind: 'multi', label: 'Konten', from: 'accounts', source: 'mail' }, mode: { kind: 'mailMode', label: 'Was zeigen' }, count: { kind: 'int', label: 'Anzahl', min: 1, max: 20 } },
   chat: { count: { kind: 'int', label: 'Anzahl', min: 1, max: 20 } },
   news: { count: { kind: 'int', label: 'Anzahl', min: 1, max: 15 }, text: { kind: 'choice', label: 'Schriftgröße', def: 'm', options: [['s', 'Klein'], ['m', 'Mittel'], ['l', 'Groß']] } },
+  // [feature:journal]
+  journal: { journal: { kind: 'one', label: 'Welches Tagebuch', from: 'journals', source: 'journal' },
+    // [feature:diaryrecallthumbs]
+    photos: { kind: 'bool', label: 'Fotos zeigen', feature: 'diaryrecallthumbs' },
+    // [/feature:diaryrecallthumbs]
+  },
+  // [/feature:journal]
   notes: { favorites: { kind: 'bool', label: 'Nur Favoriten' }, count: { kind: 'int', label: 'Anzahl', min: 1, max: 20 } },
   files: { favorites: { kind: 'bool', label: 'Nur Favoriten' }, count: { kind: 'int', label: 'Anzahl', min: 1, max: 20 }, folder: { kind: 'folder', label: 'Zielordner' } },
   birthdays: { days: { kind: 'choice', label: 'Zeitraum', options: [['7', '7 Tage'], ['14', '14 Tage'], ['30', '30 Tage'], ['90', '90 Tage']] } },
@@ -392,7 +415,8 @@ function SettingsDialog({ w, layout, onSave, onClose, onAddToStack, onRemoveFrom
   const [draft, setDraft] = useState<Widget>({ ...w, opts: { ...(w.opts ?? {}) } })
   const [lists, setLists] = useState<Record<string, { id: number | string; name: string }[]>>({})
   const [cats, setCats] = useState<{ key: string; name: string }[]>([])
-  const defs = SETTINGS[w.type] ?? {}
+  // Einstellungen mit eigener Kennung nur, wenn sie freigeschaltet ist
+  const defs = Object.fromEntries(Object.entries(SETTINGS[w.type] ?? {}).filter(([, d]) => d.kind !== 'bool' || !d.feature || featureOn(d.feature)))
   const live = layout.widgets.find(x => x.id === w.id) ?? w
   useEffect(() => {
     const need = new Set(Object.values(defs).flatMap(d => (d.kind === 'multi' || d.kind === 'one') ? [d.source + ':' + d.from] : []))
@@ -417,10 +441,12 @@ function SettingsDialog({ w, layout, onSave, onClose, onAddToStack, onRemoveFrom
       }
       case 'one': {
         const all = lists[d.from] ?? []
+        if (featureOn('filterpick')) return <Field key={k} label={t(d.label)}><FilterSelect value={String(o[k] ?? '')} none={t(d.none ?? 'Alle')} onChange={v => set(k, v ? Number(v) : undefined)}
+          items={all.map(x => ({ id: String(x.id), label: x.name }))} /></Field>
         return <Field key={k} label={t(d.label)}><Select value={String(o[k] ?? '')} onChange={(_, e) => set(k, e.value ? Number(e.value) : undefined)}><option value="">{t(d.none ?? 'Alle')}</option>{all.map(x => <option key={String(x.id)} value={String(x.id)}>{x.name}</option>)}</Select></Field>
       }
       case 'choice': return <Field key={k} label={t(d.label)}><RadioGroup layout={d.vertical ? 'vertical' : 'horizontal'} value={String(o[k] ?? d.def ?? d.options[1]?.[0] ?? d.options[0][0])} onChange={(_, e) => set(k, /^\d+$/.test(e.value) ? Number(e.value) : e.value)}>{d.options.map(([v, l]) => <Radio key={v} value={v} label={t(l)} />)}</RadioGroup></Field>
-      case 'bool': return <Checkbox key={k} label={t(d.label)} checked={o[k] === undefined ? k === 'invites' || k === 'mail' : !!o[k]} onChange={(_, c) => set(k, c.checked)} />
+      case 'bool': return <Checkbox key={k} label={t(d.label)} checked={o[k] === undefined ? k === 'invites' || k === 'mail' || (w.type === 'journal' && k === 'photos') : !!o[k]} onChange={(_, c) => set(k, c.checked)} />
       case 'int': return <Field key={k} label={t(d.label)}><Input type="number" min={d.min} max={d.max} value={String(o[k] ?? '')} onChange={(_, e) => set(k, e.value ? Number(e.value) : undefined)} style={{ width: 100 }} /></Field>
       case 'text': return <Field key={k} label={t(d.label)} hint={d.hint ? t(d.hint) : undefined}><Input value={String(o[k] ?? '')} onChange={(_, e) => set(k, e.value)} /></Field>
       case 'folder': return <Field key={k} label={t(d.label)}><Input value={String(o[k] ?? '')} onChange={(_, e) => set(k, e.value)} placeholder={t('Dateien')} /></Field>
@@ -486,7 +512,9 @@ function BackgroundDialog({ bg, onSave, onClose }: { bg: Background; onSave: (b:
               <Button onClick={() => input.current?.click()}>{t('Bild hochladen')}</Button><Text size={200} className={s.mut}>{file?.name}</Text>
               <input ref={input} type="file" accept="image/*" hidden onChange={e => setFile(e.target.files?.[0] ?? null)} />
             </div>}
-            {draft.kind === 'album' && <Field label={t('Album')}><Select value={String(draft.album ?? '')} onChange={(_, d) => setDraft(x => ({ ...x, album: d.value ? Number(d.value) : null }))}><option value="">–</option>{albums.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</Select></Field>}
+            {draft.kind === 'album' && featureOn('filterpick') && <Field label={t('Album')}><FilterSelect value={String(draft.album ?? '')} none="–"
+              onChange={v => setDraft(x => ({ ...x, album: v ? Number(v) : null }))} items={albums.map(a => ({ id: String(a.id), label: a.name }))} /></Field>}
+            {draft.kind === 'album' && !featureOn('filterpick') && <Field label={t('Album')}><Select value={String(draft.album ?? '')} onChange={(_, d) => setDraft(x => ({ ...x, album: d.value ? Number(d.value) : null }))}><option value="">–</option>{albums.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</Select></Field>}
             {draft.kind !== 'none' && <Field label={t('Abdunkeln') + ` (${draft.dim} %)`}><Slider min={0} max={80} step={5} value={draft.dim} onChange={(_, d) => setDraft(x => ({ ...x, dim: d.value }))} /></Field>}
           </DialogContent>
           <DialogActions>

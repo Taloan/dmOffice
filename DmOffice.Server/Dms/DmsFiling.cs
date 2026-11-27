@@ -141,7 +141,7 @@ public static class DmsFiling
 
     /// <summary>Angaben eines Dokuments für die Platzhalter.</summary>
     public sealed record Facts(List<string> Correspondent, List<string> Doctype, List<string> Tags, string Title, DateOnly? DocDate,
-        DateTime Imported, string OriginalName, string Source, string? Sender);
+        DateTime Imported, string OriginalName, string Source, string? Sender, string? Role = null, string? RoleAt = null);
 
     public static Facts FactsOf(UserSpace space, DmsDoc d, string sourceName)
     {
@@ -151,7 +151,9 @@ public static class DmsFiling
         return new Facts(d.Correspondent != null && byId.ContainsKey(d.Correspondent) ? Dms.PathOf(all, d.Correspondent) : [],
             d.Doctype != null && byId.ContainsKey(d.Doctype) ? Dms.PathOf(all, d.Doctype) : [],
             d.Tags.Where(t => byId.ContainsKey(t.Id)).Select(t => byId[t.Id].Name).OrderBy(n => n, StringComparer.CurrentCultureIgnoreCase).ToList(),
-            d.Title, date, TimeZoneInfo.ConvertTimeFromUtc(d.Imported, space.Zone), Path.GetFileNameWithoutExtension(d.OriginalName), sourceName, d.Sender);
+            d.Title, date, TimeZoneInfo.ConvertTimeFromUtc(d.Imported, space.Zone), Path.GetFileNameWithoutExtension(d.OriginalName), sourceName, d.Sender,
+            // Rolle im Dateinamen (Einstellung des DMS, Kennung dmsrolename): nur, solange das Dokument sie innehat
+            d.Role != null && d.RoleCurrent && byId.TryGetValue(d.Role, out var role) ? role.Name : null, RoleAtOf(space.Db));
     }
 
     /// <summary>Beispiel für die Vorschau.</summary>
@@ -215,7 +217,34 @@ public static class DmsFiling
             return parts.Count == 0 ? p.Unknown : string.Join(" - ", parts);
         });
         var v = ImportProfiles.Safe(Regex.Replace(filled, @"\s+", " ").Trim());
-        return v.Length > 150 ? v[..150].TrimEnd() : v;
+        v = v.Length > 150 ? v[..150].TrimEnd() : v;
+        return WithRole(v, f.Role, f.RoleAt);
+    }
+
+    /// <summary>Rolle im Dateinamen: „aus“ (null), „start“ oder „end“ - Einstellung des DMS für alle Profile und beide Bereiche.</summary>
+    public static string? RoleAtOf(UserDb db) =>
+        Features.On(Features.DmsRoleName) && DmsImport.Settings(db).RoleInName is "start" or "end" ? DmsImport.Settings(db).RoleInName : null;
+
+    /// <summary>„[Rolle]“ vorn oder hinten an den Namen (ohne Endung); ohne Rolle oder ausgeschaltet unverändert.</summary>
+    public static string WithRole(string name, string? role, string? at)
+    {
+        if (string.IsNullOrWhiteSpace(role) || at is not ("start" or "end")) return name;
+        var tag = "[" + ImportProfiles.Safe(role) + "]";
+        return at == "start" ? tag + " " + name : name + " " + tag;
+    }
+
+    /// <summary>Jede „[Rolle]“ (für die angegebenen Rollennamen) vorn oder hinten aus dem Namen nehmen.</summary>
+    public static string WithoutRoles(string name, IEnumerable<string> roles)
+    {
+        var v = name;
+        foreach (var r in roles)
+        {
+            var tag = "[" + ImportProfiles.Safe(r) + "]";
+            if (v.StartsWith(tag + " ", StringComparison.Ordinal)) v = v[(tag.Length + 1)..];
+            if (v.EndsWith(" " + tag, StringComparison.Ordinal)) v = v[..^(tag.Length + 1)];
+            if (v == tag) v = r;
+        }
+        return v.Trim();
     }
 
     /// <summary>

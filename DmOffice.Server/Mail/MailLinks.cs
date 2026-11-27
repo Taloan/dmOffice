@@ -49,7 +49,7 @@ public static class MailLinks
         DateTime? expires = s.LinkDays > 0 ? DateTime.UtcNow.AddDays(s.LinkDays) : null;
         int? maxDownloads = s.LinkMaxDownloads > 0 ? s.LinkMaxDownloads : null;
         var index = http.RequestServices.GetRequiredService<LinkIndex>();
-        var origin = $"{http.Request.Scheme}://{http.Request.Host}";
+        var origin = PublicAddress.Origin(http);
 
         var english = account.Language == "en";   // Sprache der Mails des Kontos
         var html = new System.Text.StringBuilder("<div style=\"margin-top:16px\"><p>")

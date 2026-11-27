@@ -169,6 +169,8 @@ public static class NextcloudApi
         }
         else return Results.BadRequest();
         if (f == null || loc == null || f.IsDir || loc.Protected(f.Path)) return Results.NotFound();
+        // Eigene Ordner, die die Person vor dem Abgleich verbirgt (und Systemordner): wie unter /remote.php gibt es sie nicht
+        if (!loc.Shared && DavServer.HiddenForNextcloud(space, f.Path)) return Results.NotFound();
         db = loc.Db;
 
         // Nextcloud: ohne Angabe 32x32 - dafuer reicht die kleine Version
@@ -372,6 +374,7 @@ public static class NextcloudApi
             if (Oidc.PasswordBlocked(http.RequestServices.GetRequiredService<ServerConfig>(), u))
                 return FlowPage(http, token, "Die Anmeldung mit Passwort ist abgeschaltet. Ein App-Passwort lässt sich in dmOffice unter Einstellungen anlegen.");
             Auth.SucceededLogin(ip, nameKey);
+            users.UpgradeHash(u, password);
             user = u;
         }
 

@@ -1,4 +1,5 @@
-# Dreistufig: Node baut die Oberflaeche, das SDK den Server, das Laufzeit-Image traegt nur das Ergebnis.
+# Node baut die Oberflaeche, das SDK den Server, eine eigene Stufe stellt die Plugins zusammen (plugins/README.md), das
+# Laufzeit-Image traegt nur das Ergebnis.
 # Die Oberflaeche liegt als wwwroot im Server. Alles Weitere (Daten, Schluessel) unter /data.
 FROM node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914 AS web
 WORKDIR /web
@@ -9,13 +10,18 @@ COPY web/ ./
 COPY tools/lizenzen/ /tools/lizenzen/
 # vite.config.ts schreibt nach ../DmOffice.Server/wwwroot
 RUN npm run build
+# Web-Teile der Plugins (plugins/<key>/web/src) einzeln, mit React und Fluent aus dem Kern; ohne Plugins geschieht nichts
+COPY plugins/ /plugins/
+RUN node build-plugins.mjs --root /plugins
 
 FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:de4fe90a98845d75910b9769662465c84de1a934665c431279d1382b2bddc02b AS build
 WORKDIR /src
 COPY vendor/Notizi.Core/Notizi.Core.csproj vendor/Notizi.Core/
+COPY DmOffice.Sdk/DmOffice.Sdk.csproj DmOffice.Sdk/
 COPY DmOffice.Server/DmOffice.Server.csproj DmOffice.Server/
 RUN dotnet restore DmOffice.Server/DmOffice.Server.csproj
 COPY vendor/ vendor/
+COPY DmOffice.Sdk/ DmOffice.Sdk/
 COPY DmOffice.Server/ DmOffice.Server/
 COPY --from=web /DmOffice.Server/wwwroot DmOffice.Server/wwwroot
 # ohne Debugsymbole: keine Dateipfade des Bau-Rechners im Image.
@@ -24,6 +30,19 @@ COPY --from=web /DmOffice.Server/wwwroot DmOffice.Server/wwwroot
 RUN dotnet publish DmOffice.Server/DmOffice.Server.csproj -c Release -o /app --no-restore -p:DebugType=none -p:DebugSymbols=false \
  && find /app/runtimes -mindepth 1 -maxdepth 1 ! -name linux-x64 ! -name linux-arm64 ! -name linux-arm -exec rm -rf {} + \
  && find /app -name '*.pdb' -delete
+# Server-Teile der Plugins (plugins/<key>/server/*.csproj, Verweis nur auf DmOffice.Sdk) je nach /pluginbins/<key>
+COPY plugins/ plugins/
+RUN for p in plugins/*/server/*.csproj; do [ -f "$p" ] || continue; k=$(basename "$(dirname "$(dirname "$p")")"); \
+      dotnet publish "$p" -c Release -o "/pluginbins/$k" -p:DebugType=none -p:DebugSymbols=false || exit 1; done; mkdir -p /pluginbins
+
+# Plugins zusammenstellen und siegeln (tools/plugins/assemble.mjs). Der private Schluessel kommt nur als Geheimnis
+# (docker build --secret id=plugin_key,src=…) und liegt nie im Image; ohne ihn bleiben die Plugins ungesiegelt und der Kern laedt sie nicht.
+FROM node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914 AS plugins
+COPY tools/plugins/ /tools/plugins/
+COPY --from=web /plugins /plugins
+COPY --from=build /pluginbins /pluginbins
+RUN --mount=type=secret,id=plugin_key,required=false \
+    node /tools/plugins/assemble.mjs /plugins /pluginbins /out $([ -s /run/secrets/plugin_key ] && echo /run/secrets/plugin_key)
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0@sha256:de0ee358cdd672f7017a003bed21e9ac9ed48a27c922a59b18175b6e82fa7fee
 # Versionsnummer fuer die Anzeige (Ordnerbereich, Verwaltung) - beim Bauen gesetzt
@@ -60,6 +79,8 @@ COPY photo-engine/models /opt/photo-engine/models
 ENV PHOTO_ENGINE_HOME=/opt/photo-engine
 WORKDIR /app
 COPY --from=build /app .
+# Plugins neben dem Programm (PluginHost.Root); geladen nur mit der Kennung plugins
+COPY --from=plugins /out ./plugins/
 # Lizenz (AGPL-3.0) und Lizenzhinweise der fremden Bestandteile
 COPY LICENSE THIRD-PARTY-NOTICES.md ./
 # Android-App desselben Stands (Version 2, vom Build-Ablauf abgelegt; sonst leer): /app/dmoffice.apk

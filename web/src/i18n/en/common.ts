@@ -14,4 +14,23 @@ export const common: Record<string, string> = {
   'Ja': 'Yes',
   'Nein': 'No',
   'OK': 'OK',
+  // 2.2: einheitliches Rückgängig (undoall)
+  'Letzte Schritte': 'Recent steps',
+  // Aus der Ablage wählen (AblagePicker, auch für Plugins)
+  'Aus der Ablage wählen': 'Choose from My files',
+  'Die Datei „{name}“ ließ sich nicht laden.': 'The file “{name}” could not be loaded.',
+  'In der Ablage suchen': 'Search My files',
+  'Keine passende Datei gefunden.': 'No matching file found.',
+  'Hier ist nichts Passendes.': 'Nothing suitable here.',
+  'Kacheln': 'Tiles',
+  'Liste': 'List',
+  'Zum Hochladen loslassen': 'Drop to upload',
+  'Vom Gerät hochladen …': 'Upload from device …',
+  '{n} Dateien gewählt': '{n} files selected',
+  '{n} Dateien übernehmen': 'Choose {n} files',
+  'pick|Übernehmen': 'Choose',
+  'Die Datei lässt sich nicht öffnen.': 'The file cannot be opened.',
+  // 2.2: Abschnitte der Einstellungen
+  'Lernen': 'Learning',
+  'Grenzwerte': 'Thresholds',
 }

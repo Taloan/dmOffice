@@ -1,7 +1,12 @@
 # dmOffice as a single container. From the checkout: `docker compose up -d --build`.
 # Set DMOFFICE_MASTER_KEY in .env (a long random string, e.g. `openssl rand -hex 32`) and keep it safe:
-# without it the user databases can no longer be opened. If it is missing, dmOffice creates it as a file in /data
-# (the whole data volume is then no longer protected at rest - the key sits next to the data).
+# without it the user databases can no longer be opened.
+# [feature:masterkeyreq]
+# A new installation does not start without it (older ones that keep the key as a file in /data keep running).
+# [feature:masterkeyreq:else]
+# # If it is missing, dmOffice creates it as a file in /data
+# # (the whole data volume is then no longer protected at rest - the key sits next to the data).
+# [/feature:masterkeyreq]
 services:
   dmoffice:
     image: ghcr.io/taloan/dmoffice:latest
@@ -17,6 +22,11 @@ services:
       DMOFFICE_MS_CLIENT_ID: ${DMOFFICE_MS_CLIENT_ID:-}
       # Behind a reverse proxy: set its address so only it may send X-Forwarded-* headers, e.g. 172.18.0.1/32.
       DMOFFICE_TRUSTED_PROXIES: ${DMOFFICE_TRUSTED_PROXIES:-}
+      # [feature:publicurl]
+      # Public address for links that others open (unsubscribe, share links, invitations), e.g. https://office.example.org.
+      # Empty: the setting under Admin -> System -> Public address, otherwise the address dmOffice is opened at.
+      DMOFFICE_PUBLIC_URL: ${DMOFFICE_PUBLIC_URL:-}
+      # [/feature:publicurl]
       # dmOffice does not run as root: /data is handed to UID/GID 1654 on first start. Change them if bind mounts
       # need another owner, e.g. 99/100 on Unraid. Other mounted folders must be writable for this user themselves.
       # DMOFFICE_UID: "1654"

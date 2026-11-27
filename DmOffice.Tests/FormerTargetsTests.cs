@@ -11,7 +11,7 @@ public class FormerTargetsTests
     {
         var dir = Directory.CreateTempSubdirectory("dmformer");
         var config = new ServerConfig(new DataPaths(Path.Combine(dir.FullName, "data")));
-        config.Update(s => { s.StorageTarget = "s3"; s.S3Endpoint = "https://s3.example.org"; s.S3Bucket = "dm"; s.S3Prefix = "a"; s.S3AccessKey = "k"; });
+        config.Update(s => { s.StorageTarget = "s3"; s.S3Endpoint = "https://s3.example.org"; s.S3Bucket = "dm"; s.S3Prefix = "a"; s.S3AccessKey = "k"; s.S3Mirror = true; });
         // Nur neue Zugangsdaten, gleicher Ort: nichts gemerkt
         var before = config.Current;
         config.Update(s => s.S3AccessKey = "k2");
@@ -44,7 +44,7 @@ public class FormerTargetsTests
         Directory.CreateDirectory(Path.Combine(a, "dm2"));
         File.WriteAllText(Path.Combine(a, "dm2", "fremd"), "bleibt");
         File.WriteAllText(Path.Combine(a, "fremd.txt"), "bleibt");
-        config.Update(s => { s.StorageTarget = "folder"; s.StorageFolder = a; s.S3Prefix = "dm"; });
+        config.Update(s => { s.StorageTarget = "folder"; s.StorageFolder = a; s.S3Prefix = "dm"; s.S3Mirror = true; });
         var before = config.Current;
         config.Update(s => s.StorageFolder = b);
         FormerTargets.Track(config, "storage", before);
@@ -67,12 +67,31 @@ public class FormerTargetsTests
     {
         var dir = Directory.CreateTempSubdirectory("dmformer");
         var config = new ServerConfig(new DataPaths(Path.Combine(dir.FullName, "data")));
-        config.Update(s => { s.StorageTarget = "folder"; s.StorageFolder = "/x/a"; });
+        config.Update(s => { s.StorageTarget = "folder"; s.StorageFolder = "/x/a"; s.S3Mirror = true; });
         var before = config.Current;
         config.Update(s => s.StorageFolder = "/x/b");
         FormerTargets.Track(config, "storage", before);
         var f = Assert.Single(config.Current.FormerTargets);
         config.Update(s => s.StorageFolder = "/x/a");
         Assert.Throws<InvalidOperationException>(() => FormerTargets.StartDelete(config, f, "admin", NullLogger.Instance));
+    }
+
+    [Fact]
+    public async Task Ein_nie_genutztes_Ziel_ist_kein_Altbestand()
+    {
+        var dir = Directory.CreateTempSubdirectory("dmformer");
+        var config = new ServerConfig(new DataPaths(Path.Combine(dir.FullName, "data")));
+        // Ordner, Storage Extender nie eingeschaltet: nichts gemerkt
+        config.Update(s => { s.StorageTarget = "folder"; s.StorageFolder = dir.FullName; });
+        var before = config.Current;
+        config.Update(s => s.StorageFolder = "/x/b");
+        FormerTargets.Track(config, "storage", before);
+        // S3, das nie erreichbar war: nichts gemerkt (Nachzählen scheitert)
+        config.Update(s => { s.StorageTarget = "s3"; s.S3Endpoint = "http://127.0.0.1:9"; s.S3Bucket = "dm"; s.S3AccessKey = "k"; });
+        before = config.Current;
+        config.Update(s => s.S3Bucket = "neu");
+        FormerTargets.Track(config, "storage", before);
+        await Task.Delay(3000);
+        Assert.Empty(config.Current.FormerTargets);
     }
 }

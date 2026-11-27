@@ -3,10 +3,17 @@ import { SearchBox, Text, makeStyles, mergeClasses, tokens } from '@fluentui/rea
 import {
   Person20Regular, Settings20Regular, Mail20Regular, CalendarLtr20Regular, People20Regular, Note20Regular, Folder20Regular, Chat20Regular,
   TaskListSquareLtr20Regular, Image20Regular, MusicNote220Regular, DocumentText20Regular,
+  BookOpen20Regular, // [feature:journal]
+  ShieldGlobe20Regular, // [feature:gatekeeper]
+  PuzzlePiece20Regular, // [feature:adminclean]
 } from '@fluentui/react-icons'
 import { useEffect, useRef, useState } from 'react'
 
-import { PageTitle } from './parts'
+import { SettingsFrame, SettingsPageHead, formWidth } from './parts'
+import { loadPlugins, pluginLabel, pluginSettingsPages, plugins } from '../plugins/registry' // [feature:adminclean]
+import { TileHeadSettings } from './TileHeadSettings'
+import { LensSettings } from './LensSettings' // [feature:lenscorr]
+import { SavedFrame } from './autosave' // [feature:savemode]
 import { BackBar, useBackClose, useIsMobile } from '../shell/mobile'
 import { pressable } from '../shell/nav'
 import { t } from '../i18n'
@@ -20,27 +27,33 @@ import { RecipeScanSettings } from '../notes/RecipeScanDialog'
 import { StatsSettings } from './StatsSettings'
 import { ActivitySettings } from './ActivitySettings'
 import { FilesLinkSettings, FilesStorageSettings, FilesTrashSettings, FilesVersionSettings } from './FilesSettings'
+import { FilesComfortSettings, comfortAvailable } from './FilesComfortSettings'
 import { SecuritySettings } from './SecuritySettings'
 import { TresorSettings } from './TresorSettings'
 import { ExternalTargetsSettings } from './ExternalTargetsSettings'
 import { GallerySettings } from './GallerySettings'
+import { EmergencySettings } from './EmergencySettings'
 import { PlainBackupSettings } from './PlainBackupSettings'
 import { AppearanceSettings, InstallSettings, LanguageSettings, NotificationSettings, SearchSettings } from './GeneralPages'
-import { ComposeSettings, FolderPaneSettings, MessageListSettings, PreviewPaneSettings } from './MailPages'
+import { SnippetSettings } from '../mail/Snippets' // [feature:mailsnippets]
+import { SignatureSettings } from '../mail/Signatures' // [feature:mailsignatures]
+import { AttachmentSettings, ComposeSettings, FolderPaneSettings, MessageListSettings, PreviewPaneSettings } from './MailPages'
 import { CategorySettings } from '../mail/Categories'
 import { SmartInboxSettings } from './SmartInboxSettings'
 import { OpenPgpSettings } from './OpenPgpSettings'
 import { CatchallSettings } from './CatchallSettings'
+import { CatchallDomainsPage } from './CatchallDomainsPage' // [feature:catchalldomains]
 import { CalendarViewSettings, EventSettings, PeopleSettings } from './CalendarPages'
 import { DmsAssignSettings, DmsProfilesSettings, DmsSourcesSettings } from '../dms/DmsSettings'
 import { DmsPaperlessSettings } from '../dms/DmsPaperless'
+import { GateKeeperOverview, GateKeeperRules, GateKeeperStats } from '../gatekeeper/GateKeeperSettings' // [feature:gatekeeper]
 
 const useStyles = makeStyles({
-  root: { flex: 1, display: 'flex', minWidth: 0 },
+  root: { flex: 1, display: 'flex', minWidth: 0, minHeight: 0 },
   // Handy: immer nur eine Ebene in voller Breite
   rootMobile: { flexDirection: 'column', minHeight: 0 },
   navMobile: { width: 'auto', flex: 1, borderRight: 'none', overflowY: 'auto', padding: '12px 8px' },
-  cats: { width: '210px', flexShrink: 0, borderRight: `1px solid ${tokens.colorNeutralStroke2}`, padding: '16px 8px', display: 'flex', flexDirection: 'column', gap: '2px' },
+  cats: { width: '210px', flexShrink: 0, borderRight: `1px solid ${tokens.colorNeutralStroke2}`, padding: '16px 8px', display: 'flex', flexDirection: 'column', gap: '2px', overflowY: 'auto' },
   title: { fontSize: '20px', fontWeight: 600, padding: '0 8px 12px' },
   pages: { width: '220px', flexShrink: 0, borderRight: `1px solid ${tokens.colorNeutralStroke2}`, padding: '16px 8px', display: 'flex', flexDirection: 'column', gap: '2px', overflowY: 'auto' },
   entry: {
@@ -53,11 +66,17 @@ const useStyles = makeStyles({
     '::before': { content: '""', position: 'absolute', left: 0, top: '8px', bottom: '8px', width: '3px', borderRadius: '2px', backgroundColor: tokens.colorBrandBackground },
   },
   sub: { fontSize: '11px', color: tokens.colorNeutralForeground3 },
-  body: { flex: 1, overflowY: 'auto', padding: '24px 32px 48px', display: 'flex', flexDirection: 'column', gap: '16px', minWidth: 0, '@media (max-width: 767px)': { padding: '12px 14px 32px' } },
-  inner: { maxWidth: '980px', display: 'flex', flexDirection: 'column', gap: '16px' },
+  // Seite: Kopf (Überschrift, Reiter, Menüband) fest, darunter rollt der Inhalt
+  page: { flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' },
+  body: { flex: 1, overflowY: 'auto', padding: '16px 32px 48px', display: 'flex', flexDirection: 'column', gap: '16px', minWidth: 0, '@media (max-width: 767px)': { padding: '12px 14px 32px' } },
+  // Formulare und Text 720 px, Tabellen volle Breite
+  inner: { display: 'flex', flexDirection: 'column', gap: '16px', ...formWidth },
+  wide: { '& > *:not(:has(table)):not([role=separator])': { maxWidth: 'none' } },
 })
 
-interface Page { key: string; label: string; words: string; render: () => JSX.Element }
+interface Page { key: string; label: string; words: string; render: () => JSX.Element; wide?: boolean
+  /** Nur für Admins (die Seite stellt Serverweites ein, anderen bliebe nur ein Hinweis) */
+  admin?: boolean }
 
 // Suchwoerter: deutsche immer, bei Englisch die englischen dazu - die Suche klappt so in beiden Sprachen
 const kw = (de: string) => { const en = t(de); return en === de ? de : de + ' ' + en }
@@ -69,6 +88,7 @@ const categories: Category[] = [
     key: 'account', label: t('Konto'), icon: <Person20Regular />, pages: [
       // Demo-Server: Sicherheit (Passwort, Zwei-Faktor) und Datensicherung gibt es dort nicht
       ...(demoMode.on ? [] : [{ key: 'security', label: t('Sicherheit'), words: kw('passwort ändern zwei-faktor 2fa authenticator wiederherstellungscodes'), render: () => <SecuritySettings /> }]),
+      { key: 'emergency', label: t('Notfallzugang'), words: kw('notfall notfallzugang tod krankheit familie erbe nachlass zugriff anfordern widersprechen'), render: () => <EmergencySettings /> },
       ...(demoMode.on ? [] : [{ key: 'plainbackup', label: t('Datenexport'), words: kw('datenexport export sicherung backup klartext lesbar webdav pcloud kopie notfall trash zip'), render: () => <PlainBackupSettings /> }]),
       { key: 'devices', label: t('Geräte & Sync'), words: kw('app-passwort caldav carddav webdav handy davx iphone thunderbird notizi'), render: () => <DevicesSettings /> },
     ],
@@ -78,7 +98,7 @@ const categories: Category[] = [
       { key: 'language', label: t('Sprache und Zeit'), words: kw('sprache datumsformat zeitformat zeitzone uhrzeit'), render: () => <LanguageSettings /> },
       { key: 'appearance', label: t('Darstellung'), words: kw('hell dunkel modus design farbe akzent theme'), render: () => <AppearanceSettings /> },
       { key: 'notifications', label: t('Benachrichtigungen'), words: kw('hinweis neue mail erinnerung ton desktop'), render: () => <NotificationSettings /> },
-      { key: 'install', label: t('Apps installieren'), words: kw('app installieren pwa apk android download fenster symbol startmenü dock home-bildschirm desktop handy'), render: () => <InstallSettings /> },
+      { key: 'install', label: t('Apps installieren'), words: kw('app installieren pwa apk android download fenster symbol startmenü dock home-bildschirm desktop handy mailto webcal links standardprogramm'), render: () => <InstallSettings /> },
       { key: 'search', label: t('Suchen'), words: kw('suchbereich ordner gelöschte relevanz anhang inhalt volltext texterkennung ocr scan pdf'), render: () => <SearchSettings /> },
       { key: 'stats', label: t('Speicher & Statistik'), words: kw('größe ordnergröße datenbank anzahl statistik'), render: () => <StatsSettings /> },
       { key: 'activity', label: t('Aktivität'), words: kw('hintergrund aufgaben läuft fortschritt sync auslagern index ocr vorschaubilder aufräumen verdichten'), render: () => <ActivitySettings /> },
@@ -89,11 +109,18 @@ const categories: Category[] = [
       ...(demoMode.on ? [] : [{ key: 'accounts', label: t('E-Mail-Konten'), words: kw('konto imap smtp server passwort signatur sync zeitraum'), render: () => <AccountsSettings /> }]),
       { key: 'list', label: t('Nachrichtenliste'), words: kw('textgröße abstand vorschau bild avatar liste'), render: () => <MessageListSettings /> },
       { key: 'pane', label: t('Vorschaufenster'), words: kw('lesebereich rechts unten layout gelesen markieren ordner öffnen'), render: () => <PreviewPaneSettings /> },
+      ...(featureOn('attsave') ? [{ key: 'attach', label: t('Anhänge'), words: kw('anhang anhänge herunterladen speichern ablage download ordner fragen'), render: () => <AttachmentSettings /> }] : []),
       { key: 'folders', label: t('Ordnerbereich'), words: kw('favoriten ordner sortieren reihenfolge'), render: () => <FolderPaneSettings /> },
       { key: 'compose', label: t('Verfassen und Antworten'), words: kw('schrift schriftart antworten allen signatur'), render: () => <ComposeSettings /> },
-      { key: 'smart', label: t('Smart Inbox'), words: kw('smart inbox intelligent relevant sonstige prio kategorien lernen pakete reisen newsletter ankündigungen termine'), render: () => <SmartInboxSettings /> },
-      { key: 'aliases', label: t('Catchall-Aliase'), words: kw('catchall catch-all alias aliase wegwerfadresse domain tarnadresse simplelogin sperren weitergeleitet'), render: () => <CatchallSettings /> },
-      { key: 'categories', label: t('Kategorien'), words: kw('kategorie farbe schlagwort keyword label einordnen'), render: () => <><PageTitle>{t('Kategorien')}</PageTitle><CategorySettings /></> },
+      ...(featureOn('mailsnippets') ? [{ key: 'mail-snippets', label: t('Textbausteine'), words: kw('textbaustein textbausteine vorlage kürzel'), render: () => <SnippetSettings /> }] : []), // [feature:mailsnippets]
+      ...(featureOn('mailsignatures') ? [{ key: 'mail-signatures', label: t('Signaturen'), words: kw('signatur signaturen unterschrift absender'), render: () => <SignatureSettings /> }] : []), // [feature:mailsignatures]
+      { key: 'smart', label: t('Smart Inbox'), words: kw('smart inbox intelligent relevant sonstige prio kategorien lernen pakete reisen newsletter ankündigungen termine nachfassen antwort erinnern'), render: () => <SmartInboxSettings /> },
+      // [feature:catchalldomains]
+      { key: 'aliases', label: t('Catchall-Aliase'), words: kw('catchall catch-all alias aliase wegwerfadresse domain tarnadresse simplelogin sperren weitergeleitet'), render: () => featureOn('catchalldomains') ? <CatchallDomainsPage /> : <CatchallSettings />, wide: featureOn('catchalldomains') },
+      // [feature:catchalldomains:else]
+      // { key: 'aliases', label: t('Catchall-Aliase'), words: kw('catchall catch-all alias aliase wegwerfadresse domain tarnadresse simplelogin sperren weitergeleitet'), render: () => <CatchallSettings /> },
+      // [/feature:catchalldomains]
+      { key: 'categories', label: t('Kategorien'), words: kw('kategorie farbe schlagwort keyword label einordnen'), render: () => <CategorySettings /> },
       { key: 'rules', label: t('Regeln'), words: kw('regel weiterleiten verschieben automatisch filter'), render: () => <RulesSettings /> },
       { key: 'openpgp', label: 'OpenPGP', words: kw('openpgp pgp gpg gnupg signieren signatur schlüssel fingerabdruck autocrypt wkd verschlüsseln'), render: () => <OpenPgpSettings /> },
       { key: 'junk', label: t('Junk-E-Mail'), words: kw('spam junk filter spambayes'), render: () => <SpamSettings /> },
@@ -126,9 +153,13 @@ const categories: Category[] = [
       { key: 'recipescan', label: t('Rezept-Scan'), words: kw('rezept foto kochbuch scan texterkennung ocr ki'), render: () => <RecipeScanSettings /> },
     ],
   },
+  // [feature:journal]
+  { key: 'journal', label: t('Tagebuch'), icon: <BookOpen20Regular />, pages: [] },
+  // [/feature:journal]
   {
     key: 'files', label: t('Dateien'), icon: <Folder20Regular />, pages: [
       { key: 'files', label: t('Speicherplatz'), words: kw('dateien speicherplatz belegt leeren löschen'), render: () => <FilesStorageSettings /> },
+      ...(comfortAvailable() ? [{ key: 'files-comfort', label: t('Bedienung'), words: kw('dateien bedienung ansicht je ordner ordnerbaum zuklappen aufklappen ziehen favoriten oben seitenleiste komfort'), render: () => <FilesComfortSettings /> }] : []),
       { key: 'file-versions', label: t('Frühere Versionen'), words: kw('fassungen versionen aufbewahrung ausdünnen'), render: () => <FilesVersionSettings /> },
       { key: 'file-trash', label: t('Papierkorb'), words: kw('papierkorb aufbewahrung leeren'), render: () => <FilesTrashSettings /> },
       { key: 'file-links', label: t('Freigabelinks'), words: kw('freigabe links teilen ablauf abrufe'), render: () => <FilesLinkSettings /> },
@@ -138,6 +169,10 @@ const categories: Category[] = [
     ],
   },
   { key: 'gallery', label: t('Galerie'), icon: <Image20Regular />, pages: [
+    ...(featureOn('tilehead') && featureOn('tilemodes') ? [{ key: 'gallery-tile', label: t('Kachel'), words: kw('kachel kopfzeile infozeile platzhalter titel datum kamera objektiv blende'), render: () => <TileHeadSettings /> }] : []),
+    // [feature:lenscorr]
+    ...(featureOn('lenscorr') ? [{ key: 'gallery-lens', label: t('Objektivprofile'), words: kw('objektiv objektivkorrektur profil verzeichnung vignettierung farbsäume adaptiert lcp lensfun einmessen schachbrett regel brennweite'), render: () => <LensSettings /> }] : []),
+    // [/feature:lenscorr]
     { key: 'gallery-xmp', label: t('Angaben in den Fotos'), words: kw('xmp sidecar sterne bewertung titel beschreibung markierung farbe schreiben lightroom'), render: () => <GallerySettings /> },
     ...(featureOn('ablagesave') ? [{ key: 'gallery-save', label: t('In Ablage sichern'), words: kw('ablage sichern kopieren galerie-ordner zielordner uploads herkunft jahr monat'), render: () => <SaveToAblageSettings /> }] : []),
   ] },
@@ -151,27 +186,78 @@ const categories: Category[] = [
       { key: 'dms-paperless', label: t('Übernahme aus paperless'), words: kw('dms paperless übernahme import export probelauf'), render: () => <DmsPaperlessSettings /> },
     ],
   },
+  // [feature:gatekeeper]
+  {
+    key: 'gatekeeper', label: 'GateKeeper', icon: <ShieldGlobe20Regular />, pages: [
+      { key: 'gatekeeper', label: t('Übersicht'), words: kw('gatekeeper werbung filter sperren handy android app vpn tunnel zähler'), render: () => <GateKeeperOverview /> },
+      { key: 'gatekeeper-rules', label: t('Eigene Regeln'), words: kw('gatekeeper eigene regel adresse domain sperren erlauben adresse prüfen'), render: () => <GateKeeperRules /> },
+      { key: 'gatekeeper-stats', label: t('Statistik'), words: kw('gatekeeper statistik gesperrt treffer adressen domains zähler zurücksetzen datenschutz'), render: () => <GateKeeperStats /> },
+    ],
+  },
+  // [/feature:gatekeeper]
 ]
 
 // Fruehere Adressen (#/settings/general) weiter gueltig
 const aliases: Record<string, string> = { general: 'language' }
 
 /** Release-Liste: Seiten und Bereiche, die erst mit einer späteren Version freigeschaltet werden. */
-const pageFeature: Record<string, string> = { aliases: 'catchall', openpgp: 'pgp', tresor: 'vault' }
-const released = (list: Category[]) => list
-  .map(c => ({ ...c, pages: c.pages.filter(p => !pageFeature[p.key] || featureOn(pageFeature[p.key])) }))
+const pageFeature: Record<string, string> = { emergency: 'emergency', aliases: 'catchall', openpgp: 'pgp', tresor: 'vault',
+  // [feature:gatekeeper]
+  gatekeeper: 'gatekeeper', 'gatekeeper-rules': 'gatekeeper', 'gatekeeper-stats': 'gatekeeper',
+  // [/feature:gatekeeper]
+}
+// [feature:adminclean]
+/** Serverweites für Admins liegt mit adminclean in der Verwaltung (Helpdesk: Posteingänge und Anmeldung für Kunden). */
+const inAdmin = new Set(['helpdesk-inbox', 'helpdesk-oauth'])
+// [/feature:adminclean]
+const released = (list: Category[], admin: boolean) => list
+  .map(c => ({ ...c, pages: c.pages.filter(p => (!pageFeature[p.key] || featureOn(pageFeature[p.key])) && (admin || !p.admin)
+    && !(featureOn('adminclean') && inAdmin.has(p.key)) // [feature:adminclean]
+  ) }))
   .filter(c => c.pages.length > 0)
 
 /** Gruppen der Module (Hauptschalter der Verwaltung, Server: Features.Modules) - Gruppe und Modul heißen gleich. */
-const categoryModule: Record<string, string> = { audio: 'audio', dms: 'dms' }
+const categoryModule: Record<string, string> = { audio: 'audio', dms: 'dms',
+  journal: 'journal', // [feature:journal]
+}
 
 /** Module: ausgeschaltet (oder nicht freigeschaltet) fehlt die Gruppe; die Hauptschalter stehen in der Verwaltung. */
 const withModules = (list: Category[]) => list.filter(c => !categoryModule[c.key] || featureOn(categoryModule[c.key]))
 
+// [feature:adminclean]
+/** W9: je Plugin mit Einstellungsseiten ein Bereich; Seiten, die das Plugin für diese Person nicht erlaubt, fehlen. ready: alles geprüft. */
+function usePluginCategories(): [Category[], boolean] {
+  const [state, setState] = useState<[Category[], boolean]>([[], !featureOn('adminclean')])
+  useEffect(() => {
+    if (!featureOn('adminclean')) return
+    let alive = true
+    const build = async () => {
+      const list = await Promise.all(pluginSettingsPages().map(async ({ plugin, pages }) => {
+        const ok = await Promise.all(pages.map(p => Promise.resolve().then(() => p.allowed ? p.allowed() : true).catch(() => false)))
+        const Icon = plugins().find(x => x.info.key === plugin.key)?.module.views?.[0]?.icon
+        const name = pluginLabel(plugin)
+        return { key: 'plugin-' + plugin.key, label: name, icon: Icon ? <Icon /> : <PuzzlePiece20Regular />,
+          pages: pages.filter((_, i) => ok[i]).map(p => { const Page = p.component; return { key: p.id, label: p.label, words: name + ' ' + (p.words ?? ''), render: () => <Page /> } }) }
+      }))
+      if (alive) setState([list.filter(c => c.pages.length > 0), true])
+    }
+    loadPlugins().then(build, () => { if (alive) setState(x => [x[0], true]) })
+    window.addEventListener('dmoffice:plugins', build)
+    return () => { alive = false; window.removeEventListener('dmoffice:plugins', build) }
+  }, [])
+  return state
+}
+// [/feature:adminclean]
+
 export default function SettingsView() {
   const s = useStyles()
-  const { notify } = useApp()
-  const cats = released(withModules(categories))
+  const { notify, me } = useApp()
+  // [feature:adminclean]
+  const [pluginCats, ready] = usePluginCategories()
+  const cats = released(withModules([...categories, ...pluginCats]), !!me?.isAdmin)
+  // [feature:adminclean:else]
+  // const cats = released(withModules(categories), !!me?.isAdmin)
+  // [/feature:adminclean]
   const pages = cats.flatMap(c => c.pages.map(p => ({ ...p, category: c })))
   const fromHash = location.hash.split('/')[2]
   const initial = pages.find(p => p.key === (aliases[fromHash] ?? fromHash)) ?? pages.find(p => p.key === 'language') ?? pages[0]
@@ -209,7 +295,16 @@ export default function SettingsView() {
     notify(t('Einstellungsseite nicht gefunden.'), undefined, 'warning')
     history.replaceState(history.state, '', '#/settings/' + page)
   }
-  useEffect(() => { if (fromHash && !pages.some(p => p.key === (aliases[fromHash] ?? fromHash))) unknownPage() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  // [feature:adminclean]
+  // Seiten der Plugins kommen erst nach dem Laden dazu: Adresse erst danach prüfen, eine Plugin-Seite dann öffnen
+  useEffect(() => {
+    if (!ready || !fromHash) return
+    if (!pages.some(p => p.key === (aliases[fromHash] ?? fromHash))) unknownPage()
+    else if (page !== (aliases[fromHash] ?? fromHash)) go(aliases[fromHash] ?? fromHash)
+  }, [ready]) // eslint-disable-line react-hooks/exhaustive-deps
+  // [feature:adminclean:else]
+  // useEffect(() => { if (fromHash && !pages.some(p => p.key === (aliases[fromHash] ?? fromHash))) unknownPage() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  // [/feature:adminclean]
   useEffect(() => {
     const handle = () => onHash.current()
     window.addEventListener('hashchange', handle)
@@ -257,15 +352,26 @@ export default function SettingsView() {
         </>}
         {step === 'page' && <>
           <BackBar onBack={() => setStep(term ? 'cats' : 'pages')} title={current.label} />
-          <div className={s.body}>
-            <div className={s.inner} key={current.key}>{current.render()}</div>
-          </div>
+          <SettingsFrame>
+          {/* [feature:savemode] */}
+          <SavedFrame>
+          {/* [/feature:savemode] */}
+          <SettingsPageHead key={current.key}>{head => <div className={s.page}>{head}
+            <div className={s.body}>
+              <div className={mergeClasses(s.inner, current.wide && s.wide)}>{current.render()}</div>
+            </div>
+          </div>}</SettingsPageHead>
+          {/* [feature:savemode] */}
+          </SavedFrame>
+          {/* [/feature:savemode] */}
+          </SettingsFrame>
         </>}
       </div>
     )
   }
 
   return (
+    <SettingsFrame>
     <div className={s.root}>
       <nav className={s.cats}>
         <Text className={s.title}>{t('Einstellungen')}</Text>
@@ -289,9 +395,18 @@ export default function SettingsView() {
           </div>
         ))}
       </nav>
-      <div className={s.body}>
-        <div className={s.inner} key={current.key}>{current.render()}</div>
-      </div>
+      {/* [feature:savemode] */}
+      <SavedFrame>
+      {/* [/feature:savemode] */}
+      <SettingsPageHead key={current.key} title={current.label}>{head => <div className={s.page}>{head}
+        <div className={s.body}>
+          <div className={mergeClasses(s.inner, current.wide && s.wide)}>{current.render()}</div>
+        </div>
+      </div>}</SettingsPageHead>
+      {/* [feature:savemode] */}
+      </SavedFrame>
+      {/* [/feature:savemode] */}
     </div>
+    </SettingsFrame>
   )
 }

@@ -37,6 +37,9 @@ public static class PlainBackupReadMe
         sb.Append(Area(PlainBackup.Contacts, $"{L.Contacts}/*.vcf – je Adressbuch eine Datei mit allen Kontakten", $"{L.Contacts}/*.vcf – one file per address book"));
         sb.Append(Area(PlainBackup.Notes, $"{L.Notes}/*.md – je Notiz eine Markdown-Datei, Bilder und Anhänge im Ordner „…{L.Attachments}“", $"{L.Notes}/*.md – one Markdown file per note, images and attachments in the folder \"…{L.Attachments}\""));
         sb.Append(Area(PlainBackup.Dms, $"{L.Dms}/{L.DmsList}.csv und .json – Titel, Datum, Korrespondent, Typ, Tags je Dokument; die Dokumente selbst unter {L.Files}/, getrennt gehaltene Originale unter {L.Dms}/{L.Originals}/", $"{L.Dms}/{L.DmsList}.csv and .json – metadata per document; the documents are under {L.Files}/, separately kept originals under {L.Dms}/{L.Originals}/"));
+        // [feature:journal]
+        sb.Append(Area(PlainBackup.Journal, $"{L.Journal}/<Tagebuch>/<Jahr>/*.md – je Eintrag eine Markdown-Datei; Fotos, Videos und Sprachaufnahmen daneben im Ordner Media/", $"{L.Journal}/<journal>/<year>/*.md – one Markdown file per entry; photos, videos and voice recordings next to it in Media/"));
+        // [/feature:journal]
         sb.Append($"""
 
             Öffnen:

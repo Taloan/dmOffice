@@ -1,18 +1,19 @@
 import {
-  Button, Checkbox, Dropdown, Field, Input, MessageBar, MessageBarBody, Option, Radio, RadioGroup, Switch, Text, Tooltip, makeStyles, mergeClasses, tokens,
+  Button, Checkbox, Dropdown, Field, Input, MessageBar, MessageBarBody, Option, Radio, RadioGroup, Slider, Switch, Text, Tooltip, makeStyles, mergeClasses, tokens,
 } from '@fluentui/react-components'
 import { useEffect, useState } from 'react'
 import QRCode from 'qrcode'
 import { ArrowDownload20Regular, QrCode20Regular } from '@fluentui/react-icons'
-import { api, demoMode, fmtSize } from '../api'
+import { api, demoMode, featureOn, fmtSize } from '../api'
 import { useApp } from '../App'
 import { UiPrefs, usePrefs } from '../prefs'
 import { lang, locale, t } from '../i18n'
-import { accents, SIGNATURE, storedTheme, storeTheme, ThemeChoice } from '../theme'
+import { accents, darkLightDefault, limeAccent, SIGNATURE, storedTheme, storeTheme, ThemeChoice, useIsDark } from '../theme'
 import { fmtDay, fmtTime } from '../shell/hooks'
 import { desktopPossible } from '../shell/Notifier'
 import { install, isIos, pwaPossible, usePwa } from '../pwa'
-import { Hint, PageTitle, Section } from './parts'
+import { LinkKind, linkHandlerSupport, registerLinkHandler } from '../linkhandler'
+import { Hint, Section, SectionTabs, TabPart } from './parts'
 import { TextIndexSection } from './TextIndexSection'
 import { WebPushSetting } from './WebPushSetting'
 
@@ -87,7 +88,6 @@ export function LanguageSettings() {
   ]
   return (
     <>
-      <PageTitle>{t('Sprache und Zeit')}</PageTitle>
       <Section title={t('Sprache und Formate')}>
         <Field label={t('Sprache der Oberfläche')} hint={t('Gilt für dein Konto auf allen Geräten. Die Seite lädt danach neu.')} className={s.field}>
           <Dropdown value={(prefs.language ?? lang) === 'en' ? 'English' : 'Deutsch'} selectedOptions={[prefs.language ?? lang]}
@@ -95,7 +95,7 @@ export function LanguageSettings() {
               const v = d.optionValue as 'de' | 'en'
               if (v === lang) return
               // Direkt speichern (nicht gesammelt), dann neu laden
-              api.put('/api/settings/ui', { ...prefs, language: v }).finally(() => { update({ language: v }); location.reload() })
+              api.patch('/api/settings/ui', { language: v }).finally(() => { update({ language: v }); location.reload() })
             }}>
             <Option value="de">Deutsch</Option>
             <Option value="en">English</Option>
@@ -148,9 +148,9 @@ export function AppearanceSettings() {
   const [mode, setMode] = useState<ThemeChoice>(storedTheme())
   const pick = (m: ThemeChoice) => { setMode(m); storeTheme(m); save({ theme: m }) }
   const accent = (prefs.accent ?? SIGNATURE).toUpperCase()
+  const isDark = useIsDark()
   return (
     <>
-      <PageTitle>{t('Darstellung')}</PageTitle>
       <Section title={t('Modus auswählen')}>
         <div className={s.modes}>
           {([['light', t('Hell')], ['dark', t('Dunkel')], ['system', t('Systemeinstellungen verwenden')]] as const).map(([m, l]) => (
@@ -161,10 +161,22 @@ export function AppearanceSettings() {
           ))}
         </div>
       </Section>
+      {featureOn('darkswap') && isDark && <Section title={t('Dunkler Modus')}>
+        <Switch checked={!!prefs.darkSwap} onChange={(_, d) => update({ darkSwap: d.checked, darkLight: undefined })} label={t('Inhalte dunkler als Kopfzeile und Leisten')} />
+        <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>{t('Listen, Mails und Dokumente stehen auf der dunkelsten Fläche und haben so den meisten Kontrast. Aus: Kopfzeile und Leisten sind dunkler.')}</Text>
+        <Field label={prefs.darkSwap ? t('Helligkeit von Kopfzeile und Leisten') : t('Helligkeit der Inhalte')}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, maxWidth: 360 }}>
+            <Slider min={50} max={130} step={5} value={prefs.darkLight ?? darkLightDefault(!!prefs.darkSwap)} style={{ flex: 1 }}
+              onChange={(_, d) => update({ darkLight: d.value })} />
+            <Text style={{ minWidth: 44, textAlign: 'right' }}>{(prefs.darkLight ?? darkLightDefault(!!prefs.darkSwap)) + ' %'}</Text>
+            <Button size="small" appearance="subtle" disabled={prefs.darkLight == null} onClick={() => update({ darkLight: undefined })}>{t('Zurücksetzen')}</Button>
+          </div>
+        </Field>
+      </Section>}
       <Section title={t('Designs')} hint={t('Die Farbe für Kopfleiste, Schaltflächen und Markierungen.')} last>
         <Text weight="semibold">{t('Farbe')}</Text>
         <div className={s.colors}>
-          {accents.map(a => (
+          {(featureOn('limeaccent') ? [...accents, limeAccent] : accents).map(a => (
             <Tooltip key={a.color} content={t(a.name)} relationship="label">
               <button className={mergeClasses(s.color, accent === a.color.toUpperCase() && s.colorOn)} style={{ background: a.color }}
                 onClick={() => update({ accent: a.color })} aria-label={t(a.name)} />
@@ -187,7 +199,6 @@ export function NotificationSettings() {
   }
   return (
     <>
-      <PageTitle>{t('Benachrichtigungen')}</PageTitle>
       <Section title={t('Mich benachrichtigen über')}>
         <Switch label={t('E-Mail – neue Nachrichten im Posteingang')} checked={prefs.notifyMail ?? true} onChange={(_, d) => update({ notifyMail: d.checked })} />
         <Switch label={t('Kalender – Erinnerungen an Termine')} checked={prefs.notifyCalendar ?? true} onChange={(_, d) => update({ notifyCalendar: d.checked })} />
@@ -222,7 +233,6 @@ export function SearchSettings() {
   const { prefs, update } = usePrefs()
   return (
     <>
-      <PageTitle>{t('Suchen')}</PageTitle>
       <Section title={t('Suchbereich')}>
         <RadioGroup value={prefs.searchScope ?? 'inboxAll'} onChange={(_, d) => update({ searchScope: d.value as any })}>
           <Radio value="inboxAll" label={t('Alle Ordner beim Durchsuchen aus dem Posteingang')} />
@@ -238,6 +248,33 @@ export function SearchSettings() {
       </Section>
       <TextIndexSection />
     </>
+  )
+}
+
+/** dmOffice im Browser als Programm für E-Mail-Links (mailto:) und Kalender-Abos (webcal:) eintragen - Kennung linkhandler. */
+function LinkHandlerSection({ last }: { last?: boolean }) {
+  const { notify } = useApp()
+  const support = linkHandlerSupport()
+  const register = (kind: LinkKind) => {
+    try {
+      registerLinkHandler(kind)
+      notify(t('An den Browser übergeben'), t('Fragt der Browser nach, muss die Anfrage bestätigt werden.'), 'info')
+    } catch (e) { notify(t('Fehler'), e instanceof Error ? e.message : String(e), 'error') }
+  }
+  return (
+    <Section title={t('Programm für Links')} hint={t('Der Browser öffnet E-Mail-Links (mailto:) und Kalender-Abos (webcal:) dann in dmOffice.')} last={last}>
+      {support === 'unsupported' ? (
+        <MessageBar intent="warning"><MessageBarBody>{t('Dieser Browser kann dmOffice nicht als Programm für Links eintragen.')}</MessageBarBody></MessageBar>
+      ) : support === 'insecure' ? (
+        <MessageBar intent="warning"><MessageBarBody>{t('Eintragen erlaubt der Browser nur über HTTPS. dmOffice läuft hier über http://{host}.', { host: location.host })}</MessageBarBody></MessageBar>
+      ) : (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <Button onClick={() => register('mailto')}>{t('Für E-Mail-Links eintragen')}</Button>
+          <Button onClick={() => register('webcal')}>{t('Für Kalender-Abos eintragen')}</Button>
+        </div>
+      )}
+      <Hint>{t('Als installierte App in Chrome oder Edge steht dmOffice zusätzlich in der Auswahl des Betriebssystems. Links mit webcals: lassen sich im Browser nicht eintragen.')}</Hint>
+    </Section>
   )
 }
 
@@ -259,7 +296,7 @@ export function InstallSettings() {
   const go = async () => { if (await install()) notify(t('dmOffice wird installiert'), t('Die App findest du gleich im Startmenü bzw. auf dem Home-Bildschirm.')) }
   return (
     <>
-      <PageTitle>{t('Apps installieren')}</PageTitle>
+      <SectionTabs page="install">
       <Section title={t('Als PWA installieren')} hint={t('dmOffice läuft dann in einem eigenen Fenster mit eigenem Symbol und ohne Adressleiste.')}>
         {installed ? (
           <>
@@ -286,9 +323,9 @@ export function InstallSettings() {
           </>
         )}
       </Section>
+      {featureOn('linkhandler') && <TabPart label={t('Programm für Links')}><LinkHandlerSection last /></TabPart>}
       {/* Demo-Server: die App gibt es dort nur über den Play-Test */}
-      {!demoMode.on && <>
-      <Section title={t('Android-App (APK)')} hint={own?.available
+      {!demoMode.on && <Section title={t('Android-App (APK)')} hint={own?.available
         ? t('Die dmOffice-App für Android 8 und neuer, direkt von diesem Server. Updates holt sich die App ebenfalls von hier.')
         : t('Die eigene dmOffice-App für Android 8 und neuer: Kalender und Aufgaben mit Widgets auf dem Startbildschirm. Sie liegt nicht im Play Store, sondern als APK-Datei auf GitHub.')} last>
         {own?.available && <Text size={200} style={{ display: 'block', marginBottom: 8 }}>{own.matches
@@ -314,8 +351,8 @@ export function InstallSettings() {
             </ol>
           </div>
         </div>
-      </Section>
-      </>}
+      </Section>}
+      </SectionTabs>
     </>
   )
 }

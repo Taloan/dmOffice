@@ -254,6 +254,21 @@ public class DavPimTests
     }
 
     [Fact]
+    public void Leerer_neuer_Kontakt_wird_abgelehnt_auch_mit_gewaehltem_Adressbuch()
+    {
+        var space = NewSpace();
+        var book = Book(space);
+        // Das Formular schickt beim Neuanlegen moveTo = gewähltes Adressbuch mit
+        var empty = new ContactDto { Book = book.Id, MoveTo = book.Id };
+        var ex = Assert.Throws<ArgumentException>(() => ContactModel.Save(space, empty));
+        Assert.Equal(ContactModel.EmptyContact, ex.Message);
+        Assert.Empty(PimStore.Objects(space.Db, book.Id));
+        // Mit einem Namen geht es
+        ContactModel.Save(space, new ContactDto { Book = book.Id, MoveTo = book.Id, Given = "Anna" });
+        Assert.Single(PimStore.Objects(space.Db, book.Id));
+    }
+
+    [Fact]
     public void Kontakt_aendern_behaelt_Postfach_und_Parameter()
     {
         var space = NewSpace();

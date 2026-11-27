@@ -1,0 +1,1 @@
+{"key":"demo","version":"1.0.0","api":1,"core":">=1 <2","web":{"entry":"web/entry.js"}}

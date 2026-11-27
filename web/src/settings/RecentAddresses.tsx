@@ -1,14 +1,15 @@
 import {
-  Badge, Button, Checkbox, Dropdown, Option, SearchBox, Table, TableBody, TableCell, TableHeader, TableHeaderCell, TableRow, Text, tokens,
+  Badge, Checkbox, Dropdown, MenuDivider, MenuItem, Option, SearchBox, Table, TableBody, TableCell, TableHeader, TableHeaderCell, TableRow, Text, tokens,
 } from '@fluentui/react-components'
 import { Delete20Regular, PersonAdd20Regular } from '@fluentui/react-icons'
 import { useEffect, useMemo, useState } from 'react'
-import { api, Collection } from '../api'
+import { api, Collection, featureOn } from '../api'
 import { useApp } from '../App'
 import { fmtDate } from '../shell/hooks'
 import { t } from '../i18n'
 import { useSort } from '../shell/sort'
-import { askConfirm } from '../shell/context'
+import { ContextMenu, askConfirm, useContextMenu } from '../shell/context'
+import { RibbonActions, RibbonButton } from '../shell/Ribbon'
 
 interface Recent { name?: string | null; address: string; count: number; last: string; inContacts: boolean }
 
@@ -20,6 +21,9 @@ export function RecentAddresses() {
   const [book, setBook] = useState<number | null>(null)
   const [picked, setPicked] = useState<string[]>([])
   const [q, setQ] = useState('')
+  // Rechtsklick (Kennung ctxall): wirkt auf die angehakten Adressen; außerhalb der Auswahl nur auf diese eine
+  const menu = useContextMenu<string>()
+  const ctxall = featureOn('ctxall')
 
   const load = () => api.get<Recent[]>('/api/pim/recent').then(setList).catch(fail)
   useEffect(() => {
@@ -55,18 +59,20 @@ export function RecentAddresses() {
     <>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
         <SearchBox placeholder={t('Vorschläge durchsuchen')} value={q} onChange={(_, d) => setQ(d.value)} style={{ minWidth: 240 }} />
-        <Button icon={<PersonAdd20Regular />} disabled={!picked.length || !book} onClick={add}>{t('In Adressbuch übernehmen')}</Button>
+        <RibbonActions>
+          <RibbonButton icon={<PersonAdd20Regular />} label={t('In Adressbuch übernehmen')} disabled={!picked.length || !book} onClick={add} />
+          <RibbonButton icon={<Delete20Regular />} label={t('Löschen')} disabled={!picked.length} onClick={remove} />
+        </RibbonActions>
         {books.length > 1 && (
           <Dropdown style={{ minWidth: 160 }} value={books.find(b => b.id === book)?.name ?? ''} selectedOptions={[String(book)]}
             onOptionSelect={(_, d) => setBook(Number(d.optionValue))}>
             {books.map(b => <Option key={b.id} value={String(b.id)}>{b.name}</Option>)}
           </Dropdown>
         )}
-        <Button icon={<Delete20Regular />} disabled={!picked.length} onClick={remove}>{t('Löschen')}</Button>
         {picked.length > 0 && <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>{t('{n} ausgewählt', { n: picked.length })}</Text>}
       </div>
       {list.length === 0 ? <Text style={{ color: tokens.colorNeutralForeground3 }}>{t('Noch keine – sie entstehen beim Senden.')}</Text> : (
-        <Table size="small" style={{ maxWidth: 900 }}>
+        <Table size="small">
           <TableHeader>
             <TableRow>
               <TableHeaderCell style={{ width: 40 }}>
@@ -81,7 +87,8 @@ export function RecentAddresses() {
           </TableHeader>
           <TableBody>
             {sorted.map(r => (
-              <TableRow key={r.address} onClick={() => toggle(r.address)} style={{ cursor: 'pointer' }}>
+              <TableRow key={r.address} onClick={() => toggle(r.address)} style={{ cursor: 'pointer' }}
+                onContextMenu={ctxall ? e => { if (!picked.includes(r.address)) setPicked([r.address]); menu.open(e, r.address) } : undefined}>
                 <TableCell><Checkbox checked={picked.includes(r.address)} onChange={() => toggle(r.address)} onClick={e => e.stopPropagation()} /></TableCell>
                 <TableCell>{r.name || '–'} {r.inContacts && <Badge size="small" appearance="tint" color="success">{t('Kontakt')}</Badge>}</TableCell>
                 <TableCell>{r.address}</TableCell>
@@ -92,6 +99,11 @@ export function RecentAddresses() {
           </TableBody>
         </Table>
       )}
+      {menu.ctx && <ContextMenu at={menu.ctx.at} onClose={menu.close}>
+        <MenuItem icon={<PersonAdd20Regular />} disabled={!picked.length || !book} onClick={add}>{t('In Adressbuch übernehmen')}</MenuItem>
+        <MenuDivider />
+        <MenuItem icon={<Delete20Regular />} disabled={!picked.length} onClick={remove}>{t('Löschen')}</MenuItem>
+      </ContextMenu>}
     </>
   )
 }

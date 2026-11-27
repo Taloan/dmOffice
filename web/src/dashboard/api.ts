@@ -2,7 +2,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, q } from '../api'
 
-export type WidgetType = 'today' | 'events' | 'meals' | 'tasks' | 'shopping' | 'mail' | 'chat' | 'pukki' | 'weather' | 'news' | 'photos' | 'notes' | 'files'
+// [feature:journal]
+export type WidgetType = 'today' | 'events' | 'meals' | 'tasks' | 'shopping' | 'mail' | 'chat' | 'pukki' | 'weather' | 'news' | 'journal' | 'photos' | 'notes' | 'files'
+// [feature:journal:else]
+// export type WidgetType = 'today' | 'events' | 'meals' | 'tasks' | 'shopping' | 'mail' | 'chat' | 'pukki' | 'weather' | 'news' | 'photos' | 'notes' | 'files'
+// [/feature:journal]
   | 'birthdays' | 'countdown' | 'bookmarks' | 'storage' | 'system' | 'stack'
 export interface Widget { id: string; type: WidgetType; size: 1 | 2 | 3 | 4; x?: number | null; y?: number | null; title?: string | null; opts?: Record<string, unknown> | null; stack?: Widget[] | null; smart?: boolean }
 export interface Background { kind: 'none' | 'gallery' | 'upload' | 'album'; path?: string | null; album?: number | null; dim: number }

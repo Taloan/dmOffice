@@ -213,6 +213,18 @@ public static class PhotoAdjust
         var info = codec.Info;
         var scale = Math.Min(1f, (float)max / Math.Max(info.Width, info.Height));
         var dims = codec.GetScaledDimensions(scale);
+        // Formate ohne verkleinertes Dekodieren (PNG …) entpacken in voller Größe: Grenze wie bei den Vorschaubildern
+        if ((long)dims.Width * dims.Height > Thumbs.MaxPixels) throw new ArgumentException("Das Foto ist zu groß.");
+        if (!SmallGate.Wait(TimeSpan.FromSeconds(60))) throw new InvalidOperationException("Der Server ist gerade ausgelastet. Bitte gleich noch einmal versuchen.");
+        try { return SmallDecode(codec, dims, max); }
+        finally { SmallGate.Release(); }
+    }
+
+    /// <summary>Höchstens zwei Bilder gleichzeitig in voller Dekodiergröße.</summary>
+    private static readonly SemaphoreSlim SmallGate = new(2);
+
+    private static SKBitmap SmallDecode(SKCodec codec, SKSizeI dims, int max)
+    {
         var bmp = new SKBitmap(new SKImageInfo(dims.Width, dims.Height, SKColorType.Rgba8888, SKAlphaType.Premul));
         codec.GetPixels(bmp.Info, bmp.GetPixels());
         if (Math.Max(bmp.Width, bmp.Height) > max)

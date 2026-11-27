@@ -13,7 +13,8 @@ internal static class TestTemp
     internal static void Init()
     {
         // Release-Liste: Tests prüfen alle Funktionen, auch die erst in späteren Versionen freigeschalteten (eigener Test: FeaturesTests)
-        Environment.SetEnvironmentVariable("DMOFFICE_FEATURES", "all");
+        // Ausgenommen masterkeyreq: Testserver legen ihren Schlüssel als Datei an (eigener Test: MasterKeyRequiredTests)
+        Environment.SetEnvironmentVariable("DMOFFICE_FEATURES", "all,-masterkeyreq");
         // Audiothek: in Tests ohne Pause zwischen den Stücken
         DmOffice.Audio.AudioFolders.TagPause = TimeSpan.Zero;
         if (Environment.GetEnvironmentVariable("DMOFFICE_TEST_TMP") is { Length: > 0 } dir)

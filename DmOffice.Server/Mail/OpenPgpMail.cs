@@ -117,7 +117,14 @@ public static class OpenPgpMail
                 return new Status("unknown", "mime", KeyId: keyId, Signed: sig.CreationDate, Partial: partial);
             return Judge(db, from, cert.PublicKey, ok.Value, sig.CreationDate, "mime", partial);
         }
-        if (InlineBlock(m) is { } block) return VerifyInline(db, from, block);
+        if (InlineBlock(m) is { } block)
+        {
+            // Geprüft wird nur der Block im Textteil; steht daneben anderes (HTML-Teil, Text davor oder danach), gilt die
+            // Signatur nur für einen Teil der Mail - der HTML-Teil kann etwas ganz anderes zeigen
+            var outside = m.HtmlBody != null || (m.TextBody ?? "").Replace(block, "").Trim().Length > 0;
+            var st = VerifyInline(db, from, block);
+            return outside ? st with { Partial = true } : st;
+        }
         return null;
     }
 

@@ -45,6 +45,8 @@ export const sourceOf = (path?: string) => {
 const sourceNames = new Map<string, string>()
 export const setSourceNames = (list: { id: string; name: string }[]) => { sourceNames.clear(); for (const x of list) sourceNames.set('ext:' + x.id, x.name) }
 /** Werte, die es immer gibt, auch ohne passendes Foto: bei der Quelle alle eingerichteten (ein leerer Ordner soll wählbar bleiben). */
+/** Name der Quelle eines Fotos zum Anzeigen: „Eigene Ablage“ oder der Name des Galerie-Ordners. */
+export const sourceLabel = (path?: string) => { const v = sourceOf(path); return v === 'own' ? t('Eigene Ablage') : sourceNames.get(v) ?? v.slice(4) }
 export const knownValues = (attr: FilterAttr): string[] => attr === 'source' ? ['own', ...sourceNames.keys()] : []
 
 /**
@@ -149,10 +151,8 @@ const useStyles = makeStyles({
 const ROW_PX = 24
 
 /** Kopf der Filterleiste: Voreinstellung, Filter aufheben, Anzahl - steht in der Titelzeile der Galerie (spart eine Zeile). */
-export function PhotoFilterTop({ total, cols: _cols, onCols, sel, onSel, shown, pending, onSaveSmart }: {
+export function PhotoFilterTop({ total, cols: _cols, onCols, sel, onSel, shown, pending }: {
   total: number; cols: FilterAttr[]; onCols: (c: FilterAttr[]) => void; sel: string[][]; onSel: (s: string[][]) => void; shown: number; pending: number
-  /** Gesetzter Filter als Smart-Album speichern */
-  onSaveSmart?: () => void
 }) {
   const s = useStyles()
   const active = sel.some(x => x.length)
@@ -165,7 +165,6 @@ export function PhotoFilterTop({ total, cols: _cols, onCols, sel, onSel, shown, 
         </MenuList></MenuPopover>
       </Menu>
       {active && <Button size="small" appearance="subtle" icon={<Dismiss16Regular />} onClick={() => onSel([[], [], [], []])}>{t('Filter aufheben')}</Button>}
-      {active && onSaveSmart && <Button size="small" appearance="subtle" onClick={onSaveSmart}>{t('Als Smart-Album speichern')}</Button>}
       <Text size={200} className={s.muted}>{active ? t('{n} von {total}', { n: shown, total }) : t('{total} Fotos und Videos', { total })}</Text>
       {pending > 0 && <Text size={200} className={s.muted}>· {t('Aufnahmedaten von {n} Dateien werden noch gelesen', { n: pending })}</Text>}
     </div>

@@ -56,9 +56,28 @@ public static partial class ChatApi
         api.MapGet("/wait", async (long since, int? timeout, long? busy, HttpContext http, ChatStore chat, CancellationToken ct) =>
         {
             var me = Me(http);
-            var seq = await chat.WaitAsync(me, since, TimeSpan.FromSeconds(Math.Clamp(timeout ?? 25, 1, 50)), ct, busy ?? -1);
+            var span = TimeSpan.FromSeconds(Math.Clamp(timeout ?? 25, 1, 50));
+            // [feature:mailpush]
+            // mail: Version des Mail-Bereichs (/api/mail/status) - wer sie mitschickt, wird auch geweckt, sobald sich dort etwas ändert
+            // (neue Mail per IDLE); ein Long-Poll für beides, der Browser hält je Server nur wenige Verbindungen offen
+            if (DmOffice.Mail.MailPush.On && long.TryParse(http.Request.Query["mail"], out var m)
+                && http.RequestServices.GetService<DmOffice.Mail.MailSync>() is { } sync)
+            {
+                using var first = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                var chatWait = chat.WaitAsync(me, since, span, first.Token, busy ?? -1);
+                var mailWait = sync.WaitAsync(me, m, span, first.Token);
+                var won = await Task.WhenAny(chatWait, mailWait);
+                // Ein Abgleich meldet mehrmals kurz hintereinander: kurz sammeln, dann eine Antwort
+                if (won == mailWait && !chatWait.IsCompleted) await Task.WhenAny(chatWait, Task.Delay(300, ct));
+                first.Cancel();
+                try { await Task.WhenAll(chatWait, mailWait); } catch (OperationCanceledException) { ct.ThrowIfCancellationRequested(); }
+                var mb = chat.Busy(me);
+                return Results.Ok(new { seq = chat.Seq(me), busy = mb.Version, busyRooms = mb.Rooms, mail = sync.Version(me) });
+            }
+            // [/feature:mailpush]
+            var seq = await chat.WaitAsync(me, since, span, ct, busy ?? -1);
             var b = chat.Busy(me);
-            return new { seq, busy = b.Version, busyRooms = b.Rooms };
+            return Results.Ok(new { seq, busy = b.Version, busyRooms = b.Rooms });
         });
 
         api.MapGet("/changes", (long? since, HttpContext http, ChatStore chat, UserStore users) =>
@@ -153,6 +172,8 @@ public static partial class ChatApi
         api.MapPost("/rooms/{id:long}/leave", (long id, HttpContext http, ChatStore chat) =>
         {
             var me = Me(http);
+            // Zu zweit: nur ausblenden - das Gegenueber merkt nichts, der Verlauf bleibt
+            if (!chat.IsGroup(id)) { chat.Hide(me, id); return Results.Ok(); }
             chat.RemoveMember(me, id, me);
             GroupSpaces.Left(http.RequestServices, id, me);
             return Results.Ok();
@@ -199,7 +220,7 @@ public static partial class ChatApi
         // Bild oder Datei direkt aus dem Chat (Handy, Einfuegen, Ziehen): landet in der eigenen Ablage unter "Chat",
         // die Nachricht zeigt darauf. Inhalt roh im Koerper (kein Formular - das laege sonst unverschluesselt in /tmp).
         // mode: show|send, ohne: Vorgabe "vom Geraet" aus den Einstellungen.
-        api.MapPost("/rooms/{id:long}/upload", async (long id, string name, string? text, string? mode, HttpRequest request, HttpContext http,
+        api.MapPost("/rooms/{id:long}/upload", async (long id, string name, string? text, string? mode, long? replyTo, HttpRequest request, HttpContext http,
             ChatStore chat, UserStore users, CancellationToken ct) =>
         {
             var space = http.Space();
@@ -209,13 +230,13 @@ public static partial class ChatApi
             var file = SafeName(name);
             var mime = request.ContentType is { Length: > 0 } ct0 && !ct0.StartsWith("application/octet-stream") ? ct0.Split(';')[0].Trim() : DavServer.Mime(file);
             var f = await StoreUpload(space.Db, file, mime, request.Body, ct);
-            var msg = chat.Post(space.User.Id, id, text, null, new[] { WithMode(FileRef(space, f), mode ?? settings.DeviceMode, settings, chat.Rights(space.User.Id)) },
+            var msg = chat.Post(space.User.Id, id, text, replyTo, new[] { WithMode(FileRef(space, f), mode ?? settings.DeviceMode, settings, chat.Rights(space.User.Id)) },
                 MentionsOf(text, id, chat, users));
             return MessageDto(chat.Message(space.User.Id, msg), users, chat);
         });
 
         // In Stuecken hochgeladen (/api/files/uploads, Version 2): fertig zusammensetzen und als Anhang verschicken
-        api.MapPost("/uploads/{upload}/send", async (string upload, long room, string? text, string? mode, HttpContext http, ChatStore chat, UserStore users, CancellationToken ct) =>
+        api.MapPost("/uploads/{upload}/send", async (string upload, long room, string? text, string? mode, long? replyTo, HttpContext http, ChatStore chat, UserStore users, CancellationToken ct) =>
         {
             var space = http.Space();
             chat.Room(space.User.Id, room);
@@ -227,7 +248,7 @@ public static partial class ChatApi
             FileEntry f;
             await using (var body = FilesApi.OpenSession(space.Db, session)) f = await StoreUpload(space.Db, file, mime, body, ct);
             FilesApi.DropSession(space.Db, session);
-            var msg = chat.Post(space.User.Id, room, text, null, new[] { WithMode(FileRef(space, f), mode ?? settings.DeviceMode, settings, chat.Rights(space.User.Id)) },
+            var msg = chat.Post(space.User.Id, room, text, replyTo, new[] { WithMode(FileRef(space, f), mode ?? settings.DeviceMode, settings, chat.Rights(space.User.Id)) },
                 MentionsOf(text, room, chat, users));
             return MessageDto(chat.Message(space.User.Id, msg), users, chat);
         });
@@ -553,7 +574,10 @@ public static partial class ChatApi
         var n = Path.GetFileName((name ?? "").Replace('\\', '/')).Trim();
         foreach (var c in Path.GetInvalidFileNameChars()) n = n.Replace(c, '_');
         if (n.Length == 0 || n is "." or "..") n = "Datei";
-        return n.Length > 200 ? n[..200] : n;
+        if (n.Length <= 200) return n;
+        // Gekürzt wird vor der Endung - sonst fehlen Dateityp und Symbol
+        var ext = Path.GetExtension(n);
+        return ext.Length is > 1 and <= 20 ? n[..(200 - ext.Length)].TrimEnd() + ext : n[..200];
     }
 
     /// <summary>

@@ -202,7 +202,7 @@ public static class FoodText
     private static double? Round(double? v) => v is { } x ? Math.Round(x, 1) : null;
 
     /// <summary>Aufzählungszeichen und Kästchen weg, „1½“ → „1 ½“, Leerraum vereinheitlicht.</summary>
-    private static string Clean(string s)
+    public static string Clean(string s)
     {
         s = s.Replace(' ', ' ').Replace(' ', ' ').Trim();
         s = s.TrimStart('-', '–', '•', '*', '·', '☐', '☑', '☒', ' ').Trim();

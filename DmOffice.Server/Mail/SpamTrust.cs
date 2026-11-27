@@ -121,6 +121,13 @@ public static class JunkLearn
         db.Exec("INSERT OR IGNORE INTO spam_moved(key, at) VALUES($k, $t)", ("$k", SpamFilter.KeyOf(m)), ("$t", DateTimeOffset.UtcNow.ToUnixTimeSeconds()));
     }
 
+    /// <summary>Hat dmOffice diese Mail selbst nach Junk verschoben?</summary>
+    public static bool WasMoved(UserDb db, MimeMessage m)
+    {
+        Ensure(db);
+        return db.Scalar("SELECT 1 FROM spam_moved WHERE key=$k", ("$k", SpamFilter.KeyOf(m))) != null;
+    }
+
     private const string LastKey = "spam.junklearn";
 
     /// <summary>Ist ein Durchgang fällig (eingeschaltet und der letzte länger her als eingestellt)?</summary>

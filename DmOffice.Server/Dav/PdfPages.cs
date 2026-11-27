@@ -12,16 +12,37 @@ public static class PdfPages
     /// <summary>Größer wird nicht umgerechnet (die Datei steht dafür ganz im Speicher).</summary>
     public const long MaxBytes = 200L * 1024 * 1024;
 
-    /// <summary>Puffer mit Obergrenze: darüber wirft das Schreiben (Full).</summary>
-    private sealed class Capped(long max) : MemoryStream
+    /// <summary>
+    /// Puffer mit Obergrenze: darüber wirft das Schreiben (Full). Nennt die Antwort ihre Länge, wird schon beim ersten Schreiben
+    /// abgelehnt (zu groß) bzw. genau so viel Platz angelegt - dann ist der Puffer selbst die Datei, ohne zweite Kopie.
+    /// </summary>
+    private sealed class Capped(long max, HttpResponse response) : MemoryStream
     {
         public bool Full { get; private set; }
+        private bool _sized;
         public override void Write(byte[] buffer, int offset, int count) { Check(count); base.Write(buffer, offset, count); }
         public override void Write(ReadOnlySpan<byte> buffer) { Check(buffer.Length); base.Write(buffer); }
         public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken ct) { Check(count); return base.WriteAsync(buffer, offset, count, ct); }
         public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken ct = default) { Check(buffer.Length); return base.WriteAsync(buffer, ct); }
-        private void Check(int n) { if (Length + n > max) { Full = true; throw new IOException("Zu groß für die Vorschau."); } }
+        private void Check(int n)
+        {
+            if (!_sized)
+            {
+                _sized = true;
+                if (response.ContentLength is long len && len > max) { Full = true; throw new IOException("Zu groß für die Vorschau."); }
+                if (response.ContentLength is long want && want > Capacity) Capacity = (int)want;
+            }
+            if (Length + n > max) { Full = true; throw new IOException("Zu groß für die Vorschau."); }
+        }
+        /// <summary>Inhalt als Feld - ohne Kopie, wenn der Puffer genau passt.</summary>
+        public byte[] Data() => Length == Capacity ? GetBuffer() : ToArray();
     }
+
+    /// <summary>
+    /// Gleichzeitige Umrechnungen (je bis <see cref="MaxBytes"/> im Speicher): angemeldet höchstens zwei, über öffentliche Links
+    /// (ohne Anmeldung) eine - ein Link kann so den Speicher nicht füllen und die Vorschau der Angemeldeten nicht blockieren.
+    /// </summary>
+    private static readonly SemaphoreSlim Gate = new(2), PublicGate = new(1);
 
     public static void Use(WebApplication app) => app.Use(async (ctx, next) =>
     {
@@ -30,10 +51,19 @@ public static class PdfPages
         var wantPage = int.TryParse(query["pdfpage"], out var page);
         if (!HttpMethods.IsGet(ctx.Request.Method) || (!wantCount && !wantPage)) { await next(); return; }
 
+        var gate = ctx.User.Identity?.IsAuthenticated == true ? Gate : PublicGate;
+        await gate.WaitAsync(ctx.RequestAborted);
+        try { await Convert(ctx, next, wantCount, page); }
+        finally { gate.Release(); }
+    });
+
+    private static async Task Convert(HttpContext ctx, Func<Task> next, bool wantCount, int page)
+    {
+        var query = ctx.Request.Query;
         // Antwort des Download-Pfads auffangen statt senden
         var original = ctx.Response.Body;
         // Höchstens MaxBytes auffangen - eine riesige Datei (auch über einen öffentlichen Link) belegt sonst den ganzen Speicher
-        using var buffer = new Capped(MaxBytes);
+        using var buffer = new Capped(MaxBytes, ctx.Response);
         ctx.Response.Body = buffer;
         var tooBig = false;
         try { await next(); }
@@ -56,7 +86,7 @@ public static class PdfPages
             await buffer.CopyToAsync(original, ctx.RequestAborted);
             return;
         }
-        var data = buffer.ToArray();
+        var data = buffer.Data();
         // Die Header der Datei gelten für das Bild nicht mehr
         foreach (var h in new[] { "Content-Disposition", "ETag", "Last-Modified", "Accept-Ranges", "Content-Range" }) ctx.Response.Headers.Remove(h);
         ctx.Response.ContentLength = null;
@@ -83,7 +113,7 @@ public static class PdfPages
         ctx.Response.ContentType = "image/jpeg";
         ctx.Response.ContentLength = jpeg.Length;
         await ctx.Response.Body.WriteAsync(jpeg, ctx.RequestAborted);
-    });
+    }
 
     /// <summary>Beginnt die Datei wie eine PDF (%PDF, auch nach ein paar Bytes Vorspann)?</summary>
     public static bool IsPdf(byte[] data) =>

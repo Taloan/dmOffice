@@ -67,6 +67,9 @@ export const dashboard: Record<string, string> = {
   '{n} Fotos und Videos passen': '{n} photos and videos match',
   'Neues Smart-Album …': 'New smart album …',
   'Wähle in der Filterleiste aus, was ins Smart-Album soll, etwa Bewertung oder Farbmarkierung. Dann „Als Smart-Album speichern“.': 'Choose in the filter bar what belongs in the smart album, such as rating or colour label. Then “Save as smart album”.',
+  // [feature:journal]
+  '{n} anhängen': 'Attach {n}',
+  // [/feature:journal]
   'Dieses Foto gibt es nicht mehr.': 'This photo no longer exists.',
   'Rot': 'Red',
   'Gelb': 'Yellow',
@@ -104,6 +107,9 @@ export const dashboard: Record<string, string> = {
   'Pukki': 'Pukki',
   'Wetter': 'Weather',
   'Schlagzeilen': 'Headlines',
+  // [feature:journal]
+  'Tagebuch': 'Journal',
+  // [/feature:journal]
   'Fotos': 'Photos',
   'Notizen': 'Notes',
   'Dateien': 'Files',
@@ -122,6 +128,9 @@ export const dashboard: Record<string, string> = {
   'fragen und Überblick': 'ask and overview',
   'heute und 7 Tage': 'today and 7 days',
   'eigene Feeds': 'your feeds',
+  // [feature:journal]
+  'heute und Rückblick': 'today and looking back',
+  // [/feature:journal]
   'An diesem Tag': 'On this day',
   'Favoriten, zuletzt': 'favourites, recent',
   'aus den Kontakten': 'from contacts',
@@ -149,6 +158,9 @@ export const dashboard: Record<string, string> = {
   'Nur Relevante': 'Relevant only',
   'Kategorie': 'Category',
   'Anzahl': 'Count',
+  // [feature:journal]
+  'Welches Tagebuch': 'Which journal',
+  // [/feature:journal]
   'Nur Favoriten': 'Favourites only',
   'Wort im Titel des Termins': 'Word in the event title',
   'Leer: der nächste mehrtägige Termin': 'Empty: the next multi-day event',
@@ -204,7 +216,16 @@ export const dashboard: Record<string, string> = {
   'H: {max}° T: {min}°': 'H: {max}° L: {min}°',
   'Regen ab {time}: {title}': 'Rain from {time}: {title}',
   'Keine Feeds eingerichtet – unter Einstellungen → Chat → Pukki wählen.': 'No feeds set up – choose under Settings → Chat → Pukki.',
+  // [feature:journal]
+  'Rückblick': 'Looking back',
+  'Heute schreiben': 'Write today',
+  'Wie geht es dir?': 'How are you?',
+  'Eintrag angelegt.': 'Entry created.',
+  // [/feature:journal]
   'Noch kein Eintrag heute.': 'No entry today yet.',
+  // [feature:journal]
+  'Kein Rückblick – an diesem Tag gab es noch keinen Eintrag.': 'Nothing to look back on – no entry on this day yet.',
+  // [/feature:journal]
   'Keine Fotos von diesem Tag in früheren Jahren.': 'No photos from this day in earlier years.',
   'vor {n} Jahren': '{n} years ago',
   'vor 1 Jahr': '1 year ago',
@@ -240,7 +261,6 @@ export const dashboard: Record<string, string> = {
   'Kopie': 'Copy',
   'Core-Backup': 'Core backup',
   'nie': 'never',
-  'Platte': 'Disk',
   'frei': 'free',
   'Zugangsdaten für den Notfall': 'Emergency access data',
   'nie gesichert': 'never saved',

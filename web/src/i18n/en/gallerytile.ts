@@ -1,0 +1,23 @@
+// Kopfzeile der Galerie-Kachel (Kennung tilehead, settings/TileHeadSettings.tsx)
+export const gallerytile: Record<string, string> = {
+  "Kachel": "Tile",
+  "Kopfzeile der Kachel": "Tile header",
+  "Gilt für die Kachel „Voll“ in der Galerie. Vier Zeilen, je links und rechts.": "Applies to the “Full” tile in the gallery. Four lines, each left and right.",
+  "Gilt für die Kachel „Voll“ in der Galerie. Vier Zeilen, je links und rechts. Im Mosaik gelten Infozeilen nicht; dort erscheinen Titel, Datum und Kamera beim Überfahren.": "Applies to the “Full” tile in the gallery. Four lines, each left and right. Info lines do not apply in the mosaic; there title, date and camera appear on hover.",
+  "Mosaik": "Mosaic",
+  "links": "left",
+  "rechts": "right",
+  "Zeile {n}": "Line {n}",
+  "Feld anklicken: es kommt an die Stelle des Cursors im zuletzt gewählten Eingabefeld. Text und Felder lassen sich mischen.": "Click a field to insert it at the cursor in the last selected input. Text and fields can be mixed.",
+  "Text vor und nach einem Feld erscheint nur, wenn das Feld einen Wert hat: {\"f\"blende} ergibt „f2,8“, ohne Blende nichts.": "Text before and after a field only appears if the field has a value: {\"f\"blende} gives “f2.8”, nothing without an aperture.",
+  "Vorgabe wiederherstellen": "Restore default",
+  "Noch keine Fotos in der Galerie.": "No photos in the gallery yet.",
+  "Aufnahmezeit": "Capture time",
+  "Datum und Zeit": "Date and time",
+  "Jahr (zweistellig)": "Year (two digits)",
+  "Tag des Monats": "Day of month",
+  "Dateiart": "File type",
+  "Dateigröße": "File size",
+  "Abmessung": "Dimensions",
+  "Sterne": "Stars",
+}

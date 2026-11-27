@@ -52,10 +52,20 @@ public static class GalleryInfo
             if (items.Count == 0) return failed;
         }
 
-        // Markierung (P/X/U) nur in dmOffice - wie Lightroom Classic, das sie nur im Katalog führt, nicht in Datei oder XMP
-        if (fields.Pick != null)
+        // Markierung (P/X/U): mit „Angaben in die Fotos schreiben“ (Kennung pickxmp) als xmpDM:pick in die Datei wie die übrigen Angaben -
+        // eine bisher nur in dmOffice gemerkte Markierung fällt dann weg, sonst ginge sie dem Wert aus der Datei vor. Sonst nur in dmOffice.
+        var pickToFile = Features.On(Features.PickXmp) && space.Settings.PhotoWriteXmp && !Demo.Enabled;
+        var rest = fields;
+        if (fields.Pick != null && !pickToFile)
+        {
             foreach (var id in items) PhotoMarks.Set(db, id, new PhotoMeta.Fields(Pick: fields.Pick), null);
-        var rest = fields with { Pick = null };
+            rest = fields with { Pick = null };
+        }
+        else if (fields.Pick != null)
+        {
+            PhotoMarks.Ensure(db);
+            foreach (var id in items) db.Exec("UPDATE photo_marks SET pick = NULL WHERE key = $k", ("$k", id));
+        }
         // Angaben nur in der Datenbank (Einstellungen → Galerie); der Ort geht weiter in die Datei (Verorten).
         // Demo: nie in Dateien schreiben - ein gemeinsames Konto, Eingaben von Fremden gehören nicht in Dateien
         if ((!space.Settings.PhotoWriteXmp || Demo.Enabled) && rest.HasXmpOnly)
@@ -78,7 +88,7 @@ public static class GalleryInfo
                     throw new UnauthorizedAccessException("Fotos anderer lassen sich hier nicht ändern.");
                 // RAW im Galerie-Ordner ohne XMP-Dateien: die Angaben stünden nirgends, wo die Galerie sie liest
                 if (id.StartsWith("ext:", StringComparison.Ordinal) && PhotoMeta.UsesSidecar(name) && !GalleryFolders.Resolve(space, config, id[4..]).Source.Sidecars)
-                    throw new InvalidOperationException("XMP-Dateien sind für diesen Galerie-Ordner ausgeschaltet - bei RAW-Fotos stehen die Angaben dort.");
+                    throw new InvalidOperationException("XMP-Dateien sind für diesen externen Galerie-Ordner ausgeschaltet - bei RAW-Fotos stehen die Angaben dort.");
                 IndexNow(space, config, id, rest);
                 write.Add(id);
             }
@@ -130,11 +140,12 @@ public static class GalleryInfo
         }
         db.Exec(@"UPDATE file_meta SET rating = CASE WHEN $sr THEN $r ELSE rating END, title = CASE WHEN $st THEN $t ELSE title END,
                 description = CASE WHEN $sd THEN $d ELSE description END, keywords = CASE WHEN $sk THEN $k ELSE keywords END,
-                label = CASE WHEN $sl THEN $l ELSE label END, lat = CASE WHEN $sg THEN $la ELSE lat END, lon = CASE WHEN $sg THEN $lo ELSE lon END
+                label = CASE WHEN $sl THEN $l ELSE label END, lat = CASE WHEN $sg THEN $la ELSE lat END, lon = CASE WHEN $sg THEN $lo ELSE lon END,
+                pick = CASE WHEN $sp THEN $pk ELSE pick END
                 WHERE path = $p",
             ("$sr", f.Rating != null), ("$r", f.Rating is > 0 ? f.Rating : null), ("$st", f.Title != null), ("$t", string.IsNullOrWhiteSpace(f.Title) ? null : f.Title.Trim()),
             ("$sd", f.Description != null), ("$d", string.IsNullOrWhiteSpace(f.Description) ? null : f.Description.Trim()), ("$sk", f.HasKeywords), ("$k", keywords),
-            ("$sl", f.Label != null), ("$l", string.IsNullOrEmpty(f.Label) ? null : f.Label), ("$sg", f.HasGps), ("$la", f.Lat), ("$lo", f.Lon), ("$p", id));
+            ("$sl", f.Label != null), ("$l", string.IsNullOrEmpty(f.Label) ? null : f.Label), ("$sg", f.HasGps), ("$la", f.Lat), ("$lo", f.Lon), ("$sp", f.Pick != null), ("$pk", f.Pick is int pk && pk != 0 ? Math.Sign(pk) : null), ("$p", id));
     }
 
     private static async Task WriteFilesAsync(UserSpace space, ServerConfig config, List<string> ids, PhotoMeta.Fields fields)
@@ -152,12 +163,37 @@ public static class GalleryInfo
                 }
                 catch (Exception e)
                 {
-                    // In der Aktivität sichtbar; der Index zeigt den neuen Stand schon, die Datei hat ihn nicht
+                    // Die Datei hat den neuen Stand nicht: die Angaben (ohne Ort) nur in der Datenbank merken wie bei „Angaben in die Fotos
+                    // schreiben“ aus - sonst überschriebe das nächste Einlesen der Datei den Index, und abgelehnte Fotos kämen zurück
+                    try { KeepInDb(space, config, id, fields); }
+                    catch (Exception k) when (k is not OutOfMemoryException) { }
+                    // In der Aktivität sichtbar
                     Activity.Start(space.User.Id, Activity.PhotoWrite, name).Fail(name + ": " + (e is Pim.PreconditionFailedException ? "Die Datei wurde inzwischen geändert." : e.Message));
                 }
             }
         }
         finally { foreach (var d in drivers.Values) d.Driver.Dispose(); }
+    }
+
+    /// <summary>
+    /// Schreiben ins Foto gescheitert: Sterne, Titel, Beschreibung, Stichwörter, Markierung und Farbe in <see cref="PhotoMarks"/> - sie gehen
+    /// beim Lesen dem Wert aus der Datei vor. Stichwörter vom Stand des Index aus (er hat die Änderung schon), damit die aus der Datei bleiben.
+    /// </summary>
+    private static void KeepInDb(UserSpace space, ServerConfig config, string id, PhotoMeta.Fields fields)
+    {
+        var f = fields with { Lat = null, Lon = null };
+        if (!f.HasXmpOnly) return;
+        string? current = null;
+        if (f.HasKeywords)
+        {
+            if (id.StartsWith("ext:", StringComparison.Ordinal))
+            {
+                var (src, rel) = GalleryFolders.Resolve(space, config, id[4..]);
+                current = space.Db.Scalar("SELECT keywords FROM gallery_ext WHERE source = $s AND path = $p", ("$s", src.Id), ("$p", rel)) as string;
+            }
+            else current = space.Db.Scalar("SELECT keywords FROM file_meta WHERE path = $p", ("$p", id)) as string;
+        }
+        PhotoMarks.Set(space.Db, id, f, current);
     }
 
     /// <summary>Eigenes Foto in der Ablage (mit ETag: hat es sich inzwischen geändert, wird nichts überschrieben).</summary>
@@ -200,7 +236,7 @@ public static class GalleryInfo
         var dir = StoragePath.Parent(rel);
         var name = rel[(rel.LastIndexOf('/') + 1)..];
         var raw = PhotoMeta.UsesSidecar(name);
-        if (raw && !src.Sidecars) throw new InvalidOperationException("XMP-Dateien sind für diesen Galerie-Ordner ausgeschaltet - bei RAW-Fotos stehen die Angaben dort.");
+        if (raw && !src.Sidecars) throw new InvalidOperationException("XMP-Dateien sind für diesen externen Galerie-Ordner ausgeschaltet - bei RAW-Fotos stehen die Angaben dort.");
 
         var entries = await driver.ListAsync(dir, ct);
         var names = entries.Where(e => !e.IsDir).Select(e => e.Name).ToList();
@@ -214,7 +250,8 @@ public static class GalleryInfo
             {
                 if (old.Size > Sidecar.MaxBytes) throw new IOException("Die Sidecar-Datei ist ungewöhnlich groß.");
                 await using var s = await driver.OpenReadAsync(path, ct);
-                using var r = new StreamReader(s, Encoding.UTF8);
+                // Die Größe nennt das Ziel - gelesen wird höchstens die Grenze
+                using var r = new StreamReader(new MemoryStream(await DmOffice.Core.ReadLimit.ReadAllAsync(s, Sidecar.MaxBytes, ct)), Encoding.UTF8);
                 text = await r.ReadToEndAsync(ct);
             }
             var result = Encoding.UTF8.GetBytes(PhotoMeta.WriteXmp(text, fields, packet: text == null));

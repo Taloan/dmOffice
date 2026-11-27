@@ -226,6 +226,18 @@ public class OnlyOfficeTests : IClassFixture<OnlyOfficeFixture>
         var signed = new HttpRequestMessage(HttpMethod.Get, fileUrl);
         signed.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Jwt.Sign(new JsonObject { ["url"] = fileUrl }, FakeDocs.Secret));
         Assert.Equal(HttpStatusCode.OK, (await _fx.Client(false).SendAsync(signed)).StatusCode);
+        // Wie ONLYOFFICE ohne inBody: {payload:{url}}
+        var wrapped = new HttpRequestMessage(HttpMethod.Get, fileUrl);
+        wrapped.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Jwt.Sign(new JsonObject { ["payload"] = new JsonObject { ["url"] = fileUrl } }, FakeDocs.Secret));
+        Assert.Equal(HttpStatusCode.OK, (await _fx.Client(false).SendAsync(wrapped)).StatusCode);
+        // Das Token der Editor-Konfiguration steht im Browser: damit gibt es die Datei nicht
+        var browser = new HttpRequestMessage(HttpMethod.Get, fileUrl);
+        browser.Headers.Authorization = new AuthenticationHeaderValue("Bearer", s.GetProperty("config").GetProperty("token").GetString());
+        Assert.Equal(HttpStatusCode.Forbidden, (await _fx.Client(false).SendAsync(browser)).StatusCode);
+        // Signierter Abruf einer anderen Datei passt nicht
+        var other = new HttpRequestMessage(HttpMethod.Get, fileUrl);
+        other.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Jwt.Sign(new JsonObject { ["url"] = "https://dm.test/onlyoffice/file?t=anders" }, FakeDocs.Secret));
+        Assert.Equal(HttpStatusCode.Forbidden, (await _fx.Client(false).SendAsync(other)).StatusCode);
     }
 
     [Fact]

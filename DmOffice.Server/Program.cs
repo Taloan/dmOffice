@@ -10,19 +10,59 @@ using Microsoft.AspNetCore.HttpOverrides;
 
 // Kommandozeilenwerkzeug: einzelne Dateien aus Core-Stand und Files-Backup holen - startet keinen Server und keine Hintergrunddienste
 if (args.Length > 0 && args[0] == RestoreTool.Command) Environment.Exit(await RestoreTool.RunAsync(args[1..], Console.Out, Console.Error, CancellationToken.None));
+// [feature:cfgseal]
+// Einstellungsdateien nach einer gewollten Änderung von Hand neu versiegeln (Server gestoppt)
+if (args.Length > 0 && args[0] == ConfigSeal.Command)
+{
+    var sealPaths = new DataPaths(Environment.GetEnvironmentVariable("DMOFFICE_DATA")
+                                  ?? (OperatingSystem.IsWindows() ? Path.Combine(AppContext.BaseDirectory, "data") : "/data"));
+    try { Environment.Exit(ConfigSeal.Run(new Vault(sealPaths, Environment.GetEnvironmentVariable("DMOFFICE_MASTER_KEY"), readOnly: true), sealPaths, Console.Out)); }
+    catch (InvalidOperationException e) { Console.Error.WriteLine(e.Message); Environment.Exit(1); }
+}
+// [/feature:cfgseal]
 
 var builder = WebApplication.CreateBuilder(args);
+// Werkzeuge (OCR, PDF) laufen unter demselben Benutzer: Speicher und Umgebung des Servers für sie sperren
+var processSealed = DmOffice.Core.Features.On(DmOffice.Core.Features.ToolIsolation) && DmOffice.Core.ProcessGuard.Seal();
 
 var dataDir = Environment.GetEnvironmentVariable("DMOFFICE_DATA")
               ?? (OperatingSystem.IsWindows() ? Path.Combine(AppContext.BaseDirectory, "data") : "/data");
 var paths = new DataPaths(dataDir, Environment.GetEnvironmentVariable("DMOFFICE_BLOBS"));
+// Systemprotokoll auf Dauer: je Tag eine Datei unter <Daten>/logs (vor allem anderen, damit auch Startfehler drinstehen)
+if (DmOffice.Core.Features.On(DmOffice.Core.Features.SyslogFile)) DmOffice.Core.SystemLogFile.Start(paths.Root);
 // Hintergrundarbeit: wann sie zuletzt fertig wurde, über einen Neustart hinweg
 DmOffice.Core.Activity.Init(paths.Root);
+DmOffice.Core.JobControl.Init(paths.Root);
 // Zwischendateien der Werkzeuge unter dem Datenverzeichnis; Reste eines abgebrochenen Laufs weg
 DmOffice.Core.WorkDir.Init(paths.Root);
 // Aus einer S3-Sicherung wiederhergestellt (Ersteinrichtung): jetzt an seinen Platz, bevor etwas die Dateien oeffnet
 var restoredFiles = S3Backup.ApplyPending(paths);
+// [feature:masterkeyreq]
+// Ohne eigenen Hauptschlüssel startet eine neue Installation nicht (bestehende mit Schlüsseldatei laufen mit Warnung weiter).
+// Ausgenommen der Demo-Server: nur Beispieldaten, jede Nacht neu angelegt
+if (DmOffice.Core.Features.On(DmOffice.Core.Features.MasterKeyRequired) && !DmOffice.Core.Demo.Enabled
+    && Vault.StartRefused(paths, Environment.GetEnvironmentVariable("DMOFFICE_MASTER_KEY")) is { } refused)
+{
+    Console.Error.WriteLine("crit: DmOffice.Core.Vault[0]");
+    Console.Error.WriteLine("      " + refused);
+    DmOffice.Core.SystemLogFile.Current?.Write(DateTime.UtcNow, "Critical", "Vault", refused, (string?)null);
+    DmOffice.Core.SystemLogFile.Stop();
+    Environment.Exit(78);
+}
+// [/feature:masterkeyreq]
 var vault = new Vault(paths, Environment.GetEnvironmentVariable("DMOFFICE_MASTER_KEY"));
+// [feature:cfgseal]
+// Benutzerliste und Einstellungen so, wie dmOffice sie geschrieben hat? Vor dem Laden - sonst würde eine fremde Änderung mitversiegelt
+var configSeal = DmOffice.Core.Features.On(DmOffice.Core.Features.ConfigSeal) ? ConfigSeal.Check(paths, vault) : null;
+if (configSeal?.State == ConfigSeal.State.Refused)
+{
+    Console.Error.WriteLine("crit: DmOffice.Core.ConfigSeal[0]");
+    Console.Error.WriteLine("      " + configSeal.Message);
+    DmOffice.Core.SystemLogFile.Current?.Write(DateTime.UtcNow, "Critical", "ConfigSeal", configSeal.Message!, (string?)null);
+    DmOffice.Core.SystemLogFile.Stop();
+    Environment.Exit(78);
+}
+// [/feature:cfgseal]
 
 builder.Services.AddSingleton(paths);
 builder.Services.AddSingleton(vault);
@@ -32,11 +72,25 @@ builder.Services.AddSingleton<UpdateCenter>();
 // Datenaenderungen beim Start (Platzpruefung, Sicherung, Freigabe) und alte Sicherungen wegraeumen
 builder.Services.AddHostedService<UpdateRunner>();
 builder.Services.AddSingleton<DmOffice.Pim.ShareStore>();
+// [feature:gatekeeper]
+builder.Services.AddSingleton<DmOffice.GateKeeper.GateKeeperStore>();
+builder.Services.AddSingleton<DmOffice.GateKeeper.GateKeeperLists>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<DmOffice.GateKeeper.GateKeeperLists>());
+builder.Services.AddSingleton<DmOffice.GateKeeper.GateKeeperStats>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<DmOffice.GateKeeper.GateKeeperStats>());
+builder.Services.AddHttpClient("gatekeeper").ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { UseCookies = false, AutomaticDecompression = System.Net.DecompressionMethods.All });
+// [/feature:gatekeeper]
 builder.Services.AddSingleton<LinkIndex>();
+builder.Services.AddSingleton<DmOffice.Mail.ForwardConfirmIndex>();
 builder.Services.AddSingleton<FolderShareStore>();
+// Notfallzugang (Version 2): Pakete, Anfragen, Fristen
+builder.Services.AddSingleton<DmOffice.Emergency.EmergencyStore>();
+builder.Services.AddSingleton<DmOffice.Emergency.EmergencyContent>();
 builder.Services.AddSingleton<DmOffice.Core.SecurityCenter>();
 builder.Services.AddHostedService<DmOffice.Core.SecurityHousekeeping>();
 builder.Services.AddSingleton<DmOffice.Gallery.AlbumStore>();
+builder.Services.AddSingleton<DmOffice.Emergency.EmergencyService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<DmOffice.Emergency.EmergencyService>());
 // Galerie-Ordner (Version 2): Fotos und Videos aus externen Ordnern einlesen
 builder.Services.AddHostedService<DmOffice.Gallery.GalleryScanJob>();
 builder.Services.AddHostedService<DmOffice.Core.TresorSweep>();
@@ -47,9 +101,13 @@ builder.Services.AddSingleton<DmOffice.Gallery.GalleryProxies>();
 builder.Services.AddSingleton<DmOffice.Gallery.GalleryShared>();
 builder.Services.AddSingleton<DmOffice.Audio.AudioShared>();
 builder.Services.AddHostedService<DmOffice.Gallery.GalleryProxyJob>();
+builder.Services.AddHostedService<DmOffice.Gallery.GalleryMediumJob>(); // [feature:galmedium]
 builder.Services.AddHostedService<FilesCleanup>();
 // Lernende Kategorien: alte Smart Inbox übernehmen, übernommene Zuordnungen als Schlagwort zum Mailserver
 builder.Services.AddHostedService<DmOffice.Mail.LabelJob>();
+// [feature:journal]
+builder.Services.AddHostedService<DmOffice.Journal.JournalMediaMove>();
+// [/feature:journal]
 builder.Services.AddHostedService<DmOffice.Dav.FileMetaJob>();
 builder.Services.AddHostedService<DmOffice.Dav.FileCategoryJob>();
 builder.Services.AddHostedService<DmOffice.Dms.DmsJob>();
@@ -116,9 +174,15 @@ builder.Services.AddSingleton<DmOffice.Mail.MailOutbox>();
 builder.Services.AddHostedService<DmOffice.Mail.MailQueueSender>();
 builder.Services.AddHostedService<DmOffice.Mail.MailCleanup>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<MailSync>());
+// [feature:mailpush]
+// Neue Mails per IMAP IDLE gleich melden (Mail/MailPush.cs)
+builder.Services.AddSingleton<DmOffice.Mail.MailPush>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<DmOffice.Mail.MailPush>());
+// [/feature:mailpush]
 builder.Services.AddSingleton<NotesSync>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<NotesSync>());
 builder.Services.AddHostedService<DmOffice.Pim.SubscriptionSync>();
+builder.Services.AddHostedService<DmOffice.Pim.CalendarRemindTasks>();
 builder.Services.AddSingleton<DmOffice.Pim.GraphSync>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<DmOffice.Pim.GraphSync>());
 // Volltextsuche in Anhaengen und Dateien (Search/): Warteschlange im Hintergrund
@@ -177,11 +241,8 @@ builder.Services.Configure<ForwardedHeadersOptions>(o =>
     // Andere Netze: DMOFFICE_TRUSTED_PROXIES="203.0.113.0/24,2001:db8::/32"
     o.KnownIPNetworks.Clear();
     o.KnownProxies.Clear();
-    var trusted = Environment.GetEnvironmentVariable("DMOFFICE_TRUSTED_PROXIES");
-    var nets = string.IsNullOrWhiteSpace(trusted)
-        ? new[] { "127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "::1/128", "fc00::/7", "fe80::/10" }
-        : trusted.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-    foreach (var n in nets) o.KnownIPNetworks.Add(System.Net.IPNetwork.Parse(n));
+    foreach (var n in DmOffice.Core.ProxyTrust.Networks(Environment.GetEnvironmentVariable("DMOFFICE_TRUSTED_PROXIES"),
+        DmOffice.Core.Features.On(DmOffice.Core.Features.ProxyTrust))) o.KnownIPNetworks.Add(n);
 });
 // Oeffentliche Links (/api/public): je Adresse gebremst - Ordner mit vielen Vorschaubildern gehen, Durchprobieren nicht
 builder.Services.AddRateLimiter(o =>
@@ -192,6 +253,13 @@ builder.Services.AddRateLimiter(o =>
         _ => new System.Threading.RateLimiting.TokenBucketRateLimiterOptions
         {
             TokenLimit = 300, TokensPerPeriod = 60, ReplenishmentPeriod = TimeSpan.FromSeconds(10), QueueLimit = 0, AutoReplenishment = true,
+        }));
+    // KI-Aufrufe auf Knopfdruck: je Benutzer gebremst - ein paar Seiten nacheinander gehen, Dauerfeuer nicht
+    o.AddPolicy("ai", ctx => System.Threading.RateLimiting.RateLimitPartition.GetTokenBucketLimiter(
+        ctx.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value ?? Auth.IpKey(ctx.Connection.RemoteIpAddress),
+        _ => new System.Threading.RateLimiting.TokenBucketRateLimiterOptions
+        {
+            TokenLimit = 10, TokensPerPeriod = 5, ReplenishmentPeriod = TimeSpan.FromMinutes(1), QueueLimit = 0, AutoReplenishment = true,
         }));
 });
 builder.Services.ConfigureHttpJsonOptions(o =>
@@ -208,12 +276,24 @@ builder.Services.AddResponseCompression(o =>
 builder.Services.Configure<Microsoft.AspNetCore.ResponseCompression.BrotliCompressionProviderOptions>(o => o.Level = System.IO.Compression.CompressionLevel.Fastest);
 builder.Services.Configure<Microsoft.AspNetCore.ResponseCompression.GzipCompressionProviderOptions>(o => o.Level = System.IO.Compression.CompressionLevel.Fastest);
 
+// Plugins (Kennung plugins): Ordner lesen, Siegel prüfen, Server-Teile laden und ihre Dienste anmelden - vor Build()
+builder.Services.AddSingleton<DmOffice.Sdk.IUserDataAccessor, DmOffice.Plugins.UserDataAccessor>();
+builder.Services.AddSingleton<DmOffice.Plugins.ServerDataStore>();
+builder.Services.AddSingleton<DmOffice.Sdk.IServerDataAccessor>(sp => sp.GetRequiredService<DmOffice.Plugins.ServerDataStore>());
+builder.Services.AddSingleton<DmOffice.Sdk.IPeople, DmOffice.Plugins.People>();
+builder.Services.AddSingleton<DmOffice.Sdk.IMailOut, DmOffice.Plugins.MailOut>();
+builder.Services.AddSingleton<DmOffice.Sdk.ICoreFeatures, DmOffice.Plugins.CoreFeatures>();
+builder.Services.AddSingleton<DmOffice.Sdk.IPublicAddress, DmOffice.Plugins.PluginPublicAddress>();
+DmOffice.Plugins.PluginHost.Discover(builder.Services);
+
 var app = builder.Build();
 Auth.Log = app.Logger;
 Tresor.Paths = paths;
 // Tresor-Datenbank im Cryptomator-Tresor: nach 30 Minuten Ruhe zurückschreiben (Prüfung jede Minute), beim Herunterfahren sofort
 var tresorFlush = new System.Threading.Timer(_ => Tresor.FlushAll(force: false), null, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
 app.Lifetime.ApplicationStopping.Register(() => { tresorFlush.Dispose(); Tresor.FlushAll(force: true); });
+// Systemprotokoll: was noch im Puffer steht, in die Datei
+app.Lifetime.ApplicationStopped.Register(DmOffice.Core.SystemLogFile.Stop);
 // System-Tresor (Cryptomator) liegt in der Dateiablage der Person
 { var tresorSpaces = app.Services.GetRequiredService<Spaces>(); Tresor.UserDbOf = id => tresorSpaces.Get(id).Db; }
 // Office im Tresor: Gespeichertes bei geschlossenem Tresor beim Öffnen übernehmen
@@ -231,6 +311,11 @@ if (app.Services.GetRequiredService<UserStore>().Empty) Auth.EnsureSetupCode(app
     BlobStore.Fetch = (blobs, id) => mirror.FetchOne(blobs, id);
     BlobStore.Written = mirror.Wrote;
     DmOffice.Gallery.GalleryFolders.Proxies = app.Services.GetRequiredService<DmOffice.Gallery.GalleryProxies>();
+    // [feature:galmedium]
+    // Mittlere Vorschauen (1280 px) der Galerie-Ordner ohne große Vorschauen: data/cache/gallery-medium
+    DmOffice.Gallery.GalleryFolders.Medium = new DmOffice.Gallery.GalleryProxies(Path.Combine(app.Services.GetRequiredService<DataPaths>().Root, "cache", "gallery-medium"),
+        app.Services.GetRequiredService<Vault>().Key);
+    // [/feature:galmedium]
     // Bildangaben und kleine Vorschaubilder der Server-Ordner: einmal für alle
     DmOffice.Gallery.GalleryFolders.Shared = app.Services.GetRequiredService<DmOffice.Gallery.GalleryShared>();
     // Tags und Cover der Audiothek auf Server-Ordnern: einmal für alle
@@ -262,15 +347,30 @@ if (app.Services.GetRequiredService<UserStore>().Empty) Auth.EnsureSetupCode(app
       DmOffice.Dav.PhotoWork.Init(app.Services.GetRequiredService<DataPaths>().Root, app.Services.GetRequiredService<Vault>().Key, app.Services.GetRequiredService<ServerConfig>(),
         id => { try { return spaces.Get(id); } catch (Exception) { return null; } }, app.Logger); }
 }
+// [feature:cfgseal]
+if (configSeal?.State == ConfigSeal.State.SealedNow)
+    app.Logger.LogWarning("{Files}: noch ohne Siegel ({Seal}) - jetzt so versiegelt, wie sie sind. Erwartet beim ersten Start dieser Version " +
+        "und nach dem Zurücklegen einer älteren Sicherung; sonst Benutzerliste und Verwaltungsrechte prüfen.", string.Join(", ", configSeal.Files), ConfigSeal.FileName);
+// [/feature:cfgseal]
 if (restoredFiles > 0)
     app.Logger.LogWarning("Stand aus der S3-Sicherung eingespielt ({Count} Dateien) - die Dateiinhalte kommen jetzt im Hintergrund aus S3.", restoredFiles);
 if (vault.Migrated > 0)
     app.Logger.LogInformation("Hauptschlüssel jetzt aus DMOFFICE_MASTER_KEY: {Count} Werte neu eingepackt. Die alte Schlüsseldatei bleibt liegen, bis sie in der Verwaltung gelöscht wird.", vault.Migrated);
 if (vault.MigrationError != null)
     app.Logger.LogError("Umstieg auf DMOFFICE_MASTER_KEY unvollständig ({Error}) - die Schlüsseldatei bleibt liegen, beide Schlüssel gelten weiter.", vault.MigrationError);
+if (Vault.LooksWeak(Environment.GetEnvironmentVariable("DMOFFICE_MASTER_KEY")))
+    app.Logger.LogWarning("DMOFFICE_MASTER_KEY ist kurz oder einfach gebaut und mit einer Kopie des Datenverzeichnisses leichter zu erraten. " +
+        "Für neue Installationen eine lange Zufallsfolge nehmen, z. B. aus „openssl rand -hex 32“. Bestehende Daten brauchen den bisherigen Wert.");
 if (vault.KeyInDataDir)
     app.Logger.LogWarning("DMOFFICE_MASTER_KEY ist nicht gesetzt - der Hauptschlüssel liegt als Datei neben den Daten ({File}). " +
         "Wer das Datenverzeichnis oder eine Sicherung kopiert, kann damit alles entschlüsseln. Besser den Schlüssel als Umgebungsvariable setzen.", vault.KeyFile);
+
+// Chat: frueher verlassene Unterhaltungen zu zweit wieder als ausgeblendet fuehren (einmalig)
+{
+    var users = app.Services.GetRequiredService<UserStore>();
+    try { app.Services.GetRequiredService<DmOffice.Chat.ChatStore>().RestoreHidden(id => id == DmOffice.Chat.Pukki.Id || users.ById(id) != null); }
+    catch (Exception ex) { app.Logger.LogWarning("Chat ausgeblendete Unterhaltungen: {Error}", ex.Message); }
+}
 
 // Datei-Speicher je Benutzer begrenzen (Verwaltung: Vorgabe und je Benutzer)
 {
@@ -309,7 +409,32 @@ if (vault.KeyInDataDir)
     };
 }
 
-app.UseForwardedHeaders();
+if (OperatingSystem.IsLinux() && DmOffice.Core.Features.On(DmOffice.Core.Features.ToolIsolation))
+    app.Logger.Log(processSealed ? LogLevel.Information : LogLevel.Warning, processSealed
+        ? "Speicher des Servers gegen gestartete Werkzeuge gesperrt."
+        : "Speicher des Servers ließ sich nicht gegen gestartete Werkzeuge sperren.");
+// [feature:proxyconfirm]
+// Ohne DMOFFICE_TRUSTED_PROXIES: X-Forwarded-* nur von Proxys, die in der Verwaltung bestätigt (oder nach dem Update übernommen) sind
+var proxyConfirm = DmOffice.Core.Features.On(DmOffice.Core.Features.ProxyConfirm) && string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DMOFFICE_TRUSTED_PROXIES"));
+if (proxyConfirm)
+{
+    var confirm = DmOffice.Core.ProxyConfirm.Shared = new DmOffice.Core.ProxyConfirm(Path.Combine(app.Services.GetRequiredService<DataPaths>().Root, "proxies.json"),
+        DmOffice.Core.ProxyTrust.Networks(null, DmOffice.Core.Features.On(DmOffice.Core.Features.ProxyTrust)));
+    var any = new ForwardedHeadersOptions { ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto | ForwardedHeaders.XForwardedHost, ForwardLimit = 1 };
+    any.KnownIPNetworks.Clear();
+    any.KnownProxies.Clear();
+    any.KnownIPNetworks.Add(System.Net.IPNetwork.Parse("0.0.0.0/0"));
+    any.KnownIPNetworks.Add(System.Net.IPNetwork.Parse("::/0"));
+    app.UseWhen(ctx => DmOffice.Core.ProxyConfirm.Forwarded(ctx.Request) && ctx.Connection.RemoteIpAddress is { } from
+        && confirm.Trusted(from, ctx.Request.Headers["X-Forwarded-Host"].FirstOrDefault()), b => b.UseForwardedHeaders(any));
+}
+else app.UseForwardedHeaders();
+// [feature:proxyconfirm:else]
+// app.UseForwardedHeaders();
+// [/feature:proxyconfirm]
+// Eigene Rechnernamen öffentlicher Plugin-Seiten (etwa hilfe.beispiel.de → Website in einer Sprache): Weg vor dem Routing umschreiben
+DmOffice.Plugins.PluginHost.UseHosts(app);
+app.UseRouting();
 DmOffice.Core.SystemLog.Use(app);
 // X-Forwarded-For blieb stehen: der Absender gilt nicht als Proxy (DMOFFICE_TRUSTED_PROXIES passt nicht) - einmal je Adresse melden
 var untrustedProxies = new System.Collections.Concurrent.ConcurrentDictionary<string, byte>();
@@ -317,6 +442,10 @@ app.Use(async (ctx, next) =>
 {
     if (ctx.Request.Headers.ContainsKey("X-Forwarded-For") && ctx.Connection.RemoteIpAddress is { } from
         && untrustedProxies.Count < 50 && untrustedProxies.TryAdd(from.ToString(), 0))
+        // [feature:proxyconfirm]
+        if (proxyConfirm) app.Logger.LogWarning("X-Forwarded-For von {Address} nicht übernommen: kein bestätigter Proxy (Verwaltung → Sicherheit → Reverse-Proxys).", from);
+        else
+        // [/feature:proxyconfirm]
         app.Logger.LogWarning("X-Forwarded-For von {Address} nicht übernommen: die Adresse steht nicht in DMOFFICE_TRUSTED_PROXIES.", from);
     await next();
 });
@@ -327,15 +456,22 @@ app.UseWhen(ctx => ctx.Request.Path.StartsWithSegments("/api/files/meta") || ctx
     b => b.UseResponseCompression());
 // Zum Vergleich in der Handy-App (Koppeln ohne QR-Code): der Weg ueber das Server-Log fuehrt an keinem Proxy vorbei
 app.Logger.LogInformation("Fingerabdruck des Serverschlüssels (verschlüsselter Umschlag der App): {Fingerprint}", app.Services.GetRequiredService<E2e.ServerKey>().Fingerprint);
+// [feature:proxyconfirm]
+if (proxyConfirm)
+    app.Logger.LogInformation("Reverse-Proxys: X-Forwarded-*-Kopfzeilen gelten von dieser Maschine und von den Proxys, die unter Verwaltung → Sicherheit bestätigt sind.");
+else
+// [/feature:proxyconfirm]
 if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DMOFFICE_TRUSTED_PROXIES")))
-    app.Logger.LogWarning("DMOFFICE_TRUSTED_PROXIES ist nicht gesetzt: X-Forwarded-*-Kopfzeilen gelten aus allen privaten Netzen. " +
+    app.Logger.LogWarning((DmOffice.Core.Features.On(DmOffice.Core.Features.ProxyTrust)
+        ? "DMOFFICE_TRUSTED_PROXIES ist nicht gesetzt: X-Forwarded-*-Kopfzeilen gelten nur von dieser Maschine und aus den eigenen Netzen des Containers. "
+        : "DMOFFICE_TRUSTED_PROXIES ist nicht gesetzt: X-Forwarded-*-Kopfzeilen gelten aus allen privaten Netzen. ") +
         "Hinter einem Reverse-Proxy dessen Adresse eintragen, z. B. DMOFFICE_TRUSTED_PROXIES=172.17.0.1/32.");
 // Sicherheits-Kopfzeilen: fuer alle Antworten nosniff und Referrer-Policy; fuer HTML-Seiten zusaetzlich eine
 // Anmeldung und Login-Flow (ohne Anmeldung erreichbar): kleine Anfragen - die 512 MB gelten für Uploads, nicht für ein Passwortfeld
 app.Use(async (ctx, next) =>
 {
     var path = ctx.Request.Path;
-    if ((path.StartsWithSegments("/api/auth") || path.StartsWithSegments("/index.php/login") || path.StartsWithSegments("/login"))
+    if ((path.StartsWithSegments("/api/auth") || path.StartsWithSegments("/index.php/login") || path.StartsWithSegments("/login") || path.StartsWithSegments("/p"))
         && ctx.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } size)
         size.MaxRequestBodySize = 64 * 1024;
     await next();
@@ -385,18 +521,53 @@ app.Use(async (ctx, next) =>
     });
     await next();
 });
+// Web-Teile und Sprachdateien der Plugins (/plugins/<key>/web|lang/…)
+DmOffice.Plugins.PluginApi.UseFiles(app);
 app.UseDefaultFiles();
+// Manifest mit protocol_handlers (mailto, webcal), solange die Kennung linkhandler an ist
+DmOffice.Core.WebManifest.Use(app);
 var contentTypes = new Microsoft.AspNetCore.StaticFiles.FileExtensionContentTypeProvider();
 contentTypes.Mappings[".webmanifest"] = "application/manifest+json";
+// Vorkomprimierte Oberfläche (vite.config.ts legt .br/.gz daneben): nimmt der Browser br oder gzip an,
+// wird die kleinere Datei ausgeliefert - Content-Type vom Original, Content-Encoding dazu.
+var webFiles = app.Environment.WebRootFileProvider;
+app.Use(async (ctx, next) =>
+{
+    var req = ctx.Request;
+    if ((HttpMethods.IsGet(req.Method) || HttpMethods.IsHead(req.Method)) && req.Path.HasValue
+        && !req.Path.StartsWithSegments("/api") && !req.Path.StartsWithSegments("/dav") && !req.Headers.ContainsKey("Range")
+        && Path.GetExtension(req.Path.Value) is ".js" or ".css" or ".json" or ".svg" or ".html")
+    {
+        var accept = req.Headers.AcceptEncoding.ToString();
+        var enc = accept.Contains("br") ? ".br" : accept.Contains("gzip") ? ".gz" : null;
+        if (enc == ".br" && !webFiles.GetFileInfo(req.Path.Value + ".br").Exists) enc = accept.Contains("gzip") ? ".gz" : null;
+        if (enc != null && webFiles.GetFileInfo(req.Path.Value + enc).Exists)
+            req.Path = req.Path.Value + enc;
+        // Auch die unkomprimierte Antwort hängt vom Accept-Encoding ab (für Zwischenspeicher)
+        ctx.Response.Headers.Vary = "Accept-Encoding";
+    }
+    await next();
+});
+var staticTypes = new PrecompressedTypes(contentTypes);
 app.UseStaticFiles(new StaticFileOptions
 {
-    ContentTypeProvider = contentTypes,
+    ContentTypeProvider = staticTypes,
     // Assets tragen einen Hash im Namen und aendern sich nie; index.html immer frisch, sonst zeigt ein Update auf alte Teilstuecke.
     // sw.js (Service Worker der installierbaren App) und das Manifest ebenso frisch - daran erkennt der Browser eine neue Version.
-    OnPrepareResponse = ctx => ctx.Context.Response.Headers.CacheControl =
-        ctx.File.Name.EndsWith(".html") || ctx.File.Name is "sw.js" or "manifest.webmanifest" ? "no-cache"
-        : ctx.Context.Request.Path.StartsWithSegments("/assets") ? "public, max-age=31536000, immutable" : "public, max-age=3600"
+    OnPrepareResponse = ctx =>
+    {
+        var name = ctx.File.Name;
+        if (name.EndsWith(".br") || name.EndsWith(".gz"))
+        {
+            ctx.Context.Response.Headers.ContentEncoding = name.EndsWith(".br") ? "br" : "gzip";
+            name = name[..^3];
+        }
+        ctx.Context.Response.Headers.CacheControl =
+            name.EndsWith(".html") || name is "sw.js" or "manifest.webmanifest" ? "no-cache"
+            : ctx.Context.Request.Path.StartsWithSegments("/assets") ? "public, max-age=31536000, immutable" : "public, max-age=3600";
+    }
 });
+DmOffice.Core.SlowRequests.Use(app);
 app.UseAuthentication();
 // CSRF von Nachbar-Seiten derselben Domain: aendernde Cookie-Anfragen nur von der eigenen Seite (Sec-Fetch-Site)
 app.Use(async (ctx, next) =>
@@ -427,7 +598,13 @@ app.Use(async (ctx, next) =>
     if (!Auth.DeviceRequestAllowed(ctx)) { ctx.Response.StatusCode = 403; return; }
     await next();
 });
+// Notfallsitzung im Konto eines anderen: Sicherheit, Verwaltung und Notfallzugang bleiben gesperrt
+DmOffice.Emergency.EmergencyApi.Use(app);
 app.UseRateLimiter();
+// [feature:gatekeeper]
+// GateKeeper: Tunnel der App als WebSocket (/api/gatekeeper/tunnel)
+app.UseWebSockets();
+// [/feature:gatekeeper]
 // PDF-Vorschau als Seitenbilder: Download-Adressen mit pdfpages / pdfpage
 DmOffice.Dav.PdfPages.Use(app);
 
@@ -453,6 +630,7 @@ app.Use(async (ctx, next) =>
             ArgumentException or InvalidOperationException or FormatException => 400,
             MailKit.Security.AuthenticationException => 502,
             MailKit.ServiceNotConnectedException or System.Net.Sockets.SocketException or IOException => 502,
+            TimeoutException => 504,
             _ => 500
         };
         if (status == 500) app.Logger.LogError(ex, "Fehler bei {Path}", ctx.Request.Path);
@@ -462,6 +640,9 @@ app.Use(async (ctx, next) =>
         // Keine Interna nach aussen: unerwartete Fehler nur allgemein (Einzelheiten im Log), und Ein-/Ausgabefehler
         // nicht mit Dateipfaden des Servers
         if (status == 500) message = "Interner Fehler. Einzelheiten stehen im Server-Protokoll.";
+        // Mail- und andere Serververbindungen: kein englischer Rohtext („Name or service not known“)
+        else if (ex is System.Net.Sockets.SocketException or MailKit.ServiceNotConnectedException or TimeoutException)
+            message = "Keine Verbindung zum Server.";
         // Ohne eigenen Text (auch: gerade von anderer Stelle gelöscht oder verschoben) nur das, was für die Person zählt
         else if (ex is KeyNotFoundException && (message == new KeyNotFoundException().Message || message.StartsWith("The given key", StringComparison.Ordinal)))
             message = "Das gibt es nicht mehr. Bitte die Ansicht neu laden.";
@@ -473,6 +654,7 @@ app.Use(async (ctx, next) =>
         if (ex is UpdatePendingException pending) await ctx.Response.WriteAsJsonAsync(new { error = message, updatePending = true, reason = pending.Reason });
         else if (ex is TresorClosedException) await ctx.Response.WriteAsJsonAsync(new { error = message, locked = Tresor.Locked });
         else if (ex is DmOffice.VaultLockedException) await ctx.Response.WriteAsJsonAsync(new { error = message, locked = "vault" });
+        else if (ex is DmOffice.Storage.SftpHostKeyException hk) await ctx.Response.WriteAsJsonAsync(new { error = message, sftpHost = new { hk.Info.Fingerprint, hk.Info.KeyType, hk.Info.Known, hk.Info.State } }); // [feature:sftptrust]
         else await ctx.Response.WriteAsJsonAsync(new { error = message });
     }
 });
@@ -481,6 +663,7 @@ Auth.Map(app);
 Oidc.Map(app);
 DmOffice.Storage.SftpApi.Map(app);
 DmOffice.Storage.SftpDriver.KnownHosts = Path.Combine(paths.Root, "sftp-known-hosts.json");
+DmOffice.Storage.SftpDriver.Log = app.Logger;
 // Kalender-Abos: Heimnetz wie bei eigenen WebDAV-Ordnern nur mit Erlaubnis der Verwaltung
 { var subConfig = app.Services.GetRequiredService<ServerConfig>(); DmOffice.Pim.Subscriptions.HomeNet = () => subConfig.Current.ExternalWebDavPrivate; }
 TresorApi.Map(app);
@@ -497,6 +680,8 @@ AppDownload.Map(app);
 UpdateApi.Map(app);
 MailApi.Map(app);
 DmOffice.Mail.MailExpiryApi.Map(app);
+DmOffice.Mail.MailSnippets.Map(app); // [feature:mailsnippets]
+DmOffice.Mail.MailSignatures.Map(app); // [feature:mailsignatures]
 PimApi.Map(app);
 DmOffice.Pim.GraphApi.Map(app);
 NotesApi.Map(app);
@@ -509,12 +694,21 @@ DmOffice.Storage.PCloudFolders.Map(app);
 DmOffice.Storage.PlainBackupService.Map(app);
 Tickets.Map(app);
 PublicApi.Map(app);
+// Bestätigung von Weiterleitungszielen (Kennung ruleforward): öffentliche Seite mit Knopf
+DmOffice.Mail.ForwardTargets.Map(app);
 DmOffice.Office.WopiApi.Map(app);
 DmOffice.Office.OnlyOffice.Map(app);
 DmOffice.Search.TextIndexApi.Map(app);
+// Plugins: Liste, Verwaltung, Routen der geladenen Plugins (404, solange eines aus ist)
+DmOffice.Plugins.PluginApi.Map(app);
+DmOffice.Plugins.PluginHost.Map(app);
 DmOffice.Chat.ChatApi.Map(app);
 DmOffice.Chat.PukkiLearnApi.Map(app);
+DmOffice.Emergency.EmergencyApi.Map(app);
+// Link einer Person ohne Konto (/n/…): anfragen und Passwort festlegen ohne Anmeldung
+DmOffice.Emergency.EmergencyPage.Map(app);
 DmOffice.Gallery.GalleryApi.Map(app);
+DmOffice.Gallery.LensProfiles.Map(app, paths); // [feature:lenscorr]
 DmOffice.Gallery.ImportProfilesApi.Map(app);
 DmOffice.Audio.AudioApi.Map(app);
 DmOffice.Gallery.AlbumApi.Map(app);
@@ -524,6 +718,11 @@ DmOffice.Mail.SmartInboxApi.Map(app);
 DmOffice.Mail.CatchallAliasesApi.Map(app);
 DmOffice.Mail.OpenPgpApi.Map(app);
 DmOffice.Notes.NoteSharesApi.Map(app);
+// [feature:journal]
+DmOffice.Journal.JournalApi.Map(app);
+DmOffice.Journal.JournalAi.Map(app);
+// [/feature:journal]
+DmOffice.GateKeeper.GateKeeperApi.Map(app); // [feature:gatekeeper]
 DavServer.Map(app);
 NextcloudApi.Map(app);
 
@@ -578,3 +777,10 @@ app.Run();
 
 // Fuer die Tests (WebApplicationFactory)
 public partial class Program;
+
+/// <summary>Content-Type einer vorkomprimierten Datei (x.js.br, x.js.gz) ist der des Originals (x.js).</summary>
+sealed class PrecompressedTypes(Microsoft.AspNetCore.StaticFiles.IContentTypeProvider inner) : Microsoft.AspNetCore.StaticFiles.IContentTypeProvider
+{
+    public bool TryGetContentType(string subpath, out string contentType) =>
+        inner.TryGetContentType(subpath.EndsWith(".br") || subpath.EndsWith(".gz") ? subpath[..^3] : subpath, out contentType!);
+}

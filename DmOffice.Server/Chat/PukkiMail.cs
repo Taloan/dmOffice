@@ -31,7 +31,7 @@ public static partial class Pukki
     private static Reply? MailQuestion(Ctx c, string t)
     {
         if (!MailWordRx.IsMatch(t) || !MailAskRx.IsMatch(t) || MailOrderRx.IsMatch(t) || MailAddressRx.IsMatch(t)) return null;
-        if (c.Space.Settings.MailAccounts.Count == 0) return "Du hast in dmOffice kein Mailkonto eingerichtet – da kann ich nichts nachschauen.";
+        if (c.Space.Settings.ActiveMailAccounts().Count == 0) return "Du hast in dmOffice kein Mailkonto eingerichtet – da kann ich nichts nachschauen.";
         if (!MailAllowed(c.Space.Db))
             return new Reply("Dafür müsste ich in deine Mails schauen. Darf ich das? Ausschalten kannst du es jederzeit unter Einstellungen → Chat.",
                 Actions: [new ChatAction(MailAllow, "Ja, erlauben", Pack(new ActData(Text: t))), new ChatAction(MailDeny, "Nein", null)]);
@@ -55,8 +55,9 @@ public static partial class Pukki
         var db = space.Db;
         if (Regex.IsMatch(t, @"wiedervorlage|nachverfolg|markiert|zurückgestellt|erinner", RegexOptions.IgnoreCase))
         {
-            var follow = MailStore.FollowUps(db, 50);
-            var snoozed = DmOffice.Mail.Snooze.All(db).OrderBy(s => s.Until).ToList();
+            var off = space.Settings.OffMailAccountIds();
+            var follow = MailStore.FollowUps(db, 50, off);
+            var snoozed = DmOffice.Mail.Snooze.All(db).Where(s => !off.Contains(s.Account)).OrderBy(s => s.Until).ToList();
             if (follow.Count == 0 && snoozed.Count == 0) return "Auf Wiedervorlage liegt gerade nichts – keine Mail ist zur Nachverfolgung markiert oder zurückgestellt.";
             var parts = new List<string>();
             if (follow.Count > 0)
@@ -67,12 +68,12 @@ public static partial class Pukki
                     "• " + (string.IsNullOrWhiteSpace(s.Subject) ? "(ohne Betreff)" : s.Subject) + " – kommt " + When(TimeZoneInfo.ConvertTimeFromUtc(s.Until, space.Zone), now) + " wieder")));
             return string.Join("\n\n", parts);
         }
-        var inboxes = space.Settings.MailAccounts.SelectMany(a => MailStore.Folders(db, a.Id).Where(f => f.Special == "inbox").Select(f => a.Id + "|" + f.Path)).ToList();
+        var inboxes = space.Settings.ActiveMailAccounts().SelectMany(a => MailStore.Folders(db, a.Id).Where(f => f.Special == "inbox").Select(f => a.Id + "|" + f.Path)).ToList();
         var from = MailFromRx.Match(t);
         if (from.Success && !Regex.IsMatch(from.Groups["who"].Value, @"^(heute|gestern|dieser|letzter|der|den)\b", RegexOptions.IgnoreCase))
         {
             var who = from.Groups["who"].Value.Trim();
-            var (total, _, items) = MailStore.Query(db, new MailCriteria { Text = "von:" + who.Split(' ')[0] }, 0, 8);
+            var (total, _, items) = MailStore.Query(db, new MailCriteria { Text = "von:" + who.Split(' ')[0] }, 0, 8, hidden: space.Settings.OffMailAccountIds());
             if (total == 0) return $"Von „{who}“ finde ich keine Mail.";
             return $"Mails von {who} ({total}, neueste zuerst):\n" + string.Join("\n", items.Select(m => "• " + Line(m, space, sender: false) + (m.Seen ? "" : " ●")));
         }

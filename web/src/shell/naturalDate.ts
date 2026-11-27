@@ -38,11 +38,20 @@ const DAYPARTS: [RegExp, number, 'am' | 'pm' | null][] = [
 const num = (w: string) => /^\d+$/.test(w) ? Number(w) : NUMBERS[w]
 const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate())
 const addDays = (d: Date, n: number) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n)
+/** Den Tag nur, wenn es ihn gibt (kein 31.02., kein Monat 0); Jahr 1900–2999. Sonst null - nicht umrechnen. */
+const realDay = (y: number, m0: number, d: number): Date | null => {
+  if (!(y >= 1900 && y <= 2999 && m0 >= 0 && m0 <= 11 && d >= 1)) return null
+  const x = new Date(y, m0, d)
+  return x.getMonth() === m0 && x.getDate() === d ? x : null
+}
 
 interface Hit { from: number; to: number }
 
-/** Erkennt Datum/Uhrzeit in einem Titel. Null, wenn nichts Brauchbares darin steht. */
-export function parseNaturalDate(text: string, now = new Date()): NaturalDate | null {
+/**
+ * Erkennt Datum/Uhrzeit in einem Titel. Null, wenn nichts Brauchbares darin steht.
+ * onDay: schon gewählter Tag (angeklickter Kalendertag) - eine Uhrzeit ohne Tagesangabe gilt dann an diesem Tag.
+ */
+export function parseNaturalDate(text: string, now = new Date(), onDay?: Date): NaturalDate | null {
   // Woerter mit Position, klein geschrieben; Satzzeichen am Ende abtrennen
   const words: { w: string; from: number; to: number }[] = []
   const re = /[^\s,;]+/g
@@ -102,32 +111,33 @@ export function parseNaturalDate(text: string, now = new Date()): NaturalDate | 
         continue
       }
       // 24.10. / 24.10.2026 / 24.10.26 / 2026-10-24 / 10/24
-      let d = x.match(/^(\d{1,2})\.(\d{1,2})\.(\d{2,4})?$/)
-      if (d) {
-        const y = d[3] ? (d[3].length === 2 ? 2000 + Number(d[3]) : Number(d[3])) : now.getFullYear()
-        let cand = new Date(y, Number(d[2]) - 1, Number(d[1]))
-        if (!d[3] && cand < startOfDay(now)) cand = new Date(y + 1, Number(d[2]) - 1, Number(d[1]))
+      let d = x.match(/^(\d{1,2})\.(\d{1,2})\.(\d{2}|\d{4})?$/)
+      const dmy = d && realDay(d[3] ? (d[3].length === 2 ? 2000 + Number(d[3]) : Number(d[3])) : now.getFullYear(), Number(d[2]) - 1, Number(d[1]))
+      if (d && dmy) {
+        let cand: Date | null = dmy
+        if (!d[3] && cand < startOfDay(now)) cand = realDay(dmy.getFullYear() + 1, dmy.getMonth(), dmy.getDate()) ?? cand
         day = cand
         take(/^(am|bis|on|by)$/.test(w(i - 1)) ? i - 1 : i, /^(am|bis|on|by)$/.test(w(i - 1)) ? 2 : 1)
         continue
       }
       d = x.match(/^(\d{4})-(\d{2})-(\d{2})$/)
-      if (d) { day = new Date(Number(d[1]), Number(d[2]) - 1, Number(d[3])); take(i, 1); continue }
+      const iso = d && realDay(Number(d[1]), Number(d[2]) - 1, Number(d[3]))
+      if (iso) { day = iso; take(i, 1); continue }
       // "24. Oktober", "3 november", "oct 24", "24 oct"
       const dm = x.match(/^(\d{1,2})\.?$/)
-      if (dm && MONTHS[w(i + 1)] !== undefined) {
+      if (dm && MONTHS[w(i + 1)] !== undefined && realDay(now.getFullYear(), MONTHS[w(i + 1)], Number(dm[1]))) {
         const mo = MONTHS[w(i + 1)]
-        let cand = new Date(now.getFullYear(), mo, Number(dm[1]))
-        if (cand < startOfDay(now)) cand = new Date(now.getFullYear() + 1, mo, Number(dm[1]))
+        let cand = realDay(now.getFullYear(), mo, Number(dm[1]))!
+        if (cand < startOfDay(now)) cand = realDay(now.getFullYear() + 1, mo, Number(dm[1])) ?? cand
         day = cand
         const withAm = /^(am|on)$/.test(w(i - 1))
         take(withAm ? i - 1 : i, withAm ? 3 : 2)
         continue
       }
-      if (MONTHS[x] !== undefined && /^\d{1,2}(st|nd|rd|th)?$/.test(w(i + 1)) && x.length >= 3) {
+      if (MONTHS[x] !== undefined && /^\d{1,2}(st|nd|rd|th)?$/.test(w(i + 1)) && x.length >= 3 && realDay(now.getFullYear(), MONTHS[x], parseInt(w(i + 1)))) {
         const mo = MONTHS[x]
-        let cand = new Date(now.getFullYear(), mo, parseInt(w(i + 1)))
-        if (cand < startOfDay(now)) cand = new Date(now.getFullYear() + 1, mo, parseInt(w(i + 1)))
+        let cand = realDay(now.getFullYear(), mo, parseInt(w(i + 1)))!
+        if (cand < startOfDay(now)) cand = realDay(now.getFullYear() + 1, mo, parseInt(w(i + 1))) ?? cand
         day = cand
         take(i, 2)
         continue
@@ -208,9 +218,9 @@ export function parseNaturalDate(text: string, now = new Date()): NaturalDate | 
     hasTime = true
   }
 
-  let base = day ?? startOfDay(now)
-  // Nur eine Uhrzeit, die heute schon vorbei ist: morgen
-  if (!day && hasTime && new Date(base.getFullYear(), base.getMonth(), base.getDate(), hour!, minute) < now) base = addDays(base, 1)
+  let base = day ?? startOfDay(onDay ?? now)
+  // Nur eine Uhrzeit, die heute schon vorbei ist: morgen (nicht bei schon gewähltem Tag)
+  if (!day && !onDay && hasTime && new Date(base.getFullYear(), base.getMonth(), base.getDate(), hour!, minute) < now) base = addDays(base, 1)
   const date = hasTime ? new Date(base.getFullYear(), base.getMonth(), base.getDate(), hour!, minute) : base
 
   // Titel ohne die erkannten Stellen; uebrig gebliebene Fuellwoerter am Rand weg

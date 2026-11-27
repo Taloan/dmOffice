@@ -88,18 +88,37 @@ public static class FormerTargets
 
     public static bool StillUsed(FormerTarget f, ServerSettings s) => InUse(s).Any(p => Overlap(p, PlaceOf(f)));
 
-    /// <summary>Nach dem Speichern eines Ziels: Hat sich der Ort geändert, das alte Ziel merken (einmal je Ort und Präfix).</summary>
+    /// <summary>
+    /// Nach dem Speichern eines Ziels: Hat sich der Ort geändert, das alte Ziel merken (einmal je Ort und Präfix) - aber nur, wenn dort
+    /// etwas liegen kann: Der Zweck war eingeschaltet, oder ein kurzes Nachzählen (S3, WebDAV) findet Dateien. Ein nie erreichtes Ziel ist kein Altbestand.
+    /// </summary>
     public static void Track(ServerConfig config, string purpose, ServerSettings before)
     {
         if (Snapshot(purpose, before) is not { } old) return;
         var now = Snapshot(purpose, config.Current);
         if (now != null && PlaceOf(now) == PlaceOf(old)) return;
-        config.Update(s =>
+        var wasActive = purpose switch { "storage" => before.S3Mirror, "backup" => before.S3Backup, "files" => before.FilesBackup, _ => true };
+        if (wasActive) { Remember(config, old); return; }
+        // Ein lokaler Ordner, der nie in Gebrauch war, enthält nichts von dmOffice (Nachzählen fände dort fremde Dateien)
+        if (old.Target == "folder") return;
+        _ = Task.Run(async () =>
         {
-            s.FormerTargets.RemoveAll(x => PlaceOf(x) == PlaceOf(old));
-            s.FormerTargets.Add(old);
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                using var remote = Remote(config, old);
+                var list = await remote.ListSizesAsync(S3Mirror.Prefix(old.Prefix), cts.Token);
+                if (list.Count > 0) Remember(config, old);
+            }
+            catch { /* nicht erreichbar: dort hat dmOffice nichts abgelegt */ }
         });
     }
+
+    private static void Remember(ServerConfig config, FormerTarget old) => config.Update(s =>
+    {
+        s.FormerTargets.RemoveAll(x => PlaceOf(x) == PlaceOf(old));
+        s.FormerTargets.Add(old);
+    });
 
     public static IBlobRemote Remote(ServerConfig config, FormerTarget f) =>
         S3Mirror.RemoteOf(f.Target, f.Endpoint, f.Region ?? "", f.Bucket, f.AccessKey, config.Unwrap(f.Secret), f.WebDavUrl, f.WebDavUser, config.Unwrap(f.WebDavPassword), f.Folder);

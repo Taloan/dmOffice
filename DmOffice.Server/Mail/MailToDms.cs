@@ -26,6 +26,7 @@ public static class MailToDms
             var space = http.Space();
             if (Dav.FileStore.FilesOff(space.Db)) return Results.Json(new { error = "Die Dateiablage ist für dieses Konto abgeschaltet." }, statusCode: 403);
             var account = space.Account(acc);
+            if (MailApi.Junk(space, acc, body.Folder, body.Uid)) return MailApi.JunkLocked(); // [feature:junklock]
             var message = await MailApi.Load(space, account, body.Folder, body.Uid, pool, ct);
             if (MailVirus.Of(space.Db, MailVirus.KeyOf(message, acc, body.Folder, body.Uid)) is { } virus)
                 return Results.Json(new { error = $"Diese Mail enthält Schadsoftware ({virus}) – sie lässt sich nicht ablegen." }, statusCode: 403);
@@ -74,6 +75,9 @@ public static class MailToDms
         public List<DmsMailItem> List(UserSpace space, string account, string folder, DateTimeOffset since)
         {
             var result = new List<DmsMailItem>();
+            // [feature:mailaccountoff]
+            if (space.Settings.MailAccounts.FirstOrDefault(a => a.Id == account) is { Off: true }) return result; // ruht bis zum Aktivieren
+            // [/feature:mailaccountoff]
             for (var page = 0; page < 200; page++)
             {
                 var (_, items) = MailStore.List(space.Db, account, folder, page, 200, null);

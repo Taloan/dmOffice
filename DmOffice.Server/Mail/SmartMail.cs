@@ -39,11 +39,30 @@ public static class SmartMail
 
     private static IEnumerable<JsonElement> JsonLd(string html)
     {
-        foreach (Match x in Regex.Matches(html, @"<script[^>]*application/ld\+json[^>]*>(.*?)</script>", RegexOptions.Singleline | RegexOptions.IgnoreCase))
+        foreach (var block in JsonLdBlocks(html))
         {
             JsonElement root;
-            try { root = JsonDocument.Parse(System.Net.WebUtility.HtmlDecode(x.Groups[1].Value)).RootElement; } catch { continue; }
+            try { root = JsonDocument.Parse(System.Net.WebUtility.HtmlDecode(block)).RootElement; } catch { continue; }
             foreach (var e in Flatten(root)) yield return e;
+        }
+    }
+
+    /// <summary>
+    /// Inhalt der &lt;script type="application/ld+json"&gt;-Blöcke. Von vorn nach hinten gesucht statt per Regex: viele
+    /// offene &lt;script ohne Ende ließen die Regex jedes Mal bis ans Ende der Mail laufen.
+    /// </summary>
+    internal static IEnumerable<string> JsonLdBlocks(string html)
+    {
+        const StringComparison ic = StringComparison.OrdinalIgnoreCase;
+        int i = 0;
+        while ((i = html.IndexOf("<script", i, ic)) >= 0)
+        {
+            int tagEnd = html.IndexOf('>', i);
+            if (tagEnd < 0) yield break;
+            int close = html.IndexOf("</script>", tagEnd + 1, ic);
+            if (close < 0) yield break;   // kein Ende mehr: auch kein späterer Block
+            if (html.AsSpan(i, tagEnd - i).Contains("application/ld+json", ic)) yield return html[(tagEnd + 1)..close];
+            i = close + 9;
         }
     }
 

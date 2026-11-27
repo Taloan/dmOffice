@@ -8,7 +8,7 @@ Kopieren des Datenordners** und **ohne Platz für eine volle Kopie** auskommt: E
 Sicherung an, wenn Platz da ist, fragt vor großen Umbauten und hinterlässt nie eine halb fertige Änderung.
 
 Trotzdem gilt: Ab und zu den Datenordner zu kopieren ist die beste Versicherung. Das Sicherheitsnetz schützt die Datenbanken,
-nicht vor einer kaputten Platte oder einem gelöschten Container.
+nicht vor einem kaputten Speicher oder einem gelöschten Container.
 
 ## So aktualisierst du
 
@@ -37,7 +37,7 @@ Für jede Benutzerdatenbank, die älter ist als die neue Version:
    mehrere Minuten dauert), startet nicht still beim ersten Start: Die Seite zeigt Zeit und Platz und wartet auf *Jetzt starten*.
    Der Server läuft währenddessen; nur der wartende Benutzer kommt noch nicht an seine Daten.
 4. **Jeder Schritt gilt ganz oder gar nicht.** Jeder Schemaschritt läuft samt Versionsnummer in einer Transaktion. Wird er
-   unterbrochen (Container gestoppt, Strom weg, Platte voll), wird er vollständig zurückgerollt und beginnt beim nächsten Start
+   unterbrochen (Container gestoppt, Strom weg, Speicher voll), wird er vollständig zurückgerollt und beginnt beim nächsten Start
    von vorn. Nichts ist halb umgebaut.
 
 ## Dateiinhalte aus der Datenbank auslagern (Schema 16)
@@ -76,6 +76,10 @@ dmOffice prüft das vorher und zeigt, was fehlt, statt mittendrin zu scheitern. 
    zugehörigen Dateien mit den Endungen `-wal` und `-shm` im Zielordner löschen.
 3. Einstellungen und Schlüssel wiederherstellen: Die Dateien `users.json`, `server.json` und `shares.json` sowie, falls vorhanden,
    `master.key` und den Ordner `keys/` aus der Sicherung nach `<data>` zurückkopieren.
+<!-- [feature:cfgseal] -->
+   `config.seal` mitkopieren. Hat die Sicherung keins, `config.seal` in `<data>` löschen: dmOffice versiegelt die Dateien dann so, wie
+   sie sind, und warnt im Log. Sonst `reseal-config` ausführen (siehe [Handbuch](handbuch.md)).
+<!-- [/feature:cfgseal] -->
 4. dmOffice wieder starten. Der Server befindet sich nun auf dem Stand der Sicherung.
 
 Wichtig: Alle Änderungen seit der Sicherung gehen verloren. Die Blob-Dateien müssen nicht zurückkopiert werden. Nicht mehr benötigte

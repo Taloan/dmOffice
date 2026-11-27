@@ -85,6 +85,12 @@ public sealed class S3Backup(DataPaths paths, Vault vault, UserStore users, Serv
     /// <summary>Naechster geplanter Lauf (Ortszeit des Servers).</summary>
     public static DateTime NextRun(ServerSettings s, DateTime now, DateTime? lastRunUtc)
     {
+        if (BackupSchedule.Active(s))
+        {
+            // Noch nicht gesichert seit dem letzten Zeitpunkt: gleich (der Dienst schaut alle fünf Minuten)
+            if (BackupSchedule.Due(s, now, lastRunUtc)) return now;
+            return BackupSchedule.Next(s, now, 1).FirstOrDefault(now);
+        }
         if (!TimeOnly.TryParse(s.S3BackupAt ?? "03:00", CultureInfo.InvariantCulture, out var at)) at = new TimeOnly(3, 0);
         var start = now.Date + at.ToTimeSpan() - TimeSpan.FromDays(1);
         for (var i = 0; i < 24 * 40; i++)
@@ -153,6 +159,7 @@ public sealed class S3Backup(DataPaths paths, Vault vault, UserStore users, Serv
     /// </summary>
     internal static bool Due(ServerSettings s, DateTime now, DateTime? lastRunUtc)
     {
+        if (BackupSchedule.Active(s)) return BackupSchedule.Due(s, now, lastRunUtc);
         if (!TimeOnly.TryParse(s.S3BackupAt ?? "03:00", CultureInfo.InvariantCulture, out var at)) at = new TimeOnly(3, 0);
         var every = Intervals.Contains(s.S3BackupEveryHours) ? s.S3BackupEveryHours : 24;
         var anchor = now.Date + at.ToTimeSpan();
@@ -251,6 +258,13 @@ public sealed class S3Backup(DataPaths paths, Vault vault, UserStore users, Serv
         services.GetRequiredService<Chat.ChatStore>().SnapshotTo(Path.Combine(stage, "chat.db"));
         services.GetRequiredService<Gallery.AlbumStore>().SnapshotTo(Path.Combine(stage, "albums.db"));
         services.GetRequiredService<WebPush>().SnapshotTo(Path.Combine(stage, "push.db"));
+        // Serverweite Datenbanken der Plugins (S9): wie die übrigen Datenbanken als verdichtete Kopie
+        if (services.GetService<Plugins.ServerDataStore>() is { } pluginData)
+            foreach (var (key, cs) in pluginData.All())
+            {
+                Directory.CreateDirectory(Path.Combine(stage, "plugins"));
+                Vacuum(cs, Path.Combine(stage, "plugins", key + ".db"));
+            }
         foreach (var f in Directory.EnumerateFiles(paths.Root))
         {
             var n = Path.GetFileName(f);
@@ -362,6 +376,18 @@ public sealed class S3Backup(DataPaths paths, Vault vault, UserStore users, Serv
             if (File.Exists(Path.Combine(pending, Path.GetFileName(db)))) continue;
             foreach (var part in new[] { db, db + "-wal", db + "-shm" }) if (File.Exists(part)) File.Delete(part);
         }
+        // Ebenso die serverweiten Datenbanken der Plugins (S9): ihre Schlüssel kommen aus dem Stand
+        var pluginDbs = Path.Combine(paths.Root, "plugins");
+        if (Directory.Exists(pluginDbs))
+            foreach (var db in Directory.EnumerateFiles(pluginDbs, "*.db"))
+            {
+                if (File.Exists(Path.Combine(pending, "plugins", Path.GetFileName(db)))) continue;
+                foreach (var part in new[] { db, db + "-wal", db + "-shm" }) if (File.Exists(part)) File.Delete(part);
+            }
+        // [feature:cfgseal]
+        // Stand ohne Siegel (älter als das Siegel): das jetzige beschreibt die gleich ersetzten Dateien - der Start versiegelt neu
+        if (!File.Exists(Path.Combine(pending, ConfigSeal.FileName))) File.Delete(Path.Combine(paths.Root, ConfigSeal.FileName));
+        // [/feature:cfgseal]
         int n = 0;
         foreach (var f in Directory.EnumerateFiles(pending, "*", SearchOption.AllDirectories))
         {

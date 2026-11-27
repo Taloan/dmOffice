@@ -6,7 +6,12 @@ import { t } from '../i18n'
 import { usePrefs } from '../prefs'
 
 /** Was ein Admin nach der Einrichtung tun sollte: verschwindet, sobald es erledigt ist oder er es abhakt. */
-export function SetupHints({ onBackup }: { onBackup: () => void }) {
+// [feature:adminclean]
+// Kennung adminclean: Hinweise stehen auf ihrer Seite (Backup, Sicherheit); only wählt sie aus, der Punkt in der Leiste kommt aus useSetupOpen
+export function SetupHints({ onBackup, only }: { onBackup?: () => void; only?: string[] }) {
+// [feature:adminclean:else]
+// export function SetupHints({ onBackup }: { onBackup: () => void }) {
+// [/feature:adminclean]
   const { me } = useApp()
   const { prefs, update } = usePrefs()
   const [backup, setBackup] = useState<boolean | null>(null)
@@ -15,12 +20,20 @@ export function SetupHints({ onBackup }: { onBackup: () => void }) {
   }, [])
   const done = prefs.adminHintsDone ?? []
   const check = (key: string) => update({ adminHintsDone: [...done, key] })
-  const open = (key: string) => !done.includes(key)
+  // [feature:adminclean]
+  const open = (key: string) => !done.includes(key) && (!only || only.includes(key))
+  // [feature:adminclean:else]
+  // const open = (key: string) => !done.includes(key)
+  // [/feature:adminclean]
   const hints: { key: string; title: string; text: string; action?: [string, () => void] }[] = []
   if (backup === false && open('backup')) hints.push({
     key: 'backup', title: t('Es läuft noch kein Backup'),
     text: '',
-    action: [t('Backup einrichten'), onBackup],
+    // [feature:adminclean]
+    action: onBackup && [t('Backup einrichten'), onBackup],
+    // [feature:adminclean:else]
+    // action: [t('Backup einrichten'), onBackup],
+    // [/feature:adminclean]
   })
   if (open('masterkey')) hints.push({
     key: 'masterkey', title: t('Hauptschlüssel aufbewahren'),
@@ -42,3 +55,17 @@ export function SetupHints({ onBackup }: { onBackup: () => void }) {
     </MessageBar>
   ))}</>
 }
+
+// [feature:adminclean]
+/** Offene Einrichtungshinweise (backup, masterkey, twofactor) für den Punkt an der Seite in der Leiste. */
+export function useSetupOpen(): string[] {
+  const { me } = useApp()
+  const { prefs } = usePrefs()
+  const [backup, setBackup] = useState<boolean | null>(null)
+  useEffect(() => {
+    api.get<{ backup?: { enabled?: boolean } }>('/api/admin/storage').then(s => setBackup(!!s.backup?.enabled)).catch(() => setBackup(null))
+  }, [])
+  const done = prefs.adminHintsDone ?? []
+  return [...(backup === false ? ['backup'] : []), 'masterkey', ...(me && !me.twoFactor ? ['twofactor'] : [])].filter(k => !done.includes(k))
+}
+// [/feature:adminclean]

@@ -10,6 +10,7 @@ import { usePrefs } from '../prefs'
 import { locale, t } from '../i18n'
 import { CategoryDot, useCategories } from './Categories'
 import { folderLabel } from './FolderPane'
+import { fetchVirtualCounts, shownVirtual, usePreloadVersion, virtualCounts, warm } from './preload'
 import type { Selection } from './MailView'
 
 export interface MailCriteria {
@@ -55,7 +56,9 @@ export function VirtualFolders({ accounts, folders, selection, onSelect, refresh
   const { prefs, update } = usePrefs()
   const categories = useCategories()
   const [list, setList] = useState<SearchFolder[]>([])
-  const [counts, setCounts] = useState<Counts>({})
+  // Zähler: eine gemeinsame Anfrage (preload.ts); eine gestiegene Zahl erst, wenn die Liste dieses Ordners vorgeladen ist
+  usePreloadVersion()
+  const counts: Counts = virtualCounts()
   const [edit, setEdit] = useState<SearchFolder | 'new' | null>(null)
   const [menu, setMenu] = useState<{ f: SearchFolder; x: number; y: number } | null>(null)
   // Kontextmenü einer Kategorie: Anzahl wie bei Ordnern, Bearbeiten in den Einstellungen
@@ -69,7 +72,7 @@ export function VirtualFolders({ accounts, folders, selection, onSelect, refresh
 
   const load = useCallback(() => {
     api.get<SearchFolder[]>('/api/settings/search-folders').then(setList).catch(() => {})
-    api.get<Counts>('/api/mail/virtual-counts').then(setCounts).catch(() => {})
+    fetchVirtualCounts()
   }, [])
   useEffect(() => { load() }, [load, refresh])
 
@@ -87,9 +90,9 @@ export function VirtualFolders({ accounts, folders, selection, onSelect, refresh
   const toggle = (k: 'search' | 'categories') => update({ virtualClosed: { ...closed, [k]: !closed[k] } })
 
   const item = (folder: string, icon: JSX.Element, name: string, onMenu?: (e: React.MouseEvent) => void) => {
-    const c = counts[folder]
+    const c = anchor ? shownVirtual(anchor, folder, counts[folder]) : counts[folder]
     return (
-      <div key={folder} className={mergeClasses('dm-frow', s.item, selection?.folder === folder && s.active)} onClick={() => open(folder)}
+      <div key={folder} className={mergeClasses('dm-frow', s.item, selection?.folder === folder && s.active)} onClick={() => open(folder)} onPointerEnter={() => anchor && warm(anchor, folder)}
         style={dropOn === folder ? { outline: `2px solid ${tokens.colorBrandStroke1}`, outlineOffset: -2 } : undefined}
         onContextMenu={onMenu ? e => { e.preventDefault(); onMenu(e) } : undefined}
         // Kategorie: Mails hierher ziehen ordnet sie zu (lernende Kategorien lernen daraus)

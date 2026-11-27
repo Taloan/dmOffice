@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": true, "baseUrl": ".", "paths": { "@dmoffice/sdk": ["src/sdk/index.ts"], "react": ["node_modules/@types/react"], "react/jsx-runtime": ["node_modules/@types/react/jsx-runtime"], "@fluentui/react-components": ["node_modules/@fluentui/react-components"], "@fluentui/react-icons": ["node_modules/@fluentui/react-icons"], "react-dom": ["node_modules/@types/react-dom"] } },
+  "include": ["src/vite-env.d.ts", "../plugins/*/web/src/**/*.tsx", "../plugins/*/web/src/**/*.ts"]
+}

@@ -5,11 +5,16 @@ import {
   TextAlignCenter20Regular, TextAlignLeft20Regular, TextAlignRight20Regular, TextBold20Regular, TextBulletListLtr20Regular, TextClearFormatting20Regular,
   TextColor20Regular, TextFont20Regular, TextFontSize20Regular, TextIndentDecreaseLtr20Regular, TextIndentIncreaseLtr20Regular, TextItalic20Regular,
   TextNumberListLtr20Regular, TextQuote20Regular, TextStrikethrough20Regular, TextUnderline20Regular,
+  DocumentBulletList20Regular,
 } from '@fluentui/react-icons'
 import { useEffect, useState } from 'react'
 import { t } from '../i18n'
 import { RibbonButton, RibbonDivider } from '../shell/Ribbon'
 import { RichEditorHandle, Swatches, colors, marks } from '../shell/RichEditor'
+import { featureOn } from '../api'
+import { SnippetMenu } from './Snippets' // [feature:mailsnippets]
+import { SnippetContext } from './snippets' // [feature:mailsnippets]
+import { AiReplyMenu, aiHtml, useAiReply } from './AiReply' // [feature:mailaireply]
 
 const useStyles = makeStyles({
   group: { display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0, padding: '0 4px' },
@@ -28,7 +33,7 @@ function Group({ label, children }: { label: string; children: React.ReactNode }
   return <div className={s.group} role="group" aria-label={label}><div className={s.body}>{children}</div><span className={s.label}>{label}</span></div>
 }
 
-export type AttachSource = 'computer' | 'gallery' | 'files'
+export type AttachSource = 'computer' | 'gallery' | 'files' | 'dms'
 /** Anhang, Freigabelink oder Bild im Text */
 export type AttachAs = 'attach' | 'link' | 'inline'
 
@@ -41,12 +46,20 @@ export interface MessageRibbonProps {
   important: boolean; onImportant: (v: boolean) => void
   receipt: boolean; onReceipt: (v: boolean) => void
   pgp?: { sign: boolean; onChange: (v: boolean) => void }
+  /** Weitere Umschalter der Nachricht hinter „Signieren“ (Nachfassen, Mit Passwort) */
+  options?: React.ReactNode
   onSave: () => void
+  /** Text geändert (Textbaustein eingefügt) */
+  onChange?: () => void
+  snippetContext?: () => SnippetContext // [feature:mailsnippets]
+  /** Beim Antworten: die beantwortete Mail - für „Antwort mit KI“ (Kennung mailaireply) */
+  aiSource?: { account: string; folder: string; uid: number } // [feature:mailaireply]
 }
 
 /** Reiter „Nachricht“ im Menüband beim Schreiben: Text formatieren, einfügen, kennzeichnen. */
-export function MessageRibbon({ editor, active, onAttach, onSignature, important, onImportant, receipt, onReceipt, pgp, onSave }: MessageRibbonProps) {
+export function MessageRibbon({ editor, active, onAttach, onSignature, important, onImportant, receipt, onReceipt, pgp, onSave, onChange, ...more }: MessageRibbonProps) {
   const s = useStyles()
+  const ai = useAiReply() // [feature:mailaireply]
   const [on, setOn] = useState<Record<string, boolean>>({})
   // Zustand der Knöpfe folgt der Einfügemarke
   useEffect(() => {
@@ -88,6 +101,7 @@ export function MessageRibbon({ editor, active, onAttach, onSignature, important
           <MenuItem icon={<Desktop20Regular />} onClick={() => onAttach('computer', as)}>{t('Vom Computer')}</MenuItem>
           <MenuItem icon={<ImageMultiple20Regular />} onClick={() => onAttach('gallery', as)}>{t('Aus der dmOffice-Galerie')}</MenuItem>
           <MenuItem icon={<Cloud20Regular />} onClick={() => onAttach('files', as)}>{t('Aus den dmOffice-Dateien')}</MenuItem>
+          {as === 'attach' && featureOn('maildms') && featureOn('dms') && <MenuItem icon={<DocumentBulletList20Regular />} onClick={() => onAttach('dms', as)}>{t('Aus dem DMS')}</MenuItem>}
         </MenuList>
       </MenuPopover>
     </Menu>
@@ -126,10 +140,18 @@ export function MessageRibbon({ editor, active, onAttach, onSignature, important
     {attachMenu(<Image20Regular />, t('Bild im Text'), 'inline')}
     <RibbonButton icon={<Link20Regular />} label={t('Link')} disabled={!active} onMouseDown={(e: React.MouseEvent) => e.preventDefault()} onClick={() => editor.current?.link()} />
     {onSignature && <RibbonButton icon={<DocumentSignature20Regular />} label={t('Signatur')} disabled={!active} onMouseDown={(e: React.MouseEvent) => e.preventDefault()} onClick={onSignature} />}
+    {featureOn('mailsnippets') && <SnippetMenu editor={editor} onInserted={onChange} context={more.snippetContext} />} {/* [feature:mailsnippets] */}
+    {/* [feature:mailaireply] */}
+    {ai && more.aiSource && <AiReplyMenu source={more.aiSource} onDraft={text => {
+      // Vor den bisherigen Text (Signatur, Zitat) - nichts wird ersetzt
+      editor.current?.focusStart(); editor.current?.insertHtml(aiHtml(text)); onChange?.()
+    }} />}
+    {/* [/feature:mailaireply] */}
     <RibbonDivider />
     <RibbonButton icon={<Important20Regular />} label={t('Wichtig')} pressed={important} onClick={() => onImportant(!important)} />
     <RibbonButton icon={<MailCheckmark20Regular />} label={t('Lese­bestätigung')} pressed={receipt} onClick={() => onReceipt(!receipt)} />
     {pgp && <RibbonButton icon={pgp.sign ? <LockClosed20Regular /> : <LockOpen20Regular />} label={t('Signieren')} pressed={pgp.sign} onClick={() => pgp.onChange(!pgp.sign)} />}
+    {more.options}
     <RibbonDivider />
     <RibbonButton icon={<Save20Regular />} label={t('Entwurf speichern')} onClick={onSave} />
   </>

@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 import { api, featureOn } from '../api'
 import { useApp } from '../App'
 import { t } from '../i18n'
-import { Hint, PageTitle, Section } from './parts'
+import { Hint, Section, SectionTabs } from './parts'
 
 interface Unsubscribed { at: string; account: string; sender: string; subject: string | null; result: 'done' | 'unconfirmed' | 'failed'; how: string | null }
 
@@ -22,11 +22,11 @@ export function SmartInboxSettings() {
     setSt({ ...st, ...change })
     try { setSt(await api.put<SmartState>('/api/mail/smart/settings', change)) } catch (e) { fail(e) }
   }
-  if (!st) return <PageTitle>{t('Smart Inbox')}</PageTitle>
+  if (!st) return null
   const off = !st.enabled
   return (
     <>
-      <PageTitle>{t('Smart Inbox')}</PageTitle>
+      <SectionTabs page="smart">
       <Section title={t('Einschalten')} hint={t('Ordnet eingehende Mails ein. Ausgewertet wird nur auf diesem Server.')}>
         <Switch checked={st.enabled} label={st.enabled ? t('Eingeschaltet') : t('Ausgeschaltet')} onChange={(_, d) => save({ enabled: d.checked })} />
       </Section>
@@ -48,6 +48,7 @@ export function SmartInboxSettings() {
           <UnsubscribedList />
         </>}
       </Section>
+      </SectionTabs>
     </>
   )
 }

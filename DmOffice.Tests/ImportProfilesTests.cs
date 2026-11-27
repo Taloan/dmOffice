@@ -91,6 +91,8 @@ public class ImportProfilesTests : IClassFixture<ChatFixture>
         // Datum ohne Trennzeichen, laufende Nummer dreistellig
         Assert.Equal("20261029_Oktober_007", ImportProfiles.RenderName("{import_date}_{import_month_name}_{sequence}", f, import, 7, de));
         Assert.Equal("20260614_103045", ImportProfiles.RenderName("{exif_date}_{exif_time}", f, import, 1, de));
+        // Foto ohne Titel: statt „_“ der Originalname
+        Assert.Equal("DSCF0042", ImportProfiles.RenderName("{title}", f with { Title = null }, import, 1, de));
 
         // Ohne Kamera: „Unknown“
         var none = f with { Make = null, Model = null };
@@ -100,6 +102,28 @@ public class ImportProfilesTests : IClassFixture<ChatFixture>
         Assert.Equal("2026/A_B", ImportProfiles.RenderFolder("{exif_year}/{camera_model}", f with { Model = "A/B" }, import, 1, de));
         Assert.Equal("a_b", ImportProfiles.RenderName("a:b", f, import, 1, de));
         Assert.Equal(["kamera"], ImportProfiles.Unknown("{exif_year}/{kamera}"));
+    }
+
+    [Fact]
+    public void Titel_und_Beschreibung_als_Platzhalter()
+    {
+        var de = ImportProfiles.CultureOf("de");
+        var import = new DateTime(2026, 10, 29, 8, 0, 0);
+        var f = ImportProfiles.Example with { Title = "Strand: am Morgen", Description = "Erster\nUrlaubstag" };
+        Assert.Equal("20260614_Strand_ am Morgen", ImportProfiles.RenderName("{exif_date}_{title}", f, import, 1, de));
+        Assert.Equal("2026/Erster Urlaubstag", ImportProfiles.RenderFolder("{exif_year}/{description}", f, import, 1, de));
+        // Im Titel bleibt der Text, wie er ist
+        Assert.Equal("Strand: am Morgen – Erster\nUrlaubstag", ImportProfiles.RenderText("{title} – {description}", f, import, 1, de));
+        // Ohne Titel: leer statt „_“
+        var none = f with { Title = null };
+        Assert.Equal("20260614_DSCF0042", ImportProfiles.RenderName("{exif_date}_{title}DSCF0042", none, import, 1, de));
+        // Bliebe nur „_“ übrig: der Originalname
+        Assert.Equal("DSCF0042", ImportProfiles.RenderName("{title}", none, import, 1, de));
+        // Lange Titel im Dateinamen gekürzt
+        Assert.Equal(100, ImportProfiles.RenderName("{title}", f with { Title = new string('x', 300) }, import, 1, de).Length);
+        Assert.Empty(ImportProfiles.Unknown("{title}/{description}"));
+        Assert.Contains("title", ImportProfiles.NameTokens);
+        Assert.Contains("description", ImportProfiles.FolderTokens);
     }
 
     [Fact]
@@ -147,12 +171,12 @@ public class ImportProfilesTests : IClassFixture<ChatFixture>
         var p = Add(db, x => { x.Folders = ""; x.Names = "{exif_datetime}"; });
         Assert.Equal(1, await ImportProfiles.RunAsync(space, Config, p.Id, CancellationToken.None));
 
-        // Dasselbe Foto noch einmal hochgeladen: kein zweites, die Quelle geht in den Papierkorb
+        // Dasselbe Foto noch einmal hochgeladen: kein zweites, die Quelle wird endgültig gelöscht (nicht in den Papierkorb)
         Put(db, "Upload/DSCF0042.JPG", jpeg);
         Assert.Equal(0, await ImportProfiles.RunAsync(space, Config, p.Id, CancellationToken.None));
         Assert.Null(FileStore.Get(db, "Upload/DSCF0042.JPG"));
         Assert.Null(FileStore.Get(db, "Bilder/20260614_103045_2.JPG"));
-        Assert.Contains(FileStore.Trash(db), t => t.Path == "Upload/DSCF0042.JPG");
+        Assert.DoesNotContain(FileStore.Trash(db), t => t.Path == "Upload/DSCF0042.JPG");
 
         // Anderes Foto mit derselben Aufnahmezeit: „_2“
         Put(db, "Upload/DSCF0043.JPG", Jpeg(color: SKColors.OrangeRed));
@@ -184,14 +208,47 @@ public class ImportProfilesTests : IClassFixture<ChatFixture>
     {
         var (space, _) = NewUser();
         var db = space.Db;
-        // Kameramodell ergibt den Namen eines Systemordners
-        Put(db, "Upload/DSCF0050.JPG", Jpeg(model: DmOffice.Dav.FileStore.ReservedRoot));
+        // [feature:journal]
+        // Kameramodell ergibt den Namen des Ordners für Tagebuch-Medien
+        Put(db, "Upload/DSCF0050.JPG", Jpeg(model: DmOffice.Journal.JournalMediaStore.Root));
+        // [feature:journal:else]
+        // // Kameramodell ergibt den Namen eines Systemordners
+        // Put(db, "Upload/DSCF0050.JPG", Jpeg(model: DmOffice.Dav.FileStore.ReservedRoot));
+        // [/feature:journal]
         var p = Add(db, x => { x.Target = ""; x.Folders = "{camera_model}"; });
         Assert.Equal(0, await ImportProfiles.RunAsync(space, Config, p.Id, CancellationToken.None));
         Assert.NotNull(FileStore.Get(db, "Upload/DSCF0050.JPG"));
-        Assert.Null(FileStore.Get(db, DmOffice.Dav.FileStore.ReservedRoot + "/DSCF0050.JPG"));
+        // [feature:journal]
+        Assert.Null(FileStore.Get(db, DmOffice.Journal.JournalMediaStore.Root + "/DSCF0050.JPG"));
+        // [feature:journal:else]
+        // Assert.Null(FileStore.Get(db, DmOffice.Dav.FileStore.ReservedRoot + "/DSCF0050.JPG"));
+        // [/feature:journal]
         Assert.Contains("Systemordner", ImportProfiles.Of(db).Single(x => x.Id == p.Id).Error);
     }
+
+    // [feature:importsub]
+    [Fact]
+    public async Task Ohne_Unterordner_nur_die_Dateien_direkt_im_Quellordner()
+    {
+        var (space, _) = NewUser();
+        var db = space.Db;
+        Put(db, "Upload/DSCF0042.JPG", Jpeg());
+        Put(db, "Upload/Alt/DSCF0043.JPG", Jpeg(color: SKColors.Green));
+        // Ziel liegt in einem Unterordner der Quelle: ohne Unterordner erlaubt
+        var p = Add(db, x => { x.Target = "Upload/Sortiert"; x.Folders = "{exif_year}"; x.Subfolders = false; });
+        Assert.Equal(1, await ImportProfiles.RunAsync(space, Config, p.Id, CancellationToken.None));
+        Assert.NotNull(FileStore.Get(db, "Upload/Sortiert/2026/DSCF0042.JPG"));
+        Assert.NotNull(FileStore.Get(db, "Upload/Alt/DSCF0043.JPG"));
+        Assert.Null(ImportProfiles.Of(db).Single().Error);
+        // Zweiter Lauf: das Einsortierte im Unterordner bleibt, wo es ist
+        Assert.Equal(0, await ImportProfiles.RunAsync(space, Config, p.Id, CancellationToken.None));
+        Assert.NotNull(FileStore.Get(db, "Upload/Sortiert/2026/DSCF0042.JPG"));
+
+        Assert.True(ImportProfiles.InSource(new("", "Upload"), "", "Upload", false));
+        Assert.False(ImportProfiles.InSource(new("", "Upload"), "", "Upload/Sortiert", false));
+        Assert.True(ImportProfiles.InSource(new("", "Upload"), "", "Upload/Sortiert", true));
+    }
+    // [/feature:importsub]
 
     [Fact]
     public async Task Kopieren_laesst_die_Quelle_und_sortiert_nichts_doppelt_ein()
@@ -224,6 +281,25 @@ public class ImportProfilesTests : IClassFixture<ChatFixture>
         Assert.Contains("Aufgenommen am 20260614", text);
         // Ohne frühere Version (neu geschrieben, nicht ersetzt)
         Assert.Empty(FileStore.Versions(db, FileStore.Get(db, "Bilder/neu.JPG")!.FileId));
+    }
+
+    [Fact]
+    public async Task Ohne_Datumsgrenze_kommen_frueher_uebersprungene_Fotos_doch()
+    {
+        var (space, _) = NewUser();
+        var db = space.Db;
+        Put(db, "Upload/alt.JPG", Jpeg(taken: "2025:12:31 23:00:00"));
+        var p = Add(db, x => { x.Folders = ""; x.Since = new DateOnly(2026, 1, 1); });
+        Assert.Equal(0, await ImportProfiles.RunAsync(space, Config, p.Id, CancellationToken.None));
+        // Gleiche Angaben: bleibt übersprungen
+        var before = new ImportProfile { Id = p.Id, Since = p.Since, Sources = [.. p.Sources] };
+        Assert.False(ImportProfiles.Reconsider(db, before, before));
+        Assert.Equal(0, await ImportProfiles.RunAsync(space, Config, p.Id, CancellationToken.None));
+        // Haken bei „Nur Fotos ab“ weg: jetzt wird es einsortiert
+        ImportProfiles.Update(db, p.Id, x => x.Since = null);
+        Assert.True(ImportProfiles.Reconsider(db, before, ImportProfiles.Of(db).Single(x => x.Id == p.Id)));
+        Assert.Equal(1, await ImportProfiles.RunAsync(space, Config, p.Id, CancellationToken.None));
+        Assert.NotNull(FileStore.Get(db, "Bilder/alt.JPG"));
     }
 
     [Fact]
@@ -289,7 +365,7 @@ public class ImportProfilesTests : IClassFixture<ChatFixture>
     }
 
     [Fact]
-    public async Task Externes_Ziel_bekommt_die_Dateien_die_Quelle_geht_in_den_Papierkorb()
+    public async Task Externes_Ziel_bekommt_die_Dateien_die_Quelle_landet_nicht_im_Papierkorb()
     {
         var (space, _) = NewUser();
         var db = space.Db;
@@ -306,12 +382,14 @@ public class ImportProfilesTests : IClassFixture<ChatFixture>
             Assert.True(File.Exists(Path.Combine(dir, "20260614_103045_DSCF0042.JPG")));
             Assert.Equal(7000, new FileInfo(Path.Combine(dir, "20260614_103045_DSCF0042.RAF")).Length);
             Assert.Null(FileStore.Get(db, "Upload/DSCF0042.RAF"));
-            Assert.Contains(FileStore.Trash(db), t => t.Path == "Upload/DSCF0042.RAF");
+            Assert.DoesNotContain(FileStore.Trash(db), t => t.Path.StartsWith("Upload/DSCF0042"));
 
             // Ziel weg (Freigabe nicht eingehängt): Fehler am Profil, die Quelle bleibt
             Put(db, "Upload/DSCF0050.JPG", Jpeg(color: SKColors.Gold));
             Directory.Delete(root, true);
-            await Assert.ThrowsAsync<ImportProfiles.TargetUnavailable>(() => ImportProfiles.RunAsync(space, Config, p.Id, CancellationToken.None));
+            var gone = await Assert.ThrowsAsync<ImportProfiles.TargetUnavailable>(() => ImportProfiles.RunAsync(space, Config, p.Id, CancellationToken.None));
+            Assert.StartsWith("Der Zielordner ist gerade nicht erreichbar", gone.Message);
+            Assert.Equal(gone.Message, ImportProfiles.Of(db).Single(x => x.Id == p.Id).Error);
             Assert.NotNull(FileStore.Get(db, "Upload/DSCF0050.JPG"));
         }
         finally
@@ -465,5 +543,79 @@ public class ImportProfilesTests : IClassFixture<ChatFixture>
         space.Db.Set(ImportProfiles.Key, """[{"Id":"alt1","Name":"Alt","Sources":["Upload","Handy/Fuji"]}]""");
         Assert.Equal([new ImportSource("", "Upload"), new ImportSource("", "Handy/Fuji")], ImportProfiles.Of(space.Db).Single().Sources);
         await Task.CompletedTask;
+    }
+    [Fact]
+    public async Task Ziel_erreichbar_aber_Ablegen_scheitert_nennt_den_Grund_und_Erfolg_raeumt_ihn_weg()
+    {
+        var (space, c) = NewUser();
+        var db = space.Db;
+        var root = Directory.CreateTempSubdirectory("dmimpwr").FullName;
+        var id = "impwr" + Guid.NewGuid().ToString("N")[..6];
+        var before = Config.Current.ExternalFolders;
+        try
+        {
+            Config.Update(s => s.ExternalFolders = [.. before, new ExternalFolderDef { Id = id, Name = "NAS", Path = root, Users = [space.User.Id] }]);
+            // Eine Datei, wo der Zielordner hin soll: der externe Ordner ist da, nur das Ablegen scheitert
+            File.WriteAllText(Path.Combine(root, "PRI"), "im Weg");
+            Put(db, "Upload/DSCF0042.JPG", Jpeg());
+            var p = Add(db, x => { x.Name = "FUJI KAMERAS"; x.Mount = id; x.Target = "PRI"; x.Folders = "{exif_year}"; });
+            var ok = Add(db, x => { x.Name = "Handy"; x.Sources = [new("", "Handy")]; x.Target = "Bilder"; });
+
+            var e = await Assert.ThrowsAsync<ImportProfiles.RunStopped>(() => ImportProfiles.RunAsync(space, Config, p.Id, CancellationToken.None));
+            Assert.IsNotType<ImportProfiles.TargetUnavailable>(e);
+            Assert.StartsWith("Ablegen im Zielordner fehlgeschlagen (DSCF0042.JPG): ", e.Message);
+            Assert.DoesNotContain("nicht erreichbar", e.Message);
+            Assert.NotNull(e.InnerException);
+            var after = ImportProfiles.Of(db).Single(x => x.Id == p.Id);
+            Assert.Equal((e.Message, 0), (after.Error, after.Pending));
+            Assert.NotNull(FileStore.Get(db, "Upload/DSCF0042.JPG"));
+
+            // Aktivität: der Fehler steht beim Profil, das scheitert, auch wenn danach ein anderes ohne Fehler lief
+            Assert.Equal(0, await ImportProfiles.RunAsync(space, Config, ok.Id, CancellationToken.None));
+            var item = await ImportItem(c);
+            Assert.Equal("error", item.GetProperty("state").GetString());
+            Assert.Equal("FUJI KAMERAS: " + e.Message, item.GetProperty("error").GetString());
+
+            // Behoben: der nächste Lauf räumt den alten Fehler weg, auch in der Aktivität
+            File.Delete(Path.Combine(root, "PRI"));
+            Assert.Equal(1, await ImportProfiles.RunAsync(space, Config, p.Id, CancellationToken.None));
+            Assert.Null(ImportProfiles.Of(db).Single(x => x.Id == p.Id).Error);
+            Assert.True(File.Exists(Path.Combine(root, "PRI", "2026", "DSCF0042.JPG")));
+            item = await ImportItem(c);
+            Assert.Equal("idle", item.GetProperty("state").GetString());
+            Assert.Equal(JsonValueKind.Null, item.GetProperty("error").ValueKind);
+        }
+        finally
+        {
+            Config.Update(s => s.ExternalFolders = before);
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    private static async Task<JsonElement> ImportItem(HttpClient c) =>
+        (await c.GetFromJsonAsync<JsonElement>("/api/activity")).GetProperty("items").EnumerateArray().Single(i => i.GetProperty("id").GetString() == "gallery-import");
+
+    [Fact]
+    public async Task Aktivitaet_zeigt_Fehler_je_Profil_und_nicht_bei_ausgeschalteten()
+    {
+        var (space, c) = NewUser();
+        var db = space.Db;
+        Add(db, x => { x.Name = "Eins"; x.Error = "Der Zielordner ist gerade nicht erreichbar."; x.Active = false; });
+        Add(db, x => { x.Name = "Zwei"; x.Error = "Ablegen im Zielordner fehlgeschlagen (A.JPG): kein Platz."; });
+        Add(db, x => { x.Name = "Drei"; x.Error = "Ein Quellordner ist gerade nicht erreichbar."; });
+        Add(db, x => { x.Name = "Vier"; });
+        var item = await ImportItem(c);
+        Assert.Equal("error", item.GetProperty("state").GetString());
+        Assert.Equal("Zwei: Ablegen im Zielordner fehlgeschlagen (A.JPG): kein Platz. · Drei: Ein Quellordner ist gerade nicht erreichbar.", item.GetProperty("error").GetString());
+        Assert.Equal("4 Importprofile", item.GetProperty("detail").GetString());
+    }
+
+    [Fact]
+    public void Grund_fuer_die_Oberflaeche_ohne_Zugangsdaten_und_kurz()
+    {
+        Assert.Equal("Verbinden: https://nas.example/dav antwortet nicht",
+            ExternalFolders.Reason(new IOException("Verbinden: https://max:geheim@nas.example/dav antwortet nicht.\n   at Irgendwo()")));
+        Assert.Equal("Schreiben: Failure", ExternalFolders.Reason(new AggregateException(new IOException("Schreiben: Failure"))));
+        Assert.True(ExternalFolders.Reason(new IOException(new string('x', 500))).Length <= 201);
     }
 }

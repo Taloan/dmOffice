@@ -4,12 +4,14 @@ import {
 } from '@fluentui/react-components'
 import { ArrowUp20Regular, Folder20Regular, Note20Regular, Search20Regular } from '@fluentui/react-icons'
 import { useEffect, useMemo, useState } from 'react'
+import { useOnce } from '../shell/hooks'
 import { api, fmtSize, q } from '../api'
 import { useApp } from '../App'
 import { locale, t } from '../i18n'
 import { hasThumb, Item, KindIcon, ownSource, parentOf, Thumb } from '../files/common'
 import { ChatMessage, ChatMode, ChatRoom, chatSettings, Person, refBlobUrl, refUrl, safeNoteHtml } from './store'
 import { askConfirm } from '../shell/context'
+import { useFilePreview } from '../files/FilePreview'
 
 const useStyles = makeStyles({
   surface: { maxWidth: '520px', width: '100%' },
@@ -50,10 +52,10 @@ function PeopleChooser({ people, chosen, toggle, exclude = [] }: { people: Perso
     .filter(p => !filter || (p.displayName + ' ' + p.login).toLowerCase().includes(filter.toLowerCase()))
   return (
     <>
-      <Input contentBefore={<Search20Regular />} placeholder={t('Personen suchen')} value={filter} onChange={(_, d) => setFilter(d.value)} style={{ width: '100%' }} />
+      <Input contentBefore={<Search20Regular />} placeholder={t('Benutzer suchen')} value={filter} onChange={(_, d) => setFilter(d.value)} style={{ width: '100%' }} />
       <div className={s.list}>
         {people == null && <Spinner size="small" />}
-        {people != null && shown.length === 0 && <div className={s.empty}>{filter && people.some(p => !exclude.includes(p.id)) ? t('Keine Treffer.') : t('Keine weiteren Personen auf diesem Server.')}</div>}
+        {people != null && shown.length === 0 && <div className={s.empty}>{filter && people.some(p => !exclude.includes(p.id)) ? t('Keine Treffer.') : t('Keine weiteren Benutzer auf diesem Server.')}</div>}
         {shown.map(p => (
           <label key={p.id} className={s.row}>
             <Checkbox checked={chosen.includes(p.id)} onChange={() => toggle(p.id)} />
@@ -111,20 +113,21 @@ export function MembersDialog({ room, me, onClose, onChanged }: { room: ChatRoom
   const { fail } = useApp()
   const people = usePeople()
   const [adding, setAdding] = useState<string[] | null>(null)
+  const [busy, once] = useOnce()
   const run = async (f: () => Promise<unknown>) => { try { await f(); onChanged() } catch (e) { fail(e) } }
   if (adding) return (
     <Dialog open onOpenChange={(_, d) => !d.open && setAdding(null)}>
       <DialogSurface className={s.surface}>
         <DialogBody>
-          <DialogTitle>{t('Personen hinzufügen')}</DialogTitle>
+          <DialogTitle>{t('Benutzer hinzufügen')}</DialogTitle>
           <DialogContent>
             <PeopleChooser people={people} chosen={adding} exclude={room.members.map(m => m.id)}
               toggle={id => setAdding(a => (a!.includes(id) ? a!.filter(x => x !== id) : [...a!, id]))} />
           </DialogContent>
           <DialogActions>
             <Button onClick={() => setAdding(null)}>{t('Abbrechen')}</Button>
-            <Button appearance="primary" disabled={adding.length === 0}
-              onClick={() => run(() => api.post(`/api/chat/rooms/${room.id}/members`, { users: adding })).then(() => setAdding(null))}>
+            <Button appearance="primary" disabled={busy || adding.length === 0}
+              onClick={() => once(() => run(() => api.post(`/api/chat/rooms/${room.id}/members`, { users: adding })).then(() => setAdding(null)))}>
               {t('Hinzufügen')}
             </Button>
           </DialogActions>
@@ -159,7 +162,7 @@ export function MembersDialog({ room, me, onClose, onChanged }: { room: ChatRoom
             </div>
           </DialogContent>
           <DialogActions>
-            {room.admin && <Button onClick={() => setAdding([])}>{t('Personen hinzufügen')}</Button>}
+            {room.admin && <Button onClick={() => setAdding([])}>{t('Benutzer hinzufügen')}</Button>}
             <Button appearance="primary" onClick={onClose}>{t('Schließen')}</Button>
           </DialogActions>
         </DialogBody>
@@ -590,7 +593,7 @@ export function AlbumRefDialog({ message, index, name, onClose }: { message: num
           <DialogContent>
             {items == null && <Spinner size="small" />}
             {items?.length === 0 && <div className={s.empty}>{t('Dieses Album ist leer.')}</div>}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 6, maxHeight: '60vh', overflowY: 'auto' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 6, alignContent: 'start', maxHeight: '60vh', overflowY: 'auto' }}>
               {items?.map(f => (
                 <a key={f.key} href={refUrl(message, index, 'album/file', { key: f.key })} target="_blank" rel="noopener noreferrer" title={[f.name, f.ownerName].filter(Boolean).join(' · ')}
                   style={{ aspectRatio: '1', overflow: 'hidden', borderRadius: 6, background: 'var(--colorNeutralBackground3)', display: 'block' }}>
@@ -612,6 +615,7 @@ interface FolderEntry { path: string; name: string; isDir: boolean; size: number
 export function FolderRefDialog({ message, index, name, canSave, onClose }: { message: number; index: number; name: string; canSave: boolean; onClose: () => void }) {
   const s = useStyles()
   const { fail, notify } = useApp()
+  const preview = useFilePreview(fail)
   const [path, setPath] = useState('')
   const [items, setItems] = useState<FolderEntry[] | null>(null)
   useEffect(() => {
@@ -625,7 +629,7 @@ export function FolderRefDialog({ message, index, name, canSave, onClose }: { me
     } catch (e) { fail(e) }
   }
   const thumbable = (f: FolderEntry) => /^(image|video)\//.test(f.mime) || f.mime === 'application/pdf'
-  return (
+  return <>
     <Dialog open onOpenChange={(_, d) => !d.open && onClose()}>
       <DialogSurface className={s.surface} style={{ maxWidth: 720 }}>
         <DialogBody>
@@ -649,7 +653,8 @@ export function FolderRefDialog({ message, index, name, canSave, onClose }: { me
                       ? <img src={refUrl(message, index, 'folder/thumb', { path: f.path, size: 96, v: f.etag })} alt="" className={s.thumbImg} style={{ objectFit: 'cover' }} loading="lazy" />
                       : <KindIcon item={{ name: f.name, isDir: false, mime: f.mime }} />}
                   </span>
-                  <a className={s.rowName} href={refUrl(message, index, 'folder/file', { path: f.path, inline: true })} target="_blank" rel="noopener noreferrer" style={{ color: 'inherit' }}>{f.name}</a>
+                  <a className={s.rowName} href={refUrl(message, index, 'folder/file', { path: f.path, inline: true })} style={{ color: 'inherit' }}
+                    onClick={e => { e.preventDefault(); preview.open({ url: refUrl(message, index, 'folder/file', { path: f.path, inline: true }), download: refUrl(message, index, 'folder/file', { path: f.path }), name: f.name, mime: f.mime, size: f.size, noDownload: !canSave }) }}>{f.name}</a>
                   <span className={s.sub}>{fmtSize(f.size)}</span>
                   {canSave && <Button size="small" appearance="subtle" onClick={() => save(f)}>{t('Bei mir speichern')}</Button>}
                 </div>
@@ -660,5 +665,6 @@ export function FolderRefDialog({ message, index, name, canSave, onClose }: { me
         </DialogBody>
       </DialogSurface>
     </Dialog>
-  )
+    {preview.element}
+  </>
 }

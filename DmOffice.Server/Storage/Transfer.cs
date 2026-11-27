@@ -79,7 +79,9 @@ public static class Transfer
             _ = Task.Run(async () =>
             {
                 using var job = Activity.Start(space.User.Id, Activity.FilesTransfer, body.Move ? "Verschieben" : "Kopieren");
+                using var control = JobControl.Run(space.User.Id, Activity.FilesTransfer);
                 try { await RunAsync(space, config, from, to, body, job, CancellationToken.None); }
+                catch (JobControl.Stopped e) { job.Finish(e.Message + " Was schon übertragen war, bleibt im Ziel."); }
                 catch (Exception e) when (e is not OutOfMemoryException)
                 {
                     log.LogWarning("Übertragung für {User}: {Error}", space.User.Login, e.Message);
@@ -112,6 +114,14 @@ public static class Transfer
         job.Progress(0, total, $"{plan.Count(x => !x.Item.IsDir)} Dateien");
         foreach (var (s, d, i) in plan)
         {
+            // Anhalten wartet hier, Abbrechen endet (jobcontrol). Beim Verschieben: was schon vollständig im Ziel ist, an der Quelle
+            // löschen - sonst läge es doppelt
+            try { await JobControl.CheckAsync(space.User.Id, Activity.FilesTransfer, ct); }
+            catch (JobControl.Stopped) when (body.Move)
+            {
+                foreach (var m in moved) await src.DeleteAsync(m, ct, permanent: true);
+                throw;
+            }
             var there = await dst.StatAsync(d, ct);
             if (i.IsDir)
             {
@@ -133,7 +143,8 @@ public static class Transfer
             if (gallery != null && i.Size <= MaxPlaced)
             {
                 byte[] bytes;
-                await using (var stream = await src.OpenReadAsync(s, ct)) { var m = new MemoryStream((int)i.Size); await stream.CopyToAsync(m, ct); bytes = m.ToArray(); }
+                // Die Größe stammt aus der Liste der Quelle (bei fremden Servern deren Angabe) - gelesen wird höchstens MaxPlaced
+                await using (var stream = await src.OpenReadAsync(s, ct)) bytes = await DmOffice.Core.ReadLimit.ReadAllAsync(stream, MaxPlaced, ct, i.Size);
                 await dst.WriteAsync(dest, new MemoryStream(bytes), ct, i.Modified);
                 try { await dst.PlacedAsync(gallery.Value.Source, gallery.Value.Rel, bytes, ct); }
                 catch (Exception e) when (e is not OperationCanceledException and not OutOfMemoryException) { /* dann holt das Einlesen es nach */ }
@@ -207,7 +218,11 @@ public static class Transfer
         {
             if (_driver != null) return StoragePath.Clean(path);
             var p = FileStore.Normalize(path);
-            // Systemordner (notizi, reservierter Ordner, Tresor) weder lesen noch beschreiben
+            // [feature:journal]
+            // Systemordner (notizi, Tagebuch-Medien, Tresor) weder lesen noch beschreiben
+            // [feature:journal:else]
+            // // Systemordner (notizi, reservierter Ordner, Tresor) weder lesen noch beschreiben
+            // [/feature:journal]
             if (p.Length > 0 && FileStore.IsSystem(_space.Db, p)) throw new UnauthorizedAccessException("Dieser Ordner ist geschützt.");
             return p;
         }
@@ -310,7 +325,8 @@ public static class Transfer
             var full = g.Path.Length == 0 ? rel : g.Path + "/" + rel;
             var e = await _driver!.StatAsync(full, ct);
             if (e == null) return;
-            DmOffice.Gallery.GalleryFolders.Placed(_space, _config, g, rel, bytes, e.Size, e.Modified);
+            // Einträge der Galerie stehen mit dem Pfad im externen Ordner (wie beim Einlesen), nicht relativ zum Galerie-Ordner
+            DmOffice.Gallery.GalleryFolders.Placed(_space, _config, g, full, bytes, e.Size, e.Modified);
         }
 
         /// <summary>Externer Ordner: Liste und Suche neu einlesen lassen, Galerie-Ordner darin gleich einlesen (nicht erst beim

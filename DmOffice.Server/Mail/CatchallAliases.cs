@@ -30,6 +30,10 @@ public static partial class CatchallAliases
         public string BlockAs { get; set; } = "junk";
         /// <summary>Antworten auf Mails an einen Catchall-Alias mit dieser als Absender (nur wenn der SMTP-Server des Postfachs das zulässt).</summary>
         public bool ReplyAs { get; set; }
+        // [feature:catchalldomains]
+        /// <summary>Einstellungen je Domain (CatchallDomains). null: noch die frühere Form - dann gilt <see cref="Migrate"/>.</summary>
+        public List<Site>? Sites { get; set; }
+        // [/feature:catchalldomains]
     }
 
     /// <param name="Blocked">null: offen; „junk“ oder „delete“: gesperrt, neue Mails dorthin</param>
@@ -58,7 +62,7 @@ public static partial class CatchallAliases
     /// <summary>Diese Kopfzeilen holt MailSync beim Abholen mit (nur für das Postfach der Catchall-Aliase).</summary>
     public static readonly string[] FetchHeaders = [.. Envelope, "Received"];
 
-    private static void Ensure(UserDb db)
+    internal static void Ensure(UserDb db)
     {
         db.Exec(@"CREATE TABLE IF NOT EXISTS mail_alias (address TEXT PRIMARY KEY, note TEXT NOT NULL DEFAULT '', created INTEGER NOT NULL,
                     blocked TEXT, auto INTEGER NOT NULL DEFAULT 0, folder TEXT, expire_kind TEXT, expire_days INTEGER) WITHOUT ROWID");
@@ -107,7 +111,12 @@ public static partial class CatchallAliases
 
     /// <summary>Gelten Catchall-Aliase für dieses Postfach?</summary>
     /// <summary>Für dieses Postfach eingerichtet - und in dieser Version freigeschaltet (Release-Liste).</summary>
-    public static bool ActiveFor(Config c, string accountId) => Features.On(Features.Catchall) && c.Domains.Count > 0 && c.Account == accountId;
+    public static bool ActiveFor(Config c, string accountId) => Features.On(Features.Catchall) && c.Domains.Count > 0 &&
+        // [feature:catchalldomains]
+        SitesOf(c).Any(s => s.Account == accountId);
+        // [feature:catchalldomains:else]
+        // c.Account == accountId;
+        // [/feature:catchalldomains]
 
     public static bool ActiveFor(UserDb db, MailAccount account) => ActiveFor(Load(db), account.Id);
 
@@ -133,12 +142,22 @@ public static partial class CatchallAliases
         return null;
     }
 
-    public static string? Of(Config c, MimeMessage m) =>
-        Find(c.Domains, m.Headers.Select(h => (h.Field, h.Value)), m.To.Mailboxes.Concat(m.Cc.Mailboxes).Select(x => x.Address));
+    /// <param name="account">Postfach, in dem die Mail liegt: nur dessen Domains (null: alle Domains)</param>
+    public static string? Of(Config c, MimeMessage m, string? account = null) =>
+        Find(DomainsOf(c, account), m.Headers.Select(h => (h.Field, h.Value)), m.To.Mailboxes.Concat(m.Cc.Mailboxes).Select(x => x.Address));
 
-    public static string? Of(Config c, IMessageSummary s) =>
-        Find(c.Domains, s.Headers?.Select(h => (h.Field, h.Value)) ?? [],
+    public static string? Of(Config c, IMessageSummary s, string? account = null) =>
+        Find(DomainsOf(c, account), s.Headers?.Select(h => (h.Field, h.Value)) ?? [],
             (s.Envelope?.To.Mailboxes ?? []).Concat(s.Envelope?.Cc.Mailboxes ?? []).Select(x => x.Address));
+
+    /// <summary>Domains eines Postfachs (null: alle).</summary>
+    public static IReadOnlyCollection<string> DomainsOf(Config c, string? account) =>
+        account == null ? c.Domains :
+        // [feature:catchalldomains]
+        SitesOf(c).Where(s => s.Account == account).Select(s => s.Domain).ToList();
+        // [feature:catchalldomains:else]
+        // c.Account == account ? c.Domains : [];
+        // [/feature:catchalldomains]
 
     private static IEnumerable<string> Addresses(string value)
     {
@@ -161,10 +180,10 @@ public static partial class CatchallAliases
         domains.Contains(PhishCheck.Ascii(address[(address.LastIndexOf('@') + 1)..]) ?? "");
 
     /// <summary>Beim Abholen: Mails des Postfachs ihrem Catchall-Alias zuordnen (auch unbekannte Adressen, zum Übernehmen).</summary>
-    public static void Record(UserDb db, Config c, IEnumerable<IMessageSummary> summaries)
+    public static void Record(UserDb db, Config c, IEnumerable<IMessageSummary> summaries, string? account = null)
     {
         foreach (var s in summaries)
-            if (Of(c, s) is { } alias)
+            if (Of(c, s, account) is { } alias)
             {
                 var from = s.Envelope?.From.Mailboxes.FirstOrDefault();
                 Hit(db, c, alias, s.Envelope?.MessageId, from?.Address, from?.Name, s.Envelope?.Date ?? s.InternalDate ?? DateTimeOffset.UtcNow);
@@ -186,9 +205,14 @@ public static partial class CatchallAliases
     public static Verdict? Judge(UserDb db, MailAccount account, MimeMessage m)
     {
         var c = Load(db);
-        if (!ActiveFor(c, account.Id) || Of(c, m) is not { } alias) return null;
+        if (!ActiveFor(c, account.Id) || Of(c, m, account.Id) is not { } alias) return null;
         var row = Get(db, alias);
-        if (row == null) return c.Unknown == "junk" ? new Verdict(alias, "junk", "alias-unknown") : null;
+        // [feature:catchalldomains]
+        // „Welche Aliase annehmen?“ gilt je Domain
+        if (row == null) return SiteFor(c, alias)?.Accept == "known" ? new Verdict(alias, "junk", "alias-unknown") : null;
+        // [feature:catchalldomains:else]
+        // if (row == null) return c.Unknown == "junk" ? new Verdict(alias, "junk", "alias-unknown") : null;
+        // [/feature:catchalldomains]
         return row.Blocked is { } b ? new Verdict(alias, b == "delete" ? "delete" : "junk", "alias-blocked") : null;
     }
 
@@ -199,8 +223,14 @@ public static partial class CatchallAliases
     public static List<MailRow> Tag(UserDb db, List<MailRow> rows)
     {
         var c = Load(db);
-        if (c.Domains.Count == 0 || c.Account == null) return rows;
-        var ids = rows.Where(r => r.Account == c.Account && r.MessageId != null).Select(r => r.MessageId!).Distinct().ToList();
+        if (c.Domains.Count == 0) return rows;
+        // [feature:catchalldomains]
+        var mine = SitesOf(c).Select(s => s.Account).OfType<string>().ToHashSet();
+        // [feature:catchalldomains:else]
+        // var mine = c.Account is { } only ? new HashSet<string> { only } : [];
+        // [/feature:catchalldomains]
+        if (mine.Count == 0) return rows;
+        var ids = rows.Where(r => mine.Contains(r.Account) && r.MessageId != null).Select(r => r.MessageId!).Distinct().ToList();
         if (ids.Count == 0) return rows;
         Ensure(db);
         var found = new Dictionary<string, (string Alias, string State)>();
@@ -212,7 +242,7 @@ public static partial class CatchallAliases
                          r => (r.GetString(0), r.GetString(1), r.GetString(2)), chunk.Select((m, i) => (names[i], (object?)m)).ToArray()))
                 found[mid] = (alias, state);
         }
-        return found.Count == 0 ? rows : rows.Select(r => r.Account == c.Account && r.MessageId != null && found.TryGetValue(r.MessageId, out var a)
+        return found.Count == 0 ? rows : rows.Select(r => mine.Contains(r.Account) && r.MessageId != null && found.TryGetValue(r.MessageId, out var a)
             ? r with { Alias = a.Alias, AliasState = a.State } : r).ToList();
     }
 
@@ -336,6 +366,12 @@ public static partial class CatchallAliases
     public static bool CanSendAs(UserDb db, MailAccount account, string address)
     {
         var c = Load(db);
+        // [feature:catchalldomains]
+        // Jeder Alias der Domain aus deren Postfach, auch nicht angelegte - gesperrte nicht. „Antworten von“ bestimmt nur die Vorgabe.
+        if (Features.On(Features.CatchallDomains))
+            return ActiveFor(c, account.Id) && Normalize(address) is { } x && SiteFor(c, x) is { } site && site.Account == account.Id
+                   && Get(db, x) is not { Blocked: not null };
+        // [/feature:catchalldomains]
         return c.ReplyAs && ActiveFor(c, account.Id) && Normalize(address) is { } a && Matches(c.Domains, a) && Get(db, a) != null;
     }
 

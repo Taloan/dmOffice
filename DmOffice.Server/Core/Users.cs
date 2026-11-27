@@ -37,6 +37,7 @@ public sealed class UserRecord
     /// <summary>Pukki darf fuer diesen Benutzer die KI fragen (Version 2, vom Admin freigegeben).</summary>
     public bool AiAllowed { get; set; }
 
+
     /// <summary>Wechselt bei Passwort, Rolle und 2FA - aeltere Anmelde-Cookies gelten dann nicht mehr.</summary>
     public string Stamp { get; set; } = "";
 
@@ -52,6 +53,13 @@ public sealed class UserRecord
     /// <summary>Über den Identitätsanbieter angelegt, noch ohne eigenes Passwort (das zufällige kennt niemand): ein eigenes lässt sich
     /// ohne das bisherige festlegen; die Verknüpfung lässt sich erst danach lösen.</summary>
     public bool NoOwnPassword { get; set; }
+
+    /// <summary>Von der Verwaltung gesperrt (Vorstufe zum Löschen): keine Anmeldung, keine App-Passwörter, keine Hintergrundarbeit;
+    /// die Daten bleiben. Wirkt nur mit der Kennung „userlock“ (<see cref="LockedOut"/>).</summary>
+    public bool Locked { get; set; }
+
+    /// <summary>Gesperrt und die Sperre gilt in dieser Version.</summary>
+    public bool LockedOut => Locked && Features.On(Features.UserLock);
 
     public void NewStamp() => Stamp = Guid.NewGuid().ToString("N");
 }
@@ -116,21 +124,42 @@ public sealed class UserStore
 
     public static string Normalize(string login) => login.Trim().ToLowerInvariant();
 
+    /// <summary>Hoechstlaenge des Anzeigenamens - er steht in Listen, Chat und Kopfzeilen.</summary>
+    public const int MaxDisplayName = 100;
+
+    private static string DisplayNameOf(string displayName, string login)
+    {
+        if (displayName?.Trim().Length > MaxDisplayName) throw new ArgumentException($"Der Anzeigename ist zu lang (höchstens {MaxDisplayName} Zeichen).");
+        return string.IsNullOrWhiteSpace(displayName) ? login : displayName.Trim();
+    }
+
+    // Am Anfang ein Buchstabe oder eine Ziffer, keine zwei Punkte hintereinander: „..“ oder „.x“ ergäben als WebDAV-Adresse
+    // (/dav/files/<login>/) einen Pfad, den Programme als „eine Ebene höher“ lesen
     public static bool ValidLogin(string login) =>
-        login.Length is >= 2 and <= 40 && login.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '-' or '_');
+        login.Length is >= 2 and <= 40 && char.IsAsciiLetterOrDigit(login[0]) && !login.Contains("..")
+        && login.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '-' or '_');
+
+    /// <summary>Hoechstlaenge eines Passworts - länger bringt keine Sicherheit, nur Rechenzeit beim Prüfen.</summary>
+    public const int MaxPassword = 1000;
+
+    /// <summary>Was an einem neuen Passwort (mindestens 8 Zeichen schon geprüft) nicht passt, sonst null.</summary>
+    public static string? PasswordProblem(string password) =>
+        string.IsNullOrWhiteSpace(password) ? "Das Passwort braucht neben Leerzeichen auch andere Zeichen."
+        : password.Length > MaxPassword ? $"Das Passwort ist zu lang (höchstens {MaxPassword} Zeichen)." : null;
 
     public UserRecord Create(string login, string displayName, string password, bool isAdmin)
     {
         login = Normalize(login);
-        if (!ValidLogin(login)) throw new ArgumentException("Anmeldename: 2–40 Zeichen, nur a–z, 0–9, Punkt, Bindestrich, Unterstrich.");
+        if (!ValidLogin(login)) throw new ArgumentException("Anmeldename: 2–40 Zeichen, nur a–z, 0–9, Punkt, Bindestrich, Unterstrich; am Anfang ein Buchstabe oder eine Ziffer.");
         if (password.Length < 8) throw new ArgumentException("Passwort: mindestens 8 Zeichen.");
+        if (PasswordProblem(password) is { } weak) throw new ArgumentException(weak);
         lock (_lock)
         {
             if (_users.Any(u => u.Login == login)) throw new ArgumentException("Den Anmeldenamen gibt es schon.");
             var user = new UserRecord
             {
                 Login = login,
-                DisplayName = string.IsNullOrWhiteSpace(displayName) ? login : displayName.Trim(),
+                DisplayName = DisplayNameOf(displayName, login),
                 PasswordHash = Passwords.Hash(password),
                 IsAdmin = isAdmin,
                 WrappedKey = _vault.Wrap(RandomNumberGenerator.GetBytes(32)),
@@ -146,15 +175,16 @@ public sealed class UserStore
     public UserRecord? CreateFirstAdmin(string login, string displayName, string password)
     {
         login = Normalize(login);
-        if (!ValidLogin(login)) throw new ArgumentException("Anmeldename: 2–40 Zeichen, nur a–z, 0–9, Punkt, Bindestrich, Unterstrich.");
+        if (!ValidLogin(login)) throw new ArgumentException("Anmeldename: 2–40 Zeichen, nur a–z, 0–9, Punkt, Bindestrich, Unterstrich; am Anfang ein Buchstabe oder eine Ziffer.");
         if (password.Length < 8) throw new ArgumentException("Passwort: mindestens 8 Zeichen.");
+        if (PasswordProblem(password) is { } weak) throw new ArgumentException(weak);
         lock (_lock)
         {
             if (_users.Count != 0) return null;
             var user = new UserRecord
             {
                 Login = login,
-                DisplayName = string.IsNullOrWhiteSpace(displayName) ? login : displayName.Trim(),
+                DisplayName = DisplayNameOf(displayName, login),
                 PasswordHash = Passwords.Hash(password),
                 IsAdmin = true,
                 WrappedKey = _vault.Wrap(RandomNumberGenerator.GetBytes(32))
@@ -162,6 +192,21 @@ public sealed class UserStore
             _users.Add(user);
             Save();
             return Copy(user);
+        }
+    }
+
+    /// <summary>Nach erfolgreicher Anmeldung: Passwort-Hash mit weniger Runden als heute neu bilden (ohne neuen Stempel,
+    /// andere Sitzungen bleiben angemeldet). Nur, wenn der Hash inzwischen nicht geändert wurde.</summary>
+    public void UpgradeHash(UserRecord u, string password)
+    {
+        if (!Passwords.Outdated(u.PasswordHash) || string.IsNullOrEmpty(password)) return;
+        var fresh = Passwords.Hash(password);
+        lock (_lock)
+        {
+            var x = _users.FirstOrDefault(r => r.Id == u.Id);
+            if (x == null || x.PasswordHash != u.PasswordHash) return;
+            x.PasswordHash = fresh;
+            Save();
         }
     }
 
@@ -191,9 +236,13 @@ public sealed class UserStore
 
     private void Save()
     {
-        var tmp = _path + ".tmp";
-        File.WriteAllText(tmp, JsonSerializer.Serialize(_users, Json));
-        File.Move(tmp, _path, overwrite: true);
+        // [feature:cfgseal]
+        ConfigSeal.Save(_path, JsonSerializer.Serialize(_users, Json), _vault);
+        // [feature:cfgseal:else]
+        // var tmp = _path + ".tmp";
+        // File.WriteAllText(tmp, JsonSerializer.Serialize(_users, Json));
+        // File.Move(tmp, _path, overwrite: true);
+        // [/feature:cfgseal]
     }
 
     private static UserRecord Copy(UserRecord u) => JsonSerializer.Deserialize<UserRecord>(JsonSerializer.Serialize(u))!;
@@ -201,7 +250,9 @@ public sealed class UserStore
 
 public static class Passwords
 {
-    private const int Iterations = 210_000;
+    /// <summary>Runden für neue Hashes. Ältere Hashes (210 000) gelten weiter und werden beim nächsten Anmelden nachgezogen
+    /// (<see cref="Outdated"/>).</summary>
+    public const int Iterations = 600_000;
 
     public static string Hash(string password)
     {
@@ -210,7 +261,7 @@ public static class Passwords
         return $"pbkdf2${Iterations}${Convert.ToBase64String(salt)}${Convert.ToBase64String(hash)}";
     }
 
-    // Hoechstens so viele Passwortpruefungen ohne Anmeldung gleichzeitig: jede rechnet 210 000 PBKDF2-Runden.
+    // Hoechstens so viele Passwortpruefungen ohne Anmeldung gleichzeitig: jede rechnet 600 000 PBKDF2-Runden.
     // Ohne Grenze legte eine Flut von Anmeldeversuchen alle Kerne lahm - auch fuer die Angemeldeten.
     private static readonly SemaphoreSlim AnonGate = new(Math.Max(1, Environment.ProcessorCount / 2));
 
@@ -219,9 +270,26 @@ public static class Passwords
     public static async Task<bool?> VerifyLimitedAsync(string password, string? stored, CancellationToken ct = default)
     {
         if (!await AnonGate.WaitAsync(TimeSpan.FromSeconds(15), ct)) return null;
-        try { return Verify(password, stored); }
+        try
+        {
+            var ok = Verify(password, stored);
+            // Gleiche Rechenzeit wie ein aktueller Hash (auch der für unbekannte Namen): ein Konto mit altem Hash fällt nicht auf
+            if (Rounds(stored) is int r and < Iterations) Rfc2898DeriveBytes.Pbkdf2("-", PadSalt, Iterations - r, HashAlgorithmName.SHA256, 32);
+            return ok;
+        }
         finally { AnonGate.Release(); }
     }
+
+    private static readonly byte[] PadSalt = RandomNumberGenerator.GetBytes(16);
+
+    private static int? Rounds(string? stored)
+    {
+        var parts = stored?.Split('$');
+        return parts is { Length: 4 } && parts[0] == "pbkdf2" && int.TryParse(parts[1], out var r) ? r : null;
+    }
+
+    /// <summary>Hash mit weniger Runden als heute üblich: nach erfolgreicher Prüfung mit dem Passwort neu bilden.</summary>
+    public static bool Outdated(string? stored) => Rounds(stored) is int r && r < Iterations;
 
     public static bool Verify(string password, string? stored)
     {

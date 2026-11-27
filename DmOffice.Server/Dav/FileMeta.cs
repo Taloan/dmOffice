@@ -62,6 +62,8 @@ public static class FileMeta
         db.Exec($@"CREATE TRIGGER IF NOT EXISTS file_meta_xmp_i AFTER INSERT ON files WHEN lower(new.path) LIKE '%.xmp' BEGIN {stale.Replace("X.", "new.")}; END;
             CREATE TRIGGER IF NOT EXISTS file_meta_xmp_u AFTER UPDATE OF etag ON files WHEN lower(new.path) LIKE '%.xmp' BEGIN {stale.Replace("X.", "new.")}; END;
             CREATE TRIGGER IF NOT EXISTS file_meta_xmp_d AFTER DELETE ON files WHEN lower(old.path) LIKE '%.xmp' BEGIN {stale.Replace("X.", "old.")}; END;");
+        // Fotos eines Tages (Tagebuch) über die Aufnahmezeit statt über alle Zeilen
+        db.Exec("CREATE INDEX IF NOT EXISTS file_meta_taken ON file_meta(taken)");
         // Markierung wie Lightroom (xmpDM:pick) kam später dazu: Spalte anlegen, Fotos einmal neu lesen
         if (!db.Query("PRAGMA table_info(file_meta)", r => r.GetString(1)).Contains("pick", StringComparer.OrdinalIgnoreCase))
         {
@@ -131,7 +133,14 @@ public static class FileMeta
                 Row? row = null;
                 try { using var s = FileStore.OpenRead(db, path); row = WithSidecar(db, path, Read(path, s, space.Zone)); }
                 catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidOperationException) { }   // fehlt oder liegt nur im Storage Extender
+                // [feature:lenscorr]
+                // Neues Foto mit passender Regel: Objektivkorrektur gleich eintragen
+                var lensNew = Gallery.LensApply.Wanted(row, () => Gallery.LensApply.AutoNewFor(space), space.User.Id) && db.Scalar("SELECT 1 FROM file_meta WHERE path = $p", ("$p", path)) == null;
                 Store(db, path, etag, row);
+                if (lensNew) Gallery.LensApply.ImportedOwn(db, path);
+                // [feature:lenscorr:else]
+                // Store(db, path, etag, row);
+                // [/feature:lenscorr]
                 done++;
                 progress?.Invoke(done);
             }
@@ -211,19 +220,26 @@ public static class FileMeta
             ("$ti", r?.Title), ("$k", r?.Keywords), ("$lb", r?.Label), ("$de", r?.Description), ("$pk", r?.Pick));
 
     /// <summary>Gelesene Aufnahmedaten: alle Fotos und Videos (ohne Pfad) oder die direkt in einem Ordner.</summary>
-    public static List<Row> List(UserDb db, string? folder)
+    public static List<Row> List(UserDb db, string? folder) => List(db, folder, null, null);
+
+    /// <summary>Fotos und Videos mit Aufnahmezeit in [from, to) (ms, UTC) - über den Index file_meta_taken (Tagebuch: Fotos des Tages).</summary>
+    public static List<Row> Taken(UserDb db, long from, long to) => List(db, null, from, to);
+
+    private static List<Row> List(UserDb db, string? folder, long? from, long? to)
     {
         Ensure(db);
         // Angaben nur in der Datenbank (PhotoMarks) gehen vor denen aus der Datei
         Gallery.PhotoMarks.Ensure(db);
         string C(string c) => Gallery.PhotoMarks.Col("m", c);
         var cols = $"m.path, m.taken, m.camera, m.lens, m.focal, m.aperture, m.exposure, m.iso, m.lat, m.lon, m.width, m.height, m.duration, {C("rating")}, {C("title")}, {C("keywords")}, {C("label")}, {C("description")}, {C("pick")}";
-        var sql = folder == null
+        var sql = from != null
+            ? $"SELECT {cols} FROM file_meta m INDEXED BY file_meta_taken LEFT JOIN photo_marks pm ON pm.key = m.path WHERE m.ok = 1 AND m.taken >= $a AND m.taken < $b"
+            : folder == null
             ? $"SELECT {cols} FROM file_meta m LEFT JOIN photo_marks pm ON pm.key = m.path WHERE m.ok = 1"
             : $"SELECT {cols} FROM file_meta m JOIN files f ON f.path = m.path LEFT JOIN photo_marks pm ON pm.key = m.path WHERE m.ok = 1 AND f.parent = $d";
         return db.Query(sql, r => new Row(r.GetString(0), N<long>(r, 1), S(r, 2), S(r, 3), N<double>(r, 4), N<double>(r, 5), N<double>(r, 6), N<int>(r, 7),
             N<double>(r, 8), N<double>(r, 9), N<int>(r, 10), N<int>(r, 11), N<double>(r, 12), N<int>(r, 13), S(r, 14), S(r, 15), S(r, 16), S(r, 17), N<int>(r, 18)),
-            ("$d", folder ?? "")).ToList();
+            ("$d", folder ?? ""), ("$a", from ?? 0), ("$b", to ?? 0)).ToList();
     }
 
     private static string? S(Microsoft.Data.Sqlite.SqliteDataReader r, int i) => r.IsDBNull(i) ? null : r.GetString(i);
@@ -262,7 +278,11 @@ public static class FileMeta
         var exif = subs.FirstOrDefault(d => d.ContainsTag(ExifDirectoryBase.TagDateTimeOriginal))
             ?? subs.FirstOrDefault(d => d.ContainsTag(ExifDirectoryBase.TagExposureTime) || d.ContainsTag(ExifDirectoryBase.TagFNumber)) ?? subs.FirstOrDefault();
 
-        // Aufnahmezeit: mit Zeitzone aus dem Bild, sonst die eigene; bei Videos die Erstellzeit (UTC)
+        // [feature:journal]
+        // Aufnahmezeit wie im Tagebuch: mit Zeitzone aus dem Bild, sonst die eigene; bei Videos die Erstellzeit (UTC)
+        // [feature:journal:else]
+        // // Aufnahmezeit: mit Zeitzone aus dem Bild, sonst die eigene; bei Videos die Erstellzeit (UTC)
+        // [/feature:journal]
         DateTime? taken = null;
         if (exif != null && (exif.TryGetDateTime(ExifDirectoryBase.TagDateTimeOriginal, out var local) || exif.TryGetDateTime(ExifDirectoryBase.TagDateTimeDigitized, out local)))
         {

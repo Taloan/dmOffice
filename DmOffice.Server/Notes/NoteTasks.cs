@@ -20,7 +20,7 @@ public static class NoteTasks
     public static List<NoteTask> All(NotesDb db)
     {
         var result = new List<NoteTask>();
-        foreach (var note in db.GetAllActive()) result.AddRange(Of(note));
+        foreach (var note in db.GetActiveWithBoxes()) result.AddRange(Of(note));
         return result;
     }
 

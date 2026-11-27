@@ -79,6 +79,8 @@ public static class CryptomatorPaths
     public static bool LooksLikeVault(IEnumerable<(string Name, bool IsDir)> entries) =>
         entries.Any(e => !e.IsDir && e.Name == VaultConfig.FileName) && entries.Any(e => e.IsDir && e.Name == VaultNames.DataDir);
 
+    private static readonly SemaphoreSlim UnlockGate = new(2);
+
     public static IResult Unlock(HttpContext http, string root, string password)
     {
         var db = http.Space().Db;
@@ -112,8 +114,11 @@ public static class CryptomatorPaths
             return Results.BadRequest(new { error = "Dieser Tresor wird über Cryptomator Hub geöffnet - das geht in dmOffice nicht." });
         }
         CryptomatorVault? vault;
+        // scrypt braucht je Entsperren bis 64 MiB: höchstens zwei gleichzeitig, wie beim eingebauten Tresor
+        if (!UnlockGate.Wait(TimeSpan.FromSeconds(30))) { owned?.Dispose(); return Results.Json(new { error = "Zu viele Versuche, bitte kurz warten." }, statusCode: 429); }
         try { vault = CryptomatorVault.Open(files, password); }
         catch (FormatException ex) { owned?.Dispose(); return Results.BadRequest(new { error = ex.Message }); }
+        finally { UnlockGate.Release(); }
         if (vault == null)
         {
             owned?.Dispose();

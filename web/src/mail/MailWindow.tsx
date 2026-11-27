@@ -1,13 +1,20 @@
 // Eine Mail im eigenen Fenster (Doppelklick in der Liste, wie in Outlook): Lesen, Antworten, Weiterleiten, Loeschen.
 // Adresse: #/popup/mail/<konto>/<message-id>
-import { Spinner, Text, tokens } from '@fluentui/react-components'
+import { Menu, MenuDivider, MenuItem, MenuList, MenuPopover, MenuTrigger, Spinner, Text, tokens } from '@fluentui/react-components'
+import {
+  ArrowForward20Regular, ArrowReply20Regular, ArrowReplyAll20Regular, Code20Regular, Delete20Regular, MoreHorizontal20Regular, Print20Regular,
+  ShieldCheckmark20Regular, ShieldError20Regular, WeatherMoon20Regular,
+} from '@fluentui/react-icons'
 import { useEffect, useRef, useState } from 'react'
 import { Account, api, featureOn, MailItem, Message, q } from '../api'
-import { Ribbon, RibbonFrame, RibbonTabs } from '../shell/Ribbon'
+import { Ribbon, RibbonButton, RibbonDivider, RibbonFrame, RibbonTabs } from '../shell/Ribbon'
 import { useApp } from '../App'
 import { t } from '../i18n'
 import { Compose, ComposeHandle, ComposeInit, forwardOf, replyOf } from './Compose'
-import { ReadingPane } from './ReadingPane'
+import { ReadingPane, saveMailSource } from './ReadingPane'
+import { ExpiryMenuItems } from './ExpiryMenu'
+import { useIsDark } from '../theme'
+import { usePrefs } from '../prefs'
 
 export const isMailWindow = () => location.hash.startsWith('#/popup/mail/') || location.hash.startsWith('#/popup/compose/')
 
@@ -81,6 +88,9 @@ function ReadWindow() {
   const [accounts, setAccounts] = useState<Account[]>([])
   const [compose, setCompose] = useState<ComposeInit | null>(null)
   const [error, setError] = useState('')
+  const dark = useIsDark()
+  const [invert, setInvert] = useState(true)
+  const { prefs } = usePrefs()
 
   useEffect(() => {
     const m = location.hash.match(/^#\/popup\/mail\/([^/]+)\/(.+)$/)
@@ -92,6 +102,7 @@ function ReadWindow() {
   useEffect(() => { document.title = message?.subject || item?.subject || 'dmOffice' }, [message, item])
 
   const account = accounts.find(a => a.id === item?.account)
+  const junkLock = featureOn('junklock') && !!message?.junk // [feature:junklock]
   const act = async (what: 'delete' | 'junk' | 'notjunk') => {
     if (!item) return
     try {
@@ -106,14 +117,47 @@ function ReadWindow() {
   if (!item) return <Spinner style={{ marginTop: 60 }} />
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: tokens.colorNeutralBackground1 }}>
+      {!compose && (
+        // Menüband wie im Hauptfenster: alle Befehle zur Mail stehen hier, nicht im Lesebereich
+        <RibbonFrame area="mailwindow" tabs={<RibbonTabs tabs={[['start', t('ribbon|Start')]]} value="start" onChange={() => {}} />}>
+          <Ribbon>
+            {/* Standardantwort (Einstellungen -> Verfassen) steht vorne */}
+            {(prefs.replyAll ? [true, false] : [false, true]).map(all => (
+              <RibbonButton key={String(all)} icon={all ? <ArrowReplyAll20Regular /> : <ArrowReply20Regular />} label={all ? t('Allen antworten') : t('Antworten')}
+                disabled={!message || !account || junkLock} onClick={() => message && account && setCompose(replyOf(message, account, all))} />
+            ))}
+            <RibbonButton icon={<ArrowForward20Regular />} label={t('Weiterleiten')} disabled={!message || !account || junkLock}
+              onClick={() => message && account && setCompose(forwardOf(message, account))} />
+            <RibbonDivider />
+            <RibbonButton icon={<Delete20Regular />} label={t('Löschen')} onClick={() => act('delete')} />
+            {message?.junk
+              ? <RibbonButton icon={<ShieldCheckmark20Regular />} label={t('Kein Junk')} onClick={() => act('notjunk')} />
+              : <RibbonButton icon={<ShieldError20Regular />} label={t('Junk')} onClick={() => act('junk')} />}
+            <RibbonDivider />
+            <RibbonButton icon={<Print20Regular />} label={t('Drucken')} disabled={!message} onClick={() => window.dispatchEvent(new Event('dm-mail-print'))} />
+            {dark && <RibbonButton icon={<WeatherMoon20Regular />} label={t('Dunkel darstellen')} pressed={invert} onClick={() => setInvert(v => !v)} />}
+            <Menu>
+              <MenuTrigger disableButtonEnhancement><RibbonButton icon={<MoreHorizontal20Regular />} label={t('Mehr')} /></MenuTrigger>
+              <MenuPopover>
+                <MenuList>
+                  <MenuItem icon={<Code20Regular />} disabled={junkLock} onClick={() => saveMailSource(item)}>{t('Quelltext (.eml)')}</MenuItem>
+                  {featureOn('mailexpiry') && <MenuDivider />}
+                  <ExpiryMenuItems targets={[item]} onError={fail}
+                    onDone={w => { tellOpener(); notify(w === 'set' ? t('Entfernen nach Zeit eingeplant') : t('Entfernen nach Zeit zurückgenommen')) }} />
+                </MenuList>
+              </MenuPopover>
+            </Menu>
+          </Ribbon>
+        </RibbonFrame>
+      )}
       {compose && account ? (
         <Compose init={compose} accounts={accounts} onClose={sent => { setCompose(null); if (sent) { tellOpener(); window.close() } }} />
       ) : (
         <ReadingPane item={item}
           onLoaded={m => { setMessage(m); if (!item.seen) tellOpener() }}
-          onReply={all => message && account && setCompose(replyOf(message, account, all))}
-          onForward={() => message && account && setCompose(forwardOf(message, account))}
+          onReply={all => message && account && !junkLock && setCompose(replyOf(message, account, all))}
           onAct={act}
+          invert={invert}
           onRemoveCategory={async key => {
             setItem(i => i && { ...i, keywords: (i.keywords ?? []).filter(k => k !== key) })
             try { await api.post(`/api/mail/${item.account}/category`, { folder: item.folder, uids: [item.uid], key, on: false }); tellOpener() }

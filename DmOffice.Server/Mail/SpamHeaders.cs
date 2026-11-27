@@ -1,12 +1,13 @@
 using System.Globalization;
 using System.Text.RegularExpressions;
+using DmOffice.Core;
 using MimeKit;
 
 namespace DmOffice.Mail;
 
 /// <summary>
 /// Urteil des eigenen Mailservers als Merkmale für den lernenden Spamfilter: SpamAssassin (X-Spam-Flag, X-Spam-Status,
-/// X-Spam-Score, X-Spam-Level), rspamd (X-Rspamd-Score, X-Spamd-Result), Microsoft (SCL) und einfache „X-Spam: yes“.
+/// X-Spam-Score, X-Spam-Level), rspamd (X-Rspamd-Score, X-Spamd-Result), Stalwart (X-Spam-Score mit score=), Microsoft (SCL) und einfache „X-Spam: yes“.
 /// Es zählen nur Zeilen über der zweiten Received-Zeile - die hat die eigene Empfangsstation geschrieben; weiter unten kann
 /// der Absender selbst „X-Spam-Status: No“ hineinschreiben. Wie stark die Merkmale wirken, lernt der Filter aus den eigenen
 /// Klicks auf „Junk“ und „Kein Junk“ - ein Server, der oft danebenliegt, zählt so von selbst wenig.
@@ -39,6 +40,10 @@ public static partial class SpamHeaders
         double? score = null;
         if (Get("X-Spam-Status") is { } st && ScoreRx().Match(st) is { Success: true } sm) score = Num(sm.Groups[1].Value);
         score ??= Num(Get("X-Spam-Score")) ?? Num(Get("X-Rspamd-Score"));
+        // [feature:spamstalwart]
+        // Stalwart: „X-Spam-Score: spam, score=12.30, avg_confidence=0.08“ – zählt auch, wenn Stalwart nur markiert und nicht nach Junk legt
+        if (score == null && Features.On(Features.SpamStalwart) && Get("X-Spam-Score") is { } ss && ScoreRx().Match(ss) is { Success: true } sw) score = Num(sw.Groups[1].Value);
+        // [/feature:spamstalwart]
         if (score == null && Get("X-Spamd-Result") is { } sr && RspamdRx().Match(sr) is { Success: true } rm) score = Num(rm.Groups[1].Value);
         if (score == null && Get("X-Spam-Level") is { } level && level.Length > 0 && level.All(c => c == '*')) score = level.Length;
         if (score is double s) yield return "srv-score:" + (s < 0 ? "neg" : s < 2 ? "low" : s < 5 ? "mid" : s < 10 ? "high" : "vhigh");

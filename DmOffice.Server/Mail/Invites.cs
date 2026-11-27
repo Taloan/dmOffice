@@ -1,3 +1,4 @@
+using MailKit;
 using System.Text;
 using DmOffice.Core;
 using DmOffice.Dav;
@@ -185,18 +186,22 @@ public static class Invites
             // Eigene Termine (ich bin Organisator) nie durch fremde REQUEST/CANCEL aendern
             if (storedOrg != null && mine.Contains(storedOrg) && response != "apply")
                 throw new ArgumentException("Dieser Termin gehört dir - eine fremde Einladung ändert ihn nicht.");
-            // Organisator der Einladung muss zum gespeicherten passen
-            if (storedOrg != null && mailOrg != null && storedOrg != mailOrg)
-                throw new ArgumentException("Die Einladung kommt nicht vom Organisator dieses Termins.");
-            // Und der Mail-Absender muss der Organisator sein (bzw. bei einer Antwort der antwortende Teilnehmer)
+            // Organisator der Einladung muss zum gespeicherten passen. Fehlt er auf einer Seite, laesst sich nichts
+            // vergleichen - dann aendert die Mail den Termin nicht (ein Termin ohne Organisator ist ein eigener).
             var from = (m.From.Mailboxes.FirstOrDefault()?.Address ?? m.Sender?.Address)?.ToLowerInvariant();
             if (response == "apply")
             {
+                // Antwort eines Teilnehmers: nur auf eine Einladung (Termin mit Organisator), und der Absender muss der Antwortende sein
+                if (storedOrg == null)
+                    throw new ArgumentException("Die Antwort passt nicht zum Absender.");
                 var who = Mailto(ev.Get("ATTENDEE"))?.ToLowerInvariant();
-                if (from != null && who != null && from != who)
+                if (from == null || who == null || from != who)
                     throw new ArgumentException("Die Antwort passt nicht zum Absender.");
             }
-            else if (from != null && mailOrg != null && from != mailOrg)
+            else if (storedOrg == null || mailOrg == null || storedOrg != mailOrg)
+                throw new ArgumentException("Die Einladung kommt nicht vom Organisator dieses Termins.");
+            // Und der Mail-Absender muss der Organisator sein
+            else if (from == null || from != mailOrg)
                 throw new ArgumentException("Die Einladung kommt nicht vom Organisator dieses Termins.");
         }
 

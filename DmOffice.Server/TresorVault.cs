@@ -17,7 +17,12 @@ public sealed class FileStoreVaultFiles(UserDb db, string root) : IVaultFiles
 
     public bool FileExists(string rel) => FileStore.Get(db, P(rel)) is { IsDir: false };
     public bool DirExists(string rel) => FileStore.Get(db, P(rel)) is { IsDir: true };
-    public byte[] ReadAll(string rel) => FileStore.Data(db, P(rel)) ?? throw new FileNotFoundException("Diese Datei gibt es im Tresor nicht.");
+    /// <summary>Nur kleine Verwaltungsdateien des Tresors: eine (veränderte) übergroße Datei wird nicht geladen.</summary>
+    public byte[] ReadAll(string rel)
+    {
+        if (FileStore.Get(db, P(rel)) is { IsDir: false, Size: > VaultFileLimits.MaxMetaFile }) throw new ReadLimit.TooLargeException();
+        return FileStore.Data(db, P(rel)) ?? throw new FileNotFoundException("Diese Datei gibt es im Tresor nicht.");
+    }
 
     public Stream OpenRead(string rel)
     {

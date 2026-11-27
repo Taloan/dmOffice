@@ -272,6 +272,12 @@ def apply_corrections(img_rgb: np.ndarray, corr: dict, *, simulate: bool = False
                       inplace: bool = False) -> np.ndarray:
     """Wendet die Korrekturen an. simulate=True überspringt Schärfen/Drehen (nur Tonwerte).
     inplace=True schreibt das Ergebnis in img_rgb (spart bei großen Bildern ein Vollbild)."""
+    # [feature:lenscorr]
+    if corr.get("lens") and not simulate:
+        from . import lens
+        img_rgb = lens.apply(img_rgb, corr["lens"])  # neues Bild gleicher Größe → darf überschrieben werden
+        inplace = True
+    # [/feature:lenscorr]
     p = _Plan(corr, img_rgb)
     h, w, long_edge = p.h, p.w, p.long_edge
 

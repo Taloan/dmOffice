@@ -27,6 +27,9 @@ public static class MailCompose
         public bool ForwardAsAttachment { get; set; }
         /// <summary>Entwurf, den dieser ersetzt.</summary>
         public uint? DraftUid { get; set; }
+        /// <summary>Feste Kennung des Entwurfs (seine Message-ID, vor dem ersten Speichern eine Zufallskennung des Web): Speichern ersetzt
+        /// jeden Entwurf mit dieser Kennung, auch wenn ein anderer Tab ihn inzwischen neu abgelegt hat (DraftUid wäre dann veraltet).</summary>
+        public string? DraftId { get; set; }
         public bool HighPriority { get; set; }
         public bool ReadReceipt { get; set; }
         /// <summary>Konto der Original-Mail (ReplyUid, ForwardUid) und des alten Entwurfs (DraftUid),
@@ -233,6 +236,28 @@ public static class MailCompose
         m.Headers.Add("X-dmOffice-Forwarded", "1");
         return m;
     }
+
+    /// <summary>
+    /// Umleiten durch eine Regel (Kennung ruleforward, wie Sieve „redirect“): die Mail unverändert, oben nur Resent-Angaben
+    /// (RFC 5322 3.6.6) und das Kennzeichen gegen Schleifen. Kopfzeilen und Inhalt des Originals bleiben Byte für Byte - eine
+    /// DKIM-Signatur bleibt gültig, denn sie deckt nur die in h= genannten Kopfzeilen ab. Absender im Umschlag: das Konto.
+    /// </summary>
+    public static MimeMessage Redirect(MailAccount account, MimeMessage original, string to)
+    {
+        using var ms = new MemoryStream();
+        original.WriteTo(ms);
+        ms.Position = 0;
+        var m = MimeMessage.Load(ms);
+        // Oben einfügen, in umgekehrter Reihenfolge: Resent-Date, Resent-From, Resent-To, Resent-Message-ID, Kennzeichen
+        m.Headers.Insert(0, new Header("X-dmOffice-Forwarded", "1"));
+        m.Headers.Insert(0, new Header(HeaderId.ResentMessageId, "<" + MimeKit.Utils.MimeUtils.GenerateMessageId(DomainOf(account.Email)) + ">"));
+        m.Headers.Insert(0, new Header(HeaderId.ResentTo, to.Trim()));
+        m.Headers.Insert(0, new Header(HeaderId.ResentFrom, account.Email));
+        m.Headers.Insert(0, new Header(HeaderId.ResentDate, MimeKit.Utils.DateUtils.FormatDate(DateTimeOffset.Now)));
+        return m;
+    }
+
+    private static string DomainOf(string email) => email.Contains('@') ? email[(email.IndexOf('@') + 1)..] : "localhost";
 
     private const string CidPlaceholder = "https://cid.dmoffice.invalid/";
 }

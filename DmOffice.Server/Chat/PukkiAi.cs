@@ -30,8 +30,13 @@ public static class PukkiAi
         "dem bisherigen Gespräch (etwa wann erinnert werden soll) nicht wieder auf - darum kümmert sich dmOffice. Bittet dich " +
         "jemand ausdrücklich, etwas einzutragen oder nachzusehen, sag kurz, wie er es Pukki direkt sagen kann, zum Beispiel " +
         "„Erinnere mich morgen um 9 an …“ oder „Was steht morgen an?“. " +
-        // Sonst „korrigiert“ die KI Meldungen von dmOffice im Verlauf („Ich kann keinen Termin anlegen“) und die Uhrzeit
-        "Frühere Nachrichten im Verlauf, die etwas als erledigt melden (Termin angelegt, Notiz gespeichert …), " +
+        // [feature:journal]
+        // Sonst „korrigiert“ die KI Meldungen von dmOffice im Verlauf („Ich kann nichts ins Tagebuch eintragen“) und die Uhrzeit
+        "Frühere Nachrichten im Verlauf, die etwas als erledigt melden (Termin angelegt, Tagebucheintrag gespeichert …), " +
+        // [feature:journal:else]
+        // // Sonst „korrigiert“ die KI Meldungen von dmOffice im Verlauf („Ich kann keinen Termin anlegen“) und die Uhrzeit
+        // "Frühere Nachrichten im Verlauf, die etwas als erledigt melden (Termin angelegt, Notiz gespeichert …), " +
+        // [/feature:journal]
         "stammen von dmOffice und stimmen. Korrigiere oder widerrufe nie etwas aus dem bisherigen Gespräch, und nenne Datum " +
         "oder Uhrzeit nur, wenn danach gefragt wird. " +
         // Tagesüberblicke im Verlauf enthalten Betreffzeilen und Schlagzeilen von außen
@@ -132,7 +137,11 @@ public static class PukkiAi
     }
 
     /// <summary>
-    /// Text schreiben lassen mit eigener Anweisung - ohne Pukkis Rolle und ohne Verlauf. Websuche, wenn der Admin
+    // [feature:journal]
+    /// Text schreiben lassen mit eigener Anweisung (z. B. Tagebuch) - ohne Pukkis Rolle und ohne Verlauf. Websuche, wenn der Admin
+    // [feature:journal:else]
+    // /// Text schreiben lassen mit eigener Anweisung - ohne Pukkis Rolle und ohne Verlauf. Websuche, wenn der Admin
+    // [/feature:journal]
     /// sie eingeschaltet hat und search nicht aus ist. Null, wenn es nicht geklappt hat.
     /// </summary>
     /// <param name="search">Aus für fremde Inhalte (DMS: Dokumenttext) - eine präparierte Datei könnte sonst über Suchanfragen

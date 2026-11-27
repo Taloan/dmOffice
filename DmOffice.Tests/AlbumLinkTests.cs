@@ -53,7 +53,13 @@ public class AlbumLinkTests : IClassFixture<ChatFixture>
         var link2 = await Json(await ben.PostAsJsonAsync($"/api/gallery/albums/{id}/links", new { password = "geheim-123", download = true }));
         var token2 = link2.GetProperty("token").GetString()!;
         var visitor = _fx.Factory.CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = true });
-        Assert.Equal(HttpStatusCode.Unauthorized, (await visitor.GetAsync($"/api/public-album/{token2}/")).StatusCode);
+        var locked = await visitor.GetAsync($"/api/public-album/{token2}/");
+        Assert.Equal(HttpStatusCode.Unauthorized, locked.StatusCode);
+        // Vor dem Passwort weder Albumname noch Besitzer
+        var lockedBody = await locked.Content.ReadAsStringAsync();
+        Assert.Contains("needsPassword", lockedBody);
+        Assert.DoesNotContain("Sommer", lockedBody);
+        Assert.DoesNotContain("Ben", lockedBody);
         Assert.Equal(HttpStatusCode.Forbidden, (await visitor.PostAsJsonAsync($"/api/public-album/{token2}/auth", new { password = "falsch" })).StatusCode);
         await Json(await visitor.PostAsJsonAsync($"/api/public-album/{token2}/auth", new { password = "geheim-123" }));
         var k2 = (await Json(await visitor.GetAsync($"/api/public-album/{token2}/"))).GetProperty("items").EnumerateArray().Single().GetProperty("k").GetString()!;

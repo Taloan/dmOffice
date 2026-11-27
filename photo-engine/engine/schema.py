@@ -156,4 +156,10 @@ def sanitize(data: dict) -> dict:
     c = data.get("crop") or {}
     v = _clamp(c.get("straighten_deg", 0.0), *STRAIGHTEN_RANGE)
     out["crop"]["straighten_deg"] = round(v or 0.0, 2)
+    # [feature:lenscorr]
+    from . import lens
+    lc = lens.sanitize(data.get("lens"))
+    if lc:
+        out["lens"] = lc
+    # [/feature:lenscorr]
     return out

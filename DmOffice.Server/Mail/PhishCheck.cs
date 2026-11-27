@@ -61,7 +61,9 @@ public static partial class PhishCheck
                 if (Ascii(DomainOf(a.Email)) is { } own) domains.Add(Registrable(own));
             var ctx = new Context
             {
-                KnownSender = from.Length > 0 && known.Contains(from),
+                // Sichere Absender aus „Kein Betrug“/„Kein Junk“ (SafeList) zählen wie bekannte - nur mit bestätigter Absenderdomain
+                KnownSender = from.Length > 0 && (known.Contains(from) || (Features.On(Features.PhishTrust)
+                    && SafeList.Trusts(space.Db, m, SpamSignals.Of(m, [account.ImapHost, DomainOf(account.Email)])))),
                 KnownDomains = domains,
                 OwnHosts = [account.ImapHost, DomainOf(account.Email)],
                 OwnAddresses = space.Settings.MailAccounts.Select(a => a.Email.ToLowerInvariant()).ToList(),
@@ -115,11 +117,17 @@ public static partial class PhishCheck
         // 2. Linktext zeigt eine andere Domain als das Ziel. Newsletter leiten ueber Zaehl-Domains um - stammt die Mail
         // nachweislich vom Absender (DMARC) und ist er bekannt oder ein Verteiler, ist es nur ein Hinweis.
         bool vouched = auth.Dmarc == "pass" && (ctx.KnownSender || m.Headers.Contains(HeaderId.ListUnsubscribe));
+        // Bekannter Absender mit bestätigter Domain („Kein Betrug“): Linkabweichungen sind dort Zähl- und Weiterleitungsdomains, kein Hinweis.
+        // Führt ein Link zur bestätigten Domain eines bekannten Absenders selbst (amazon.de zeigt „audible.de“), ebenso nicht -
+        // bei Freemail-Domains schon, dort kann sich jeder eine Adresse anlegen
+        bool ownTarget(string host) => senderVerified && fromReg != null && Registrable(host) == fromReg
+            && ctx.KnownDomains.Contains(fromReg) && !SafeList.Freemail.Contains(fromReg);
         var seen = new HashSet<(string, string)>();
         foreach (var l in links)
         {
+            if (senderVerified && ctx.KnownSender) break;
             if (ShownHost(l.Text) is not { } shown) continue;
-            if (Registrable(shown) == Registrable(l.Host) || !seen.Add((shown, l.Host))) continue;
+            if (Registrable(shown) == Registrable(l.Host) || ownTarget(l.Host) || !seen.Add((shown, l.Host))) continue;
             found.Add(new("link", !vouched, Shown: shown, Target: l.Host));
             if (seen.Count >= MaxPerKind) break;
         }
@@ -165,12 +173,15 @@ public static partial class PhishCheck
 
             var mine = ctx.OwnAddresses.Concat(m.To.Mailboxes.Concat(m.Cc.Mailboxes).Select(x => x.Address))
                 .Where(a => a.Contains('@')).Select(a => a.ToLowerInvariant()).ToHashSet();
-            foreach (var l in links)
-                if (HiddenAddress(l.Href, mine) is { } address)
-                {
-                    found.Add(new("myaddress", false, Domain: address, Target: l.Host));
-                    break;
-                }
+            // Mit bestandenem DMARC stammt die Mail nachweislich von der Domain des Absenders: Dann ist die eigene Adresse im Link
+            // der übliche Anmeldelink, den man gerade selbst angefordert hat (claude.ai, Slack …). Gekaperte Server haben kein DMARC
+            if (auth.Dmarc != "pass")
+                foreach (var l in links)
+                    if (HiddenAddress(l.Href, mine) is { } address)
+                    {
+                        found.Add(new("myaddress", false, Domain: address, Target: l.Host));
+                        break;
+                    }
 
             if (Pressure(m)) found.Add(new("pressure", false));
         }
@@ -204,7 +215,10 @@ public static partial class PhishCheck
             var signers = dkim.SelectMany(r => r.Properties).Where(x => x.PropertyType.Equals("header", StringComparison.OrdinalIgnoreCase)
                     && x.Property.Equals("d", StringComparison.OrdinalIgnoreCase))
                 .Select(x => Ascii(x.Value)).OfType<string>().Select(Registrable).Distinct().ToList();
-            return new AuthResult(Result("dmarc"), Result("spf"), dkim.Count > 0, Result("arc"), signers);
+            var own = new AuthResult(Result("dmarc"), Result("spf"), dkim.Count > 0, Result("arc"), signers);
+            // Weitergeleitet und der eigene Mailserver prüft ARC nicht: die Kette selbst prüfen (ArcTrust)
+            if (own.Dmarc == "fail" && own.Arc == null && m.Headers.Contains(HeaderId.ArcSeal) && ArcTrust.Of(m) is { } forwarded) return forwarded;
+            return own;
         }
         return new AuthResult(null, null, false, null, []);
     }

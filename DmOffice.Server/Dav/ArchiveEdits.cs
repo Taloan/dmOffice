@@ -180,7 +180,7 @@ public static class ArchiveEdits
     private static void CheckSize(State s)
     {
         if (s.Files.Count + s.Dirs.Count > Archives.MaxEditEntries)
-            throw new ArchiveException($"Mehr als {Archives.MaxEditEntries:N0} Einträge – so große Archive lassen sich nur lesen und entpacken.");
+            throw new ArchiveException($"Mehr als {DmOffice.Core.Num.N(Archives.MaxEditEntries)} Einträge – so große Archive lassen sich nur lesen und entpacken.");
         if (s.Files.Values.Sum(f => f.S) > Archives.MaxEditBytes * 2)
             throw new ArchiveException("Das Archiv würde zu groß zum Ändern.");
     }

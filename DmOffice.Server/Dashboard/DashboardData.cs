@@ -6,6 +6,9 @@ using DmOffice.Chat;
 using DmOffice.Core;
 using DmOffice.Dav;
 using DmOffice.Gallery;
+// [feature:journal]
+using DmOffice.Journal;
+// [/feature:journal]
 using DmOffice.Mail;
 using DmOffice.Notes;
 using DmOffice.Pim;
@@ -168,7 +171,7 @@ public static class DashboardData
         // Fällige Wiedervorlage-Mails dazu
         var followUps = new List<object>();
         if (o.Bool("mail", true))
-            foreach (var (m, due) in MailStore.FollowUps(space.Db))
+            foreach (var (m, due) in MailStore.FollowUps(space.Db, hidden: space.Settings.OffMailAccountIds()))
                 if (due != null && DateOnly.TryParse(due, CultureInfo.InvariantCulture, out var d) && d < today.AddDays(days))
                     followUps.Add(new { m.Account, m.Folder, m.Uid, m.MessageId, m.Subject, from = m.From?.Name ?? m.From?.Address, due = Iso(d), overdue = d < today, when = d < today ? "überfällig" : PukkiParse.DayText(d, today) });
         return new
@@ -209,7 +212,7 @@ public static class DashboardData
         var count = o.Int("count", 5, 1, 20);
         var mode = o.Str("mode", "all");   // all | focused | category:<id>
         var accounts = o.Strs("accounts");
-        var use = space.Settings.MailAccounts.Where(a => accounts.Count == 0 || accounts.Contains(a.Id)).ToList();
+        var use = space.Settings.ActiveMailAccounts().Where(a => accounts.Count == 0 || accounts.Contains(a.Id)).ToList();
         var inboxes = use.SelectMany(a => MailStore.Folders(db, a.Id).Where(f => f.Special == "inbox").Select(f => a.Id + "|" + f.Path)).ToList();
         if (inboxes.Count == 0) return new { unread = 0, items = Array.Empty<object>(), accounts = use.Select(a => new { a.Id, a.Name }) };
         var c = new MailCriteria { Folders = inboxes, Unread = true };
@@ -338,6 +341,34 @@ public static class DashboardData
         return new { configured = true, items = picked.Select(h => new { h.Title, h.Link, h.At, h.Source }) };
     }
 
+    // [feature:journal]
+    // ---------------- Tagebuch ----------------
+
+    public static object Journal(HttpContext http, Opts o)
+    {
+        var space = http.Space();
+        var today = Today(space);
+        var scopes = JournalApi.Scopes(http);
+        var pick = o.Long("journal");
+        var use = pick is long p && scopes.Any(s => s.PublicId == p) ? scopes.Where(s => s.PublicId == p).ToList() : scopes;
+        var all = use.SelectMany(s => s.Entries().Select(e => (Scope: s, Entry: e))).ToList();
+        object Dto((JournalApi.Scope Scope, JournalEntry Entry) x)
+        {
+            var pv = JournalApi.Preview(x.Entry);
+            var img = x.Entry.Media.FirstOrDefault(m => m.Mime.StartsWith("image/"));
+            return new { pv.Id, journal = x.Scope.PublicId, pv.Uri, pv.Date, pv.Title, snippet = pv.Snippet.Length > 160 ? pv.Snippet[..160].TrimEnd() + " …" : pv.Snippet, pv.Mood, pv.Weather, place = pv.Place?.Name, image = img?.Path, photos = x.Entry.Media.Count(m => m.Mime.StartsWith("image/")) };
+        }
+        var todays = all.Where(x => DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(x.Entry.Date, space.Zone)) == today).OrderBy(x => x.Entry.Date).Select(Dto).ToList();
+        var back = JournalApi.OnThisDay(all.Select(x => x.Entry), today, space.Zone)
+            .Select(g => new { g.Label, day = Iso(g.Day), entries = g.Entries.Select(e => Dto(all.First(x => x.Entry.Id == e.Id))).ToList() }).ToList();
+        // Serie: Tage in Folge mit Eintrag (eigene Tagebücher), gestern zählt noch
+        var days = all.Where(x => x.Scope.Own).Select(x => DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(x.Entry.Date, space.Zone))).ToHashSet();
+        var streak = 0;
+        for (var d = days.Contains(today) ? today : today.AddDays(-1); days.Contains(d); d = d.AddDays(-1)) streak++;
+        return new { today = todays, back, streak, journals = scopes.Select(s => new { id = s.PublicId, s.Coll.Name, s.Coll.Color, s.CanWrite }).ToList(), writeTo = scopes.FirstOrDefault(s => s.Own)?.PublicId };
+    }
+
+    // [/feature:journal]
     // ---------------- Fotos ----------------
 
     public static async Task<object> PhotosAsync(HttpContext http, ServerConfig config, Opts o)
@@ -388,7 +419,7 @@ public static class DashboardData
         var onlyFav = o.Bool("favorites");
         bool Hidden(string p) => FileStore.InRoot(p, space.Settings.Notizi.Root) || FileStore.InRoot(p, FileStore.ReservedRoot) || FileStore.InRoot(p, FileStore.SystemVault);
         var favs = FileStore.Favorites(db).Where(f => !Hidden(f.Path)).Select(f => new { f.Path, f.Name, f.IsDir, f.Size, f.Mime, f.Modified, f.Etag, f.FileId, favorite = true, used = (DateTime?)null }).ToList();
-        var recent = onlyFav ? [] : FileStore.Recent(db).Where(x => !Hidden(x.File.Path) && favs.All(f => f.Path != x.File.Path))
+        var recent = onlyFav ? [] : FileStore.Recent(db, since: Features.On(Features.RecentClear) ? space.Settings.RecentClearedAt : null).Where(x => !Hidden(x.File.Path) && favs.All(f => f.Path != x.File.Path))
             .Select(x => new { x.File.Path, x.File.Name, x.File.IsDir, x.File.Size, x.File.Mime, x.File.Modified, x.File.Etag, x.File.FileId, favorite = false, used = (DateTime?)x.Used }).ToList();
         return new { items = favs.Concat(recent).Take(count).ToList(), favorites = favs.Count };
     }

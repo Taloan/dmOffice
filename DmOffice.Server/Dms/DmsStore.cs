@@ -14,6 +14,8 @@ public sealed class DmsStore : ISqlStore
     public ISqlStore Sql { get; }
     public BlobStore Blobs { get; }
     public bool Tresor { get; }
+    /// <summary>Beim letzten <see cref="Dms.Apply"/> abgelöste Rolleninhaber (Bereich, Dokument): sie verlieren die Rolle im Namen und werden neu abgelegt.</summary>
+    public List<(bool Tresor, long Doc, string Role)> ReplacedHolders { get; } = [];
     /// <summary>Pfad einer Datei im Tresor (Ordner/Name) - nur im Tresor.</summary>
     private readonly Func<long, string?>? _pathOf;
 

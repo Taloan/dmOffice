@@ -1,7 +1,9 @@
 import { Text, makeStyles, tokens } from '@fluentui/react-components'
-import { CalendarLtr20Regular, Document20Regular, Folder20Regular, Note20Regular, People20Regular, Person20Regular, TaskListSquareLtr20Regular } from '@fluentui/react-icons'
+import { CalendarLtr20Regular, Document20Regular, Image20Regular, Folder20Regular, Note20Regular, People20Regular, Person20Regular, TaskListSquareLtr20Regular } from '@fluentui/react-icons'
 import { useEffect, useState } from 'react'
 import { t } from '../i18n'
+import { useApp } from '../App'
+import { useFilePreview } from '../files/FilePreview'
 import { fmtDate } from '../shell/hooks'
 import { ChatMessage, ChatRef, ChatRoom, refUrl } from './store'
 import { ChatSpace, openSpace, spaceLabel } from './Spaces'
@@ -51,13 +53,16 @@ export function ChatInfo({ room, me, messages, spaces, onPreview, onPhotos, widt
   onPhotos?: (list: { m: ChatMessage; r: ChatRef; i: number }[], at: { m: ChatMessage; i: number }) => void
 }) {
   const s = useStyles()
+  const { fail } = useApp()
+  const preview = useFilePreview(fail)
   // Neueste zuerst: Fotos als Kacheln, alles andere als Liste
   const refs = messages.filter(m => !m.deleted).flatMap(m => m.refs.map((r, i) => ({ m, r, i }))).reverse()
   const photos = refs.filter(x => isPhoto(x.r)).slice(0, 12)
   const others = refs.filter(x => !isPhoto(x.r) && x.r.type !== 'location' && x.r.state === 'ok').slice(0, 15)
   const open = (x: { m: ChatMessage; r: ChatRef; i: number }) =>
     isPhoto(x.r) && onPhotos ? onPhotos(refs.filter(y => isPhoto(y.r)), x)
-    : x.r.type === 'file' ? window.open(refUrl(x.m.id, x.i, 'file', { inline: true }), '_blank', 'noopener') : onPreview(x.m.id, x.i)
+    : x.r.type === 'file' ? preview.open({ url: refUrl(x.m.id, x.i, 'file', { inline: true }), download: refUrl(x.m.id, x.i, 'file'), name: x.r.name, mime: x.r.mime, size: x.r.size ?? undefined,
+      noDownload: x.r.owner !== me && x.r.mode === 'show' }) : onPreview(x.m.id, x.i)
 
   return (
     <aside className={s.pane} style={width ? { width } : undefined} aria-label={t('Infobereich')}>
@@ -86,7 +91,7 @@ export function ChatInfo({ room, me, messages, spaces, onPreview, onPhotos, widt
       {photos.length === 0 ? <Text className={s.empty}>{t('Noch keine Fotos.')}</Text> : (
         <div className={s.photos}>
           {photos.map(x => (
-            <img key={`${x.m.id}-${x.i}`} className={s.photo} src={refUrl(x.m.id, x.i, 'thumb', { size: 160 })} alt={x.r.name} title={x.r.name} loading="lazy" onClick={() => open(x)} />
+            <PhotoTile key={`${x.m.id}-${x.i}`} className={s.photo} src={refUrl(x.m.id, x.i, 'thumb', { size: 160, quiet: 1 })} name={x.r.name} onClick={() => open(x)} />
           ))}
         </div>
       )}
@@ -99,6 +104,14 @@ export function ChatInfo({ room, me, messages, spaces, onPreview, onPhotos, widt
           <span className={s.sub}>{fmtDate(x.m.created)}</span>
         </div>
       ))}
+      {preview.element}
     </aside>
   )
+}
+
+/** Foto in der Seitenleiste; ohne lesbares Bild (kaputt, leer, nur dem Namen nach ein Bild) ein Bildsymbol statt des kaputten Bilds. */
+function PhotoTile({ className, src, name, onClick }: { className: string; src: string; name: string; onClick: () => void }) {
+  const [failed, setFailed] = useState(false)
+  if (failed) return <div className={className} title={name} onClick={onClick} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Image20Regular /></div>
+  return <img className={className} src={src} alt={name} title={name} loading="lazy" onClick={onClick} onError={() => setFailed(true)} />
 }

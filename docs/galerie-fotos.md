@@ -2,7 +2,7 @@
 
 [Deutsch](galerie-fotos.de.md) · English
 
-Status: version 2. Applies to photos in your own files and in gallery folders (external folders added to the gallery).
+Status: version 2. Applies to photos in your own files and in external gallery folders (external folders added to the gallery).
 
 ## Where the information lives
 
@@ -16,8 +16,8 @@ dmOffice writes photo information where other programs (Lightroom, darktable, di
 - After writing, dmOffice reads the result back and checks it (image data unchanged, capture time and camera as before,
   location as intended). If the check fails, the file is not changed.
 
-For gallery folders the folder must be mounted writable. For RAW photos in a gallery folder, "XMP files" must be switched
-on for that folder (*Gallery* → *Gallery folders*); otherwise the gallery would not read what was written.
+For external gallery folders the folder must be mounted writable. For RAW photos in an external gallery folder, "XMP files" must be switched
+on for that folder (*Gallery* → *External gallery folders*); otherwise the gallery would not read what was written.
 
 When reading, a sidecar takes precedence over the information inside the photo, and XMP takes precedence over IPTC.
 

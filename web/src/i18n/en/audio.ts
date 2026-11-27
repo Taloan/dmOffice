@@ -100,4 +100,8 @@ export const audio: Record<string, string> = {
   'Diese Auto-Playlist gibt es nicht.': 'This auto playlist does not exist.',
   'Wiedergabe beenden': 'Stop playback',
   'Wiedergabe beenden (leert die Warteschlange)': 'Stop playback (clears the queue)',
+  'Wähle den Ordner, in dem dieselben Titel jetzt liegen. Tags, Hörverlauf und Wiedergabelisten bleiben erhalten.': 'Choose the folder that now holds the same tracks. Tags, listening history and playlists are kept.',
+  'Nach dem Umstellen sucht dmOffice jeden Titel am neuen Ort. Was dort fehlt, wird aus der Audiothek entfernt.': 'After switching, dmOffice looks for every track in the new location. Tracks missing there are removed from the music library.',
+  'Audiothek-Ordner abgleichen': 'Checking music folders',
+  'Der Audiothek-Ordner zeigt schon auf diesen Ordner.': 'The music folder already points to this folder.',
 }

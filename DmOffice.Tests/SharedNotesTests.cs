@@ -65,7 +65,11 @@ public class SharedNotesTests : IClassFixture<SharedCalendarFixture>
         var privat = await NewFolder("anna", "Privat");
         var n1 = await NewNote("anna", rezepte, "Pfannkuchen");
         await NewNote("anna", suppen, "Kuerbissuppe");
-        var geheim = await NewNote("anna", privat, "Geheimnis");
+        // [feature:journal]
+        var geheim = await NewNote("anna", privat, "Tagebuch");
+        // [feature:journal:else]
+        // var geheim = await NewNote("anna", privat, "Geheimnis");
+        // [/feature:journal]
         await Share(rezepte, new[] { "ben", "cleo" }, new[] { "ben" });
 
         // Sichtbar: der Ordner samt Unterordner bei Ben und Cleo, bei Dora nichts

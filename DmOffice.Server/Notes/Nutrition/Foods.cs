@@ -32,7 +32,8 @@ public static class Bls
 {
     public const string Attribution = "Max Rubner-Institut (2025): Bundeslebensmittelschlüssel (BLS), Version 4.0 — Deutsche Nährstoffdatenbank. Karlsruhe. DOI: 10.25826/Data20251217-134202-0 (CC BY 4.0)";
 
-    public sealed record Entry(string Code, string Name, Nutrients Per100, string Folded, string[] Words);
+    /// <summary>Micro: Vitamine, Mineralstoffe und Alkohol je 100 g mit den BLS-Kürzeln (VITB12, FE, ALC …), soweit angegeben.</summary>
+    public sealed record Entry(string Code, string Name, string NameEn, Nutrients Per100, Dictionary<string, double> Micro, string Folded, string[] Words);
 
     private static readonly Lazy<Dictionary<string, Entry>> All = new(Load);
     public static IReadOnlyCollection<Entry> Entries => All.Value.Values;
@@ -54,8 +55,11 @@ public static class Bls
             if (c.Length < head.Length) continue;
             double? N(string n) => double.TryParse(c[Col(n)], NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : null;
             var per = new Nutrients(N("ENERCC") ?? 0, N("PROT625") ?? 0, N("FAT") ?? 0, N("CHO") ?? 0, N("FIBT"), N("SUGAR"), N("NACL"), N("FASAT"));
+            var micro = new Dictionary<string, double>();
+            foreach (var m in new[] { "VITB12", "VITD", "VITC", "FOL", "FE", "CA", "MG", "K", "ZN", "ID", "ALC" })
+                if (N(m) is double v) micro[m] = v;
             var folded = Fold(c[1]);
-            map[c[0]] = new Entry(c[0], c[1], per, folded, Words(folded));
+            map[c[0]] = new Entry(c[0], c[1], c[2], per, micro, folded, Words(folded));
         }
         return map;
     }

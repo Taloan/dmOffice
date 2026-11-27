@@ -80,6 +80,49 @@ public class DmsTests
         Assert.Null(D.Get(space.Db, alt.Id).Role);
     }
 
+    [Fact]
+    public async Task Rolle_im_Dateinamen_nach_Einstellung_und_nur_beim_geltenden_Dokument()
+    {
+        Assert.Equal("[Elster] a", DmsFiling.WithRole("a", "Elster", "start"));
+        Assert.Equal("a [Elster]", DmsFiling.WithRole("a", "Elster", "end"));
+        Assert.Equal("a", DmsFiling.WithRole("a", "Elster", null));
+        Assert.Equal("a", DmsFiling.WithoutRoles("[Elster] a", ["Elster"]));
+        Assert.Equal("a", DmsFiling.WithoutRoles("a [Elster]", ["Elster"]));
+
+        var (space, host) = NewSpace();
+        var profile = new DmsProfile { Default = true, Name = "Standard", Folder = "Dokumente", Folders = "", Names = "{title}", Follow = true };
+        space.Db.SetJson(DmsFiling.Key, new List<DmsProfile> { profile });
+        var role = D.Create(space.Db, D.Role, "Elster Zertifikat", null, null, null, null, false);
+        var alt = await Import(space, host, "alt.txt", "Zertifikat alt");
+        var neu = await Import(space, host, "neu.txt", "Zertifikat neu");
+        // Aus: kein Zusatz
+        DmsApi.Change(space, [alt.Id], new DmsApi.DocBody("Zertifikat 2025", null, null, null, null, null, null, true, role.Id));
+        Assert.EndsWith("/Zertifikat 2025.txt", D.Get(space.Db, alt.Id).Path);
+        // Am Ende: Einstellung benennt die vorhandenen Rollendokumente um
+        var s = DmsImport.Settings(space.Db); s.RoleInName = "end"; DmsImport.SaveSettings(space.Db, s);
+        DmsImport.SyncRoleTags(space, host, space.Db);
+        Assert.EndsWith("/Zertifikat 2025 [Elster Zertifikat].txt", D.Get(space.Db, alt.Id).Path);
+        // Rolle wechselt: das neue trägt sie, das alte verliert sie
+        DmsApi.Change(space, [neu.Id], new DmsApi.DocBody("Zertifikat 2026", null, null, null, null, null, null, true, role.Id));
+        Assert.EndsWith("/Zertifikat 2026 [Elster Zertifikat].txt", D.Get(space.Db, neu.Id).Path);
+        Assert.EndsWith("/Zertifikat 2025.txt", D.Get(space.Db, alt.Id).Path);
+        // Am Anfang
+        s.RoleInName = "start"; DmsImport.SaveSettings(space.Db, s);
+        DmsImport.SyncRoleTags(space, host, space.Db);
+        Assert.EndsWith("/[Elster Zertifikat] Zertifikat 2026.txt", D.Get(space.Db, neu.Id).Path);
+
+        // Profil folgt den Angaben nicht: bleibt im Ordner, nur der Name ändert sich
+        profile.Follow = false;
+        space.Db.SetJson(DmsFiling.Key, new List<DmsProfile> { profile });
+        var dritt = await Import(space, host, "dritt.txt", "Zertifikat dritt");
+        var vorher = D.Get(space.Db, neu.Id).Path!;
+        DmsApi.Change(space, [dritt.Id], new DmsApi.DocBody(null, null, null, null, null, null, null, true, role.Id));
+        var nachher = D.Get(space.Db, neu.Id).Path!;
+        Assert.Equal(FileStore.Parent(vorher), FileStore.Parent(nachher));
+        Assert.EndsWith("/Zertifikat 2026.txt", nachher);
+        Assert.StartsWith("[Elster Zertifikat] ", Path.GetFileName(D.Get(space.Db, dritt.Id).Path!));
+    }
+
     private static async Task<DmsDoc> Import(UserSpace space, DmsHost host, string name, string text, DmsImport.Info? info = null)
     {
         var r = await DmsImport.ImportAsync(space, new MemoryStream(Encoding.UTF8.GetBytes(text)), name, "text/plain", info ?? new DmsImport.Info("upload"), default);
@@ -590,6 +633,26 @@ public class DmsTests
     }
 
     [Fact]
+    public void Nur_Dokumente_ins_DMS()
+    {
+        Assert.True(DmsImport.IsDocument("rechnung.pdf", "application/pdf"));
+        Assert.True(DmsImport.IsDocument("brief.odt", null));
+        Assert.True(DmsImport.IsDocument("scan.jpg", "image/jpeg"));
+        Assert.False(DmsImport.IsDocument("lied.mp3", "audio/mpeg"));
+        Assert.False(DmsImport.IsDocument("programm.exe", "application/octet-stream"));
+    }
+
+    [Fact]
+    public void Betrag_aus_PDF_mit_MwSt_Zeile()
+    {
+        // Jede PDF-Zeile bleibt eine Zeile - sonst fiele die ganze Seite wegen „MwSt“ aus der Betragssuche
+        var pdf = Samples.Pdf("Rechnung 2026-17", "Netto 100,00 EUR", "MwSt 19 % 19,00 EUR", "Gesamtbetrag: 119,00 EUR");
+        var text = Search.TextExtract.Extract(pdf, "r.pdf", "application/pdf", ocr: false).Text;
+        Assert.Contains("\nGesamtbetrag", text);
+        Assert.Equal(11900, DmsAssign.FindAmount(text));
+    }
+
+    [Fact]
     public async Task Warteschlange_getrennt_von_der_Inbox()
     {
         var (space, host) = NewSpace();
@@ -710,6 +773,30 @@ public class DmsTests
         Assert.Throws<ArgumentException>(() => D.Update(space.Db, top.Id, null, sub.Id, null, null, null, null));
         Assert.Throws<ArgumentException>(() => D.Create(space.Db, D.Tag, "x", null, null, D.Sender, "a@b.de", false));
         Assert.Throws<ArgumentException>(() => D.Create(space.Db, D.Tag, "y", null, null, D.Regex, "([", false));
+    }
+
+    [Fact]
+    public async Task Jahresordner_unter_Oberbegriff_zeigt_nur_eigene_Dokumente()
+    {
+        // Baum Korrespondent/Jahr: unter „Finanzamt“ stehen der Unterbegriff „EkSt“ (mit eigenem 2026) und die Jahre der Dokumente,
+        // die direkt bei „Finanzamt“ liegen. Die Liste zum Jahresordner muss dieselbe Zahl zeigen wie der Baum.
+        var (space, host) = NewSpace();
+        var top = D.Create(space.Db, D.Correspondent, "Finanzamt", null, null, D.Auto, null, false);
+        var sub = D.Create(space.Db, D.Correspondent, "EkSt", top.Id, null, D.Auto, null, false);
+        foreach (var (name, c) in new[] { ("a", top.Id), ("b", sub.Id), ("c", sub.Id) })
+        {
+            var d = await Import(space, host, name + ".txt", "Schreiben " + name);
+            D.Apply(space.Db, [d.Id], new D.Change(DocDate: "2026-03-01", Correspondent: c, Confirm: true));
+        }
+        var tree = D.Tree(space, ["correspondent", "doc_year"], _ => "");
+        var fa = tree.Single(n => n.Key == top.Id);
+        Assert.Equal(3, fa.Count);
+        Assert.Equal(1, fa.Children.Single(n => n.Level == "doc_year" && n.Key == "2026").Count);
+        Assert.Equal(2, fa.Children.Single(n => n.Key == sub.Id).Children.Single(n => n.Key == "2026").Count);
+        // Liste: Finanzamt › 2026 nur eigene, Finanzamt allein samt Unterbegriff, Finanzamt › EkSt › 2026 nur EkSt
+        Assert.Equal(1, D.Docs(space.Db, new D.Filter(Correspondent: top.Id, DocFrom: "2026-01-01", DocTo: "2026-12-31", Exact: [top.Id])).Total);
+        Assert.Equal(3, D.Docs(space.Db, new D.Filter(Correspondent: top.Id)).Total);
+        Assert.Equal(2, D.Docs(space.Db, new D.Filter(Correspondent: sub.Id, DocFrom: "2026-01-01", DocTo: "2026-12-31", Exact: [top.Id, sub.Id])).Total);
     }
 
     [Fact]
@@ -847,11 +934,144 @@ public class DmsTests
         Assert.Empty(DmsAiCheck.Parse("kein json"));
     }
 
+    [Fact]
+    public void KI_Antwort_abgeschnitten_vollstaendige_Eintraege_bleiben()
+    {
+        // Antwort bricht mitten im dritten Eintrag ab (Längengrenze) - die ersten beiden zählen trotzdem, auch mit } und " im Grund
+        var cut = """Hier: [{"doc": 1, "entry": 2, "confidence": 80, "reason": "Briefkopf {Firma} \"Muster\""}, {"doc": 2, "entry": null, "new": "Neu", "parent": 1, "confidence": 70, "reason": "x"}, {"doc": 3, "entry": 4, "conf""";
+        var items = DmsAiCheck.Parse(cut);
+        Assert.Equal([1L, 2L], items.Select(i => i.Doc));
+        Assert.Equal("Neu", items[1].New);
+        Assert.Equal([5L], DmsAiCheck.Parse("""[{"doc": 5, "entry": 1}, {"doc": 6, "entry": }]""").Select(i => i.Doc));
+    }
+
+    [Fact]
+    public async Task KI_Einordnen_fragt_unbeantwortete_Dokumente_einzeln_nach()
+    {
+        var (space, host) = NewSpace();
+        var amt = D.Create(space.Db, D.Correspondent, "Finanzamt", null, null, D.None, null, false);
+        var docs = new List<DmsDoc>();
+        for (var i = 0; i < 3; i++) docs.Add(await Import(space, host, $"d{i}.txt", $"Steuerbescheid {i}"));
+        D.Apply(space.Db, docs.Select(d => d.Id), new D.Change(Confirm: true));
+        // Erste Antwort (Paket) bricht nach dem ersten Dokument ab; die Einzelfragen danach antworten vollständig
+        var ai = new ScriptedAi(prompt =>
+        {
+            var ids = docs.Where(d => prompt.Contains($"--- Dokument {d.Id}\n")).Select(d => d.Id).ToList();
+            return ids.Count > 1
+                ? $$"""[{"doc": {{ids[0]}}, "entry": 1, "confidence": 90, "reason": "a"}, {"doc": {{ids[1]}}, "entry": 1, "conf"""
+                : $$"""[{"doc": {{ids[0]}}, "entry": 1, "confidence": 90, "reason": "b"}]""";
+        });
+        var run = DmsAiCheck.Start(space, ai, DmsAiCheck.Assign, D.Correspondent, null, DmsAiCheck.Existing);
+        for (var i = 0; i < 100 && DmsAiCheck.Runs(space.Db).First(r => r.Id == run).State == "running"; i++) await Task.Delay(50);
+        Assert.Equal("done", DmsAiCheck.Runs(space.Db).First(r => r.Id == run).State);
+        Assert.Equal(docs.Select(d => d.Id).Order(), DmsAiCheck.Open(space.Db, run).Select(s => s.Doc).Order());
+        Assert.All(DmsAiCheck.Open(space.Db, run), s => Assert.Equal(amt.Id, s.ProposalEntry));
+        Assert.Equal(3, ai.Calls);
+        Assert.All(ai.MaxTokens, n => Assert.Equal(DmsAiCheck.AnswerTokens, n));
+
+        // Zweiter Lauf: kein passender Eintrag - die Zeile erscheint trotzdem (mit Grund) und ersetzt die offene aus dem ersten Lauf
+        var none = new FakeAi($$"""[{"doc": {{docs[0].Id}}, "entry": null, "new": null, "confidence": 20, "reason": "nur ein Bild"}]""");
+        D.Apply(space.Db, docs.Skip(1).Select(d => d.Id), new D.Change(Correspondent: amt.Id));
+        var run2 = DmsAiCheck.Start(space, none, DmsAiCheck.Assign, D.Correspondent, null, DmsAiCheck.AllowNew);
+        for (var i = 0; i < 100 && DmsAiCheck.Runs(space.Db).First(r => r.Id == run2).State == "running"; i++) await Task.Delay(50);
+        var row = Assert.Single(DmsAiCheck.Open(space.Db), s => s.Doc == docs[0].Id);
+        Assert.Equal((run2, (string?)null, (string?)null, "nur ein Bild"), (row.Run, row.ProposalEntry, row.ProposalNew, row.Reason));
+        // Übernehmen ohne Wahl: Zeile erledigt, Dokument unverändert
+        Assert.Empty(DmsAiCheck.Apply(space, [row.Id], refile: false, _ => { }));
+        Assert.DoesNotContain(DmsAiCheck.Open(space.Db), s => s.Doc == docs[0].Id);
+        Assert.Null(D.Get(space.Db, docs[0].Id).Correspondent);
+    }
+
+    private sealed class ScriptedAi(Func<string, string> answer) : IDmsAi
+    {
+        public int Calls;
+        public readonly List<int> MaxTokens = [];
+        public bool Allowed(UserSpace space) => true;
+        public string? Service => "Test";
+        public Task<string?> WriteAsync(string system, string prompt, CancellationToken ct, int maxTokens = 1024)
+        {
+            lock (MaxTokens) { Calls++; MaxTokens.Add(maxTokens); }
+            return Task.FromResult<string?>(answer(prompt));
+        }
+    }
+
+    [Fact]
+    public async Task KI_Pruefung_nur_eigener_Lauf_abbrechbar()
+    {
+        var (anna, host) = NewSpace();
+        var (bert, _) = NewSpace();
+        DmsHost.Current = host;
+        var tag = D.Create(anna.Db, D.Tag, "Rechnung", null, "#7b9cde", D.None, null, false);
+        var a = await Import(anna, host, "r.txt", "Rechnung Nr. 1");
+        D.Apply(anna.Db, [a.Id], new D.Change(Confirm: true, AddTags: [tag.Id]));
+        var ai = new WaitingAi();
+        var run = DmsAiCheck.Start(anna, ai, DmsAiCheck.Check, D.Tag, tag.Id, DmsAiCheck.Existing);
+        await ai.Asked.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        // Nummern zählt jeder für sich: Bert hat dieselbe Nummer und bricht damit nichts von Anna ab
+        DmsAiCheck.Cancel(bert, run);
+        Assert.False(ai.Token.IsCancellationRequested);
+        DmsAiCheck.Cancel(anna, run);
+        Assert.True(ai.Token.IsCancellationRequested);
+        for (var i = 0; i < 100 && DmsAiCheck.Runs(anna.Db).First(r => r.Id == run).State == "running"; i++) await Task.Delay(50);
+        Assert.Equal("cancelled", DmsAiCheck.Runs(anna.Db).First(r => r.Id == run).State);
+    }
+
+    private sealed class WaitingAi : IDmsAi
+    {
+        public readonly TaskCompletionSource Asked = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public CancellationToken Token;
+        public bool Allowed(UserSpace space) => true;
+        public string? Service => "Test";
+        public async Task<string?> WriteAsync(string system, string prompt, CancellationToken ct, int maxTokens = 1024)
+        {
+            Token = ct;
+            Asked.TrySetResult();
+            await Task.Delay(Timeout.Infinite, ct);
+            return null;
+        }
+    }
+
     private sealed class FakeAi(string answer) : IDmsAi
     {
         public string Prompt = "";
         public bool Allowed(UserSpace space) => true;
         public string? Service => "Test";
-        public Task<string?> WriteAsync(string system, string prompt, CancellationToken ct) { Prompt = prompt; return Task.FromResult<string?>(answer); }
+        public Task<string?> WriteAsync(string system, string prompt, CancellationToken ct, int maxTokens = 1024) { Prompt = prompt; return Task.FromResult<string?>(answer); }
+    }
+
+    [Fact]
+    public async Task Eigene_Felder_pruefen_Werte_suchen_und_sortieren()
+    {
+        var (space, host) = NewSpace();
+        var steuer = DmsFields.Save(space.Db, null, new DmsFields.Input("Steuernummer", DmsFields.Text, null));
+        var betrag = DmsFields.Save(space.Db, null, new DmsFields.Input("Vorauszahlung", DmsFields.Money, null));
+        var bis = DmsFields.Save(space.Db, null, new DmsFields.Input("Kündbar bis", DmsFields.Date, null));
+        Assert.Throws<ArgumentException>(() => DmsFields.Save(space.Db, null, new DmsFields.Input("steuernummer", DmsFields.Text, null)));
+        Assert.Throws<ArgumentException>(() => DmsFields.Save(space.Db, steuer.Id, new DmsFields.Input("Steuernummer", DmsFields.Number, null)));
+
+        var a = await Import(space, host, "bescheid.txt", "Einkommensteuerbescheid für 2025");
+        var b = await Import(space, host, "vertrag.txt", "Mobilfunkvertrag");
+        D.Apply(space.Db, [a.Id], new D.Change(Fields: new() { [steuer.Id] = " 123/456/78901 ", [betrag.Id] = "125000" }));
+        D.Apply(space.Db, [b.Id], new D.Change(Fields: new() { [bis.Id] = "2027-03-31", [betrag.Id] = "9900" }));
+        Assert.Equal("123/456/78901", D.Get(space.Db, a.Id).Fields![steuer.Id]);
+        // Ungültig: Datum, Betrag, unbekanntes Feld
+        Assert.Throws<ArgumentException>(() => D.Apply(space.Db, [b.Id], new D.Change(Fields: new() { [bis.Id] = "31.03.2027" })));
+        Assert.Throws<ArgumentException>(() => D.Apply(space.Db, [b.Id], new D.Change(Fields: new() { [betrag.Id] = "neun" })));
+        Assert.Throws<KeyNotFoundException>(() => D.Apply(space.Db, [b.Id], new D.Change(Fields: new() { ["fx"] = "1" })));
+        // Leer entfernt, die übrigen bleiben
+        D.Apply(space.Db, [a.Id], new D.Change(Fields: new() { [betrag.Id] = "" }));
+        Assert.Equal([steuer.Id], D.Get(space.Db, a.Id).Fields!.Keys);
+
+        // Suche findet den Wert, auch wenn er nicht im Text steht
+        Assert.Equal([a.Id], D.Docs(space.Db, new D.Filter(Query: "456/78901")).Items.Select(d => d.Id));
+        // Sortieren nach Betrag: ohne Wert ans Ende
+        D.Apply(space.Db, [a.Id], new D.Change(Fields: new() { [betrag.Id] = "500" }));
+        Assert.Equal([a.Id, b.Id], D.Docs(space.Db, new D.Filter(Sort: "f:" + betrag.Id, Desc: false)).Items.Select(d => d.Id));
+        Assert.Equal([b.Id, a.Id], D.Docs(space.Db, new D.Filter(Sort: "f:" + betrag.Id, Desc: true)).Items.Select(d => d.Id));
+
+        // Gelöschtes Feld: Wert fällt beim nächsten Ändern weg
+        DmsFields.Delete(space.Db, steuer.Id);
+        D.Apply(space.Db, [a.Id], new D.Change(Fields: new() { [betrag.Id] = "600" }));
+        Assert.DoesNotContain(steuer.Id, D.Get(space.Db, a.Id).Fields!.Keys);
     }
 }

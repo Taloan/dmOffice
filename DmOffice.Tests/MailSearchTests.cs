@@ -107,4 +107,80 @@ public class MailSearchTests
         db.Exec("UPDATE mail SET folder='Archiv' WHERE message_id='m1@x'");
         Assert.Equal("2030-10-24", MailStore.FollowUps(db)[0].Due);
     }
+
+    [Fact]
+    public void Alle_Posteingaenge_wie_Abfrage_ueber_alle()
+    {
+        var dir = Directory.CreateTempSubdirectory("dmunified");
+        var db = new UserDb(Path.Combine(dir.FullName, "u.db"), new byte[32], "t");
+        foreach (var acc in new[] { "a", "b" })
+            MailStore.ReplaceFolders(db, acc, new() { ("INBOX", "INBOX", "/", "inbox", true), ("Archiv", "Archiv", "/", "archive", true) });
+        var rnd = new Random(7);
+        for (var i = 0; i < 300; i++)
+            db.Exec(@"INSERT INTO mail(account,folder,uid,subject,from_addr,date,seen,flagged,has_att,keywords) VALUES($a,$f,$u,'x','x@y',$d,$s,$fl,$h,$k)",
+                ("$a", i % 3 == 0 ? "b" : "a"), ("$f", i % 5 == 0 ? "Archiv" : "INBOX"), ("$u", i), ("$d", 1_700_000_000_000L + rnd.Next(0, 1000) * 60_000L),
+                ("$s", rnd.Next(2)), ("$fl", rnd.Next(4) == 0 ? 1 : 0), ("$h", rnd.Next(3) == 0 ? 1 : 0), ("$k", rnd.Next(2) == 0 ? " dm_rechnung " : " "));
+        List<(string, string)> inboxes = [("a", "INBOX"), ("b", "INBOX")];
+        var criteria = new MailCriteria { Folders = ["a|INBOX", "b|INBOX"] };
+        foreach (var filter in new string?[] { null, "unread", "flagged", "attachments", "cat:dm_rechnung" })
+            foreach (var sort in new string?[] { null, "newest", "oldest", "subject" })
+                foreach (var page in new[] { 0, 1, 2 })
+                {
+                    var q = MailStore.Query(db, criteria, page, 50, filter, sort);
+                    var u = MailStore.Unified(db, inboxes, page, 50, filter, sort);
+                    Assert.Equal(q.Total, u.Total);
+                    Assert.Equal(q.Unread, u.Unread);
+                    // Gleiches Datum: Reihenfolge darf abweichen, die Folge der Daten nicht
+                    Assert.Equal(q.Items.Select(r => r.Date), u.Items.Select(r => r.Date));
+                }
+        Assert.Empty(MailStore.Unified(db, [], 0, 50, null, null).Items);
+    }
+
+    [Fact]
+    public void Zaehlerstand_springt_bei_jeder_Aenderung()
+    {
+        var dir = Directory.CreateTempSubdirectory("dmstamp");
+        var db = new UserDb(Path.Combine(dir.FullName, "u.db"), new byte[32], "t");
+        MailStore.ReplaceFolders(db, "a", new() { ("INBOX", "INBOX", "/", "inbox", true) });
+        var s0 = VirtualCounts.StampOf(db);
+        Assert.Equal(s0, VirtualCounts.StampOf(db));
+        db.Exec("INSERT INTO mail(account,folder,uid,subject,from_addr,date,seen,flagged,has_att,keywords) VALUES('a','INBOX',1,'x','x@y',1,0,0,0,' ')");
+        var s1 = VirtualCounts.StampOf(db);
+        Assert.NotEqual(s0, s1);
+        MailStore.SetFlag(db, "a", "INBOX", [1u], "seen", true);
+        var s2 = VirtualCounts.StampOf(db);
+        Assert.NotEqual(s1, s2);
+        db.Exec("UPDATE mail SET keywords=' dm_privat ' WHERE uid=1");
+        var s3 = VirtualCounts.StampOf(db);
+        Assert.NotEqual(s2, s3);
+        db.Exec("DELETE FROM mail WHERE uid=1");
+        Assert.NotEqual(s3, VirtualCounts.StampOf(db));
+    }
+
+    [Fact]
+    public void Kategorien_in_einem_Durchgang_wie_einzeln()
+    {
+        var dir = Directory.CreateTempSubdirectory("dmcatcount");
+        var db = new UserDb(Path.Combine(dir.FullName, "u.db"), new byte[32], "t");
+        foreach (var acc in new[] { "a", "b", "c" })
+            MailStore.ReplaceFolders(db, acc, new() { ("INBOX", "INBOX", "/", "inbox", true), ("Papierkorb", "Papierkorb", "/", "trash", true),
+                ("Entwürfe", "Entwürfe", "/", "drafts", true), ("Junk", "Junk", "/", "junk", true) });
+        var words = new[] { " ", "", " dm_rechnung ", " DM_Rechnung dm_privat ", " dm_privat ", " dm_rechnungen ", " äpfel ", " Äpfel ", " a_b ", " axb " };
+        var folders = new[] { "INBOX", "Papierkorb", "Entwürfe", "Junk" };
+        var rnd = new Random(11);
+        for (var i = 0; i < 400; i++)
+            db.Exec(@"INSERT INTO mail(account,folder,uid,subject,from_addr,date,seen,flagged,has_att,keywords) VALUES($a,$f,$u,'x','x@y',$d,$s,0,0,$k)",
+                ("$a", new[] { "a", "b", "c" }[rnd.Next(3)]), ("$f", folders[rnd.Next(4)]), ("$u", i), ("$d", 1_700_000_000_000L + i),
+                ("$s", rnd.Next(2)), ("$k", words[rnd.Next(words.Length)]));
+        var keys = new[] { "dm_rechnung", "DM_Privat", "äpfel", "Äpfel", "a_b", "fehlt" };
+        foreach (var hidden in new IReadOnlySet<string>?[] { null, new HashSet<string>(), new HashSet<string> { "c" } })
+        {
+            var all = MailStore.CategoryCounts(db, keys, hidden);
+            foreach (var k in keys)
+            {
+                var (t, u, _) = MailStore.Query(db, new MailCriteria { Categories = [k] }, 0, 0, hidden: hidden);
+                Assert.Equal((t, u), all[k]);
+            }
+        }
+    }
 }

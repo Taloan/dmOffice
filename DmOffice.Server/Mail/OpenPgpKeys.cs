@@ -129,14 +129,22 @@ public static class OpenPgpKeys
     public static bool Store(UserDb db, PgpPublicKeyRing ring, string source)
     {
         Ensure(db);
+        ring = OnlyBound(ring);
         var fp = Fingerprint(ring.GetPublicKey());
-        var emails = Emails(ring);
         var confirmed = source is Own or Import or Wkd;
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        var old = db.Query("SELECT source, confirmed FROM pgp_keys WHERE fingerprint=$f", r => (Source: r.GetString(0), Confirmed: r.GetInt64(1) == 1), ("$f", fp)).FirstOrDefault();
+        var old = db.Query("SELECT source, confirmed, ring FROM pgp_keys WHERE fingerprint=$f",
+            r => (Source: r.GetString(0), Confirmed: r.GetInt64(1) == 1, Ring: (byte[])r[2]), ("$f", fp)).FirstOrDefault();
         if (old.Source != null)
         {
             if (Rank(source) < Rank(old.Source) && old.Confirmed) return false;
+            // Mit dem bekannten Stand zusammenführen: Widerrufe und Unterschlüssel, die schon da waren, gehen nicht verloren
+            try { ring = OnlyBound(PgpPublicKeyRing.Join(new PgpPublicKeyRing(old.Ring), ring, false, false)); }
+            catch (Exception e) when (e is PgpException or IOException or ArgumentException) { }
+        }
+        var emails = Emails(ring);
+        if (old.Source != null)
+        {
             db.Exec("UPDATE pgp_keys SET emails=$e, ring=$r, source=$s, confirmed=max(confirmed, $c), updated=$n WHERE fingerprint=$f",
                 ("$e", System.Text.Json.JsonSerializer.Serialize(emails)), ("$r", ring.GetEncoded()),
                 ("$s", Rank(source) >= Rank(old.Source) ? source : old.Source), ("$c", confirmed ? 1 : 0), ("$n", now), ("$f", fp));
@@ -145,9 +153,59 @@ public static class OpenPgpKeys
             db.Exec("INSERT INTO pgp_keys(fingerprint, emails, ring, source, confirmed, added, updated) VALUES($f, $e, $r, $s, $c, $n, $n)",
                 ("$f", fp), ("$e", System.Text.Json.JsonSerializer.Serialize(emails)), ("$r", ring.GetEncoded()), ("$s", source), ("$c", confirmed ? 1 : 0), ("$n", now));
         db.Exec("DELETE FROM pgp_key_ids WHERE fingerprint=$f", ("$f", fp));
-        foreach (var k in ring.GetPublicKeys())
+        foreach (var k in ring.GetPublicKeys().Where(k => Bound(ring, k)))
             db.Exec("INSERT OR IGNORE INTO pgp_key_ids(key_id, fingerprint) VALUES($k, $f)", ("$k", k.KeyId), ("$f", fp));
         return old.Source == null;
+    }
+
+    /// <summary>
+    /// Gehört der Schlüssel zum Hauptschlüssel des Rings? Der Hauptschlüssel selbst ja; ein Unterschlüssel nur mit gültiger
+    /// Bindungssignatur des Hauptschlüssels (RFC 4880 5.2.1, 0x18), ein Unterschlüssel zum Signieren zusätzlich mit der
+    /// eingebetteten Gegensignatur (0x19). Sonst könnte jeder einen eigenen Unterschlüssel neben einen fremden Hauptschlüssel legen.
+    /// </summary>
+    public static bool Bound(PgpPublicKeyRing ring, PgpPublicKey key)
+    {
+        var master = ring.GetPublicKey();
+        if (key.IsMasterKey) return key.KeyId == master.KeyId;
+        foreach (var sig in key.GetSignaturesOfType(PgpSignature.SubkeyBinding).OfType<PgpSignature>())
+        {
+            if (sig.KeyId != master.KeyId) continue;
+            try
+            {
+                sig.InitVerify(master);
+                if (!sig.VerifyCertification(master, key)) continue;
+                var flags = sig.HasSubpackets ? sig.GetHashedSubPackets().GetKeyFlags() : 0;
+                if ((flags & PgpKeyFlags.CanSign) == 0 || BackSigned(sig, master, key)) return true;
+            }
+            catch (Exception e) when (e is PgpException or IOException or InvalidOperationException) { }
+        }
+        return false;
+    }
+
+    /// <summary>Eingebettete Gegensignatur des Unterschlüssels (0x19) in der Bindungssignatur.</summary>
+    private static bool BackSigned(PgpSignature binding, PgpPublicKey master, PgpPublicKey key)
+    {
+        foreach (var vector in new[] { binding.GetHashedSubPackets(), binding.GetUnhashedSubPackets() })
+        {
+            if (vector == null) continue;
+            var list = vector.GetEmbeddedSignatures();
+            for (int i = 0; i < list.Count; i++)
+            {
+                var back = list[i];
+                if (back.SignatureType != PgpSignature.PrimaryKeyBinding || back.KeyId != key.KeyId) continue;
+                back.InitVerify(key);
+                if (back.VerifyCertification(master, key)) return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>Ring ohne Unterschlüssel, die nicht an den Hauptschlüssel gebunden sind.</summary>
+    public static PgpPublicKeyRing OnlyBound(PgpPublicKeyRing ring)
+    {
+        foreach (var k in ring.GetPublicKeys().Where(k => !Bound(ring, k)).ToList())
+            ring = PgpPublicKeyRing.RemovePublicKey(ring, k) ?? ring;
+        return ring;
     }
 
     private static int Rank(string source) => source switch { Own => 4, Import => 3, Wkd => 2, _ => 1 };
@@ -156,10 +214,11 @@ public static class OpenPgpKeys
     public static (PgpPublicKeyRing Ring, string Source, bool Confirmed)? ByKeyId(UserDb db, long keyId)
     {
         Ensure(db);
+        // Nur Ringe, in denen dieser Schlüssel gebunden ist (ältere Einträge können ungebundene Unterschlüssel enthalten)
         return db.Query(@"SELECT k.ring, k.source, k.confirmed FROM pgp_key_ids i JOIN pgp_keys k ON k.fingerprint = i.fingerprint
-                WHERE i.key_id = $k ORDER BY k.confirmed DESC, k.updated DESC LIMIT 1",
+                WHERE i.key_id = $k ORDER BY k.confirmed DESC, k.updated DESC LIMIT 20",
             r => ((PgpPublicKeyRing Ring, string Source, bool Confirmed)?)(new PgpPublicKeyRing((byte[])r[0]), r.GetString(1), r.GetInt64(2) == 1),
-            ("$k", keyId)).FirstOrDefault();
+            ("$k", keyId)).FirstOrDefault(x => x!.Value.Ring.GetPublicKey(keyId) is { } key && Bound(x.Value.Ring, key));
     }
 
     public static (PgpPublicKeyRing Ring, string Source, bool Confirmed)? ByFingerprint(UserDb db, string fingerprint)

@@ -55,9 +55,9 @@ public static partial class Pukki
         chat.Post(Id, room, english ? "Hello! " + HelpEn : "Hallo! " + Help);
     }
 
-    /// <summary>Unterhaltung mit Pukki, in der der Benutzer noch Mitglied ist - sonst null (ausgeblendet).</summary>
+    /// <summary>Unterhaltung mit Pukki, die der Benutzer sieht - sonst null (ausgeblendet: dann schreibt Pukki von sich aus nicht).</summary>
     public static long? RoomOf(ChatStore chat, string user) =>
-        chat.DirectRoom(user, Id) is { } r && chat.IsMember(r, user) ? r : null;
+        chat.DirectRoom(user, Id) is { } r && chat.IsShown(r, user) ? r : null;
 
     // ---------------- Gedächtnis ----------------
 
@@ -130,7 +130,14 @@ public static partial class Pukki
             if (mem.Asked != null && DateTime.UtcNow - mem.PendingAt > Remember) ClearAsk(mem);
             var c = new Ctx(services, space, mem, Now(space), chat, room);
             Reply reply;
-            try { reply = Respond(c, Normalize(text)); }
+            // Tagebuch (Version 2): „Tagebuch: …“ oder die Antwort auf „Wie war dein Tag?“
+            // Vorhaben der Woche: die Antwort auf den Wochenrückblick des Coachs (PukkiWeekGoal.cs)
+            try
+            {
+                Reply? said = null;
+                if (DmOffice.Core.Features.On(DmOffice.Core.Features.Journal)) said = JournalSaid(services, space, chat, text); // [feature:journal]
+                reply = said ?? Respond(c, Normalize(text));
+            }
             catch (Exception e) when (e is ArgumentException or InvalidOperationException or KeyNotFoundException)
             {
                 reply = "Das hat nicht geklappt: " + e.Message;
@@ -966,7 +973,7 @@ public sealed class PukkiService(ChatStore chat, Spaces spaces, IServiceProvider
             await Task.Delay(TimeSpan.FromSeconds(15), stop);
             while (!stop.IsCancellationRequested)
             {
-                foreach (var space in spaces.All())
+                foreach (var space in spaces.Working())
                 {
                     try { Tick(space); }
                     catch (Exception e) { log.LogWarning(e, "Pukki fuer {User}", space.User.Login); }
@@ -984,50 +991,65 @@ public sealed class PukkiService(ChatStore chat, Spaces spaces, IServiceProvider
         if (p.Sender != Pukki.Id) _inbox.Writer.TryWrite(p);
     }
 
+    /// <summary>Letzte laufende Antwort je Absender: Nachrichten eines Benutzers der Reihe nach, verschiedene Benutzer nebeneinander.</summary>
+    private readonly Dictionary<string, Task> _queues = new();
+
     private async Task Answers(CancellationToken stop)
     {
+        // Eine lange Antwort (KI bis 90 s, Abruf der Uhr) hält nur den eigenen Absender auf, nicht alle
         await foreach (var p in _inbox.Reader.ReadAllAsync(stop))
-        {
-            try
+            lock (_queues)
             {
-                var room = chat.Room(p.Sender, p.Room);
-                var text = chat.Message(p.Sender, p.Message).Text;
-                if (string.IsNullOrWhiteSpace(text)) continue;
-                if (room.Kind == ChatStore.Direct && room.Members.Any(m => m.Id == Pukki.Id))
-                {
-                    // Neue Nachricht: offene Auswahl-Knoepfe sind ueberholt (Text wie „ja“ geht ueber die Rueckfrage)
-                    Pukki.CloseChoices(chat, p.Sender, p.Room);
-                    var space = spaces.Get(p.Sender);
-                    using var device = Pukki.ForDevice(space);
-                    var reply = Pukki.Answer(services, space, text, chat, p.Room);
-                    // Nicht gewusst: mit KI (wenn der Admin sie fuer diesen Benutzer freigegeben hat) Claude fragen
-                    var config = services.GetRequiredService<ServerConfig>();
-                    var aiAllowed = PukkiAi.Allowed(config, services.GetRequiredService<UserStore>().ById(p.Sender));
-                    // Beschwerden und Medikamente nie an die KI: dann bleibt es bei der festen Antwort
-                    if (reply.Unknown && aiAllowed && PukkiGuard.GuardForAi(text) is { } guard) reply = guard.Text;
-                    if (reply.Unknown && aiAllowed)
-                    {
-                        var history = chat.Messages(p.Sender, p.Room, before: p.Message, limit: 8)
-                            .Where(m => !m.Deleted && !string.IsNullOrWhiteSpace(m.Text)).OrderBy(m => m.Id)
-                            .Select(m => (m.Sender != Pukki.Id, m.Text!)).ToList();
-                        // Solange die KI rechnet, zeigt der Chat „Pukki denkt nach …“
-                        chat.SetBusy(p.Sender, p.Room, true);
-                        try
-                        {
-                            string? fromAi = null;
-                            if (await PukkiAi.Ask(config, text, history, Pukki.Now(space), log, stop) is { } ai) { reply = Pukki.AiReply(ai); fromAi = Pukki.AiMood; }
-                            chat.Post(Pukki.Id, p.Room, reply.Text, refs: reply.Refs, actions: reply.Actions, mood: fromAi);
-                        }
-                        finally { chat.SetBusy(p.Sender, p.Room, false); }
-                    }
-                    else chat.Post(Pukki.Id, p.Room, reply.Text, refs: reply.Refs, actions: reply.Actions);
-                }
-                else if (room.Kind == ChatStore.Group && ChatMentions.Has(text, Pukki.Name))
-                    using (Pukki.ForDevice(spaces.Get(p.Sender)))
-                        chat.Post(Pukki.Id, p.Room, Pukki.GroupAnswer(services, chat, p.Room, text, p.Sender), mentions: [p.Sender]);
+                var before = _queues.GetValueOrDefault(p.Sender) ?? Task.CompletedTask;
+                var next = before.ContinueWith(_ => Answer(p, stop), CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default).Unwrap();
+                _queues[p.Sender] = next;
+                // Erledigt: Eintrag wieder weg, sofern keine neuere Nachricht dahinter wartet
+                next.ContinueWith(t => { lock (_queues) if (_queues.TryGetValue(p.Sender, out var cur) && cur == t) _queues.Remove(p.Sender); },
+                    CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default);
             }
-            catch (Exception e) { log.LogWarning(e, "Pukki-Antwort in {Room}", p.Room); }
+    }
+
+    private async Task Answer(ChatPosted p, CancellationToken stop)
+    {
+        try
+        {
+            var room = chat.Room(p.Sender, p.Room);
+            var text = chat.Message(p.Sender, p.Message).Text;
+            if (string.IsNullOrWhiteSpace(text)) return;
+            if (room.Kind == ChatStore.Direct && room.Members.Any(m => m.Id == Pukki.Id))
+            {
+                // Neue Nachricht: offene Auswahl-Knoepfe sind ueberholt (Text wie „ja“ geht ueber die Rueckfrage)
+                Pukki.CloseChoices(chat, p.Sender, p.Room);
+                var space = spaces.Get(p.Sender);
+                using var device = Pukki.ForDevice(space);
+                var reply = Pukki.Answer(services, space, text, chat, p.Room);
+                // Nicht gewusst: mit KI (wenn der Admin sie fuer diesen Benutzer freigegeben hat) Claude fragen
+                var config = services.GetRequiredService<ServerConfig>();
+                var aiAllowed = PukkiAi.Allowed(config, services.GetRequiredService<UserStore>().ById(p.Sender));
+                // Beschwerden und Medikamente nie an die KI: dann bleibt es bei der festen Antwort
+                if (reply.Unknown && aiAllowed && PukkiGuard.GuardForAi(text) is { } guard) reply = guard.Text;
+                if (reply.Unknown && aiAllowed)
+                {
+                    var history = chat.Messages(p.Sender, p.Room, before: p.Message, limit: 8)
+                        .Where(m => !m.Deleted && !string.IsNullOrWhiteSpace(m.Text)).OrderBy(m => m.Id)
+                        .Select(m => (m.Sender != Pukki.Id, m.Text!)).ToList();
+                    // Solange die KI rechnet, zeigt der Chat „Pukki denkt nach …“
+                    chat.SetBusy(p.Sender, p.Room, true);
+                    try
+                    {
+                        string? fromAi = null;
+                        if (await PukkiAi.Ask(config, text, history, Pukki.Now(space), log, stop) is { } ai) { reply = Pukki.AiReply(ai); fromAi = Pukki.AiMood; }
+                        chat.Post(Pukki.Id, p.Room, reply.Text, refs: reply.Refs, actions: reply.Actions, mood: fromAi);
+                    }
+                    finally { chat.SetBusy(p.Sender, p.Room, false); }
+                }
+                else chat.Post(Pukki.Id, p.Room, reply.Text, refs: reply.Refs, actions: reply.Actions);
+            }
+            else if (room.Kind == ChatStore.Group && ChatMentions.Has(text, Pukki.Name))
+                using (Pukki.ForDevice(spaces.Get(p.Sender)))
+                    chat.Post(Pukki.Id, p.Room, Pukki.GroupAnswer(services, chat, p.Room, text, p.Sender), mentions: [p.Sender]);
         }
+        catch (Exception e) { log.LogWarning(e, "Pukki-Antwort in {Room}", p.Room); }
     }
 
     /// <summary>Je Benutzer und Minute: Tagesüberblick fällig? Erinnerungen fällig?</summary>
@@ -1046,15 +1068,28 @@ public sealed class PukkiService(ChatStore chat, Spaces spaces, IServiceProvider
             if (chat.GetKv(key) != today.ToString("yyyy-MM-dd"))
             {
                 chat.SetKv(key, today.ToString("yyyy-MM-dd"));
-                // Nur wenn etwas ansteht - leere Tage bleiben still; dazu die Zeitumstellung
+                // [feature:journal]
+                // Nur wenn etwas ansteht - leere Tage bleiben still; dazu die Zeitumstellung und „Heute vor einem Jahr …“ aus dem Tagebuch
+                // [feature:journal:else]
+                // // Nur wenn etwas ansteht - leere Tage bleiben still; dazu die Zeitumstellung
+                // [/feature:journal]
                 // Wetter und Schlagzeilen (eingeschaltet unter Einstellungen → Chat) - dann kommt der Überblick jeden Tag
-                var extra = string.Join("\n\n", new[] { Pukki.ClockChange(space.Zone, today), PukkiBriefing.Text(services, space, today) }.Where(x => x != null));
+                // [feature:journal]
+                var extra = string.Join("\n\n", new[] { Pukki.ClockChange(space.Zone, today), PukkiBriefing.Text(services, space, today), DmOffice.Core.Features.On(DmOffice.Core.Features.Journal) ? Pukki.JournalLookBack(space, today) : null }.Where(x => x != null));
+                // [feature:journal:else]
+                // var extra = string.Join("\n\n", new[] { Pukki.ClockChange(space.Zone, today), PukkiBriefing.Text(services, space, today) }.Where(x => x != null));
+                // [/feature:journal]
                 if (Pukki.Overview(services, space, today, today) is { } text)
                     chat.Post(Pukki.Id, room, Pukki.L("Guten Morgen! ", "Good morning! ") + text + (extra.Length > 0 ? "\n\n" + extra : ""), actions: Pukki.DoneActions(services, space, today, today));
                 else if (extra.Length > 0) chat.Post(Pukki.Id, room, "Guten Morgen! " + extra, mood: "kaffee");
             }
         }
 
+        // [feature:journal]
+        // Tagebuch: abends „Wie war dein Tag?“ (nur eingeschaltet)
+        if (DmOffice.Core.Features.On(DmOffice.Core.Features.Journal)) Pukki.JournalAsk(services, chat, space, room);
+
+        // [/feature:journal]
         // Noch einmal erinnern (Knopf oder „noch mal“): kommt auch, wenn Erinnerungen sonst aus sind - ausdrücklich gewünscht
         foreach (var (title, start) in Pukki.DueSnoozes(chat, user, DateTime.UtcNow))
         {
@@ -1085,6 +1120,18 @@ public sealed class PukkiService(ChatStore chat, Spaces spaces, IServiceProvider
             var from = _remindedUntil.GetOrAdd(user, utcNow);
             _remindedUntil[user] = utcNow;
             if (from >= utcNow) return;
+            // Ab 2.2 (Kennungen calremind ...): mehrere Erinnerungen, Kalender-Standard; ganztägig ohne Uhrzeit
+            if (Pim.CalendarReminders.Active)
+            {
+                foreach (var d in Pim.CalendarReminders.Due(services, space, from, utcNow))
+                {
+                    var lead = (int)Math.Round((d.StartUtc - d.FireUtc).TotalMinutes);
+                    chat.Post(Pukki.Id, room, Pukki.ReminderText(space, d.Title, d.StartUtc, !d.AllDay && lead > 0 ? $" (in {Span(lead)})" : null, d.AllDay ? d.Start : null),
+                        actions: Pukki.SnoozeActions(d.Title, d.StartUtc));
+                    Pukki.RememberReminder(chat, user, d.Title, d.StartUtc);
+                }
+                return;
+            }
             foreach (var (title, start, reminder) in DueReminders(services, space, from, utcNow))
             {
                 // Mit Knöpfen zum erneuten Erinnern; gemerkt für „erinnere mich in 10 Minuten noch mal“

@@ -6,9 +6,13 @@ namespace DmOffice;
 
 public static class SettingsApi
 {
+    static readonly object UiPrefsLock = new();
     public record DiscoverBody(string Email);
-    public record General(string? Theme, string? TimeZone, int? MarkReadDelay, string? OpenOnFolder, long? InviteCalendar = null, bool? SmartCalendar = null);
+    public record General(string? Theme, string? TimeZone, int? MarkReadDelay, string? OpenOnFolder, long? InviteCalendar = null, bool? SmartCalendar = null,
+        string? AttachSaveTarget = null, string? AttachSaveFolder = null, bool? AttachSaveAsk = null);
     public record NewAppPassword(string Name, string? Password = null, string? Code = null);
+    /// <summary>Kennung ruleforward: Ziel und (beim Bestätigen im Regeln-Dialog) der Code aus der Bestätigungsmail.</summary>
+    public record ForwardTargetBody(string? Address, string? Code = null);
     public record RenameAppPassword(string? Name);
     public record NotiziConnect(string? Password = null, string? Code = null);
     public record TrustedEntry(string Entry);
@@ -59,7 +63,7 @@ public static class SettingsApi
     });
 
     /// <summary>Konto ohne Passwoerter - die Oberflaeche sieht nur, ob eines gesetzt ist.</summary>
-    private static object Masked(MailAccount a, bool isDefault) => new
+    private static object Masked(MailAccount a, bool isDefault, UserSpace space) => new
     {
         a.Id, isDefault, a.Name, a.Email, a.DisplayName, a.ImapHost, a.ImapPort, a.ImapSecurity, a.ImapUser,
         hasImapPassword = !string.IsNullOrEmpty(a.ImapPassword),
@@ -67,8 +71,12 @@ public static class SettingsApi
         hasGraph = !string.IsNullOrEmpty(a.GraphRefreshToken), a.GraphCalendars, a.GraphContacts, a.GraphTasks,
         a.SmtpHost, a.SmtpPort, a.SmtpSecurity, a.SmtpUser,
         hasSmtpPassword = !string.IsNullOrEmpty(a.SmtpPassword),
-        a.Signature, a.AcceptAnyCertificate, a.SaveSentCopy, a.SyncMonths, a.MaxCachedMb, a.Storage, a.SlimDays, a.SlimMb, a.Language, a.TrashDays, a.JunkDays, a.FocusedInbox, a.FolderMap, a.InUnified
+        a.Signature, a.AcceptAnyCertificate, a.SaveSentCopy, a.SyncMonths, a.MaxCachedMb, a.Storage, a.SlimDays, a.SlimMb, a.Language, a.TrashDays, a.JunkDays, a.FocusedInbox, a.FolderMap, a.InUnified,
+        // [feature:mailaccountoff]
+        disabled = a.Off, offNotes = a.Off ? MailAccountOff.Notes(space, a) : [],
+        // [/feature:mailaccountoff]
     };
+
 
     /// <summary>Zeigt der Host auf den eigenen Container (Loopback, Link-Local, unbestimmt)? Dann kein Verbindungsversuch -
     /// das Heimnetz (selbst gehostete Mail) bleibt erlaubt. Auch Namen werden aufgeloest: ein DNS-Name, der auf
@@ -99,14 +107,28 @@ public static class SettingsApi
         || existing.SmtpSecurity != body.SmtpSecurity || existing.SmtpUser != body.SmtpUser.Trim()
         || existing.AcceptAnyCertificate != body.AcceptAnyCertificate && body.AcceptAnyCertificate;
 
+    /// <summary>Fehlertext bei unvollstaendigem Konto (Adresse, Server, Ports); sonst null. Bei Microsoft-Anmeldung kommen die
+    /// Server aus der Anmeldung, Adresse und Ports gelten trotzdem.</summary>
+    internal static string? Invalid(MailAccount body)
+    {
+        var email = body.Email?.Trim() ?? "";
+        if (email.Length < 3 || email.IndexOf('@') is <= 0 || email.EndsWith('@') || email.Any(char.IsWhiteSpace))
+            return "Bitte eine gültige E-Mail-Adresse eintragen.";
+        if (body.Auth != MailAuth.Microsoft && (string.IsNullOrWhiteSpace(body.ImapHost) || string.IsNullOrWhiteSpace(body.SmtpHost)))
+            return "Bitte den Server für Posteingang und Postausgang eintragen.";
+        if (body.ImapPort is < 1 or > 65535 || body.SmtpPort is < 1 or > 65535)
+            return "Der Port muss zwischen 1 und 65535 liegen.";
+        return null;
+    }
+
     /// <summary>Fehlertext, wenn das Ziel geaendert wurde, aber Passwort bzw. neue Microsoft-Anmeldung fehlen; sonst null.</summary>
     private static string? MissingSecretFor(MailAccount existing, MailAccount body)
     {
         if (!TargetChanged(existing, body)) return null;
         if (body.Auth == MailAuth.Microsoft)
             return string.IsNullOrEmpty(body.OAuthFlow) ? "Bei geändertem Server bitte erneut bei Microsoft anmelden." : null;
-        return string.IsNullOrEmpty(body.ImapPassword) || string.IsNullOrEmpty(body.SmtpPassword)
-            ? "Bei geändertem Server bitte das Passwort erneut eingeben." : null;
+        // Leeres SMTP-Passwort heisst „wie IMAP“ (Merge) - verlangt wird nur das IMAP-Passwort
+        return string.IsNullOrEmpty(body.ImapPassword) ? "Bei geändertem Server bitte das Passwort erneut eingeben." : null;
     }
 
     /// <summary>Leeres Passwort beim Speichern heisst: das bisherige behalten. Das Microsoft-Token kommt
@@ -115,7 +137,9 @@ public static class SettingsApi
     internal static void Merge(MailAccount target, MailAccount body)
     {
         var imap = string.IsNullOrEmpty(body.ImapPassword) ? target.ImapPassword : body.ImapPassword;
-        var smtp = string.IsNullOrEmpty(body.SmtpPassword) ? target.SmtpPassword : body.SmtpPassword;
+        // Leeres SMTP-Passwort: bei gleichem Ziel das bisherige, bei neuem Ziel keines - dann gilt das IMAP-Passwort
+        // (wie der Feldhinweis „leer: wie IMAP“ sagt); das alte ginge sonst an einen anderen Server
+        var smtp = !string.IsNullOrEmpty(body.SmtpPassword) ? body.SmtpPassword : TargetChanged(target, body) ? null : target.SmtpPassword;
         target.Name = body.Name.Trim(); target.Email = body.Email.Trim(); target.DisplayName = body.DisplayName.Trim();
         target.ImapHost = body.ImapHost.Trim(); target.ImapPort = body.ImapPort; target.ImapSecurity = body.ImapSecurity;
         target.ImapUser = body.ImapUser.Trim(); target.ImapPassword = imap;
@@ -196,11 +220,11 @@ public static class SettingsApi
             var s = space.Settings;
             return new
             {
-                s.Theme, s.TimeZone, s.MarkReadDelay, s.OpenOnFolder, s.InviteCalendar, s.SmartCalendar,
+                s.Theme, s.TimeZone, s.MarkReadDelay, s.OpenOnFolder, s.InviteCalendar, s.SmartCalendar, s.AttachSaveTarget, s.AttachSaveFolder, s.AttachSaveAsk,
                 // Domains, bei denen der Assistent "Mit Microsoft anmelden" anbietet - null: nicht eingerichtet
                 microsoftDomains = http.RequestServices.GetRequiredService<MicrosoftOAuth>().Enabled ? MicrosoftOAuth.Domains.Order() : null,
-                accounts = s.MailAccounts.Select(a => Masked(a, s.IsDefault(a))),
-                user = new { space.User.Login, space.User.DisplayName, space.User.IsAdmin }
+                accounts = s.MailAccounts.Select(a => Masked(a, s.IsDefault(a), space)),
+                user = new { space.User.Login, space.User.DisplayName, space.User.IsAdmin },
             };
         });
 
@@ -215,6 +239,9 @@ public static class SettingsApi
                 if (body.OpenOnFolder is "none" or "first" or "unread" or "last") s.OpenOnFolder = body.OpenOnFolder;
                 if (body.InviteCalendar is long ic) s.InviteCalendar = ic > 0 ? ic : null;
                 if (body.SmartCalendar is bool sc) s.SmartCalendar = sc;
+                if (body.AttachSaveTarget is "ablage" or "browser") s.AttachSaveTarget = body.AttachSaveTarget;
+                if (body.AttachSaveFolder != null) s.AttachSaveFolder = DmOffice.Dav.FileStore.Normalize(body.AttachSaveFolder) is { Length: > 0 } f ? f : null;
+                if (body.AttachSaveAsk is bool ask) s.AttachSaveAsk = ask;
             });
             return Results.Ok();
         });
@@ -225,12 +252,13 @@ public static class SettingsApi
         {
             var a = new MailAccount();
             var space = http.Space();
+            if (Invalid(body) is { } invalid) return Results.BadRequest(new { error = invalid });
             if (await LoopbackHost(body.ImapHost) || await LoopbackHost(body.SmtpHost)) return Results.BadRequest(new { error = "Dieser Server ist nicht erlaubt." });
             Merge(a, body);
             Claim(a, oauth.Grant(space.User.Id, body.OAuthFlow));
             if (a.Auth == MailAuth.Microsoft && string.IsNullOrEmpty(a.OAuthRefreshToken))
                 return Results.BadRequest(new { error = "Erst bei Microsoft anmelden." });
-            space.UpdateSettings(s => s.MailAccounts.Add(a));
+            space.UpdateSettings(s => { DmOffice.Mail.ForwardTargets.Remember(s); s.MailAccounts.Add(a); });
             oauth.Forget(body.OAuthFlow);
             sync.Kick(space.User.Id, a.Id);
             return Results.Ok(new { a.Id });
@@ -240,12 +268,14 @@ public static class SettingsApi
         {
             var space = http.Space();
             var existing = space.Settings.MailAccounts.FirstOrDefault(a => a.Id == id) ?? throw new KeyNotFoundException("Konto nicht gefunden.");
+            if (Invalid(body) is { } invalid) return Results.BadRequest(new { error = invalid });
             // Neuer Server: gespeichertes Passwort bzw. Microsoft-Token nicht mitnehmen (wie beim Test)
             if (MissingSecretFor(existing, body) is { } missing) return Results.BadRequest(new { error = missing });
             if (await LoopbackHost(body.ImapHost) || await LoopbackHost(body.SmtpHost)) return Results.BadRequest(new { error = "Dieser Server ist nicht erlaubt." });
             var token = oauth.Grant(space.User.Id, body.OAuthFlow);
             space.UpdateSettings(s =>
             {
+                DmOffice.Mail.ForwardTargets.Remember(s);
                 var a = s.MailAccounts.First(a => a.Id == id);
                 Merge(a, body);
                 Claim(a, token);
@@ -269,6 +299,10 @@ public static class SettingsApi
             oauth.Enabled ? Results.Ok(await oauth.StartAsync(http.Space().User.Id, ct)) : Results.NotFound());
         api.MapPost("/accounts/microsoft/poll", async (OAuthPoll body, HttpContext http, MicrosoftOAuth oauth, CancellationToken ct) =>
             oauth.Enabled ? Results.Ok(new { status = await oauth.PollAsync(http.Space().User.Id, body.Flow, ct) }) : Results.NotFound());
+
+        // [feature:mailaccountoff]
+        MailAccountOff.Map(api);
+        // [/feature:mailaccountoff]
 
         // Standard-Mailkonto festlegen (Features.DefaultAccount): genau eines ist Standard
         api.MapPut("/accounts/{id}/default", (string id, HttpContext http) =>
@@ -313,27 +347,39 @@ public static class SettingsApi
             Claim(a, oauth.Grant(space.User.Id, body.OAuthFlow));
             // Nur der eigene Container ist tabu (Loopback) - das Heimnetz ist bei selbst gehosteter Mail gewollt
             if (await LoopbackHost(a.ImapHost) || await LoopbackHost(a.SmtpHost)) return Results.BadRequest(new { error = "Dieser Server ist nicht erlaubt." });
-            var result = new Dictionary<string, string>();
-            try
+            // IMAP und SMTP gleichzeitig, beide zusammen höchstens 15 s (ein nicht erreichbarer Server hielt den Test sonst 80 s fest)
+            using var limit = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            limit.CancelAfter(TimeSpan.FromSeconds(15));
+            var lt = limit.Token;
+            async Task<string> Imap()
             {
-                using var imap = new MailKit.Net.Imap.ImapClient { Timeout = 20_000 };
-                if (a.AcceptAnyCertificate) imap.ServerCertificateValidationCallback = (_, _, _, _) => true;
-                await imap.ConnectAsync(a.ImapHost, a.ImapPort, ImapPool.Options(a.ImapSecurity), ct);
-                await ImapPool.LoginAsync(imap, a, a.ImapUser, a.ImapPassword, ct);
-                await imap.DisconnectAsync(true, ct);
-                result["imap"] = "ok";
+                try
+                {
+                    using var imap = new MailKit.Net.Imap.ImapClient { Timeout = 15_000 };
+                    if (a.AcceptAnyCertificate) imap.ServerCertificateValidationCallback = (_, _, _, _) => true;
+                    await ImapPool.ConnectCheckedAsync(imap, a, a.ImapHost, a.ImapPort, a.ImapSecurity, lt);
+                    await ImapPool.LoginAsync(imap, a, a.ImapUser, a.ImapPassword, lt);
+                    await imap.DisconnectAsync(true, lt);
+                    return "ok";
+                }
+                // Keine Server-Einzelheiten als Fehlertext (Port-Scan-Orakel) - nur Anmeldung vs. Verbindung
+                catch (MailKit.Security.AuthenticationException) { return "Anmeldung fehlgeschlagen (Benutzer oder Passwort)."; }
+                catch (Exception) when (!ct.IsCancellationRequested) { return "Keine Verbindung zum Server."; }
             }
-            // Keine Server-Einzelheiten als Fehlertext (Port-Scan-Orakel) - nur Anmeldung vs. Verbindung
-            catch (MailKit.Security.AuthenticationException) { result["imap"] = "Anmeldung fehlgeschlagen (Benutzer oder Passwort)."; }
-            catch (Exception) { result["imap"] = "Keine Verbindung zum Server."; }
-            try
+            async Task<string> Smtp()
             {
-                using var smtp = await ImapPool.SmtpAsync(a, ct);
-                await smtp.DisconnectAsync(true, ct);
-                result["smtp"] = "ok";
+                try
+                {
+                    using var smtp = await ImapPool.SmtpAsync(a, lt);
+                    await smtp.DisconnectAsync(true, lt);
+                    return "ok";
+                }
+                catch (MailKit.Security.AuthenticationException) { return "Anmeldung fehlgeschlagen (Benutzer oder Passwort)."; }
+                catch (Exception) when (!ct.IsCancellationRequested) { return "Keine Verbindung zum Server."; }
             }
-            catch (MailKit.Security.AuthenticationException) { result["smtp"] = "Anmeldung fehlgeschlagen (Benutzer oder Passwort)."; }
-            catch (Exception) { result["smtp"] = "Keine Verbindung zum Server."; }
+            var imapTask = Imap();
+            var smtpTask = Smtp();
+            var result = new Dictionary<string, string> { ["imap"] = await imapTask, ["smtp"] = await smtpTask };
             return Results.Ok(result);
         });
 
@@ -360,6 +406,34 @@ public static class SettingsApi
             catch (System.Text.Json.JsonException) { return Results.BadRequest(new { error = "Ungültige Einstellungen." }); }
             http.Space().Db.Set("ui.prefs", text);
             return Results.Ok();
+        });
+
+        // Nur die geaenderten Felder zusammenfuehren (null loescht ein Feld). Ein alter Stand
+        // aus einem anderen Tab oder vor dem ersten Laden ueberschreibt so nichts anderes.
+        api.MapMethods("/ui", new[] { "PATCH" }, async (HttpRequest request, HttpContext http) =>
+        {
+            using var reader = new StreamReader(request.Body);
+            var text = await reader.ReadToEndAsync();
+            if (text.Length > 200_000) return Results.BadRequest(new { error = "Zu gross." });
+            System.Text.Json.Nodes.JsonObject patch;
+            try { patch = System.Text.Json.Nodes.JsonNode.Parse(text) as System.Text.Json.Nodes.JsonObject ?? throw new System.Text.Json.JsonException(); }
+            catch (Exception) { return Results.BadRequest(new { error = "Ungültige Einstellungen." }); }
+            var db = http.Space().Db;
+            lock (UiPrefsLock)
+            {
+                System.Text.Json.Nodes.JsonObject current;
+                try { current = System.Text.Json.Nodes.JsonNode.Parse(db.Get("ui.prefs") ?? "{}") as System.Text.Json.Nodes.JsonObject ?? new(); }
+                catch (Exception) { current = new(); }
+                foreach (var (k, v) in patch.ToList())
+                {
+                    if (v is null) current.Remove(k);
+                    else current[k] = v.DeepClone();
+                }
+                var json = current.ToJsonString();
+                if (json.Length > 200_000) return Results.BadRequest(new { error = "Zu gross." });
+                db.Set("ui.prefs", json);
+                return Results.Content(json, "application/json");
+            }
         });
 
         // ---------------- Suchordner ----------------
@@ -526,8 +600,9 @@ public static class SettingsApi
                 || r.Conditions.Any(c => c is null || c.Field is null || c.Op is null || c.Value is null)
                 || r.Actions.Any(a => a is null || a.Type is null || a.Value is null)))
                 return Results.BadRequest(new { error = "Ungültige Regel." });
-            static HashSet<string> Targets(IEnumerable<MailRule> list) => list.SelectMany(r => r.Actions).Where(a => a.Type == "forward")
-                .SelectMany(a => a.Value.Split(',', ';').Select(x => x.Trim().ToLowerInvariant()).Where(x => x.Contains('@'))).ToHashSet();
+            // Zieladressen und Tage prüfen, bevor etwas gilt: sonst wirkt die Aktion still nie (oder es gehen Bestätigungen an Unsinn)
+            if (rules.Select(DmOffice.Mail.Rules.Problem).FirstOrDefault(p => p != null) is { } problem) return Results.BadRequest(new { error = problem });
+            static HashSet<string> Targets(IEnumerable<MailRule> list) => DmOffice.Mail.ForwardTargets.Of(list);
             var added = Targets(rules).Except(Targets(http.Space().Settings.Rules)).ToList();
             if (added.Count > 0)
             {
@@ -540,9 +615,73 @@ public static class SettingsApi
                 foreach (var c in r.Conditions.Where(c => c.Op == "regex"))
                     try { _ = new System.Text.RegularExpressions.Regex(c.Value); }
                     catch (ArgumentException) { return Results.BadRequest(new { error = $"Ungültiger regulärer Ausdruck in Regel: „{r.Name}“" }); }
-            http.Space().UpdateSettings(s => s.Rules = rules);
+            // Kennung ruleforward: neue Ziele warten auf Bestätigung durch den Empfänger, weggefallene vergessen
+            List<string> pending = [], dropped = [];
+            http.Space().UpdateSettings(s => { (pending, dropped) = DmOffice.Mail.ForwardTargets.Update(s, rules); s.Rules = rules; });
+            var confirmIndex = http.RequestServices.GetRequiredService<DmOffice.Mail.ForwardConfirmIndex>();
+            foreach (var h in dropped) confirmIndex.Remove(h);
+            if (pending.Count > 0)
+            {
+                var space = http.Space();
+                var origin = PublicAddress.Base(http);
+                var log = http.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("DmOffice.Mail.ForwardTargets");
+                // Im Hintergrund: Speichern wartet nicht auf den Mailserver
+                _ = Task.Run(async () => { foreach (var a in pending) await DmOffice.Mail.ForwardTargets.SendAsync(space, confirmIndex, a, origin, log); });
+            }
             if (added.Count > 0) SecurityNotice.Important(http.RequestServices, http.Space().User.Id, "Mail-Weiterleitung an " + string.Join(", ", added));
             return Results.Ok();
+        });
+
+        // Kennung ruleforward: Ziele von Weiterleiten/Umleiten mit Stand der Bestätigung
+        api.MapGet("/forward-targets", (HttpContext http) =>
+        {
+            var space = http.Space();
+            DmOffice.Mail.ForwardTargets.Ensure(space);
+            var s = space.Settings;
+            var now = DateTime.UtcNow;
+            // Konten mit Umleiten-Regeln: 8BITMIME einmal im Hintergrund abfragen, die Oberfläche lädt kurz danach erneut
+            var redirectAccounts = s.Rules.Where(r => r.Actions.Any(a => a.Type == "redirect"))
+                .SelectMany(r => r.AccountId is { } id ? [id] : s.MailAccounts.Select(a => a.Id)).Distinct().ToList();
+            foreach (var id in redirectAccounts.Where(id => s.Smtp8BitMime?.ContainsKey(id) != true))
+                if (s.MailAccounts.FirstOrDefault(a => a.Id == id) is { } acc) DmOffice.Mail.ForwardTargets.Probe8Bit(space, acc);
+            return Results.Ok(new
+            {
+                own = DmOffice.Mail.ForwardTargets.Own(s),
+                no8bit = redirectAccounts.Where(id => s.Smtp8BitMime?.TryGetValue(id, out var ok) == true && !ok),
+                targets = (s.ForwardTargets ?? []).Select(t => new
+                {
+                    address = t.Address, confirmed = t.Confirmed, sentAt = t.SentAt, expired = !t.Confirmed && t.Expires is { } e && e <= now,
+                    error = t.Error, locked = !t.Confirmed && t.CodeTries >= DmOffice.Mail.ForwardTargets.MaxCodeTries,
+                }),
+            });
+        });
+        api.MapPost("/forward-targets/resend", async (ForwardTargetBody body, HttpContext http) =>
+        {
+            var space = http.Space();
+            var a = DmOffice.Mail.ForwardTargets.Norm(body.Address ?? "");
+            if (space.Settings.ForwardTargets?.FirstOrDefault(t => t.Address == a) is not { Confirmed: false } t)
+                return Results.NotFound(new { error = "Dieses Ziel wartet nicht auf Bestätigung." });
+            if (t.SentAt is { } sent && DateTime.UtcNow - sent < DmOffice.Mail.ForwardTargets.ResendPause)
+                return Results.Json(new { error = "Gerade erst gesendet. Bitte eine Minute warten." }, statusCode: 429);
+            var log = http.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("DmOffice.Mail.ForwardTargets");
+            await DmOffice.Mail.ForwardTargets.SendAsync(space, http.RequestServices.GetRequiredService<DmOffice.Mail.ForwardConfirmIndex>(), a,
+                PublicAddress.Base(http), log, http.RequestAborted);
+            var error = space.Settings.ForwardTargets?.FirstOrDefault(x => x.Address == a)?.Error;
+            return error == null ? Results.Ok() : Results.Json(new { error = "Bestätigungsmail nicht gesendet: " + error }, statusCode: 502);
+        });
+        api.MapPost("/forward-targets/confirm", (ForwardTargetBody body, HttpContext http) =>
+        {
+            var r = DmOffice.Mail.ForwardTargets.ConfirmCode(http.Space(), http.RequestServices.GetRequiredService<DmOffice.Mail.ForwardConfirmIndex>(),
+                body.Address ?? "", body.Code ?? "", DateTime.UtcNow);
+            return r switch
+            {
+                DmOffice.Mail.ForwardTargets.Result.Confirmed => Results.Ok(),
+                DmOffice.Mail.ForwardTargets.Result.Expired => Results.BadRequest(new { error = "Der Code ist abgelaufen. Bitte die Bestätigung erneut senden." }),
+                DmOffice.Mail.ForwardTargets.Result.TooManyTries => Results.BadRequest(new { error = "Zu viele falsche Codes. Bitte die Bestätigung erneut senden." }),
+                DmOffice.Mail.ForwardTargets.Result.TooManyToday => Results.BadRequest(new { error = "Heute zu viele falsche Codes. Bitte den Link aus der Bestätigungsmail nutzen oder morgen erneut versuchen." }),
+                DmOffice.Mail.ForwardTargets.Result.WrongCode => Results.BadRequest(new { error = "Der Code stimmt nicht." }),
+                _ => Results.NotFound(new { error = "Dieses Ziel wartet nicht auf Bestätigung." }),
+            };
         });
 
         // Jetzt ausfuehren: gespeicherte Regel auf die Mails im Posteingang anwenden (ohne Weiterleiten)

@@ -78,7 +78,11 @@ public class DashboardTests : IClassFixture<ChatFixture>
         Assert.Equal(HttpStatusCode.OK, (await c.PostAsJsonAsync("/api/dashboard/task", new { list = list.Id, uri = taskUri, done = false })).StatusCode);
         Assert.Contains((await Get(c, "/api/dashboard/w/tasks")).GetProperty("items").EnumerateArray(), x => x.GetProperty("uri").GetString() == taskUri);
 
-        // Heute, Kalender, Chat, Notizen, Dateien, Speicher: antworten ohne Fehler und mit den erwarteten Feldern
+        // [feature:journal]
+        // Heute, Kalender, Chat, Notizen, Dateien, Speicher, Tagebuch: antworten ohne Fehler und mit den erwarteten Feldern
+        // [feature:journal:else]
+        // // Heute, Kalender, Chat, Notizen, Dateien, Speicher: antworten ohne Fehler und mit den erwarteten Feldern
+        // [/feature:journal]
         Assert.StartsWith("Gut", (await Get(c, "/api/dashboard/w/today")).GetProperty("greeting").GetString()!.Length > 0 ? "Gut" : "");
         var ev = await Get(c, "/api/dashboard/w/events?o=" + Uri.EscapeDataString("{\"days\":2}"));
         Assert.Equal(2, ev.GetProperty("days").GetArrayLength());
@@ -89,6 +93,10 @@ public class DashboardTests : IClassFixture<ChatFixture>
         FileStore.Favorite(space.Db, FileStore.Get(space.Db, dir + ".txt")!.FileId, true);
         Assert.Contains((await Get(c, "/api/dashboard/w/files")).GetProperty("items").EnumerateArray(), x => x.GetProperty("path").GetString() == dir + ".txt" && x.GetProperty("favorite").GetBoolean());
         Assert.True((await Get(c, "/api/dashboard/w/storage")).GetProperty("used").GetInt64() > 0);
+        // [feature:journal]
+        var j = await Get(c, "/api/dashboard/w/journal");
+        Assert.True(j.TryGetProperty("back", out _));
+        // [/feature:journal]
         Assert.True((await Get(c, "/api/dashboard/w/birthdays")).TryGetProperty("items", out _));
         Assert.True((await Get(c, "/api/dashboard/w/photos")).TryGetProperty("years", out _));
         Assert.Equal(false, (await Get(c, "/api/dashboard/w/weather")).GetProperty("configured").GetBoolean());
