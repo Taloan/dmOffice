@@ -1,7 +1,7 @@
 # Node baut die Oberflaeche, das SDK den Server, eine eigene Stufe stellt die Plugins zusammen (plugins/README.md), das
 # Laufzeit-Image traegt nur das Ergebnis.
 # Die Oberflaeche liegt als wwwroot im Server. Alles Weitere (Daten, Schluessel) unter /data.
-FROM node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914 AS web
+FROM node:26-alpine@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5 AS web
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci --no-audit --no-fund
@@ -14,7 +14,7 @@ RUN npm run build
 COPY plugins/ /plugins/
 RUN node build-plugins.mjs --root /plugins
 
-FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:de4fe90a98845d75910b9769662465c84de1a934665c431279d1382b2bddc02b AS build
+FROM mcr.microsoft.com/dotnet/sdk:11.0@sha256:65f3c7c6a25a239ab3e6719f2896147e7b68242ff2d8818dd70498bde6ef8bea AS build
 WORKDIR /src
 COPY vendor/Notizi.Core/Notizi.Core.csproj vendor/Notizi.Core/
 COPY DmOffice.Sdk/DmOffice.Sdk.csproj DmOffice.Sdk/
@@ -44,7 +44,7 @@ COPY --from=build /pluginbins /pluginbins
 RUN --mount=type=secret,id=plugin_key,required=false \
     node /tools/plugins/assemble.mjs /plugins /pluginbins /out $([ -s /run/secrets/plugin_key ] && echo /run/secrets/plugin_key)
 
-FROM mcr.microsoft.com/dotnet/aspnet:10.0@sha256:de0ee358cdd672f7017a003bed21e9ac9ed48a27c922a59b18175b6e82fa7fee
+FROM mcr.microsoft.com/dotnet/aspnet:11.0@sha256:bc0d6653979efba491ab3d6f589d691f96c309c3c3ef81325efa6978e7b7f242
 # Versionsnummer fuer die Anzeige (Ordnerbereich, Verwaltung) - beim Bauen gesetzt
 ARG VERSION=dev
 ENV DMOFFICE_VERSION=$VERSION
